@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0 generated-floor physics stability repair
+
+- Compile floor boxes as actual-size closed USD meshes with identity scale instead of non-uniformly scaled cube colliders.
+- Add an 18 x 12 m floor geometry contract and long-route physics regression.
+- Verify the persisted one-image 8 m generated route completes without the former roll instability.
+
 ## 0.1.0 RobotProfile v2 and automated 3D acceptance repair
 
 - Replace the unstable two-contact AGV with a vetted two-driven-wheel/two-passive-caster profile.

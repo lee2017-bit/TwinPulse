@@ -8,8 +8,9 @@
 - M2-A: PASS; corrected compact UI confirmed in the user-run Full app
 - M2-B: PASS for one real image. The user-run Luna request produced 14 allowlisted calls/59 objects, built 134 generated prims, and restored the same persisted plan after restart.
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
-- Distribution checkpoint: the full local verification repeated PASS on 2026-09-13 (`artifacts/runs/20260913-231705`, intentionally git-ignored). A company-PC installation guide and configurable Isaac root were added for handoff.
-- Next: reproduce the Extension on the company PC, then investigate generated-layout-specific robot stability before the three distinct image fixtures required for M2-C.
+- Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
+- Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored). Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
+- Next: reproduce the Extension on the company PC, then run the three distinct image fixtures required for M2-C.
 
 ## Implemented
 
@@ -18,6 +19,7 @@
 - `twinpulse.extension-0.1.0` with Build Scene, Run / Resume, Pause, and Reset UI.
 - The compatible `twinpulse.extension-0.1.0` visible-scene revision adds an overview camera, dome/sun lighting, goal marker, automatic viewport focus, and a 1.5 m visible route. The manifest stays at 0.1.0 because the existing Isaac enable list pins that exact package version.
 - Idempotent `/World/TwinPulse` scene compiler with floor/walls/racks/box and procedural wheeled AGV.
+- Large generated floors use actual-size closed USD meshes rather than non-uniformly scaled cube colliders, avoiding asymmetric PhysX wheel/caster contact.
 - Finite core and Isaac runtime verification scripts.
 - Provider-neutral request/capability/result contracts, deterministic mock, modern OpenAI Responses adapter, timeout/cancel/stale-response handling, and eight provider tests.
 - A pre-Nav2 route gate rejects sideways, reverse, overlong, off-floor, tilted-collider, and blocked paths that the current positive-X controller cannot safely execute.
@@ -40,8 +42,8 @@
 - The old Isaac 5.1 safety backup remains outside this repository because recursive cleanup was policy-blocked.
 - No API key was created, read into logs, or entered by Codex. The user initiated one Luna request that returned a valid draft; Codex did not initiate it. No cloud resource, ROS2/Lab installation, or physical AGV command was used.
 - The corrected scene-tool-plan and RobotProfile v2 path has 23/23 core tests, 8/8 provider tests, and an Isaac regression PASS (54 generated regression prims, fallback rejection, rollback, three lifecycle/physics cycles, and a stable 6.9 m route).
-- The user-run real image path passed generation, generated Build, and persisted draft restore. The post-fix motion still needs one interactive visual confirmation; the three-fixture diversity/measurement gate remains open.
-- A deterministic replay of that same persisted real-image plan later stopped as `unstable` after 187 frames (maximum roll 9.0393 deg, goal error 7.809 m). The stable fixed 6.9 m acceptance route still passes, so this is a generated-layout/initialization limitation rather than proof that arbitrary generated plans are physically safe. Do not use generated scenes for physical deployment.
+- The user-run real image path passed generation, generated Build, persisted draft restore, and post-repair deterministic headless motion. A new Full-app visual confirmation remains advisable; the three-fixture diversity/measurement gate remains open.
+- The former persisted-plan failure (roll 9.0393 deg at frame 187) was isolated to the large non-uniformly scaled floor cube and is resolved by the mesh-floor compiler. This verifies the tested plan, not arbitrary future generated scenes. Do not use generated scenes for physical deployment.
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
 
 ## Current approval boundary

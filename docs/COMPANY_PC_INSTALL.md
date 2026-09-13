@@ -82,16 +82,17 @@ LLM 요청은 선택 사항이며 비용이 발생할 수 있다. 자동 검증�
 
 ## 6. 현재 검증 범위와 제한
 
-2026-09-13 개발 PC에서 다음 안정 기준이 PASS했다.
+2026-09-13 개발 PC에서 다음 안정 기준이 PASS했다. 최신 전체 검증 artifact는 `artifacts/runs/20260913-234455`이며 로컬 전용이라 Git에는 포함되지 않는다.
 
 - core 23/23, provider 8/8
 - Extension enable/disable 3/3
 - short Run/Reset 3/3
 - generated/fallback/rollback 계약
 - `agv_compact_2wd_caster_v2`: 좌우 2개 구동륜 + 앞뒤 passive caster 2개
-- 고정 6.9 m 경로: goal error 0.049306 m, 최대 cross-track 0.000825 m, pitch 0.0306°, roll 0.0433°, 충돌 sample 0
+- 18 x 12 m 대형 바닥 Mesh 계약과 6.9 m 경로: goal error 0.049289 m, 최대 cross-track 0.004352 m, pitch 0.0668°, roll 0.0762°, 충돌 sample 0
+- 실제 이미지에서 저장된 8 m 플랜 재생: 1,889 frames에 완료, goal error 0.2465 m(허용 0.25 m), pitch 0.0738°, roll 0.0862°
 
-하지만 임의 LLM 장면 전체의 물리 안정성을 보장하지 않는다. 실제 이미지에서 생성·저장된 한 플랜은 구조 검증과 3D Build에는 성공했으나 이후 deterministic replay에서 roll 9.0393°로 안전 정지했다. 서로 다른 이미지 3개 M2-C 평가는 아직 수행하지 않았다. 따라서 현재 버전은 Playground prototype이며 실물 AGV 제어·배포에 사용하면 안 된다.
+이전 persisted-plan의 roll 9.0393° 안전 정지는 대형 바닥을 non-uniform scale Cube collider로 만든 컴파일 결함이 원인이었고, 실제 치수의 closed Mesh로 교체해 위 재생과 대형 바닥 회귀가 통과했다. 하지만 이 결과가 임의 LLM 장면 전체의 물리 안정성을 보장하지는 않는다. 서로 다른 이미지 3개 M2-C 평가도 아직 수행하지 않았다. 따라서 현재 버전은 Playground prototype이며 실물 AGV 제어·배포에 사용하면 안 된다.
 
 회사 PC는 개발 PC와 별도 환경이므로 위 자동 검증 PASS와 Full 앱 화면에서 Build/Run/Reset을 직접 확인해야 회사 PC 재현 성공으로 기록할 수 있다.
 

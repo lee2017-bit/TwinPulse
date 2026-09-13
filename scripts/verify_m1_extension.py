@@ -194,7 +194,14 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
             replace(
                 item,
                 transform=Transform((3.45, item.transform.position_m[1], item.transform.position_m[2])),
-                shape=ShapeSpec("box", (8.0, *item.shape.dimensions_m[1:])),
+                # The 18 x 12 m floor is a regression for the generated scene
+                # that became unstable when compiled as one scaled cube.
+                shape=ShapeSpec(
+                    "box",
+                    (18.0, 12.0, item.shape.dimensions_m[2])
+                    if item.id == "floor_main"
+                    else (8.0, *item.shape.dimensions_m[1:]),
+                ),
             )
             if item.id in {"floor_main", "wall_left", "wall_right"}
             else item
@@ -210,6 +217,12 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
             ),
         )
         extension.runtime.build_scene(long_bundle)
+        floor_geometry = stage.GetPrimAtPath("/World/TwinPulse/Environment/floor_main/geometry")
+        large_floor_mesh = bool(
+            floor_geometry.IsValid()
+            and floor_geometry.GetTypeName() == "Mesh"
+            and not floor_geometry.GetAttribute("xformOp:scale").IsValid()
+        )
         extension.reset()
         for _ in range(20):
             APP.update()
@@ -235,8 +248,9 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
             "goal_error_m": long_goal_error,
             "maximum_cross_track_error_m": long_assessment.maximum_cross_track_error_m,
             "runtime_state": extension.runtime.state,
+            "large_floor_mesh": large_floor_mesh,
             "episode_assessment": long_assessment.to_dict(),
-            "passed": long_assessment.passed,
+            "passed": long_assessment.passed and large_floor_mesh,
         }
         extension.reset()
 

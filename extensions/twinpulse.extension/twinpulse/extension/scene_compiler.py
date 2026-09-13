@@ -227,7 +227,32 @@ class SceneCompiler:
         root.AddRotateXYZOp().Set(Gf.Vec3f(*item.transform.rotation_rpy_deg))
 
         geometry_path = object_path.AppendChild("geometry")
-        if item.shape.type == "box":
+        if item.kind == "floor" and item.shape.type == "box":
+            # Large, very thin floors represented as non-uniformly scaled cubes
+            # produced asymmetric wheel contact in PhysX. Author the actual box
+            # vertices instead so collision geometry has an identity scale.
+            dx, dy, dz = item.shape.dimensions_m
+            hx, hy, hz = dx / 2.0, dy / 2.0, dz / 2.0
+            geometry = UsdGeom.Mesh.Define(self._stage, geometry_path)
+            geometry.CreatePointsAttr(
+                [
+                    Gf.Vec3f(-hx, -hy, -hz),
+                    Gf.Vec3f(hx, -hy, -hz),
+                    Gf.Vec3f(hx, hy, -hz),
+                    Gf.Vec3f(-hx, hy, -hz),
+                    Gf.Vec3f(-hx, -hy, hz),
+                    Gf.Vec3f(hx, -hy, hz),
+                    Gf.Vec3f(hx, hy, hz),
+                    Gf.Vec3f(-hx, hy, hz),
+                ]
+            )
+            geometry.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
+            geometry.CreateFaceVertexIndicesAttr(
+                [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5]
+            )
+            geometry.CreateSubdivisionSchemeAttr("none")
+            geometry.CreateExtentAttr([Gf.Vec3f(-hx, -hy, -hz), Gf.Vec3f(hx, hy, hz)])
+        elif item.shape.type == "box":
             geometry = UsdGeom.Cube.Define(self._stage, geometry_path)
             geometry.CreateSizeAttr(1.0)
             geometry.AddScaleOp().Set(Gf.Vec3f(*item.shape.dimensions_m))
