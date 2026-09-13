@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0 M2-C three-image evaluation harness
+
+- Add an attributed, hash-pinned three-image fixture manifest without committing image binaries.
+- Add explicit fixture download, one-attempt provider generation, and multi-scene Isaac physics runners.
+- Confirm three different image observations/tool plans and three completed generated-scene episodes with collision, route, attitude, Pause, and Reset metrics.
+- Add an intentional collision measurement regression; routine verification remains free of paid provider calls.
+
 ## 0.1.0 generated-floor physics stability repair
 
 - Compile floor boxes as actual-size closed USD meshes with identity scale instead of non-uniformly scaled cube colliders.

@@ -71,6 +71,28 @@ class ContractTests(unittest.TestCase):
         )
         self.assertTrue(result.passed, result.violations)
 
+    def test_episode_assessment_counts_intentional_geometric_collision(self) -> None:
+        bundle = fixed_warehouse_bundle()
+        obstacle = SceneObject(
+            id="intentional_collision_box",
+            kind="box",
+            transform=replace(bundle.task.goal, position_m=(*bundle.task.goal.position_m[:2], 0.25)),
+            shape=ShapeSpec("box", (0.5, 0.5, 0.5)),
+        )
+        collision_bundle = replace(
+            bundle,
+            scene=replace(bundle.scene, objects=(*bundle.scene.objects, obstacle)),
+        )
+        result = assess_episode(
+            collision_bundle,
+            [EpisodeSample(1.0, bundle.task.goal.position_m, (0.0, 0.0, 0.0))],
+            final_state="completed",
+            observed_support_wheels=2,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.geometric_collision_samples, 1)
+        self.assertTrue(any("overlapped colliders" in violation for violation in result.violations))
+
     def test_closed_loop_route_command_recovers_heading_and_lateral_error(self) -> None:
         position = [0.0, 0.06]
         yaw = math.radians(4.0)

@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "purpose": "M2-C three-image multimodal provider and Isaac Sim evaluation",
+  "fixtures": [
+    {
+      "id": "warehouse_narrow_pallet_racks",
+      "local_filename": "fixture-01-pallet-racks.jpg",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Pallet_racks.jpg",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/8/88/Pallet_racks.jpg",
+      "license": "Public domain",
+      "author": "Jandrinov",
+      "sha256": "9b835812fb0624b2ed9bb3a20b229dbf23333980db7c73d389603bc5ae6632d6",
+      "prompt": "Use the attached image as the primary layout evidence. Model the visible narrow pallet-rack aisle, preserve one clear positive-X route for the driven AGV, and omit unsupported details rather than inventing them."
+    },
+    {
+      "id": "warehouse_asymmetric_parts_storage",
+      "local_filename": "fixture-02-parts-shelving.jpg",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Almacen_interior.jpg",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Almacen_interior.jpg/960px-Almacen_interior.jpg",
+      "license": "CC BY-SA 4.0",
+      "author": "Aspasturias",
+      "sha256": "ec2df4a7e9c34c925ac4d4feea1309da2dd49f2134cdc9e2d65913f3930e1dad",
+      "prompt": "Use the attached image as the primary layout evidence. Model the asymmetric parts-storage shelving and a visible clear aisle for one positive-X AGV route. Omit unsupported vehicles or people instead of misclassifying them as AGVs."
+    },
+    {
+      "id": "warehouse_open_pallet_staging",
+      "local_filename": "fixture-03-open-pallets.jpg",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Pallets_for_Gustav.jpg",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/02/Pallets_for_Gustav.jpg/1280px-Pallets_for_Gustav.jpg",
+      "license": "Public domain (FEMA)",
+      "author": "Jacinta Quesada / FEMA",
+      "sha256": "364554dcfb3a5bc1bda348575ea0dee4fdfedf06f17ef247a0e6c9c50c57c0d8",
+      "prompt": "Use the attached image as the primary layout evidence. Model the wide pallet-staging warehouse with pallet stacks along the sides and one clear center positive-X AGV route. Do not model people."
+    }
+  ]
+}

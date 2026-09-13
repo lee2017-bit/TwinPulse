@@ -7,10 +7,11 @@
 - M1-B: PASS (local MinimalRendering/CPU physics + user-run Full-app interactive visual)
 - M2-A: PASS; corrected compact UI confirmed in the user-run Full app
 - M2-B: PASS for one real image. The user-run Luna request produced 14 allowlisted calls/59 objects, built 134 generated prims, and restored the same persisted plan after restart.
+- M2-C: PASS for three distinct rights-cleared images. Codex initiated exactly one saved-key provider request per fixture; all three produced different validated image observations/tool plans and all three generated scenes completed headless Isaac physics with zero collision samples, zero Pause drift, and zero Reset error.
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
 - Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
 - Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored) and the repair was published as GitHub main commit `1c5ed27`. Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
-- Next: reproduce the Extension on the company PC, then run the three distinct image fixtures required for M2-C.
+- Next: reproduce the Extension and the M2-C harness on the company PC, then begin M3 structured scene edits/save/replay. General navigation and obstacle avoidance remain future work.
 
 ## Implemented
 
@@ -32,6 +33,7 @@
 - RobotProfile v2 owns drive/support contacts, center of mass, diagonal inertia, and an attitude safety limit. The current profile has two driven wheels plus front/rear passive ball casters; legacy plan IDs are upgraded by the local catalog.
 - Tool calls now have explicit scene/robot/task domains and an auditable execution receipt. MCP remains an optional external adapter rather than the in-process physics/control mechanism.
 - `scripts/verify_twinpulse.ps1` runs compile, core, provider, and Isaac checks and stores a manifest, structured result, and transcript per run.
+- The M2-C manifest plus fetch/provider/Isaac runners reproduce the three-image gate without requiring manual screenshot relay. The API key remains in Windows Credential Manager and paid retries are disabled.
 
 ## Current constraints
 
@@ -40,9 +42,9 @@
 - The headless harness retains Python frame references during its first immediate disable, producing one object-lifetime warning; all three shutdown callbacks complete and physics subscriptions are released. An interactive UI unload check remains advisable.
 - User-run Full-app acceptance confirmed 28 prims, visible camera/light/warehouse/AGV/goal, Focus Scene, AGV movement during Run, Reset recovery, and a responsive 43-74 FPS viewport.
 - The old Isaac 5.1 safety backup remains outside this repository because recursive cleanup was policy-blocked.
-- No API key was created, read into logs, or entered by Codex. The user initiated one Luna request that returned a valid draft; Codex did not initiate it. No cloud resource, ROS2/Lab installation, or physical AGV command was used.
+- No API key was printed, serialized, or committed. For the user-approved M2-C test, Codex loaded the existing saved credential and initiated exactly three Luna requests, one per fixture, with no automatic retry. No cloud compute resource, ROS2/Lab installation, or physical AGV command was used.
 - The corrected scene-tool-plan and RobotProfile v2 path has 23/23 core tests, 8/8 provider tests, and an Isaac regression PASS (54 generated regression prims, fallback rejection, rollback, three lifecycle/physics cycles, and a stable 6.9 m route).
-- The user-run real image path passed generation, generated Build, persisted draft restore, and post-repair deterministic headless motion. A new Full-app visual confirmation remains advisable; the three-fixture diversity/measurement gate remains open.
+- The original user-run real image path and the three new Codex-run fixtures passed generation, generated Build, and deterministic headless motion. Full-app visual confirmation remains optional; the M2-C diversity/measurement gate is closed for the tested fixtures.
 - The former persisted-plan failure (roll 9.0393 deg at frame 187) was isolated to the large non-uniformly scaled floor cube and is resolved by the mesh-floor compiler. This verifies the tested plan, not arbitrary future generated scenes. Do not use generated scenes for physical deployment.
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
 
