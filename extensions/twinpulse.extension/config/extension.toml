@@ -1,0 +1,28 @@
+[package]
+title = "TwinPulse Playground"
+version = "0.1.0"
+description = "Fixed-scene 3D warehouse playground with a procedural differential-drive AGV"
+category = "Simulation"
+authors = ["TwinPulse"]
+keywords = ["isaac sim", "warehouse", "agv", "physical ai"]
+readme = "docs/Overview.md"
+changelog = "docs/CHANGELOG.md"
+writeTarget.kit = true
+
+[dependencies]
+"isaacsim.core.simulation_manager" = {}
+"isaacsim.robot.experimental.wheeled_robots" = {}
+"omni.kit.uiapp" = {}
+"omni.kit.window.filepicker" = {}
+"omni.kit.viewport.utility" = {}
+"omni.timeline" = {}
+"omni.usd" = {}
+
+[[python.module]]
+name = "twinpulse.extension"
+
+[settings]
+exts."twinpulse.extension".ownedRoot = "/World/TwinPulse"
+
+[documentation]
+pages = ["docs/Overview.md", "docs/CHANGELOG.md"]

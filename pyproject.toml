@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twinpulse-core"
+version = "0.1.0"
+description = "Validated data contracts for the TwinPulse Isaac Sim Extension"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "packages/twinpulse_core/src"}
+
+[tool.setuptools.packages.find]
+where = ["packages/twinpulse_core/src"]
+
