@@ -26,6 +26,10 @@ from twinpulse_provider import (  # noqa: E402
     GenerationRequest,
     GenerationService,
     ImageInput,
+    load_measurement_constraints,
+    MeasurementConstraint,
+    MeasurementConstraintError,
+    measurement_sidecar_path,
     OpenAIResponsesProvider,
     ProviderCapabilities,
     ProviderConfig,
@@ -120,6 +124,8 @@ class TwinPulseExtension(omni.ext.IExt):
         self._provider_detail_label: ui.Label | None = None
         self._image_frame: ui.Frame | None = None
         self._image_path: Path | None = None
+        self._measurement_constraints: tuple[MeasurementConstraint, ...] = ()
+        self._measurement_sidecar_path: Path | None = None
         self._filepicker: FilePickerDialog | None = None
         self._settings_window: ui.Window | None = None
         self._warning_window: ui.Window | None = None
@@ -322,7 +328,12 @@ class TwinPulseExtension(omni.ext.IExt):
             with ui.VStack(spacing=3, height=ui.Pixel(88)):
                 ui.Label(self._image_path.name, name="muted", elided_text=True, height=ui.Pixel(24))
                 size_mb = self._image_path.stat().st_size / (1024 * 1024)
-                ui.Label(f"{size_mb:.2f} MB - sent only when Generate is clicked", name="caption", height=ui.Pixel(22))
+                measurement_text = (
+                    f"{len(self._measurement_constraints)} drawing measurements enforced"
+                    if self._measurement_constraints
+                    else "exact dimensions unverified"
+                )
+                ui.Label(f"{size_mb:.2f} MB - {measurement_text}", name="caption", height=ui.Pixel(22))
                 ui.Button("Remove", name="ghost", clicked_fn=self._remove_image, width=ui.Pixel(78), height=ui.Pixel(28))
 
     def _build_draft_card(self) -> None:
@@ -474,13 +485,28 @@ class TwinPulseExtension(omni.ext.IExt):
         if path.stat().st_size > _MAX_IMAGE_BYTES:
             self._set_status("Image exceeds the 10 MB input limit")
             return
+        sidecar_path = measurement_sidecar_path(path)
+        constraints: tuple[MeasurementConstraint, ...] = ()
+        if sidecar_path.is_file():
+            try:
+                constraints = load_measurement_constraints(sidecar_path, image_path=path)
+            except MeasurementConstraintError as error:
+                self._set_status(f"Measurement sidecar rejected: {error}")
+                return
         self._image_path = path
+        self._measurement_constraints = constraints
+        self._measurement_sidecar_path = sidecar_path if constraints else None
         if self._image_frame is not None:
             self._image_frame.rebuild()
-        self._set_status(f"Attached image - {path.name}")
+        if constraints:
+            self._set_status(f"Attached drawing - {path.name}; {len(constraints)} measurements will be enforced")
+        else:
+            self._set_status(f"Attached image - {path.name}; exact dimensions are unverified")
 
     def _remove_image(self) -> None:
         self._image_path = None
+        self._measurement_constraints = ()
+        self._measurement_sidecar_path = None
         if self._image_frame is not None:
             self._image_frame.rebuild()
         self._set_status("Reference image removed")
@@ -553,7 +579,7 @@ class TwinPulseExtension(omni.ext.IExt):
         image_count = 1 if self._image_path is not None else 0
         print(
             f"[twinpulse.extension] generation queued: model={self._provider_settings.model_id}, "
-            f"images={image_count}"
+            f"images={image_count}, measurement_constraints={len(self._measurement_constraints)}"
         )
         self._track_task(asyncio.ensure_future(self._generate_draft(prompt)))
 
@@ -572,7 +598,15 @@ class TwinPulseExtension(omni.ext.IExt):
             f"[twinpulse.extension] generation started: request_id={request_id}, "
             f"model={self._provider_settings.model_id}, images={len(images)}"
         )
-        result = await self._provider_service.generate(GenerationRequest(request_id, prompt, images))
+        result = await self._provider_service.generate(
+            GenerationRequest(
+                request_id=request_id,
+                prompt=prompt,
+                images=images,
+                image_detail="auto",
+                measurement_constraints=self._measurement_constraints,
+            )
+        )
         record = GeneratedDraftRecord.create(
             request_id=result.request_id,
             provider_name=result.provider_name,
@@ -592,7 +626,14 @@ class TwinPulseExtension(omni.ext.IExt):
         bundle = result.bundle
         self._provider_verified = True
         self._refresh_provider_header()
-        message = "Draft generated and validated - click Build Generated Scene"
+        if result.measurement_constraint_count:
+            message = (
+                "Draft generated; "
+                f"{result.measurement_constraint_count} drawing measurements validated - "
+                "click Build Generated Scene"
+            )
+        else:
+            message = "Draft generated and validated; exact dimensions unverified - click Build Generated Scene"
         if persistence_error is not None:
             message += " (reload restore unavailable)"
         self._set_status(message)
@@ -600,7 +641,8 @@ class TwinPulseExtension(omni.ext.IExt):
         print(
             f"[twinpulse.extension] generation completed: request_id={result.request_id}, "
             f"scene={bundle.scene.id}, images={result.image_count}, tools={len(result.plan.calls)}, "
-            f"objects={len(bundle.scene.objects)}, plan={record.plan_sha256[:12]}"
+            f"objects={len(bundle.scene.objects)}, measurements={result.measurement_constraint_count}, "
+            f"measurement_values={result.measurement_checked_value_count}, plan={record.plan_sha256[:12]}"
         )
 
     def _request_build(self) -> None:

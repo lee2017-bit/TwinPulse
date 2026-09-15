@@ -18,6 +18,14 @@ from .errors import (
     ProviderTimeoutError,
 )
 from .providers import MockMode, MockProvider, OpenAIResponsesProvider, StructuredJsonHttpProvider
+from .measurement_constraints import (
+    load_measurement_constraints,
+    MeasurementConstraint,
+    MeasurementConstraintError,
+    MeasurementValidationResult,
+    measurement_sidecar_path,
+    validate_measurement_constraints,
+)
 from .schema import scene_tool_plan_json_schema, spec_bundle_json_schema
 from .service import GenerationResult, GenerationService
 
@@ -29,6 +37,11 @@ __all__ = [
     "GenerationService",
     "ImageInput",
     "InvalidProviderResponseError",
+    "load_measurement_constraints",
+    "MeasurementConstraint",
+    "MeasurementConstraintError",
+    "MeasurementValidationResult",
+    "measurement_sidecar_path",
     "MockMode",
     "MockProvider",
     "OpenAIResponsesProvider",
@@ -43,4 +56,5 @@ __all__ = [
     "StructuredJsonHttpProvider",
     "scene_tool_plan_json_schema",
     "spec_bundle_json_schema",
+    "validate_measurement_constraints",
 ]

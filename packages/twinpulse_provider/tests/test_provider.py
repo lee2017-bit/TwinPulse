@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,10 @@ from twinpulse_provider import (  # noqa: E402
     GenerationService,
     ImageInput,
     InvalidProviderResponseError,
+    load_measurement_constraints,
+    MeasurementConstraint,
+    MeasurementConstraintError,
+    measurement_sidecar_path,
     MockMode,
     MockProvider,
     OpenAIResponsesProvider,
@@ -44,6 +49,77 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         result = await GenerationService(MockProvider(), config()).generate(GenerationRequest("ok", "warehouse"))
         self.assertEqual(result.bundle.bundle_version, "1.0")
         self.assertGreater(len(result.plan.calls), 0)
+
+    async def test_external_measurements_accept_matching_plan(self) -> None:
+        request = GenerationRequest(
+            "measured-ok",
+            "warehouse",
+            measurement_constraints=(
+                MeasurementConstraint("floor_width", "create_floor", "size_m.0", 8.0, 0.01, 0),
+                MeasurementConstraint("rack_height", "create_rack_row", "height_m", 1.5, 0.01),
+            ),
+        )
+        result = await GenerationService(MockProvider(), config()).generate(request)
+        self.assertEqual(result.measurement_constraint_count, 2)
+        self.assertEqual(result.measurement_checked_value_count, 3)
+
+    async def test_external_measurements_block_mismatched_plan(self) -> None:
+        request = GenerationRequest(
+            "measured-bad",
+            "warehouse",
+            measurement_constraints=(
+                MeasurementConstraint("rack_height", "create_rack_row", "height_m", 3.0, 0.01),
+            ),
+        )
+        with self.assertRaisesRegex(InvalidProviderResponseError, "rack_height:.*expected 3.*got 1.5"):
+            await GenerationService(MockProvider(), config()).generate(request)
+
+    def test_measurement_sidecar_loads_and_binds_to_image_name(self) -> None:
+        image_path = Path("C:/drawings/plan.png")
+        sidecar_path = measurement_sidecar_path(image_path)
+        payload = json.dumps(
+            {
+                "schema_version": "1.0",
+                "source_image": "plan.png",
+                "measurement_constraints": [
+                    {
+                        "constraint_id": "floor_size",
+                        "tool": "create_floor",
+                        "argument_path": "size_m",
+                        "expected": [12, 8],
+                        "tolerance": 0.1,
+                        "occurrence": 0,
+                        "source": "trusted_test",
+                    }
+                ],
+            }
+        )
+        with patch.object(Path, "read_text", return_value=payload):
+            constraints = load_measurement_constraints(sidecar_path, image_path=image_path)
+        self.assertEqual(len(constraints), 1)
+        self.assertEqual(constraints[0].expected, (12.0, 8.0))
+
+    def test_measurement_sidecar_rejects_wrong_image_name(self) -> None:
+        image_path = Path("C:/drawings/plan.png")
+        sidecar_path = measurement_sidecar_path(image_path)
+        payload = json.dumps(
+            {
+                "schema_version": "1.0",
+                "source_image": "other.png",
+                "measurement_constraints": [
+                    {
+                        "constraint_id": "floor_size",
+                        "tool": "create_floor",
+                        "argument_path": "size_m",
+                        "expected": [12, 8],
+                        "tolerance": 0.1,
+                    }
+                ],
+            }
+        )
+        with patch.object(Path, "read_text", return_value=payload):
+            with self.assertRaisesRegex(MeasurementConstraintError, "other.png, not plan.png"):
+                load_measurement_constraints(sidecar_path, image_path=image_path)
 
     async def test_invalid_structure_is_rejected(self) -> None:
         service = GenerationService(MockProvider(MockMode.INVALID_STRUCTURE), config())
@@ -89,6 +165,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         image = body["input"][0]["content"][0]
         self.assertEqual(image["type"], "input_image")
         self.assertTrue(image["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(image["detail"], "low")
         self.assertIn("primary evidence", body["instructions"])
         self.assertIn("0.7 meter wide clear corridor", body["instructions"])
         self.assertIn("passive support casters", body["instructions"])
@@ -109,6 +186,16 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         tolerance = task_schema["properties"]["arguments"]["properties"]["position_tolerance_m"]
         self.assertEqual(tolerance["minimum"], 0.01)
         self.assertEqual(tolerance["maximum"], 0.25)
+
+    def test_dimensioned_plan_uses_high_image_detail(self) -> None:
+        provider = OpenAIResponsesProvider(lambda: "not-used")
+        request = GenerationRequest(
+            "drawing-1",
+            "Read this dimensioned top-down floor plan",
+            (ImageInput("warehouse-floorplan.png", "image/png", b"image-bytes"),),
+        )
+        body = provider.build_request_body(request, config())
+        self.assertEqual(body["input"][0]["content"][0]["detail"], "high")
 
     def test_openai_responses_parser_extracts_structured_json(self) -> None:
         expected = {"scene": {"id": "warehouse"}}

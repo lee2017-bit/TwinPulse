@@ -1,4 +1,4 @@
-"""Build and drive every successful M2-C provider fixture in one headless Isaac run."""
+"""Build and drive every successful generated provider fixture in one headless Isaac run."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider-report", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--usd-output-dir", type=Path)
     parser.add_argument("--max-frames", type=int, default=2400)
     args = parser.parse_args()
 
@@ -82,15 +83,25 @@ def main() -> int:
 
         provider_report = json.loads(args.provider_report.read_text(encoding="utf-8"))
         if provider_report.get("status") != "PASS":
-            raise RuntimeError("provider report must contain three successful fixtures")
+            raise RuntimeError("provider report must contain only successful fixtures")
+        provider_fixtures = provider_report.get("fixtures", [])
+        if not provider_fixtures:
+            raise RuntimeError("provider report contains no fixtures")
+        total = len(provider_fixtures)
 
-        for index, fixture in enumerate(provider_report["fixtures"], start=1):
+        for index, fixture in enumerate(provider_fixtures, start=1):
             fixture_id = str(fixture["fixture_id"])
-            print(f"fixture={index}/3 id={fixture_id} physics=BUILDING", flush=True)
+            measurement_count = int(fixture.get("measurement_constraint_count", 0))
+            if measurement_count:
+                if fixture.get("measurement_validation_status") != "PASS":
+                    raise RuntimeError(f"{fixture_id}: measurement validation did not pass")
+                if int(fixture.get("measurement_checked_value_count", 0)) < measurement_count:
+                    raise RuntimeError(f"{fixture_id}: measurement validation evidence is incomplete")
+            print(f"fixture={index}/{total} id={fixture_id} physics=BUILDING", flush=True)
             bundle = bundle_from_json(json.dumps(fixture["bundle"]))
             prim_count = extension.runtime.build_scene(bundle)
             extension.runtime.compiler.set_build_metadata(
-                source="m2c_generated_tool_plan",
+                source=str(provider_report.get("evaluation_id", "generated_fixture_tool_plan")),
                 request_id=str(fixture["request_id"]),
                 image_count=1,
                 plan_sha256=hashlib.sha256(
@@ -143,6 +154,17 @@ def main() -> int:
                 APP.update()
             reset_position = extension.runtime.robot_position()
             reset_error_m = _distance(start_position, reset_position)
+            usd_stage_path = None
+            if args.usd_output_dir is not None:
+                args.usd_output_dir.mkdir(parents=True, exist_ok=True)
+                safe_fixture_id = "".join(
+                    character if character.isalnum() or character in "-_" else "_"
+                    for character in fixture_id
+                )
+                usd_path = args.usd_output_dir / f"{safe_fixture_id}.usda"
+                if not stage.GetRootLayer().Export(str(usd_path)):
+                    raise RuntimeError(f"{fixture_id}: failed to export generated USD stage")
+                usd_stage_path = str(usd_path)
             passed = bool(
                 assessment.passed
                 and pause_drift_m < 0.001
@@ -161,12 +183,13 @@ def main() -> int:
                 "end_position_m": samples[-1].position_m,
                 "pause_drift_m": pause_drift_m,
                 "reset_error_m": reset_error_m,
+                "usd_stage": usd_stage_path,
                 "episode_assessment": assessment.to_dict(),
                 "passed": passed,
             }
             result["fixtures"].append(item)
             print(
-                f"fixture={index}/3 id={fixture_id} physics={'PASS' if passed else 'FAIL'} "
+                f"fixture={index}/{total} id={fixture_id} physics={'PASS' if passed else 'FAIL'} "
                 f"state={final_state} goal_error_m={assessment.goal_error_m:.4f} "
                 f"collisions={assessment.geometric_collision_samples}",
                 flush=True,
@@ -174,7 +197,7 @@ def main() -> int:
 
         result["status"] = (
             "PASS"
-            if len(result["fixtures"]) == 3 and all(item["passed"] for item in result["fixtures"])
+            if len(result["fixtures"]) == total and all(item["passed"] for item in result["fixtures"])
             else "FAIL"
         )
     except Exception as error:

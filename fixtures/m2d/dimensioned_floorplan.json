@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "evaluation_id": "m2d_dimensioned_floorplan_e2e",
+  "purpose": "Dimensioned top-down warehouse plan to generated 3D Isaac Sim scene",
+  "ground_truth": {
+    "floor_center_m": [0.0, 0.0],
+    "floor_size_m": [12.0, 8.0],
+    "rack_centers_m": [[0.0, -2.6], [0.0, 2.6]],
+    "rack_length_m": 8.0,
+    "rack_depth_m": 1.5,
+    "rack_height_m": 3.0,
+    "rack_bay_count": 5,
+    "perimeter_wall_height_m": 2.5,
+    "clear_aisle_width_m": 2.0,
+    "agv_start_position_m": [-4.0, 0.0, 0.0],
+    "goal_position_m": [4.0, 0.0, 0.0],
+    "route_length_m": 8.0
+  },
+  "fixtures": [
+    {
+      "id": "dimensioned_warehouse_floorplan_v1",
+      "local_filename": "warehouse-floorplan.png",
+      "source_page": "Generated deterministic TwinPulse project fixture",
+      "license": "TwinPulse project fixture",
+      "author": "TwinPulse",
+      "sha256": "600235a5050dfda789edc3eb1abc199533fd14ba1d720dc2bd0254601e3ba59f",
+      "image_detail": "high",
+      "measurement_constraints": [
+        {"constraint_id": "floor_size", "tool": "create_floor", "argument_path": "size_m", "expected": [12.0, 8.0], "tolerance": 0.5, "occurrence": 0, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "rack_length", "tool": "create_rack_row", "argument_path": "length_m", "expected": 8.0, "tolerance": 0.5, "occurrence": null, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "rack_depth", "tool": "create_rack_row", "argument_path": "depth_m", "expected": 1.5, "tolerance": 0.25, "occurrence": null, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "rack_height", "tool": "create_rack_row", "argument_path": "height_m", "expected": 3.0, "tolerance": 0.25, "occurrence": null, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "rack_bays", "tool": "create_rack_row", "argument_path": "bay_count", "expected": 5, "tolerance": 0, "occurrence": null, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "wall_height", "tool": "create_wall", "argument_path": "dimensions_m.2", "expected": 2.5, "tolerance": 0.25, "occurrence": null, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "agv_start", "tool": "place_predefined_agv", "argument_path": "start_position_m", "expected": [-4.0, 0.0, 0.0], "tolerance": 0.25, "occurrence": 0, "source": "dimensioned_drawing_sidecar"},
+        {"constraint_id": "navigation_goal", "tool": "create_navigation_task", "argument_path": "goal_position_m", "expected": [4.0, 0.0, 0.0], "tolerance": 0.25, "occurrence": 0, "source": "dimensioned_drawing_sidecar"}
+      ],
+      "prompt": "Treat the attached dimensioned top-down floor plan as authoritative. Read its metric annotations and labels, extrude the perimeter walls and rack rows to their annotated heights, preserve the labeled clear center aisle, and place the predefined AGV at the drawn START with the navigation goal at the drawn GOAL. Do not reinterpret it as a perspective photo or invent unshown equipment."
+    }
+  ]
+}

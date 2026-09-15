@@ -1,6 +1,7 @@
 # TwinPulse progress
 
-- Updated: 2026-09-14 KST
+- Updated: 2026-09-15 KST
+- App migration R0: PASS for source handoff only. D1 is local React web App + separate Isaac 3D window; D2 is this existing GitHub-connected clone as the sole development root. M2-D 6 new and 11 changed source files were hash-matched from the preserved development copy. Core 24/24 and Provider 13/13 passed in this clone. R1-R10, UI/backend, fresh Isaac workflow, and GitHub publication remain NOT RUN. See `docs/planning/TWINPULSE_R0_HANDOFF.md`.
 - M0-A: PASS
 - M0-B: limited PASS
 - M1-A: PASS
@@ -8,10 +9,11 @@
 - M2-A: PASS; corrected compact UI confirmed in the user-run Full app
 - M2-B: PASS for one real image. The user-run Luna request produced 14 allowlisted calls/59 objects, built 134 generated prims, and restored the same persisted plan after restart.
 - M2-C: PASS for three distinct rights-cleared images. Codex initiated exactly one saved-key provider request per fixture; all three produced different validated image observations/tool plans and all three generated scenes completed headless Isaac physics with zero collision samples, zero Pause drift, and zero Reset error.
+- M2-D dimensioned plan: PARTIAL. One real Luna request produced 10 calls/32 objects and the resulting 84-prim Isaac scene completed its 8 m route, but both 3.0 m rack heights were read as 2.0 m, giving 27/29. The post-failure repair sends drawing-like inputs at high detail and enforces an independent sibling measurement sidecar before tool execution. Replaying the bad plan now blocks Build at the rack-height mismatch, and a clean Full-app restart loaded the repaired Extension to `app ready`. A fresh paid request has not been made.
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
 - Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
 - Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored) and the repair was published as GitHub main commit `1c5ed27`. Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
-- Next: reproduce the Extension and the M2-C harness on the company PC, then begin M3 structured scene edits/save/replay. General navigation and obstacle avoidance remain future work.
+- Next: only when the user approves it, execute migration R1 input/measurement/draft/build/restore consistency repair, then R2 stage identity and safety. Do not claim sidecar or end-to-end accuracy from the R0 unit tests. A fresh paid drawing evaluation and the old M3 plan are deferred until these gates are addressed. General navigation and obstacle avoidance remain future work.
 
 ## Implemented
 
@@ -22,7 +24,7 @@
 - Idempotent `/World/TwinPulse` scene compiler with floor/walls/racks/box and procedural wheeled AGV.
 - Large generated floors use actual-size closed USD meshes rather than non-uniformly scaled cube colliders, avoiding asymmetric PhysX wheel/caster contact.
 - Finite core and Isaac runtime verification scripts.
-- Provider-neutral request/capability/result contracts, deterministic mock, modern OpenAI Responses adapter, timeout/cancel/stale-response handling, and eight provider tests.
+- Provider-neutral request/capability/result contracts, deterministic mock, modern OpenAI Responses adapter, timeout/cancel/stale-response handling, and thirteen provider tests.
 - A pre-Nav2 route gate rejects sideways, reverse, overlong, off-floor, tilted-collider, and blocked paths that the current positive-X controller cannot safely execute.
 - Copilot-inspired prompt-first UI with structured draft preview and explicit mock/provider state.
 - Initial UI visual review failed because the Isaac font replaced Korean/symbol glyphs and auto-sized stacks expanded vertically. The correction uses ASCII-only UI text and explicit pixel dimensions; runtime regression remains PASS.
@@ -34,6 +36,8 @@
 - Tool calls now have explicit scene/robot/task domains and an auditable execution receipt. MCP remains an optional external adapter rather than the in-process physics/control mechanism.
 - `scripts/verify_twinpulse.ps1` runs compile, core, provider, and Isaac checks and stores a manifest, structured result, and transcript per run.
 - The M2-C manifest plus fetch/provider/Isaac runners reproduce the three-image gate without requiring manual screenshot relay. The API key remains in Windows Credential Manager and paid retries are disabled.
+- The generalized manifest runners also accept PNG and any non-empty fixture count. `create_m2d_floorplan_fixture.py`, `evaluate_m2d_floorplan_result.py`, and the explicitly non-provider reference report isolate diagram-reading accuracy from deterministic 3D compiler/physics behavior.
+- Dimensioned inputs use high-detail image inference and optional trusted `<stem>.measurements.json` constraints. The Extension labels unconstrained images as exact-dimensions-unverified; constrained mismatches stop before the tool registry and Isaac Build.
 
 ## Current constraints
 
@@ -47,6 +51,7 @@
 - The original user-run real image path and the three new Codex-run fixtures passed generation, generated Build, and deterministic headless motion. Full-app visual confirmation remains optional; the M2-C diversity/measurement gate is closed for the tested fixtures.
 - The former persisted-plan failure (roll 9.0393 deg at frame 187) was isolated to the large non-uniformly scaled floor cube and is resolved by the mesh-floor compiler. This verifies the tested plan, not arbitrary future generated scenes. Do not use generated scenes for physical deployment.
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
+- The Windows credential target contains a value and the later one-attempt M2-D request authenticated successfully. No secret was printed or serialized. The current acceptance blocker is the 27/29 rack-height reading, not authentication.
 
 ## Current approval boundary
 

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from urllib.parse import urljoin, urlparse
 
 from .errors import ProviderConfigurationError
+from .measurement_constraints import MeasurementConstraint
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,12 @@ class GenerationRequest:
     prompt: str
     images: tuple[ImageInput, ...] = ()
     schema_version: str = "1.0"
+    image_detail: str = "auto"
+    measurement_constraints: tuple[MeasurementConstraint, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.image_detail not in {"auto", "low", "high"}:
+            raise ValueError("image_detail must be auto, low, or high")
 
 
 @dataclass(frozen=True, slots=True)

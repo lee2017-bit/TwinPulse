@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0 M2-D measurement guard hardening
+
+- Select high image detail automatically for dimensioned plans and technical-drawing cues while retaining low detail for ordinary photos.
+- Load strict sibling `<stem>.measurements.json` constraints when a drawing is attached.
+- Reject mismatched LLM tool arguments before local registry execution and keep generated Build unavailable.
+- Label inputs without independent measurements as `exact dimensions unverified` instead of implying precision.
+- Add provider and Isaac-runner defense-in-depth checks for measurement validation evidence.
+
+## 0.1.0 M2-D dimensioned-plan evaluation harness
+
+- Add a deterministic metric top-down warehouse plan generator and hash-pinned PNG fixture manifest.
+- Generalize the provider/Isaac fixture runners to non-empty fixture sets and PNG/JPG/WEBP MIME selection.
+- Add an exact-coordinate plan scorer and an explicitly non-provider reference extrusion path.
+- Verify the reference plan as 29/29 coordinate checks and a 90-prim Isaac episode with an 8 m completed route and zero collision samples.
+- Record the one real provider attempt as authentication-rejected; do not claim diagram-reading success and do not retry automatically.
+
 ## 0.1.0 M2-C three-image evaluation harness
 
 - Add an attributed, hash-pinned three-image fixture manifest without committing image binaries.

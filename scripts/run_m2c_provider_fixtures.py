@@ -1,4 +1,4 @@
-"""Run the three M2-C images through the saved OpenAI Responses credential once each.
+"""Run a hash-pinned image manifest through the saved OpenAI credential once each.
 
 The script never prints or serializes the API key. It writes only validated scene
 tool plans, compiled TwinPulse bundles, provenance, and sanitized failures.
@@ -28,6 +28,7 @@ from twinpulse_provider import (  # noqa: E402
     GenerationRequest,
     GenerationService,
     ImageInput,
+    MeasurementConstraint,
     OpenAIResponsesProvider,
     ProviderCapabilities,
     ProviderConfig,
@@ -66,6 +67,10 @@ def _sanitized_error(error: Exception) -> dict[str, str]:
 
 async def _run(args: argparse.Namespace) -> int:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    fixtures = manifest.get("fixtures", [])
+    if not fixtures:
+        raise RuntimeError("fixture manifest must contain at least one fixture")
+    total = len(fixtures)
     key = _load_saved_api_key()
     if not key:
         raise RuntimeError("TwinPulse API key is not present in Windows Credential Manager")
@@ -96,12 +101,18 @@ async def _run(args: argparse.Namespace) -> int:
         "model_id": args.model,
         "reasoning_effort": args.reasoning_effort,
         "automatic_retries": 0,
+        "evaluation_id": manifest.get("evaluation_id", "m2c_three_image_e2e"),
+        "manifest": str(args.manifest),
         "fixtures": [],
     }
     passed = 0
-    for index, fixture in enumerate(manifest["fixtures"], start=1):
+    mime_types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    for index, fixture in enumerate(fixtures, start=1):
         fixture_id = str(fixture["id"])
         image_path = args.image_dir / str(fixture["local_filename"])
+        mime_type = mime_types.get(image_path.suffix.lower())
+        if mime_type is None:
+            raise RuntimeError(f"{fixture_id}: unsupported image suffix {image_path.suffix}")
         item: dict[str, object] = {
             "fixture_id": fixture_id,
             "source_page": fixture["source_page"],
@@ -111,20 +122,26 @@ async def _run(args: argparse.Namespace) -> int:
             "image_sha256": _sha256(image_path),
             "prompt": fixture["prompt"],
             "provider_attempts": 1,
+            "image_detail": str(fixture.get("image_detail", "auto")),
         }
         if item["image_sha256"] != fixture["sha256"]:
             item.update({"status": "FAIL", "error": {"type": "HashMismatch", "message": "fixture SHA-256 mismatch"}})
             report["fixtures"].append(item)
-            print(f"fixture={index}/3 id={fixture_id} status=FAIL reason=HashMismatch", flush=True)
+            print(f"fixture={index}/{total} id={fixture_id} status=FAIL reason=HashMismatch", flush=True)
             continue
         request_id = str(uuid.uuid4())
-        print(f"fixture={index}/3 id={fixture_id} status=REQUESTING", flush=True)
+        print(f"fixture={index}/{total} id={fixture_id} status=REQUESTING", flush=True)
         try:
             result = await service.generate(
                 GenerationRequest(
                     request_id=request_id,
                     prompt=str(fixture["prompt"]),
-                    images=(ImageInput(image_path.name, "image/jpeg", image_path.read_bytes()),),
+                    images=(ImageInput(image_path.name, mime_type, image_path.read_bytes()),),
+                    image_detail=str(fixture.get("image_detail", "auto")),
+                    measurement_constraints=tuple(
+                        MeasurementConstraint.from_dict(value)
+                        for value in fixture.get("measurement_constraints", [])
+                    ),
                 )
             )
             item.update(
@@ -136,6 +153,11 @@ async def _run(args: argparse.Namespace) -> int:
                     "summary": result.plan.summary,
                     "tool_call_count": len(result.plan.calls),
                     "expanded_object_count": len(result.bundle.scene.objects),
+                    "measurement_constraint_count": result.measurement_constraint_count,
+                    "measurement_checked_value_count": result.measurement_checked_value_count,
+                    "measurement_validation_status": (
+                        "PASS" if result.measurement_constraint_count else "NOT_APPLICABLE"
+                    ),
                     "tool_names": [call.tool for call in result.plan.calls],
                     "plan": result.plan.to_dict(),
                     "bundle": json.loads(bundle_to_json(result.bundle)),
@@ -143,24 +165,24 @@ async def _run(args: argparse.Namespace) -> int:
             )
             passed += 1
             print(
-                f"fixture={index}/3 id={fixture_id} status=PASS "
+                f"fixture={index}/{total} id={fixture_id} status=PASS "
                 f"scene={result.plan.scene_id} tools={len(result.plan.calls)} "
                 f"objects={len(result.bundle.scene.objects)}",
                 flush=True,
             )
         except Exception as error:  # one paid attempt; preserve failure without retry
             item.update({"status": "FAIL", "request_id": request_id, "error": _sanitized_error(error)})
-            print(f"fixture={index}/3 id={fixture_id} status=FAIL reason={type(error).__name__}", flush=True)
+            print(f"fixture={index}/{total} id={fixture_id} status=FAIL reason={type(error).__name__}", flush=True)
         report["fixtures"].append(item)
 
     report["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
     report["passed_fixtures"] = passed
-    report["failed_fixtures"] = len(manifest["fixtures"]) - passed
-    report["status"] = "PASS" if passed == len(manifest["fixtures"]) else "FAIL"
+    report["failed_fixtures"] = total - passed
+    report["status"] = "PASS" if passed == total else "FAIL"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report={args.output}")
-    print(f"status={report['status']} passed={passed}/{len(manifest['fixtures'])}")
+    print(f"status={report['status']} passed={passed}/{total}")
     return 0 if report["status"] == "PASS" else 1
 
 

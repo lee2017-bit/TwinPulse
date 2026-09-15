@@ -11,6 +11,7 @@ from twinpulse_core import SceneToolPlan, SceneToolRegistry, SpecBundle, scene_t
 
 from .contracts import CancellationToken, GenerationRequest, ProviderConfig, ProviderResponse
 from .errors import GenerationCancelledError, InvalidProviderResponseError, ProviderTimeoutError
+from .measurement_constraints import validate_measurement_constraints
 
 
 class Provider(Protocol):
@@ -27,6 +28,8 @@ class GenerationResult:
     image_count: int
     plan: SceneToolPlan
     bundle: SpecBundle
+    measurement_constraint_count: int = 0
+    measurement_checked_value_count: int = 0
 
 
 class GenerationService:
@@ -58,6 +61,7 @@ class GenerationService:
                 raise GenerationCancelledError("late or cancelled response was ignored")
             try:
                 plan = scene_tool_plan_from_json(json.dumps(response.payload))
+                measurement_result = validate_measurement_constraints(plan, request.measurement_constraints)
                 bundle = SceneToolRegistry().execute(plan)
                 return GenerationResult(
                     request_id=request.request_id,
@@ -66,6 +70,8 @@ class GenerationService:
                     image_count=len(request.images),
                     plan=plan,
                     bundle=bundle,
+                    measurement_constraint_count=measurement_result.constraint_count,
+                    measurement_checked_value_count=measurement_result.checked_value_count,
                 )
             except (KeyError, TypeError, ValueError) as error:
                 detail = " ".join(str(error).split()) or type(error).__name__

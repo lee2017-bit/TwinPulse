@@ -155,13 +155,14 @@ class OpenAIResponsesProvider:
 
     def build_request_body(self, request: GenerationRequest, config: ProviderConfig) -> dict:
         content: list[dict] = []
+        image_detail = _resolve_image_detail(request)
         for image in request.images:
             encoded = base64.b64encode(image.content).decode("ascii")
             content.append(
                 {
                     "type": "input_image",
                     "image_url": f"data:{image.mime_type};base64,{encoded}",
-                    "detail": "low",
+                    "detail": image_detail,
                 }
             )
         user_text = request.prompt.strip() or (
@@ -248,3 +249,21 @@ class OpenAIResponsesProvider:
             raise GenerationCancelledError("generation cancelled")
         bundle_payload = self.parse_response(response_payload)
         return ProviderResponse(request.request_id, bundle_payload, self.name, config.model_id)
+
+
+def _resolve_image_detail(request: GenerationRequest) -> str:
+    if request.image_detail != "auto":
+        return request.image_detail
+    cues = (
+        "blueprint",
+        "dimensioned",
+        "floor plan",
+        "floorplan",
+        "top-down",
+        "technical drawing",
+        "도면",
+        "평면도",
+        "배치도",
+    )
+    searchable = " ".join((request.prompt, *(image.name for image in request.images))).lower()
+    return "high" if any(cue in searchable for cue in cues) else "low"
