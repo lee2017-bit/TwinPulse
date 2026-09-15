@@ -20,7 +20,10 @@ from .core_bootstrap import add_core_to_path
 
 add_core_to_path()
 
-from twinpulse_core import GeneratedDraftRecord, GeneratedDraftStore  # noqa: E402
+from twinpulse_core import (  # noqa: E402
+    COMPACT_2WD_PROFILE_ID, GeneratedDraftRecord, GeneratedDraftStore,
+    InputArtifactStore, InputRevision, generation_result_is_current,
+)
 
 from twinpulse_provider import (  # noqa: E402
     GenerationRequest,
@@ -129,17 +132,22 @@ class TwinPulseExtension(omni.ext.IExt):
         self._filepicker: FilePickerDialog | None = None
         self._settings_window: ui.Window | None = None
         self._warning_window: ui.Window | None = None
+        self._previous_draft_window: ui.Window | None = None
         self._warned_approximation = False
         self._generated_bundle = None
         self._generated_record: GeneratedDraftRecord | None = None
         self._draft_store = GeneratedDraftStore()
+        self._input_artifacts = InputArtifactStore(self._draft_store.path.parent / "inputs")
         self._credential_store = WindowsCredentialStore()
         self._provider_settings = load_provider_settings()
         self._prompt_model = ui.SimpleStringModel("")
+        self._input_epoch = 0
         self._tasks: set[asyncio.Task] = set()
         self._busy = False
         self._provider_verified = False
         self._configure_provider()
+        if hasattr(self._prompt_model, "add_value_changed_fn"):
+            self._prompt_model.add_value_changed_fn(lambda _model: self._on_input_changed())
         self._window = ui.Window("TwinPulse Copilot", width=480, height=760, visible=True)
         self._window.frame.style = STYLE
         with self._window.frame:
@@ -147,7 +155,7 @@ class TwinPulseExtension(omni.ext.IExt):
                 horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
                 style=STYLE,
             ):
-                with ui.VStack(spacing=10, height=ui.Pixel(830), style={"margin": 12}):
+                with ui.VStack(spacing=10, height=ui.Pixel(870), style={"margin": 12}):
                     self._build_header()
                     self._build_stage_indicator()
                     self._build_prompt_card()
@@ -248,18 +256,71 @@ class TwinPulseExtension(omni.ext.IExt):
             f"{name} x{count}" if count > 1 else name for name, count in sorted(counts.items())
         )
         if self._draft_label is not None:
-            state = "RESTORED" if restored else "DRAFT VALID"
+            state = ("LEGACY UNVERIFIED" if record.legacy_unverified else
+                     "LEGACY REBOUND - ORIGINAL IMAGE UNVERIFIED" if record.origin_status == "legacy_rebound" else
+                     "RESTORED" if restored else "DRAFT VALID")
             self._draft_label.text = (
                 f"{state}  {bundle.scene.id}  |  {len(record.plan.calls)} tools -> "
                 f"{len(bundle.scene.objects)} objects\n{tools}  |  images {record.image_count}"
             )
         if self._build_button is not None:
             self._build_button.text = "Build Generated Scene"
-            self._build_button.enabled = True
+            self._build_button.enabled = self._record_matches_current_input(record)
         if restored:
-            message = f"Restored validated draft - source generated plan {record.plan_sha256[:12]}"
+            message = (
+                f"Restored previous draft {record.plan_sha256[:12]} - reattach matching input before Build"
+                if not record.legacy_unverified else
+                "Legacy draft restored as unverified; explicit adoption is required before Build"
+            )
+            if record.origin_status == "legacy_rebound":
+                message = "Legacy draft rebound to current input; original image provenance is unknown"
             self._set_status(message)
             self._set_generation_status(message)
+
+    def _current_input(self) -> tuple[InputRevision, tuple[ImageInput, ...], tuple[MeasurementConstraint, ...]]:
+        prompt = self._prompt_model.get_value_as_string().strip()
+        images: tuple[ImageInput, ...] = ()
+        constraints: tuple[MeasurementConstraint, ...] = ()
+        if self._image_path is not None:
+            path = self._image_path
+            mime_type = mimetypes.guess_type(path.name)[0]
+            if mime_type not in _IMAGE_MIME_TYPES or not path.is_file():
+                raise ValueError("Attached image is unavailable or unsupported")
+            content = path.read_bytes()
+            if len(content) > _MAX_IMAGE_BYTES:
+                raise ValueError("Attached image now exceeds the 10 MB limit")
+            images = (ImageInput(path.name, mime_type, content),)
+            sidecar = measurement_sidecar_path(path)
+            if sidecar.is_file():
+                constraints = load_measurement_constraints(sidecar, image_path=path)
+            elif self._measurement_sidecar_path is not None:
+                raise ValueError("Attached measurement sidecar has been removed")
+        settings = self._provider_settings
+        revision = InputRevision.create(
+            prompt=prompt, images=tuple((image.name, image.content) for image in images),
+            measurement_constraints=constraints, profile_id=COMPACT_2WD_PROFILE_ID,
+            generation_settings={"base_url": settings.base_url, "model_id": settings.model_id,
+                                 "reasoning_effort": settings.reasoning_effort, "image_detail": "auto",
+                                 "request_schema": "1.0"},
+        )
+        return revision, images, constraints
+
+    def _record_matches_current_input(self, record: GeneratedDraftRecord) -> bool:
+        try:
+            revision, _, _ = self._current_input()
+            return record.build_allowed_for(revision)
+        except (OSError, ValueError):
+            return False
+
+    def _on_input_changed(self) -> None:
+        self._input_epoch += 1
+        self._provider_service.cancel_active()
+        if self._generated_record is not None:
+            if self._build_button is not None:
+                self._build_button.enabled = False
+            if self._draft_label is not None:
+                self._draft_label.text = "Previous draft is stale for this input. Generate again before Build."
+            self._set_generation_status("Input changed; previous draft retained but Build blocked")
 
     def _build_stage_indicator(self) -> None:
         with ui.HStack(height=ui.Pixel(34), spacing=4):
@@ -337,9 +398,9 @@ class TwinPulseExtension(omni.ext.IExt):
                 ui.Button("Remove", name="ghost", clicked_fn=self._remove_image, width=ui.Pixel(78), height=ui.Pixel(28))
 
     def _build_draft_card(self) -> None:
-        with ui.ZStack(height=ui.Pixel(84)):
+        with ui.ZStack(height=ui.Pixel(116)):
             self._card_background()
-            with ui.VStack(spacing=5, height=ui.Pixel(84), style={"margin": 12}):
+            with ui.VStack(spacing=5, height=ui.Pixel(116), style={"margin": 12}):
                 with ui.HStack(height=ui.Pixel(20)):
                     ui.Label("Draft preview", name="section")
                     ui.Spacer()
@@ -350,6 +411,49 @@ class TwinPulseExtension(omni.ext.IExt):
                     word_wrap=True,
                     height=ui.Pixel(36),
                 )
+                ui.Button("Open previous draft (review)", name="ghost",
+                          clicked_fn=self._open_previous_draft, height=ui.Pixel(26))
+
+    def _open_previous_draft(self) -> None:
+        record = self._generated_record
+        if record is None:
+            self._set_status("No previous draft is saved")
+            return
+        if self._previous_draft_window is not None:
+            self._previous_draft_window.destroy()
+        self._previous_draft_window = ui.Window("Previous Draft Review", width=520, height=240, visible=True)
+        self._previous_draft_window.frame.style = STYLE
+        with self._previous_draft_window.frame:
+            with ui.VStack(spacing=8, style={"margin": 16}):
+                ui.Label(f"Plan {record.plan_sha256[:12]} | {len(record.plan.calls)} tools",
+                         name="section", height=ui.Pixel(28))
+                matches = self._record_matches_current_input(record)
+                status = "Legacy: original input bytes not recorded" if record.legacy_unverified else (
+                    ("Legacy rebound: original image unknown; " + ("matches current input" if matches else "stale input"))
+                    if record.origin_status == "legacy_rebound" else
+                    "Matches current input" if matches else "Stale: input differs; this window is read-only")
+                ui.Label(status, name="muted", word_wrap=True, height=ui.Pixel(45))
+                if record.legacy_unverified:
+                    ui.Label("Rebinding checks the plan against today's input; it cannot prove the old image matched.",
+                             name="caption", word_wrap=True, height=ui.Pixel(48))
+                    ui.Button("Explicitly rebind legacy draft", name="ghost",
+                              clicked_fn=self._rebind_legacy_draft, height=ui.Pixel(30))
+
+    def _rebind_legacy_draft(self) -> None:
+        record = self._generated_record
+        if record is None or not record.legacy_unverified:
+            return
+        try:
+            revision, _, _ = self._current_input()
+            adopted = record.adopt_legacy_for(revision)
+            self._draft_store.save(adopted)
+        except (OSError, ValueError) as error:
+            self._set_status(f"Legacy draft rebinding rejected: {error}")
+            return
+        self._set_generated_record(adopted, restored=True)
+        self._set_status("Legacy plan rebound to current input after validation; old image provenance remains unknown")
+        if self._previous_draft_window is not None:
+            self._previous_draft_window.visible = False
 
     def _build_simulation_card(self) -> None:
         with ui.ZStack(height=ui.Pixel(154)):
@@ -455,6 +559,7 @@ class TwinPulseExtension(omni.ext.IExt):
             self._provider_settings = value
             self._provider_service.cancel_active()
             self._configure_provider()
+            self._on_input_changed()
             self._refresh_provider_header()
             self._set_status(f"Provider saved - {value.model_id}")
             self._close_settings()
@@ -496,6 +601,7 @@ class TwinPulseExtension(omni.ext.IExt):
         self._image_path = path
         self._measurement_constraints = constraints
         self._measurement_sidecar_path = sidecar_path if constraints else None
+        self._on_input_changed()
         if self._image_frame is not None:
             self._image_frame.rebuild()
         if constraints:
@@ -507,6 +613,7 @@ class TwinPulseExtension(omni.ext.IExt):
         self._image_path = None
         self._measurement_constraints = ()
         self._measurement_sidecar_path = None
+        self._on_input_changed()
         if self._image_frame is not None:
             self._image_frame.rebuild()
         self._set_status("Reference image removed")
@@ -561,14 +668,25 @@ class TwinPulseExtension(omni.ext.IExt):
         if self._busy:
             self._set_status("Please wait for the current operation")
             return
-        prompt = self._prompt_model.get_value_as_string().strip()
-        if not prompt and self._image_path is None:
+        try:
+            revision, images, constraints = self._current_input()
+        except (OSError, ValueError) as error:
+            self._set_status(f"Input rejected: {error}")
+            return
+        if not revision.prompt and not images:
             self._set_status("Attach an image or describe the warehouse before generating")
             return
         if not self._has_credential():
             self._set_status("Open Settings and save an API key first")
             self._open_settings()
             return
+        try:
+            self._input_artifacts.save(revision, tuple((image.name, image.content) for image in images))
+        except (OSError, ValueError) as error:
+            self._set_status(f"Input snapshot failed; no provider request sent: {error}")
+            return
+        self._on_input_changed()
+        ticket = self._input_epoch
         self._busy = True
         message = f"Generating with {self._provider_settings.model_id} - allow up to 90 seconds..."
         self._set_status(message)
@@ -576,23 +694,17 @@ class TwinPulseExtension(omni.ext.IExt):
         if self._generate_button is not None:
             self._generate_button.text = "Generating..."
             self._generate_button.enabled = False
-        image_count = 1 if self._image_path is not None else 0
+        image_count = len(images)
         print(
             f"[twinpulse.extension] generation queued: model={self._provider_settings.model_id}, "
-            f"images={image_count}, measurement_constraints={len(self._measurement_constraints)}"
+            f"images={image_count}, measurement_constraints={len(constraints)}, input={revision.digest[:12]}"
         )
-        self._track_task(asyncio.ensure_future(self._generate_draft(prompt)))
+        self._track_task(asyncio.ensure_future(self._generate_draft(revision, images, constraints, ticket)))
 
-    async def _generate_draft(self, prompt: str) -> None:
-        images: tuple[ImageInput, ...] = ()
-        if self._image_path is not None:
-            mime_type = mimetypes.guess_type(self._image_path.name)[0]
-            if mime_type not in _IMAGE_MIME_TYPES:
-                raise ValueError("Attached image type is no longer supported")
-            content = self._image_path.read_bytes()
-            if len(content) > _MAX_IMAGE_BYTES:
-                raise ValueError("Attached image now exceeds the 10 MB input limit")
-            images = (ImageInput(self._image_path.name, mime_type, content),)
+    async def _generate_draft(
+        self, revision: InputRevision, images: tuple[ImageInput, ...],
+        constraints: tuple[MeasurementConstraint, ...], ticket: int,
+    ) -> None:
         request_id = str(uuid4())
         print(
             f"[twinpulse.extension] generation started: request_id={request_id}, "
@@ -601,18 +713,21 @@ class TwinPulseExtension(omni.ext.IExt):
         result = await self._provider_service.generate(
             GenerationRequest(
                 request_id=request_id,
-                prompt=prompt,
+                prompt=revision.prompt,
                 images=images,
                 image_detail="auto",
-                measurement_constraints=self._measurement_constraints,
+                measurement_constraints=constraints,
             )
         )
+        if not self._generation_result_is_current(ticket, revision):
+            raise ValueError("Generation result belongs to a superseded input; previous draft retained")
         record = GeneratedDraftRecord.create(
             request_id=result.request_id,
             provider_name=result.provider_name,
             model_id=result.model_id,
             image_count=result.image_count,
             plan=result.plan,
+            input_revision=revision,
         )
         persistence_error: OSError | None = None
         try:
@@ -642,13 +757,30 @@ class TwinPulseExtension(omni.ext.IExt):
             f"[twinpulse.extension] generation completed: request_id={result.request_id}, "
             f"scene={bundle.scene.id}, images={result.image_count}, tools={len(result.plan.calls)}, "
             f"objects={len(bundle.scene.objects)}, measurements={result.measurement_constraint_count}, "
-            f"measurement_values={result.measurement_checked_value_count}, plan={record.plan_sha256[:12]}"
+            f"measurement_values={result.measurement_checked_value_count}, input={revision.digest[:12]}, "
+            f"plan={record.plan_sha256[:12]}, bundle={record.validation_receipt.bundle_sha256[:12]}"
         )
+
+    def _generation_result_is_current(self, ticket: int, revision: InputRevision) -> bool:
+        try:
+            current, _, _ = self._current_input()
+            return generation_result_is_current(
+                ticket=ticket, current_ticket=self._input_epoch,
+                requested_input_digest=revision.digest, current_input_digest=current.digest,
+            )
+        except (OSError, ValueError):
+            return False
 
     def _request_build(self) -> None:
         if self._generated_bundle is None or self._generated_record is None:
             self._set_status("No generated draft - attach or describe, then Generate with LLM")
             self._set_generation_status("Build blocked: no validated generated tool plan")
+            return
+        if not self._record_matches_current_input(self._generated_record):
+            self._set_status("Build blocked: draft is stale or legacy-unverified for current input")
+            self._set_generation_status("Build blocked: input revision does not match validated draft")
+            if self._build_button is not None:
+                self._build_button.enabled = False
             return
         if not self._warned_approximation:
             self._show_approximation_warning()
@@ -706,6 +838,8 @@ class TwinPulseExtension(omni.ext.IExt):
     def build_scene(self) -> int:
         if self._generated_bundle is None or self._generated_record is None:
             raise RuntimeError("No validated generated tool plan is available")
+        if not self._record_matches_current_input(self._generated_record):
+            raise RuntimeError("Input changed before Build; validated draft is stale")
         count = self.runtime.build_scene(self._generated_bundle)
         record = self._generated_record
         self.runtime.compiler.set_build_metadata(
@@ -757,11 +891,12 @@ class TwinPulseExtension(omni.ext.IExt):
         if self._filepicker is not None:
             self._filepicker.hide()
         self._filepicker = None
-        for window in (self._settings_window, self._warning_window, self._window):
+        for window in (self._settings_window, self._warning_window, self._previous_draft_window, self._window):
             if window is not None:
                 window.destroy()
         self._settings_window = None
         self._warning_window = None
+        self._previous_draft_window = None
         self._window = None
         self._shutdown_complete = True
         if _INSTANCE is self:

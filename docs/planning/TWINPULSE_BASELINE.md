@@ -1,13 +1,13 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.28**
-- 기준일: **2026-09-15 (KST)**
-- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 인수인계 완료, R1~R10 미착수**. M2-D 실제 provider는 10 calls/32 objects를 생성했으나 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 기존 scorer 27/29 FAIL이었다. 동일 bundle은 실제 Isaac 84 prim/8m 주행으로 physics PASS했다. scorer 검사 범위 밖의 정확도나 임의 장면의 안정성을 보장하지 않는다. 아래 최신 검토 보정과 App 전환 지침을 먼저 읽는다.
+- 문서 버전: **Baseline v1.0.29**
+- 기준일: **2026-09-16 (KST)**
+- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2~R10 미착수**. R1은 실제 유료 multimodal 재시험과 visible UI 시각 검수를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다. 임의 장면의 정확도·안정성을 보장하지 않는다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
 - 최신 단계 기록: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
-- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2 확정 및 R0 인수인계만 실행했다. 다음 R1~R6은 사용자에게 선택된 단계만 승인된다.
+- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1 로컬 검증은 확정됐다. 다음 R2~R6은 사용자에게 선택된 단계만 승인된다.
 - 2026-09-15 검토 보정: M2-C 과거 실행 증거는 보존한다. M2-D sidecar 규격 불일치와 새 입력 뒤 이전 draft Build 가능성을 확인했으며, stage identity/안전상태/복원 provenance도 보강 대상이다. 기존 13 Provider/24 Core 테스트 PASS는 이 연결까지 보장하지 않는다. BL-027의 `detail=low` 원인 단정은 비교 검증되지 않았으며, 통로 정확도는 기존 scorer 검사 범위와 구분해야 한다. 상세 근거/우선순위는 새 지침 F1~F10을 따른다.
 
 ## 1. 문서의 권위와 읽는 방법
@@ -337,7 +337,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ### 다음 구현 작업의 시작점
 
-2026-09-15 현재 **D1/D2는 확정되고 R0 기준 소스 정리는 완료**했다. 다음 재개점은 사용자에게 선택된 R1 입력/치수/복원 정합성이다. 이어 R2 stage identity/안전, R3~R6 app service/bridge/외부 UI/자동 검증 순서다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지하며 a.biz 호환성은 계속 미확인이다. 기존 headless 자동화는 재사용하지만 Full viewport 캡처와 실제 UI 검증은 별도 acceptance로 추가해야 한다.
+2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance가 완료**됐다. [R1 증거](../verification/R1-input-draft-integrity.md)는 실제 sidecar, 입력 provenance, Build/restore gate, Isaac headless Extension smoke를 포함한다. 실제 유료 multimodal 재시험 및 visible UI 시각 검수는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R2 stage identity/안전**이고, 이어 R3~R6 app service/bridge/외부 UI/자동 검증 순서다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
 
 ## 11. Blocking risk와 fallback
 
@@ -413,6 +413,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-030 | 2026-09-16 | 1.0.29 | R1 입력·치수·생성 기록 정합성 복구 | 기준 clone에서 M2-D ground_truth→sidecar 단일화, InputRevision 및 immutable snapshot, generation supersede, v2 receipt/Build·restore 재검증, v1 legacy-unverified/명시 review·rebind 구현. R1 통합 9/9, Core 24/24, Provider 13/13, Isaac 6.0.1 headless Extension smoke PASS. 실제 유료 multimodal/visible UI/R2는 미실행, push·설치·실물 구동 없음 |
 | BL-029 | 2026-09-15 | 1.0.28 | 사용자 D1/D2 확정 및 R0 인수인계 | React 로컬 웹 App+별도 Isaac 창으로 확정. GitHub 연결 기존 clone을 단일 기준 root로 선정하고 M2-D 신규 6/수정 11파일을 원본 해시 일치로 이관. 기존 개발본/제품 사양서 보존. 기준 root에서 Core 24/24·Provider 13/13 PASS. M2-D 정확도, 실제 Isaac/UI, R1~R10은 미검증·미착수. 설치·유료 호출·push 없음 |
 | BL-028 | 2026-09-15 | 1.0.27 | 전체 코드 검토와 외부 App 전환 단계 계획 | sidecar 규격/입력-draft 연결 오류 및 stale stage/안전/검증 범위 위험을 정리. R0~R10 지침, Phase 1 파일 단위 변경안/API/소유권/회귀 gate 작성. D1/D2 확인 대기. 문서만 수정했으며 제품 코드·설치·유료 호출·push·실물 명령 없음. 과거 M2-C PASS와 M2-D PARTIAL 유지 |
 | BL-001 | 2026-09-12 | 1.0 | 기존 사양·사용자 정정·환경 조사를 통합. 3D Playground 우선, 실물 확장, 서버 최종 목표, 프로세스 분리, 승인 경계와 단계별 시험 정의 | 사용자의 Baseline 문서·메모리 저장 요청. 문서화 완료, 구현 미착수 |

@@ -2,7 +2,10 @@
 
 from .fixtures import fixed_warehouse_bundle
 from .acceptance import EpisodeAssessment, EpisodeCriteria, EpisodeSample, assess_episode
-from .draft_store import GeneratedDraftRecord, GeneratedDraftStore, default_generated_draft_path
+from .draft_store import GeneratedDraftRecord, GeneratedDraftStore, ValidationReceipt, default_generated_draft_path
+from .measurements import validate_plan_measurements
+from .revisions import (InputArtifactStore, InputRevision, VALIDATOR_VERSION, bundle_digest,
+                        canonical_sha256, generation_result_is_current, plan_digest)
 from .models import (
     RobotProfile,
     SupportWheelSpec,
@@ -46,6 +49,10 @@ __all__ = [
     "RouteCommand",
     "GeneratedDraftRecord",
     "GeneratedDraftStore",
+    "InputArtifactStore",
+    "InputRevision",
+    "ValidationReceipt",
+    "VALIDATOR_VERSION",
     "SceneObject",
     "SceneSpec",
     "ShapeSpec",
@@ -63,12 +70,17 @@ __all__ = [
     "ToolExecutionReceipt",
     "bundle_from_json",
     "bundle_to_json",
+    "bundle_digest",
+    "canonical_sha256",
+    "generation_result_is_current",
+    "plan_digest",
     "fixed_warehouse_bundle",
     "default_generated_draft_path",
     "demo_warehouse_tool_plan",
     "scene_tool_plan_from_json",
     "scene_tool_plan_to_json",
     "validate_scene_tool_plan",
+    "validate_plan_measurements",
     "validate_bundle",
     "validate_current_controller_route",
     "normalize_angle",

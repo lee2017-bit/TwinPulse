@@ -33,6 +33,7 @@ from twinpulse_provider import (  # noqa: E402
     ProviderCapabilities,
     ProviderConfig,
 )
+from m2d_measurements import constraints_from_ground_truth
 
 
 def _load_saved_api_key() -> str | None:
@@ -140,7 +141,10 @@ async def _run(args: argparse.Namespace) -> int:
                     image_detail=str(fixture.get("image_detail", "auto")),
                     measurement_constraints=tuple(
                         MeasurementConstraint.from_dict(value)
-                        for value in fixture.get("measurement_constraints", [])
+                        for value in (
+                            constraints_from_ground_truth(manifest["ground_truth"])
+                            if "ground_truth" in manifest else fixture.get("measurement_constraints", [])
+                        )
                     ),
                 )
             )

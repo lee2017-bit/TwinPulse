@@ -22,6 +22,7 @@ from twinpulse_provider import (  # noqa: E402
     MeasurementConstraintError,
     validate_measurement_constraints,
 )
+from m2d_measurements import constraints_from_ground_truth
 
 
 def _near(actual: float, expected: float, tolerance: float) -> bool:
@@ -53,7 +54,7 @@ def main() -> int:
     calls = fixture["plan"]["calls"]
     declared_constraints = tuple(
         MeasurementConstraint.from_dict(value)
-        for value in manifest["fixtures"][0].get("measurement_constraints", [])
+        for value in constraints_from_ground_truth(truth)
     )
     measurement_validation: dict[str, Any]
     try:

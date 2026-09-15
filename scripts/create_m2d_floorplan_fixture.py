@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from m2d_measurements import constraints_from_ground_truth
 
 
 CANVAS = (1400, 1100)
@@ -15,21 +16,11 @@ ORIGIN = (700, 610)
 PIXELS_PER_METER = 90
 
 
-def _measurement_sidecar(source_image: str) -> dict[str, object]:
-    source = "dimensioned_drawing_sidecar"
+def _measurement_sidecar(source_image: str, truth: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": "1.0",
         "source_image": source_image,
-        "measurement_constraints": [
-            {"constraint_id": "floor_size", "tool": "create_floor", "argument_path": "size_m", "expected": [12.0, 8.0], "tolerance": 0.1, "occurrence": 0, "source": source},
-            {"constraint_id": "rack_length", "tool": "create_rack_row", "argument_path": "length_m", "expected": 8.0, "tolerance": 0.1, "occurrence": None, "source": source},
-            {"constraint_id": "rack_depth", "tool": "create_rack_row", "argument_path": "depth_m", "expected": 1.5, "tolerance": 0.1, "occurrence": None, "source": source},
-            {"constraint_id": "rack_height", "tool": "create_rack_row", "argument_path": "height_m", "expected": 3.0, "tolerance": 0.25, "occurrence": None, "source": source},
-            {"constraint_id": "rack_bays", "tool": "create_rack_row", "argument_path": "bay_count", "expected": 5.0, "tolerance": 0.0, "occurrence": None, "source": source},
-            {"constraint_id": "wall_height", "tool": "create_wall", "argument_path": "dimensions_m.2", "expected": 2.5, "tolerance": 0.1, "occurrence": None, "source": source},
-            {"constraint_id": "agv_start", "tool": "place_predefined_agv", "argument_path": "position_m", "expected": [-4.0, 0.0], "tolerance": 0.1, "occurrence": 0, "source": source},
-            {"constraint_id": "agv_goal", "tool": "create_navigation_task", "argument_path": "goal_m", "expected": [4.0, 0.0], "tolerance": 0.1, "occurrence": 0, "source": source},
-        ],
+        "measurement_constraints": constraints_from_ground_truth(truth),
     }
 
 
@@ -59,6 +50,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    manifest = json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "m2d" /
+                           "dimensioned_floorplan.json").read_text(encoding="utf-8"))
+    truth = manifest["ground_truth"]
+    floor_x, floor_y = truth["floor_size_m"]
+    rack_length, rack_depth, rack_height = (truth["rack_length_m"], truth["rack_depth_m"], truth["rack_height_m"])
+    rack_bays = truth["rack_bay_count"]
+    start_xy = truth["agv_start_position_m"][:2]
+    goal_xy = truth["goal_position_m"][:2]
 
     image = Image.new("RGB", CANVAS, "white")
     draw = ImageDraw.Draw(image)
@@ -71,18 +70,19 @@ def main() -> int:
     draw.text((70, 82), "TOP VIEW  |  ALL DIMENSIONS IN METERS  |  NORTH UP", fill="#374151", font=body)
 
     # Authoritative 12 m x 8 m floor boundary.
-    _rect(draw, (0.0, 0.0), (12.0, 8.0), fill="#f8fafc", outline="#111827", width=7)
+    _rect(draw, tuple(truth["floor_center_m"]), (floor_x, floor_y), fill="#f8fafc", outline="#111827", width=7)
 
     # Two rack rows: exact 8.0 m length, 1.5 m depth, 3.0 m height.
-    for name, y_m in (("RACK A", 2.6), ("RACK B", -2.6)):
-        _rect(draw, (0.0, y_m), (8.0, 1.5), fill="#bfdbfe", outline="#1d4ed8", width=5)
-        left, top = _xy(-4.0, y_m + 0.75)
-        right, bottom = _xy(4.0, y_m - 0.75)
-        for bay in range(1, 5):
-            x = int(left + (right - left) * bay / 5)
+    for name, (x_m, y_m) in (("RACK A", truth["rack_centers_m"][1]),
+                             ("RACK B", truth["rack_centers_m"][0])):
+        _rect(draw, (x_m, y_m), (rack_length, rack_depth), fill="#bfdbfe", outline="#1d4ed8", width=5)
+        left, top = _xy(x_m - rack_length / 2, y_m + rack_depth / 2)
+        right, bottom = _xy(x_m + rack_length / 2, y_m - rack_depth / 2)
+        for bay in range(1, rack_bays):
+            x = int(left + (right - left) * bay / rack_bays)
             draw.line((x, top, x, bottom), fill="#1d4ed8", width=3)
         text_box = draw.textbbox((0, 0), name, font=label)
-        center_px = _xy(0.0, y_m)
+        center_px = _xy(x_m, y_m)
         draw.text(
             (center_px[0] - (text_box[2] - text_box[0]) / 2, center_px[1] - 14),
             name,
@@ -91,29 +91,29 @@ def main() -> int:
         )
 
     # Central clear aisle and its exact width annotation.
-    _rect(draw, (0.0, 0.0), (10.5, 2.0), fill="#f3f4f6", outline="#9ca3af", width=2)
+    _rect(draw, (0.0, 0.0), (floor_x - 1.5, truth["clear_aisle_width_m"]), fill="#f3f4f6", outline="#9ca3af", width=2)
     draw.text((575, 520), "CLEAR CENTER AISLE", fill="#4b5563", font=body)
-    draw.text((620, 553), "WIDTH 2.0 m", fill="#4b5563", font=small)
+    draw.text((620, 553), f"WIDTH {truth['clear_aisle_width_m']:.1f} m", fill="#4b5563", font=small)
 
     # Route is deliberately positive X to match the currently validated controller.
-    start = _xy(-4.0, 0.0)
-    goal = _xy(4.0, 0.0)
+    start = _xy(*start_xy)
+    goal = _xy(*goal_xy)
     draw.line((start, goal), fill="#16a34a", width=10)
     draw.polygon(((goal[0], goal[1]), (goal[0] - 25, goal[1] - 16), (goal[0] - 25, goal[1] + 16)), fill="#16a34a")
     draw.ellipse((start[0] - 17, start[1] - 17, start[0] + 17, start[1] + 17), fill="#22c55e", outline="#14532d", width=3)
     draw.ellipse((goal[0] - 17, goal[1] - 17, goal[0] + 17, goal[1] + 17), fill="#ef4444", outline="#7f1d1d", width=3)
-    draw.text((start[0] - 68, start[1] + 24), "START (-4, 0)", fill="#14532d", font=small)
-    draw.text((goal[0] - 34, goal[1] + 24), "GOAL (4, 0)", fill="#7f1d1d", font=small)
-    draw.text((620, 665), "8.0 m AGV ROUTE", fill="#166534", font=small)
+    draw.text((start[0] - 68, start[1] + 24), f"START ({start_xy[0]:g}, {start_xy[1]:g})", fill="#14532d", font=small)
+    draw.text((goal[0] - 34, goal[1] + 24), f"GOAL ({goal_xy[0]:g}, {goal_xy[1]:g})", fill="#7f1d1d", font=small)
+    draw.text((620, 665), f"{truth['route_length_m']:.1f} m AGV ROUTE", fill="#166534", font=small)
 
     # Dimension callouts and wall height define how the 2D plan should become 3D.
     draw.line((_xy(-6, -4.35), _xy(6, -4.35)), fill="#111827", width=3)
-    draw.text((625, 1015), "12.0 m", fill="#111827", font=label)
+    draw.text((625, 1015), f"{floor_x:.1f} m", fill="#111827", font=label)
     draw.line((_xy(-6.35, -4), _xy(-6.35, 4)), fill="#111827", width=3)
-    draw.text((70, 595), "8.0 m", fill="#111827", font=label)
-    draw.text((865, 120), "FLOOR: 12.0 m x 8.0 m", fill="#111827", font=body)
-    draw.text((865, 151), "RACKS: 8.0 x 1.5 x 3.0 m HIGH", fill="#1e3a8a", font=body)
-    draw.text((865, 182), "PERIMETER WALLS: 2.5 m HIGH", fill="#111827", font=body)
+    draw.text((70, 595), f"{floor_y:.1f} m", fill="#111827", font=label)
+    draw.text((865, 120), f"FLOOR: {floor_x:.1f} m x {floor_y:.1f} m", fill="#111827", font=body)
+    draw.text((865, 151), f"RACKS: {rack_length:.1f} x {rack_depth:.1f} x {rack_height:.1f} m HIGH", fill="#1e3a8a", font=body)
+    draw.text((865, 182), f"PERIMETER WALLS: {truth['perimeter_wall_height_m']:.1f} m HIGH", fill="#111827", font=body)
     draw.text((865, 213), "KEEP CENTER AISLE CLEAR", fill="#166534", font=body)
 
     draw.polygon(((1320, 125), (1300, 170), (1340, 170)), fill="#111827")
@@ -123,7 +123,7 @@ def main() -> int:
     image.save(args.output, format="PNG", optimize=True)
     sidecar_path = args.output.with_suffix(".measurements.json")
     sidecar_path.write_text(
-        json.dumps(_measurement_sidecar(args.output.name), indent=2) + "\n",
+        json.dumps(_measurement_sidecar(args.output.name, truth), indent=2) + "\n",
         encoding="utf-8",
     )
     digest = hashlib.sha256(args.output.read_bytes()).hexdigest()
