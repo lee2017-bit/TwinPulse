@@ -1,13 +1,13 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.30**
+- 문서 버전: **Baseline v1.0.31**
 - 기준일: **2026-09-16 (KST)**
-- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3~R10 미착수**. R1은 실제 유료 multimodal 재시험과 visible UI 시각 검수를 포함하지 않는다. R2는 tested stage identity/rollback/runtime safety 범위이며 임의 장면의 정확도·안정성이나 실물 안전을 보장하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
+- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4~R10 미착수**. R3는 UI 독립 service/공통 계약과 legacy Extension 회귀의 tested local 범위이며 loopback bridge·React UI·wheel 배포를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
 - 최신 단계 기록: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
-- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1/R2 검증은 확정됐다. 다음 R3~R6은 사용자에게 선택된 단계만 승인된다. R2 증거는 [R2-stage-identity-safety.md](../verification/R2-stage-identity-safety.md)에 둔다.
+- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1/R2/R3 검증은 확정됐다. 다음 R4~R6은 사용자에게 선택된 단계만 승인된다. R3 증거는 [R3-application-service-contracts.md](../verification/R3-application-service-contracts.md)에 둔다.
 - 2026-09-15 검토 보정: M2-C 과거 실행 증거는 보존한다. M2-D sidecar 규격 불일치와 새 입력 뒤 이전 draft Build 가능성을 확인했으며, stage identity/안전상태/복원 provenance도 보강 대상이다. 기존 13 Provider/24 Core 테스트 PASS는 이 연결까지 보장하지 않는다. BL-027의 `detail=low` 원인 단정은 비교 검증되지 않았으며, 통로 정확도는 기존 scorer 검사 범위와 구분해야 한다. 상세 근거/우선순위는 새 지침 F1~F10을 따른다.
 
 ## 1. 문서의 권위와 읽는 방법
@@ -318,7 +318,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ## 10. 단계별 구현과 Acceptance Test
 
-현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 개발 root `C:\Users\jaewo\Documents\Codex\TwinPulse`의 `twinpulse.extension-0.1.0`은 prompt-first Copilot UI, persistent provider 설정, 안전한 key 저장, 단일 이미지 preview, image-first strict scene-tool plan, allowlisted local execution, generated draft persistence/source audit와 자동 episode 계측을 포함한다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
+현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 기준 개발 root `C:\Users\jaewo\Documents\TwinPulse`의 `twinpulse.extension-0.1.0`은 prompt-first legacy UI와 deterministic Isaac 실행을 보존하며, R3에서 `twinpulse_app`의 UI 독립 generation/project/build 상태 규칙과 `twinpulse_core.engine_contracts` schema 1.0을 사용하도록 연결됐다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
 
 | 단계 | 산출물과 완료 기준 | Acceptance test |
 |---|---|---|
@@ -337,7 +337,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ### 다음 구현 작업의 시작점
 
-2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance가 완료**됐다. [R1 증거](../verification/R1-input-draft-integrity.md)는 실제 sidecar, 입력 provenance, Build/restore gate를 포함하고, [R2 증거](../verification/R2-stage-identity-safety.md)는 stage identity/rollback/Run safety와 기존 physics 회귀를 포함한다. 실제 유료 multimodal 재시험 및 visible UI 시각 검수는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R3 application service/공통 계약 추출**이고, 이어 R4~R6 bridge/외부 UI/자동 검증 순서다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
+2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance가 완료**됐다. [R3 증거](../verification/R3-application-service-contracts.md)는 일반 Python의 순수 import, generation/persistence/fake-port 9/9, 실제 Isaac legacy Extension 회귀와 전체 runner PASS를 포함한다. wheel 생성은 `setuptools` 부재로 NOT RUN이고, 실제 유료 multimodal 재시험 및 visible React UI 검수도 하지 않았다. 다음 재개점은 사용자에게 선택된 **R4 loopback API/actual Isaac bridge**이며 R5 React와 R6 E2E는 후속이다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
 
 ## 11. Blocking risk와 fallback
 
@@ -413,6 +413,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-032 | 2026-09-16 | 1.0.31 | R3 UI 독립 application service와 공통 engine 계약 추출 | `twinpulse_app` service/project/settings/credentials, core command/receipt/snapshot schema 1.0, Extension 호환 연결 및 local auth/TTL ADR 구현. R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9, 전체 actual-Isaac runner PASS(`20260916-152550`). wheel은 setuptools 부재로 NOT RUN. bridge·React·유료 호출·실물 구동·push 없음 |
 | BL-031 | 2026-09-16 | 1.0.30 | R2 actual stage identity·rollback·runtime safety 복구 | 실제 Isaac에서 fresh compiler+동일 scene ID+변경 치수 F4를 재현 후 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only receipt, authored-content 검사, stage reload/new-stage/ownership, rollback 보존, off_route/unstable Reset latch를 구현. R2 전용 actual acceptance, 기존 lifecycle/2WD/mesh-floor/long-route, 통합 9/9·Core 24/24·Provider 13/13 PASS. 유료 호출·visible UI·R3·push·실물 구동 없음 |
 | BL-030 | 2026-09-16 | 1.0.29 | R1 입력·치수·생성 기록 정합성 복구 | 기준 clone에서 M2-D ground_truth→sidecar 단일화, InputRevision 및 immutable snapshot, generation supersede, v2 receipt/Build·restore 재검증, v1 legacy-unverified/명시 review·rebind 구현. R1 통합 9/9, Core 24/24, Provider 13/13, Isaac 6.0.1 headless Extension smoke PASS. 실제 유료 multimodal/visible UI/R2는 미실행, push·설치·실물 구동 없음 |
 | BL-029 | 2026-09-15 | 1.0.28 | 사용자 D1/D2 확정 및 R0 인수인계 | React 로컬 웹 App+별도 Isaac 창으로 확정. GitHub 연결 기존 clone을 단일 기준 root로 선정하고 M2-D 신규 6/수정 11파일을 원본 해시 일치로 이관. 기존 개발본/제품 사양서 보존. 기준 root에서 Core 24/24·Provider 13/13 PASS. M2-D 정확도, 실제 Isaac/UI, R1~R10은 미검증·미착수. 설치·유료 호출·push 없음 |

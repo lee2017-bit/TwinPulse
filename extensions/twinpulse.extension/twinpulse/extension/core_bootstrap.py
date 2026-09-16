@@ -19,4 +19,9 @@ def add_core_to_path() -> Path:
         provider_path = str(provider_src)
         if provider_path not in sys.path:
             sys.path.insert(0, provider_path)
+    app_src = repo_root / "packages" / "twinpulse_app" / "src"
+    if app_src.is_dir():
+        app_path = str(app_src)
+        if app_path not in sys.path:
+            sys.path.insert(0, app_path)
     return core_src

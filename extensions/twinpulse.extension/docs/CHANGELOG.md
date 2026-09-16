@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0 R3 application-service compatibility
+
+- Route generation, draft persistence and Build eligibility through the UI-independent `twinpulse_app.ApplicationService` while retaining the legacy Isaac window.
+- Move Windows credential storage and one-time non-secret provider-settings migration behind application adapters without changing the credential target.
+- Add pure schema 1.0 command, receipt and simulation-snapshot contracts for the later loopback bridge; no bridge or React UI is introduced in R3.
+- Preserve R1 stale-input/error/cancel behavior and pass the existing actual-Isaac Extension smoke regression.
+
 ## 0.1.0 R2 stage identity and runtime safety
 
 - Replace scene-ID-only reuse with a canonical build fingerprint, authored-content validation and a success-only build receipt.

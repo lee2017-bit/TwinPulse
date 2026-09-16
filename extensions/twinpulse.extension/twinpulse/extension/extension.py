@@ -9,7 +9,6 @@ import os
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from uuid import uuid4
 
 import omni.ext
 import omni.kit.app
@@ -22,11 +21,12 @@ add_core_to_path()
 
 from twinpulse_core import (  # noqa: E402
     COMPACT_2WD_PROFILE_ID, GeneratedDraftRecord, GeneratedDraftStore,
-    InputArtifactStore, InputRevision, generation_result_is_current,
+    InputArtifactStore, InputRevision,
 )
 
+from twinpulse_app import ApplicationService, PreparedInput, ProjectStore  # noqa: E402
+
 from twinpulse_provider import (  # noqa: E402
-    GenerationRequest,
     GenerationService,
     ImageInput,
     load_measurement_constraints,
@@ -146,6 +146,12 @@ class TwinPulseExtension(omni.ext.IExt):
         self._busy = False
         self._provider_verified = False
         self._configure_provider()
+        self._application = ApplicationService(
+            self._provider_service,
+            project_store=ProjectStore(self._draft_store.path.parent / "active_project.json"),
+            artifact_store=self._input_artifacts,
+            legacy_draft_store=self._draft_store,
+        )
         if hasattr(self._prompt_model, "add_value_changed_fn"):
             self._prompt_model.add_value_changed_fn(lambda _model: self._on_input_changed())
         self._window = ui.Window("TwinPulse Copilot", width=480, height=760, visible=True)
@@ -187,6 +193,8 @@ class TwinPulseExtension(omni.ext.IExt):
             OpenAIResponsesProvider(self._credential_store.load, reasoning_effort=value.reasoning_effort),
             config,
         )
+        if hasattr(self, "_application"):
+            self._application.set_generation_gateway(self._provider_service)
 
     def _has_credential(self) -> bool:
         try:
@@ -233,12 +241,7 @@ class TwinPulseExtension(omni.ext.IExt):
             self._provider_detail_label.text = self._provider_settings.model_id
 
     def _restore_generated_draft(self) -> None:
-        try:
-            record = self._draft_store.load()
-        except Exception as error:
-            self._set_status(f"Saved draft rejected: {type(error).__name__}: {error}")
-            print(f"[twinpulse.extension] saved draft rejected: {type(error).__name__}: {error}")
-            return
+        record = self._application.record
         if record is None:
             return
         self._set_generated_record(record, restored=True)
@@ -248,6 +251,7 @@ class TwinPulseExtension(omni.ext.IExt):
         )
 
     def _set_generated_record(self, record: GeneratedDraftRecord, *, restored: bool) -> None:
+        self._application.set_draft(record, persist=False)
         bundle = record.bundle
         self._generated_record = record
         self._generated_bundle = bundle
@@ -308,13 +312,14 @@ class TwinPulseExtension(omni.ext.IExt):
     def _record_matches_current_input(self, record: GeneratedDraftRecord) -> bool:
         try:
             revision, _, _ = self._current_input()
-            return record.build_allowed_for(revision)
-        except (OSError, ValueError):
+            candidate = self._application.build_candidate(revision)
+            return candidate.record == record
+        except (OSError, RuntimeError, ValueError):
             return False
 
     def _on_input_changed(self) -> None:
         self._input_epoch += 1
-        self._provider_service.cancel_active()
+        self._application.invalidate_input("input_changed")
         if self._generated_record is not None:
             if self._build_button is not None:
                 self._build_button.enabled = False
@@ -446,7 +451,7 @@ class TwinPulseExtension(omni.ext.IExt):
         try:
             revision, _, _ = self._current_input()
             adopted = record.adopt_legacy_for(revision)
-            self._draft_store.save(adopted)
+            self._application.set_draft(adopted, persist=True)
         except (OSError, ValueError) as error:
             self._set_status(f"Legacy draft rebinding rejected: {error}")
             return
@@ -680,13 +685,12 @@ class TwinPulseExtension(omni.ext.IExt):
             self._set_status("Open Settings and save an API key first")
             self._open_settings()
             return
+        self._on_input_changed()
         try:
-            self._input_artifacts.save(revision, tuple((image.name, image.content) for image in images))
+            self._application.select_input(PreparedInput(revision, images, constraints))
         except (OSError, ValueError) as error:
             self._set_status(f"Input snapshot failed; no provider request sent: {error}")
             return
-        self._on_input_changed()
-        ticket = self._input_epoch
         self._busy = True
         message = f"Generating with {self._provider_settings.model_id} - allow up to 90 seconds..."
         self._set_status(message)
@@ -699,77 +703,41 @@ class TwinPulseExtension(omni.ext.IExt):
             f"[twinpulse.extension] generation queued: model={self._provider_settings.model_id}, "
             f"images={image_count}, measurement_constraints={len(constraints)}, input={revision.digest[:12]}"
         )
-        self._track_task(asyncio.ensure_future(self._generate_draft(revision, images, constraints, ticket)))
+        self._track_task(asyncio.ensure_future(self._generate_draft(revision, images, constraints)))
 
     async def _generate_draft(
         self, revision: InputRevision, images: tuple[ImageInput, ...],
-        constraints: tuple[MeasurementConstraint, ...], ticket: int,
+        constraints: tuple[MeasurementConstraint, ...],
     ) -> None:
-        request_id = str(uuid4())
         print(
-            f"[twinpulse.extension] generation started: request_id={request_id}, "
+            f"[twinpulse.extension] generation started: input={revision.digest[:12]}, "
             f"model={self._provider_settings.model_id}, images={len(images)}"
         )
-        result = await self._provider_service.generate(
-            GenerationRequest(
-                request_id=request_id,
-                prompt=revision.prompt,
-                images=images,
-                image_detail="auto",
-                measurement_constraints=constraints,
-            )
-        )
-        if not self._generation_result_is_current(ticket, revision):
-            raise ValueError("Generation result belongs to a superseded input; previous draft retained")
-        record = GeneratedDraftRecord.create(
-            request_id=result.request_id,
-            provider_name=result.provider_name,
-            model_id=result.model_id,
-            image_count=result.image_count,
-            plan=result.plan,
-            input_revision=revision,
-        )
-        persistence_error: OSError | None = None
-        try:
-            self._draft_store.save(record)
-        except OSError as error:
-            # A valid paid response remains usable in memory even if local
-            # persistence is unavailable. The UI and log must disclose this.
-            persistence_error = error
-            print(f"[twinpulse.extension] draft persistence failed: {type(error).__name__}: {error}")
+        outcome = await self._application.generate()
+        record = outcome.record
         self._set_generated_record(record, restored=False)
-        bundle = result.bundle
+        bundle = record.bundle
         self._provider_verified = True
         self._refresh_provider_header()
-        if result.measurement_constraint_count:
+        if constraints:
             message = (
                 "Draft generated; "
-                f"{result.measurement_constraint_count} drawing measurements validated - "
+                f"{len(constraints)} drawing measurements validated - "
                 "click Build Generated Scene"
             )
         else:
             message = "Draft generated and validated; exact dimensions unverified - click Build Generated Scene"
-        if persistence_error is not None:
+        if not outcome.persisted:
             message += " (reload restore unavailable)"
         self._set_status(message)
         self._set_generation_status(message)
         print(
-            f"[twinpulse.extension] generation completed: request_id={result.request_id}, "
-            f"scene={bundle.scene.id}, images={result.image_count}, tools={len(result.plan.calls)}, "
-            f"objects={len(bundle.scene.objects)}, measurements={result.measurement_constraint_count}, "
-            f"measurement_values={result.measurement_checked_value_count}, input={revision.digest[:12]}, "
+            f"[twinpulse.extension] generation completed: request_id={record.request_id}, "
+            f"scene={bundle.scene.id}, images={record.image_count}, tools={len(record.plan.calls)}, "
+            f"objects={len(bundle.scene.objects)}, measurements={len(constraints)}, "
+            f"measurement_values={record.validation_receipt.checked_value_count}, input={revision.digest[:12]}, "
             f"plan={record.plan_sha256[:12]}, bundle={record.validation_receipt.bundle_sha256[:12]}"
         )
-
-    def _generation_result_is_current(self, ticket: int, revision: InputRevision) -> bool:
-        try:
-            current, _, _ = self._current_input()
-            return generation_result_is_current(
-                ticket=ticket, current_ticket=self._input_epoch,
-                requested_input_digest=revision.digest, current_input_digest=current.digest,
-            )
-        except (OSError, ValueError):
-            return False
 
     def _request_build(self) -> None:
         if self._generated_bundle is None or self._generated_record is None:
@@ -836,12 +804,10 @@ class TwinPulseExtension(omni.ext.IExt):
         self._schedule(self.reset)
 
     def build_scene(self) -> int:
-        if self._generated_bundle is None or self._generated_record is None:
-            raise RuntimeError("No validated generated tool plan is available")
-        if not self._record_matches_current_input(self._generated_record):
-            raise RuntimeError("Input changed before Build; validated draft is stale")
-        count = self.runtime.build_scene(self._generated_bundle)
-        record = self._generated_record
+        revision, _, _ = self._current_input()
+        candidate = self._application.build_candidate(revision)
+        count = self.runtime.build_scene(candidate.bundle)
+        record = candidate.record
         self.runtime.compiler.set_build_metadata(
             source="generated_tool_plan",
             image_count=record.image_count,
@@ -875,7 +841,7 @@ class TwinPulseExtension(omni.ext.IExt):
 
     def on_shutdown(self) -> None:
         global _INSTANCE
-        self._provider_service.cancel_active()
+        self._application.cancel_generation()
         for task in tuple(self._tasks):
             task.cancel()
         self._tasks.clear()

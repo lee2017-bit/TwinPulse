@@ -11,3 +11,4 @@ build/
 verification-output/
 artifacts/runs/
 tmp*/
+.nonexistent-runtime-test-state/

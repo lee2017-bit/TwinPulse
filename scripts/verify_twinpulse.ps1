@@ -28,6 +28,9 @@ try {
     & $r1TestPython -B -m unittest discover -s tests\integration -p test_r1_workflow.py
     if ($LASTEXITCODE -ne 0) { throw "R1 integration tests failed" }
 
+    python scripts\verify_r3_application.py
+    if ($LASTEXITCODE -ne 0) { throw "R3 application-service tests failed" }
+
     if (-not $SkipIsaac) {
         if (-not (Test-Path -LiteralPath $isaacPython)) {
             throw "Isaac Sim Python launcher not found: $isaacPython"
@@ -53,7 +56,8 @@ try {
         status = "PASS"
         run_id = $runId
         created_at = (Get-Date).ToString("o")
-        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2" }
+        app = "PASS_R3"
+        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY" }
         artifact_dir = $artifactDir
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDir "manifest.json") -Encoding UTF8

@@ -1,7 +1,7 @@
 # TwinPulse progress
 
 - Updated: 2026-09-16 KST
-- App migration R0/R1/R2: **PASS for the tested local scope.** D1 is local React web App + separate Isaac 3D window; D2 is this GitHub-connected clone as the sole development root. R1 fixed input/measurement/draft/receipt integrity. R2 reproduced the same-scene-ID stale-build defect in actual Isaac, then passed fingerprint/receipt, authored-content repair, reload/new-stage, rollback/ownership and Reset-required safety-latch acceptance. R3-R10 and the UI/backend remain NOT RUN. See `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md` and `docs/verification/R2-stage-identity-safety.md`.
+- App migration R0/R1/R2/R3: **PASS for the tested local scope.** D1 is local React web App + separate Isaac 3D window; D2 is this GitHub-connected clone as the sole development root. R1 fixed input/measurement/draft/receipt integrity. R2 passed actual-Isaac stage identity, rollback and Reset-required safety acceptance. R3 extracted a UI-independent application service, credential-free project/settings persistence and strict engine command/receipt/snapshot contracts; the existing Extension now uses the service and its actual-Isaac legacy regression passed. R4-R10 and the React UI remain NOT RUN. See `docs/verification/R3-application-service-contracts.md`.
 - M0-A: PASS
 - M0-B: limited PASS
 - M1-A: PASS
@@ -13,7 +13,7 @@
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
 - Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
 - Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored) and the repair was published as GitHub main commit `1c5ed27`. Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
-- Next: only when the user approves it, execute R3 application-service/common-contract extraction. Do not start the web UI or bridge ahead of that contract. A fresh paid drawing evaluation remains deferred to R9; general navigation and obstacle avoidance remain future work.
+- Next: only when the user approves it, execute R4 loopback API and actual Isaac bridge. Do not start the React UI ahead of the bridge contract. A fresh paid drawing evaluation remains deferred to R9; general navigation and obstacle avoidance remain future work.
 
 ## Implemented
 
@@ -40,6 +40,7 @@
 - Dimensioned inputs use high-detail image inference and optional trusted `<stem>.measurements.json` constraints. The Extension labels unconstrained images as exact-dimensions-unverified; constrained mismatches stop before the tool registry and Isaac Build.
 - Applied USD now carries explicit TwinPulse ownership, canonical build fingerprint, compiler/catalog versions and an authored-static-content digest. A matching receipt is published only after the actual stage validates.
 - Runtime commands are invalidated on stage change. Off-route/unstable states remain latched through Pause and require a successful Reset before Run.
+- `twinpulse_app` now owns generation epochs, immutable input promotion, active-project persistence and Build eligibility without importing Isaac modules. `twinpulse_core.engine_contracts` defines the versioned R4-facing command, receipt and simulation snapshot vocabulary.
 
 ## Current constraints
 
@@ -54,6 +55,7 @@
 - The former persisted-plan failure (roll 9.0393 deg at frame 187) was isolated to the large non-uniformly scaled floor cube and is resolved by the mesh-floor compiler. This verifies the tested plan, not arbitrary future generated scenes. Do not use generated scenes for physical deployment.
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
 - The Windows credential target contains a value and the later one-attempt M2-D request authenticated successfully. No secret was printed or serialized. The current acceptance blocker is the 27/29 rack-height reading, not authentication.
+- R3 general-Python tests passed 9/9 and the full actual-Isaac runner passed at `artifacts/runs/20260916-152550` (git-ignored). Wheel construction was not run because neither available Python environment contains `setuptools`; package metadata was parsed and dependency declarations were tested instead. This is a packaging-toolchain gap for a later distribution gate, not a wheel PASS.
 
 ## Current approval boundary
 

@@ -2,7 +2,7 @@
 
 TwinPulse is a 3D Isaac Sim Playground/Copilot Extension for turning constrained warehouse images and optional natural-language constraints into a runnable simulation. The multimodal LLM produces a high-level allowlisted plan; deterministic local code owns robot profiles, USD/PhysX compilation, runtime control, and acceptance measurement.
 
-The approved next product architecture is a **local React web App plus a separate Isaac 3D window**. This GitHub-connected clone is the canonical development root; the current Extension and its legacy UI are retained as the engine adapter until the replacement is validated. R0 source handoff, R1 input/draft integrity and R2 actual-Isaac stage identity/runtime safety are complete. R3 application-service extraction and the web UI/backend have not started. See [`docs/planning/TWINPULSE_R0_HANDOFF.md`](docs/planning/TWINPULSE_R0_HANDOFF.md), the [R2 evidence](docs/verification/R2-stage-identity-safety.md), and the [stepwise migration plan](docs/planning/TWINPULSE_APP_MIGRATION_PLAYBOOK.md).
+The approved next product architecture is a **local React web App plus a separate Isaac 3D window**. This GitHub-connected clone is the canonical development root; the current Extension and its legacy UI are retained as the engine adapter until the replacement is validated. R0 source handoff, R1 input/draft integrity, R2 actual-Isaac stage identity/runtime safety, and R3 UI-independent application contracts are complete for their tested local scopes. The loopback bridge and web UI have not started. See [`docs/planning/TWINPULSE_R0_HANDOFF.md`](docs/planning/TWINPULSE_R0_HANDOFF.md), the [R3 evidence](docs/verification/R3-application-service-contracts.md), and the [stepwise migration plan](docs/planning/TWINPULSE_APP_MIGRATION_PLAYBOOK.md).
 
 ## Current scope
 
@@ -17,6 +17,7 @@ The approved next product architecture is a **local React web App plus a separat
 - The Extension owns only `/World/TwinPulse` in the USD stage.
 - R1 binds every generated draft to immutable input/measurement/settings revisions and revalidates persisted receipts before Build.
 - R2 binds applied content to a canonical fingerprint and success-only receipt, repairs stale/damaged owned content, preserves foreign stage content through rollback, and requires Reset after off-route/unstable safety stops.
+- R3 centralizes generation, project persistence and Build eligibility in a UI-independent application service, defines strict versioned engine command/receipt/snapshot contracts, and keeps Isaac imports behind the Extension boundary.
 
 ## Core tests
 
@@ -50,3 +51,4 @@ Use the provided launcher or add `extensions` as a local Extension search path, 
 - Dimensioned-plan partial evidence: [`docs/verification/M2-D-dimensioned-floorplan-e2e.md`](docs/verification/M2-D-dimensioned-floorplan-e2e.md)
 - R1 input/draft integrity evidence: [`docs/verification/R1-input-draft-integrity.md`](docs/verification/R1-input-draft-integrity.md)
 - R2 stage identity/safety evidence: [`docs/verification/R2-stage-identity-safety.md`](docs/verification/R2-stage-identity-safety.md)
+- R3 application-service/contract evidence: [`docs/verification/R3-application-service-contracts.md`](docs/verification/R3-application-service-contracts.md)

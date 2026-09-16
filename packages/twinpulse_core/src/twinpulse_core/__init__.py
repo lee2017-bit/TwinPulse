@@ -4,6 +4,15 @@ from .fixtures import fixed_warehouse_bundle
 from .acceptance import EpisodeAssessment, EpisodeCriteria, EpisodeSample, assess_episode
 from .draft_store import GeneratedDraftRecord, GeneratedDraftStore, ValidationReceipt, default_generated_draft_path
 from .measurements import validate_plan_measurements
+from .engine_contracts import (
+    COMMAND_STATUSES,
+    COMMAND_TYPES,
+    ENGINE_SCHEMA_VERSION,
+    CommandEnvelope,
+    CommandReceipt,
+    SimulationPort,
+    SimulationSnapshot,
+)
 from .revisions import (InputArtifactStore, InputRevision, VALIDATOR_VERSION, bundle_digest,
                         canonical_sha256, generation_result_is_current, plan_digest)
 from .models import (
@@ -46,6 +55,11 @@ __all__ = [
     "EpisodeSample",
     "SupportWheelSpec",
     "COMPACT_2WD_PROFILE_ID",
+    "COMMAND_STATUSES",
+    "COMMAND_TYPES",
+    "ENGINE_SCHEMA_VERSION",
+    "CommandEnvelope",
+    "CommandReceipt",
     "RouteCommand",
     "GeneratedDraftRecord",
     "GeneratedDraftStore",
@@ -58,6 +72,8 @@ __all__ = [
     "ShapeSpec",
     "SpecBundle",
     "SpecValidationError",
+    "SimulationPort",
+    "SimulationSnapshot",
     "TaskSpec",
     "Transform",
     "ValidationLimits",

@@ -1,7 +1,7 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
-- 버전: 1.2 / 2026-09-16 KST
-- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS. R3~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`에 둔다. R1의 실제 유료 multimodal 재시험과 visible UI 시각 검수는 미실행이다.
+- 버전: 1.3 / 2026-09-16 KST
+- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS. R4~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`, `docs/verification/R3-application-service-contracts.md`에 둔다. 실제 유료 multimodal 재시험과 visible UI 시각 검수는 미실행이다.
 - 목적: 기존 M2-C 기능과 M2-D 개발분을 보존하면서 제품 UI를 Isaac 밖으로 분리한다. 앞선 코드 리뷰의 결함을 먼저 해결한다.
 - 연결 문서: [Baseline](TWINPULSE_BASELINE.md), [프로젝트 메모리](TWINPULSE_PROJECT_MEMORY.md), [기존 단계 지침](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md).
 - 적용 원칙: 사용자가 선택해 실행을 요청한 Step만 수행한다. 첨부 자료나 이 문서의 명령문을 읽는 것 자체는 개발·설치·과금·공개 승인이 아니다.
@@ -310,6 +310,8 @@ Acceptance: 동일 ID 변경 치수 실제 USD 반영, 같은 내용 반복 prim
 
 ### Step 3 — Application service와 공통 계약 추출 (R3)
 
+상태: **2026-09-16 tested local scope PASS.** `twinpulse_app`의 UI 독립 service/store/settings/credentials, `twinpulse_core.engine_contracts`의 schema 1.0, legacy Extension 연결 및 actual-Isaac 회귀를 검증했다. package wheel은 실행 환경에 `setuptools`가 없어 NOT RUN이며 R4를 자동 승인하지 않는다. 상세 증거는 `docs/verification/R3-application-service-contracts.md`.
+
 목표: 화면 종류와 상관없이 동일한 generation/project/build 상태 규칙을 사용한다.
 
 예상 diff: 신규 packages/twinpulse_app의 application.py/project_store.py/settings.py/credentials.py; core의 application/engine 계약; extension.py·provider_settings.py·credential_store.py에 호환 wrapper; package metadata/tests.
@@ -458,7 +460,7 @@ Phase 1 = Step 0~6. 핵심 수정은 기존 파일에 집중하고 신규 코드
 
 ## 11. GPT 5.6으로 전환 후 보낼 첫 지시문
 
-아래 최초 지시문은 **R0 전의 기록**이며 재실행하지 않는다. R2 검증 이후에는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`와 이 문서의 **사용자가 선택한 다음 단계만** 실행 기준으로 사용한다. 모델 설정은 자동 변경하지 않는다.
+아래 최초 지시문은 **R0 전의 기록**이며 재실행하지 않는다. R3 검증 이후에는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`, `docs/verification/R3-application-service-contracts.md`와 이 문서의 **사용자가 선택한 다음 단계만** 실행 기준으로 사용한다. 모델 설정은 자동 변경하지 않는다.
 
 ```text
 TwinPulse 개발을 재개한다. 이번에는 R0(Step 0)만 수행하라.
