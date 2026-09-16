@@ -1,10 +1,10 @@
 # TwinPulse — 프로젝트 메모리
 
-- 연결된 기준: **Baseline v1.0.33**
+- 연결된 기준: **Baseline v1.0.34**
 - 갱신일: **2026-09-16 (KST)**
 - 상세 기준 문서: [TWINPULSE_BASELINE.md](TWINPULSE_BASELINE.md)
 - 단계별 Sol 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
-- 최신 App 전환/결함 수정 지침: [TWINPULSE_APP_MIGRATION_PLAYBOOK.md](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). **D1/D2·R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4 loopback/actual-Isaac bridge acceptance PASS; R5~R10 미착수.** 다음 구현 요청은 선택한 Step만 따른다.
+- 최신 App 전환/결함 수정 지침: [TWINPULSE_APP_MIGRATION_PLAYBOOK.md](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). **D1/D2·R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4 loopback/actual-Isaac bridge acceptance PASS, R5 React→actual-Isaac vertical-slice acceptance PASS; R6~R10 미착수.** 다음 구현 요청은 선택한 Step만 따른다.
 - M0-A 결과: [TWINPULSE_M0A_READINESS.md](TWINPULSE_M0A_READINESS.md)
 - M0-B 결과: [TWINPULSE_M0B_RUNTIME_PRECHECK.md](TWINPULSE_M0B_RUNTIME_PRECHECK.md)
 - M1 결과: [TWINPULSE_M1_IMPLEMENTATION.md](TWINPULSE_M1_IMPLEMENTATION.md)
@@ -14,10 +14,10 @@
 - M2-D 치수 도면 결과: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
 - M2 RobotProfile v2 교정: [TWINPULSE_M2_ROBOT_PROFILE_V2.md](TWINPULSE_M2_ROBOT_PROFILE_V2.md)
 - generated-floor 안정성 결과: [TwinPulse repository `docs/verification/M2-generated-floor-stability.md`](../verification/M2-generated-floor-stability.md)
-- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2 actual-Isaac acceptance PASS·R3 application/contract acceptance PASS·R4 loopback/actual-Isaac bridge acceptance PASS·R5~R10 미착수**. R4는 인증된 loopback broker와 실제 Isaac managed bridge, 연결 상실 watchdog을 검증했으며 React/원격 접속/유료 provider/wheel 공개·회사 PC 설치는 포함하지 않는다. M2-D 실제 provider의 랙 높이 오류로 27/29와 동일 bundle의 Isaac 주행 PASS는 보존한다.
+- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2 actual-Isaac acceptance PASS·R3 application/contract acceptance PASS·R4 loopback/actual-Isaac bridge acceptance PASS·R5 React→actual-Isaac vertical-slice acceptance PASS·R6~R10 미착수**. R5는 local React UI의 strict upload, deterministic async generation/review/ack, actual applied revision, Build/Run/Pause/Reset/Focus와 responsive browser 검증을 실제 Isaac에 연결했다. 새 유료 provider App smoke, R6 launcher, 원격 접속, wheel 공개·회사 PC 설치는 포함하지 않는다. M2-D 실제 provider의 랙 높이 오류로 27/29와 동일 bundle의 Isaac 주행 PASS는 보존한다.
 - 성격: 프로젝트 파일 기반의 지속 기록. 계정 전체 내장 메모리 저장을 의미하지 않음.
 
-### 최신 결정·R0/R1/R2/R3/R4 실행 — 2026-09-16 (아래 과거 상태 설명보다 우선)
+### 최신 결정·R0/R1/R2/R3/R4/R5 실행 — 2026-09-16 (아래 과거 상태 설명보다 우선)
 
 - **D1 확정:** 첫 제품 UI는 로컬 React 웹 App, 3D/물리는 별도 Isaac 창. legacy Extension UI는 대체 검증 전 보존.
 - **D2 확정:** `C:\Users\jaewo\Documents\TwinPulse` 기존 GitHub 연결 clone이 단일 기준 개발 root. 새 폴더 불필요. `C:\Users\jaewo\Documents\Codex\TwinPulse`는 삭제·이동하지 않은 보존 개발본.
@@ -26,7 +26,8 @@
 - **R2 actual-Isaac 검증 PASS:** 동일 scene ID의 변경 치수 미반영(F4)을 실제 USD에서 재현한 뒤 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only build receipt, authored-content 검사·복구, reload/new-stage/단위·ownership, replacement rollback, stage binding 무효화 및 off_route/unstable Reset latch를 구현했다. R2 전용 acceptance와 기존 lifecycle 3/3, short run 3/3, 2WD+2 passive support, large mesh-floor/6.9m route가 PASS했다. 증거는 [R2-stage-identity-safety.md](../verification/R2-stage-identity-safety.md).
 - **R3 application/contract 검증 PASS:** `twinpulse_app`로 generation/input epoch/project persistence/Build gate를 추출하고, `twinpulse_core.engine_contracts` schema 1.0과 Windows credential/non-secret settings adapter를 고정했다. 일반 Python R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9 및 full actual-Isaac runner가 PASS했다. 격리된 환경에서 core/provider/app 0.1.0 wheel build와 별도 clean install/`pip check`도 PASS했다. 증거는 [R3-application-service-contracts.md](../verification/R3-application-service-contracts.md).
 - **R4 loopback/actual-Isaac bridge 검증 PASS:** 127.0.0.1 인증 API, product/engine 역할 분리, 단일 writer/lease/session broker, bounded network-to-Kit queue, managed Extension adapter와 연결 상실 watchdog을 구현했다. R4 일반 Python 6/6, HTTP를 통한 실제 Isaac Build/Run/Pause/Reset/GetState/Focus, backend 종료 후 pause, lifecycle/reconnect 3/3 및 full runner `20260916-212014`가 PASS했다. 증거는 [R4-loopback-isaac-bridge.md](../verification/R4-loopback-isaac-bridge.md).
-- **현재 다음 단계:** R5 React 제품 UI는 사용자 선택 전 미착수. R4에서 외부 포트, 유료 호출, GitHub push, ROS2/MCP/WebRTC, 실물 구동 없음.
+- **R5 React 제품 UI 검증 PASS:** same-origin React/TypeScript UI, strict image/optional sidecar upload, async deterministic generation/cancel, review acknowledgement, backend-vs-Isaac revision gate, Build/Run/Pause/Reset/Focus를 연결했다. R5 API 7/7, React 3/3과 full actual runner `20260916-235245`가 PASS했다. 실제 Isaac 32 prim, revision 일치, 0.412375m 이동, desktop/mobile/125%/한글/scroll/keyboard evidence를 자동 생성했다. 증거는 [R5-react-product-ui.md](../verification/R5-react-product-ui.md).
+- **현재 다음 단계:** R6 자동 기동/process manager·restart/capture acceptance는 사용자 선택 전 미착수. R5에서 새 유료 provider 호출, 외부 포트, GitHub push, ROS2/MCP/WebRTC, 실물 구동 없음.
 
 ### 이전 검토·요청 — 2026-09-15 (이하 이력)
 
@@ -126,7 +127,7 @@
 | M6 | 독립 RL/최적화와 검증된 parameter artifact | 미착수 |
 | M7 | 실물 scan·보정·Deploy | 미착수 |
 
-현재 재개점은 R4 loopback/actual-Isaac bridge acceptance 뒤의 **R5 React 제품 UI**이며 사용자 선택 전 실행하지 않는다. 과거 도면 유료 재시험부터 자동 재개하지 않는다. R1은 입력/검증/빌드/복원 결함을, R2는 stage identity/rollback/Run 안전 결함을, R3는 화면 독립 application state와 engine 계약 경계를, R4는 인증된 로컬 transport와 실제 Isaac watchdog 경계를 닫았다. 다음에는 이 typed state/command API 위에 제품 UI를 연결한다. Full viewport/UI screenshot evidence는 R6에서 실제 검증해야 한다.
+현재 재개점은 R5 React→actual-Isaac vertical slice 뒤의 **R6 자동 기동·관찰·회귀**이며 사용자 선택 전 실행하지 않는다. 과거 도면 유료 재시험부터 자동 재개하지 않는다. R1은 입력 정합성, R2는 stage/안전, R3는 application/contract, R4는 인증 transport/watchdog, R5는 제품 UI와 실제 applied revision까지 닫았다. R6에서는 소유 프로세스와 사용자 프로세스를 구분하는 launcher, 실패/재기동, 공식 Isaac viewport capture와 fresh-clone 설치를 검증해야 한다. R5 browser screenshot은 자동 생성됐지만 공식 Isaac viewport capture는 아직 R6 범위다.
 
 ## 승인과 기록 규칙
 
@@ -178,4 +179,5 @@
 - BL-032 / 2026-09-16 / Baseline v1.0.31: R3 UI 독립 application service/common engine contract 추출. 순수 import와 R3 9/9, full actual-Isaac legacy 회귀 PASS. wheel NOT RUN. 증거 `docs/verification/R3-application-service-contracts.md`.
 - BL-033 / 2026-09-16 / Baseline v1.0.32: 사용자 승인 아래 git-ignored 격리 venv에 packaging 도구를 설치하고 core/provider/app wheel build, 별도 clean offline install, `pip check`, pure import PASS. 시스템/Isaac Python 및 공개 배포 변경 없음.
 - BL-034 / 2026-09-16 / Baseline v1.0.33: R4 인증 loopback API/command broker와 실제 Isaac managed bridge 구현. R4 6/6, actual HTTP Build/Run/Pause/Reset/GetState/Focus, backend-loss watchdog, lifecycle/reconnect 3/3 및 전체 runner `20260916-212014` PASS. React·원격·유료 provider·실물 제어 없음.
-- 다음 단계: 사용자 승인이 있으면 R5부터. R4 완료가 후속 단계 실행 승인은 아니다.
+- BL-035 / 2026-09-16 / Baseline v1.0.34: R5 same-origin React 제품 UI와 strict upload, deterministic async generation/cancel/review/ack, actual applied-revision gate 및 Build/Run/Pause/Reset/Focus 연결. R5 API 7/7, React 3/3, full actual runner `20260916-235245` PASS; 32 prim, 0.412375m 이동, desktop/mobile/125%/한글/scroll/keyboard evidence 자동 생성. 새 유료 provider App smoke, R6 launcher, 원격·실물 제어 없음.
+- 다음 단계: 사용자 승인이 있으면 R6부터. R5 완료가 후속 단계 실행 승인은 아니다.

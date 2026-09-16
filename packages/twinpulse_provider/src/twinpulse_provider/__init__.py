@@ -24,6 +24,7 @@ from .measurement_constraints import (
     MeasurementConstraintError,
     MeasurementValidationResult,
     measurement_sidecar_path,
+    parse_measurement_constraints,
     validate_measurement_constraints,
 )
 from .schema import scene_tool_plan_json_schema, spec_bundle_json_schema
@@ -42,6 +43,7 @@ __all__ = [
     "MeasurementConstraintError",
     "MeasurementValidationResult",
     "measurement_sidecar_path",
+    "parse_measurement_constraints",
     "MockMode",
     "MockProvider",
     "OpenAIResponsesProvider",

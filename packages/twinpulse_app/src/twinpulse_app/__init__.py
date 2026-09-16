@@ -11,6 +11,7 @@ from .application import (
 from .credentials import CredentialStore, WindowsCredentialStore
 from .api import LocalApiServer
 from .command_broker import BrokerError, CommandBroker, RegisteredArtifact
+from .product_workflow import ProductWorkflow
 from .project_store import ProjectRecord, ProjectStore, default_project_state_path
 from .settings import (
     DEFAULT_BASE_URL,
@@ -26,6 +27,6 @@ __all__ = [
     "BrokerError", "CommandBroker",
     "CredentialStore", "DEFAULT_BASE_URL", "DEFAULT_MODEL_ID", "DEFAULT_REASONING",
     "GenerationOutcome", "JsonProviderSettingsStore", "LocalApiServer", "PreparedInput", "ProjectRecord",
-    "ProjectStore", "ProviderSettings", "RegisteredArtifact", "WindowsCredentialStore", "default_project_state_path",
+    "ProductWorkflow", "ProjectStore", "ProviderSettings", "RegisteredArtifact", "WindowsCredentialStore", "default_project_state_path",
     "migrate_legacy_settings_once",
 ]

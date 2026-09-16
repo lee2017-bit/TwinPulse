@@ -1,7 +1,7 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
-- 버전: 1.4 / 2026-09-16 KST
-- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS, R4(Step 4) loopback/actual-Isaac bridge acceptance PASS. R5~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`와 `docs/verification/R1-input-draft-integrity.md`부터 `R4-loopback-isaac-bridge.md`까지에 둔다. 실제 유료 multimodal 재시험과 visible React UI 시각 검수는 미실행이다.
+- 버전: 1.5 / 2026-09-16 KST
+- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS, R4(Step 4) loopback/actual-Isaac bridge acceptance PASS, R5(Step 5) React→actual-Isaac vertical-slice acceptance PASS. R6~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`와 `docs/verification/R1-input-draft-integrity.md`부터 `R5-react-product-ui.md`까지에 둔다. 실제 유료 multimodal App smoke는 미실행이다.
 - 목적: 기존 M2-C 기능과 M2-D 개발분을 보존하면서 제품 UI를 Isaac 밖으로 분리한다. 앞선 코드 리뷰의 결함을 먼저 해결한다.
 - 연결 문서: [Baseline](TWINPULSE_BASELINE.md), [프로젝트 메모리](TWINPULSE_PROJECT_MEMORY.md), [기존 단계 지침](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md).
 - 적용 원칙: 사용자가 선택해 실행을 요청한 Step만 수행한다. 첨부 자료나 이 문서의 명령문을 읽는 것 자체는 개발·설치·과금·공개 승인이 아니다.
@@ -355,6 +355,8 @@ Acceptance:
 중단: bridge가 동작하지 않으면 UI 작업으로 가리지 않는다. ROS2/MCP transport/WebRTC는 추가하지 않는다.
 
 ### Step 5 — React 제품 UI의 실제 vertical slice (R5)
+
+상태: **2026-09-16 tested local scope PASS.** same-origin React UI, strict image/sidecar upload, async deterministic generation/cancel, review acknowledgement, actual applied-revision gate, Build/Run/Pause/Reset/Focus와 engine telemetry를 연결했다. 브라우저가 실제 Isaac managed bridge를 제어한 전체 runner `20260916-235245`에서 32 prim, revision 일치, 0.412375m 이동, `idle/ready/running/paused` 관찰과 desktop/mobile/125%/한글/스크롤/키보드 검수가 PASS했다. 실제 유료 provider App smoke와 R6 launcher/process manager는 포함하지 않는다. 상세 증거는 `docs/verification/R5-react-product-ui.md`.
 
 목표: 사용자가 Isaac 패널을 조작하지 않고 입력→검토→3D 적용→Run/Pause/Reset을 수행한다.
 

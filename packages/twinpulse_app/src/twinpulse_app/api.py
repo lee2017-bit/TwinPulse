@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+from pathlib import Path
 import secrets
 from threading import RLock, Thread
 import time
@@ -16,9 +17,11 @@ from urllib.parse import urlsplit
 from twinpulse_core import CommandReceipt, SimulationSnapshot
 
 from .command_broker import BrokerError, CommandBroker
+from .product_workflow import ProductWorkflow
 
 
 MAX_JSON_BYTES = 256 * 1024
+MAX_UPLOAD_JSON_BYTES = 14 * 1024 * 1024
 PRODUCT_COOKIE = "twinpulse_product"
 
 
@@ -45,6 +48,8 @@ class LocalApiServer:
         port: int = 0,
         bootstrap_ttl_s: float = 30.0,
         session_ttl_s: float = 1800.0,
+        product_workflow: ProductWorkflow | None = None,
+        static_root: Path | None = None,
         clock=time.monotonic,
     ) -> None:
         if host != "127.0.0.1":
@@ -52,6 +57,8 @@ class LocalApiServer:
         if len(product_bootstrap_secret) < 32 or len(engine_bootstrap_secret) < 32:
             raise ValueError("Bootstrap secrets must contain at least 256 bits of material")
         self.broker = broker
+        self.product_workflow = product_workflow
+        self._static_root = static_root.resolve() if static_root is not None else None
         self._clock = clock
         self._bootstrap_expires_at = clock() + bootstrap_ttl_s
         self._bootstrap: dict[str, str | None] = {
@@ -114,13 +121,34 @@ class LocalApiServer:
         if request.headers.get("Origin") not in (None, self.base_url, f"http://localhost:{self.port}"):
             return self._error(request, 403, "origin_forbidden", "Origin is not allowed")
         try:
+            if request.command == "GET" and not parsed.path.startswith("/v1/"):
+                return self._serve_static(request, parsed.path)
             if request.command == "POST" and parsed.path == "/v1/bootstrap":
                 return self._bootstrap_session(request, self._read_json(request))
             if parsed.path.startswith("/v1/product/"):
                 session = self._authenticate_product(request, require_csrf=request.command == "POST")
                 if request.command == "GET" and parsed.path == "/v1/product/state":
                     return self._json(request, 200, self.broker.public_state(session.session_id))
-                body = self._read_json(request)
+                if request.command == "GET" and parsed.path == "/v1/product/workflow":
+                    return self._json(request, 200, self._workflow().snapshot())
+                body = self._read_json(
+                    request,
+                    maximum=MAX_UPLOAD_JSON_BYTES if parsed.path == "/v1/product/input" else MAX_JSON_BYTES,
+                )
+                if parsed.path == "/v1/product/input":
+                    return self._json(request, 200, self._workflow().select_input(body))
+                if parsed.path == "/v1/product/generation":
+                    self._require_shape(body, set())
+                    return self._json(request, 202, self._workflow().start_fixture_generation())
+                if parsed.path == "/v1/product/generation/cancel":
+                    self._require_shape(body, set())
+                    return self._json(request, 200, self._workflow().cancel())
+                if parsed.path == "/v1/product/draft/acknowledge":
+                    self._require_shape(body, {"revision"})
+                    return self._json(
+                        request, 200,
+                        self._workflow().acknowledge(self._string(body, "revision")),
+                    )
                 if parsed.path == "/v1/product/lease":
                     self._require_shape(body, set())
                     return self._json(request, 200, self.broker.acquire_lease(session.session_id))
@@ -130,6 +158,10 @@ class LocalApiServer:
                         session.session_id, self._string(body, "control_lease_id"),
                     ))
                 if parsed.path == "/v1/product/commands":
+                    if body.get("command_type") == "build_scene" and self.product_workflow is not None:
+                        self.product_workflow.assert_build_allowed(
+                            body.get("artifact_id"), body.get("expected_applied_revision"),
+                        )
                     return self._json(request, 202, self.broker.submit(session.session_id, body))
                 if parsed.path == "/v1/product/commands/cancel":
                     self._require_shape(body, {"command_id"})
@@ -186,6 +218,54 @@ class LocalApiServer:
             return self._error(request, error.status, error.code, str(error))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             return self._error(request, 400, "request_invalid", str(error)[:240])
+
+    def _workflow(self) -> ProductWorkflow:
+        if self.product_workflow is None:
+            raise BrokerError("workflow_unavailable", "Product workflow is not configured", status=503)
+        return self.product_workflow
+
+    def _serve_static(self, request: BaseHTTPRequestHandler, path: str) -> None:
+        root = self._static_root
+        if root is None:
+            return self._error(request, 404, "static_unavailable", "Product UI is not configured")
+        relative = "index.html" if path in {"", "/"} else path.lstrip("/")
+        if not relative or "\\" in relative or any(part in {"", ".", ".."} for part in relative.split("/")):
+            return self._error(request, 404, "asset_not_found", "Static asset does not exist")
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return self._error(request, 404, "asset_not_found", "Static asset does not exist")
+        if not target.is_file():
+            return self._error(request, 404, "asset_not_found", "Static asset does not exist")
+        suffix = target.suffix.lower()
+        media_type = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".json": "application/json; charset=utf-8",
+        }.get(suffix)
+        if media_type is None:
+            return self._error(request, 415, "asset_type_forbidden", "Static asset type is forbidden")
+        payload = target.read_bytes()
+        request.send_response(200)
+        request.send_header("Content-Type", media_type)
+        request.send_header("Content-Length", str(len(payload)))
+        request.send_header("Cache-Control", "no-store" if suffix == ".html" else "public, max-age=31536000, immutable")
+        request.send_header("X-Content-Type-Options", "nosniff")
+        request.send_header("Referrer-Policy", "no-referrer")
+        request.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        request.end_headers()
+        request.wfile.write(payload)
 
     def _bootstrap_session(self, request: BaseHTTPRequestHandler, body: Mapping[str, object]) -> None:
         allowed = {"role", "secret", "engine_session_id", "stage_epoch"}
@@ -244,17 +324,19 @@ class LocalApiServer:
             session.expires_at = self._clock() + self._session_ttl_s
             return session
 
-    def _read_json(self, request: BaseHTTPRequestHandler) -> Mapping[str, object]:
+    def _read_json(
+        self, request: BaseHTTPRequestHandler, *, maximum: int = MAX_JSON_BYTES,
+    ) -> Mapping[str, object]:
         if request.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
             raise BrokerError("content_type_invalid", "Content-Type must be application/json", status=415)
         raw_length = request.headers.get("Content-Length")
         if raw_length is None or not raw_length.isdigit():
             raise BrokerError("content_length_required", "Content-Length is required", status=411)
         length = int(raw_length)
-        if length > MAX_JSON_BYTES:
+        if length > maximum:
             # Drain only a tightly bounded overflow so Windows can deliver the
             # 413 response without resetting a socket that still has body data.
-            if length <= MAX_JSON_BYTES * 2:
+            if length <= maximum * 2:
                 request.rfile.read(length)
             else:
                 request.close_connection = True

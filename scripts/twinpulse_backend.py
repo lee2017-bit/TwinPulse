@@ -20,7 +20,7 @@ for source in (
 ):
     sys.path.insert(0, str(source))
 
-from twinpulse_app import CommandBroker, LocalApiServer  # noqa: E402
+from twinpulse_app import CommandBroker, LocalApiServer, ProductWorkflow  # noqa: E402
 from twinpulse_core import fixed_warehouse_bundle  # noqa: E402
 
 
@@ -28,6 +28,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--ready-file", type=Path, required=True)
+    parser.add_argument("--static-root", type=Path)
     args = parser.parse_args()
     product_secret = os.environ.pop("TWINPULSE_PRODUCT_BOOTSTRAP", "")
     engine_secret = os.environ.pop("TWINPULSE_ENGINE_BOOTSTRAP", "")
@@ -36,11 +37,20 @@ def main() -> int:
 
     broker = CommandBroker()
     artifact = broker.register_artifact("fixed_warehouse_v1", fixed_warehouse_bundle())
+    static_root = args.static_root.resolve() if args.static_root is not None else None
+    if static_root is not None and not static_root.is_dir():
+        raise SystemExit(f"Built product UI not found: {static_root}")
+    # Keep the R4 engine-only bridge usable without the R5 product workflow.
+    # The stricter draft acknowledgement gate is enabled together with the
+    # product UI, where the user can actually review and acknowledge a draft.
+    workflow = ProductWorkflow(artifact) if static_root is not None else None
     server = LocalApiServer(
         broker,
         product_bootstrap_secret=product_secret,
         engine_bootstrap_secret=engine_secret,
         port=args.port,
+        product_workflow=workflow,
+        static_root=static_root,
     )
     server.start()
     stop = Event()
@@ -53,6 +63,7 @@ def main() -> int:
     ready = {
         "pid": os.getpid(), "base_url": server.base_url,
         "artifact_id": artifact.artifact_id, "revision": artifact.revision,
+        "ui_url": server.base_url + "/" if static_root is not None else None,
     }
     args.ready_file.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.ready_file.with_suffix(args.ready_file.suffix + ".tmp")

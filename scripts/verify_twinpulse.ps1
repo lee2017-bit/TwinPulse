@@ -19,6 +19,9 @@ try {
     python -m compileall -q packages extensions\twinpulse.extension\twinpulse scripts
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 
+    python scripts\generate_engine_ts.py --check
+    if ($LASTEXITCODE -ne 0) { throw "generated TypeScript engine contract is stale" }
+
     python packages\twinpulse_core\tests\test_contracts.py
     if ($LASTEXITCODE -ne 0) { throw "core tests failed" }
 
@@ -33,6 +36,15 @@ try {
 
     python -B -m unittest -v tests.integration.test_r4_bridge_api
     if ($LASTEXITCODE -ne 0) { throw "R4 loopback API/bridge contract tests failed" }
+
+    python -B -m unittest -v tests.integration.test_r5_product_api
+    if ($LASTEXITCODE -ne 0) { throw "R5 product API tests failed" }
+
+    pnpm --dir apps\twinpulse-web test
+    if ($LASTEXITCODE -ne 0) { throw "R5 React tests failed" }
+
+    pnpm --dir apps\twinpulse-web build
+    if ($LASTEXITCODE -ne 0) { throw "R5 React production build failed" }
 
     if (-not $SkipIsaac) {
         if (-not (Test-Path -LiteralPath $isaacPython)) {
@@ -62,14 +74,23 @@ try {
         if ($r4ExitCode -ne 0 -or -not $r4Pass -or -not $r4Status) {
             throw "Isaac R4 managed bridge acceptance failed"
         }
+
+        $r5Output = & $isaacPython -B scripts\verify_r5_web.py 2>&1
+        $r5ExitCode = $LASTEXITCODE
+        $r5Output | ForEach-Object { Write-Output $_ }
+        $r5Pass = $r5Output | Select-String -SimpleMatch 'TWINPULSE_R5_RESULT={"actual_isaac"'
+        $r5Status = $r5Output | Select-String -SimpleMatch '"status": "PASS"'
+        if ($r5ExitCode -ne 0 -or -not $r5Pass -or -not $r5Status) {
+            throw "R5 React browser to actual-Isaac acceptance failed"
+        }
     }
 
     $manifest = [ordered]@{
         status = "PASS"
         run_id = $runId
         created_at = (Get-Date).ToString("o")
-        app = "PASS_R3_R4_CONTRACTS"
-        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE" }
+        app = "PASS_R3_R4_R5_CONTRACTS_AND_REACT_BUILD"
+        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE_R5_WEB_E2E" }
         artifact_dir = $artifactDir
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDir "manifest.json") -Encoding UTF8

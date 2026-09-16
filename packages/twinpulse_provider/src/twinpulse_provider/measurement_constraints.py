@@ -119,6 +119,19 @@ def load_measurement_constraints(
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise MeasurementConstraintError(f"cannot read measurement sidecar: {error}") from error
+    return parse_measurement_constraints(
+        payload,
+        image_name=image_path.name if image_path is not None else None,
+    )
+
+
+def parse_measurement_constraints(
+    payload: object,
+    *,
+    image_name: str | None = None,
+) -> tuple[MeasurementConstraint, ...]:
+    """Validate an already decoded sidecar without requiring a filesystem path."""
+
     if not isinstance(payload, Mapping):
         raise MeasurementConstraintError("measurement sidecar root must be an object")
     allowed = {"schema_version", "source_image", "measurement_constraints"}
@@ -130,9 +143,9 @@ def load_measurement_constraints(
     if source_image is not None:
         if not isinstance(source_image, str) or Path(source_image).name != source_image:
             raise MeasurementConstraintError("measurement sidecar source_image must be a file name")
-        if image_path is not None and source_image != image_path.name:
+        if image_name is not None and source_image != image_name:
             raise MeasurementConstraintError(
-                f"measurement sidecar is for {source_image}, not {image_path.name}"
+                f"measurement sidecar is for {source_image}, not {image_name}"
             )
     raw_constraints = payload.get("measurement_constraints")
     if not isinstance(raw_constraints, list) or not raw_constraints:

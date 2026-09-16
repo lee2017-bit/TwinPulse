@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0 R5 React product vertical slice
+
+- Add a same-origin React/TypeScript product UI with responsive Korean layouts, strict image/optional measurement upload, asynchronous deterministic generation/cancel, review acknowledgement, and explicit backend/Isaac/provider status.
+- Keep the backend draft revision separate from the actual Isaac applied revision and enable Build/Run/Pause/Reset/Focus only from server-provided command permissions.
+- Generate TypeScript engine contracts from the authoritative Python schema and preserve the R4 engine-only/legacy Extension paths.
+- Pass product API 7/7, React 3/3, production build, and browser-to-actual-Isaac acceptance with 32 prims, revision match, movement, Reset/Focus, mobile/zoom/scroll/keyboard screenshots.
+- Do not perform a fresh paid provider request; the R5 acceptance generation path is deterministic and local.
+
 ## 0.1.0 R4 authenticated loopback bridge
 
 - Add the managed Isaac adapter and worker-thread bridge client while keeping USD, PhysX, compiler and runtime mutation on the Kit update thread.

@@ -2,7 +2,7 @@
 
 TwinPulse is a 3D Isaac Sim Playground/Copilot Extension for turning constrained warehouse images and optional natural-language constraints into a runnable simulation. The multimodal LLM produces a high-level allowlisted plan; deterministic local code owns robot profiles, USD/PhysX compilation, runtime control, and acceptance measurement.
 
-The approved next product architecture is a **local React web App plus a separate Isaac 3D window**. This GitHub-connected clone is the canonical development root; the current Extension and its legacy UI are retained as the engine adapter until the replacement is validated. R0 source handoff through the R4 authenticated loopback/actual-Isaac bridge are complete for their tested local scopes. The React product UI has not started. See [`docs/planning/TWINPULSE_R0_HANDOFF.md`](docs/planning/TWINPULSE_R0_HANDOFF.md), the [R4 evidence](docs/verification/R4-loopback-isaac-bridge.md), and the [stepwise migration plan](docs/planning/TWINPULSE_APP_MIGRATION_PLAYBOOK.md).
+The approved product architecture is a **local React web App plus a separate Isaac 3D window**. This GitHub-connected clone is the canonical development root; the current Extension and its legacy UI remain available as the engine adapter. R0 through the R5 React-to-actual-Isaac vertical slice are complete for their tested local scopes. See [`docs/planning/TWINPULSE_R0_HANDOFF.md`](docs/planning/TWINPULSE_R0_HANDOFF.md), the [R5 evidence](docs/verification/R5-react-product-ui.md), and the [stepwise migration plan](docs/planning/TWINPULSE_APP_MIGRATION_PLAYBOOK.md).
 
 ## Current scope
 
@@ -19,6 +19,7 @@ The approved next product architecture is a **local React web App plus a separat
 - R2 binds applied content to a canonical fingerprint and success-only receipt, repairs stale/damaged owned content, preserves foreign stage content through rollback, and requires Reset after off-route/unstable safety stops.
 - R3 centralizes generation, project persistence and Build eligibility in a UI-independent application service, defines strict versioned engine command/receipt/snapshot contracts, and keeps Isaac imports behind the Extension boundary.
 - R4 adds an authenticated loopback command broker and managed Extension bridge. Network I/O remains off the Kit thread; actual Build/Run/Pause/Reset/GetState/Focus, disconnect watchdog behavior, and three reconnect cycles passed in Isaac.
+- R5 adds a same-origin React/TypeScript product UI for strict image/optional measurement upload, asynchronous deterministic draft generation, review acknowledgement, revision-gated 3D Build, and actual Isaac Run/Pause/Reset/Focus. The automated browser-to-Isaac acceptance passed at desktop, mobile, and 125% zoom; no new paid provider request was made.
 
 ## Core tests
 
@@ -54,3 +55,4 @@ Use the provided launcher or add `extensions` as a local Extension search path, 
 - R2 stage identity/safety evidence: [`docs/verification/R2-stage-identity-safety.md`](docs/verification/R2-stage-identity-safety.md)
 - R3 application-service/contract evidence: [`docs/verification/R3-application-service-contracts.md`](docs/verification/R3-application-service-contracts.md)
 - R4 loopback/actual-Isaac bridge evidence: [`docs/verification/R4-loopback-isaac-bridge.md`](docs/verification/R4-loopback-isaac-bridge.md)
+- R5 React product UI evidence: [`docs/verification/R5-react-product-ui.md`](docs/verification/R5-react-product-ui.md)
