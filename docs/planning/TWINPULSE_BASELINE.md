@@ -1,13 +1,13 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.32**
+- 문서 버전: **Baseline v1.0.33**
 - 기준일: **2026-09-16 (KST)**
-- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4~R10 미착수**. R3는 UI 독립 service/공통 계약, legacy Extension 회귀와 격리된 wheel build/clean install의 tested local 범위이며 loopback bridge·React UI·wheel 공개/회사 PC 설치를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
+- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4 loopback/actual-Isaac bridge acceptance PASS, R5~R10 미착수**. R4는 인증된 127.0.0.1 broker, managed Extension bridge와 backend-loss watchdog의 tested local 범위이며 React UI·원격 접속·wheel 공개/회사 PC 설치를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
 - 최신 단계 기록: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
-- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1/R2/R3 검증은 확정됐다. 다음 R4~R6은 사용자에게 선택된 단계만 승인된다. R3 증거는 [R3-application-service-contracts.md](../verification/R3-application-service-contracts.md)에 둔다.
+- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1/R2/R3/R4 검증은 확정됐다. 다음 R5~R6은 사용자에게 선택된 단계만 승인된다. R4 증거는 [R4-loopback-isaac-bridge.md](../verification/R4-loopback-isaac-bridge.md)에 둔다.
 - 2026-09-15 검토 보정: M2-C 과거 실행 증거는 보존한다. M2-D sidecar 규격 불일치와 새 입력 뒤 이전 draft Build 가능성을 확인했으며, stage identity/안전상태/복원 provenance도 보강 대상이다. 기존 13 Provider/24 Core 테스트 PASS는 이 연결까지 보장하지 않는다. BL-027의 `detail=low` 원인 단정은 비교 검증되지 않았으며, 통로 정확도는 기존 scorer 검사 범위와 구분해야 한다. 상세 근거/우선순위는 새 지침 F1~F10을 따른다.
 
 ## 1. 문서의 권위와 읽는 방법
@@ -318,7 +318,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ## 10. 단계별 구현과 Acceptance Test
 
-현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 기준 개발 root `C:\Users\jaewo\Documents\TwinPulse`의 `twinpulse.extension-0.1.0`은 prompt-first legacy UI와 deterministic Isaac 실행을 보존하며, R3에서 `twinpulse_app`의 UI 독립 generation/project/build 상태 규칙과 `twinpulse_core.engine_contracts` schema 1.0을 사용하도록 연결됐다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
+현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 기준 개발 root `C:\Users\jaewo\Documents\TwinPulse`의 `twinpulse.extension-0.1.0`은 prompt-first legacy UI와 deterministic Isaac 실행을 보존하며, R4에서 `twinpulse_app`의 인증 loopback broker와 `twinpulse_core.engine_contracts` schema 1.1을 사용하는 managed Isaac bridge까지 연결됐다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
 
 | 단계 | 산출물과 완료 기준 | Acceptance test |
 |---|---|---|
@@ -337,7 +337,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ### 다음 구현 작업의 시작점
 
-2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance가 완료**됐다. [R3 증거](../verification/R3-application-service-contracts.md)는 일반 Python의 순수 import, generation/persistence/fake-port 9/9, 실제 Isaac legacy Extension 회귀, 전체 runner, 세 wheel build와 별도 clean install/`pip check` PASS를 포함한다. wheel 공개·회사 PC 설치, 실제 유료 multimodal 재시험 및 visible React UI 검수는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R4 loopback API/actual Isaac bridge**이며 R5 React와 R6 E2E는 후속이다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
+2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance, R4 loopback/actual-Isaac bridge acceptance가 완료**됐다. [R4 증거](../verification/R4-loopback-isaac-bridge.md)는 R4 일반 Python 6/6, 인증/role/Origin·Host/크기/lease/revision 거절, 실제 Isaac HTTP Build/Run/Pause/Reset/GetState/Focus, backend-loss watchdog, lifecycle/reconnect 3/3 및 전체 runner `20260916-212014` PASS를 포함한다. wheel 공개·회사 PC 설치, 실제 유료 multimodal 재시험 및 visible React UI 검수는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R5 React 제품 UI**이며 R6 자동 E2E는 후속이다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
 
 ## 11. Blocking risk와 fallback
 
@@ -413,6 +413,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-034 | 2026-09-16 | 1.0.33 | R4 인증 loopback API와 실제 Isaac bridge 연결 | 127.0.0.1 product/engine auth, 단일 writer/lease/session broker, bounded network-to-Kit queue, managed adapter와 backend-loss watchdog 구현. R4 6/6, 실제 HTTP Build/Run/Pause/Reset/GetState/Focus, backend-loss pause, lifecycle/reconnect 3/3, 전체 runner PASS(`20260916-212014`). React·원격 접속·유료 provider·ROS2/MCP/WebRTC·실물 제어 없음 |
 | BL-033 | 2026-09-16 | 1.0.32 | R3 package build/clean-install gap 종료 | 사용자 승인으로 git-ignored 임시 venv에만 setuptools 84.0.0/wheel 0.48.0 설치. core/provider/app 0.1.0 wheel 3개 build PASS, 별도 clean venv에서 app 단독 지정으로 세 패키지 offline 설치·`pip check`·pure import PASS. 시스템/Isaac Python 변경, wheel 공개, 회사 PC 설치 없음 |
 | BL-032 | 2026-09-16 | 1.0.31 | R3 UI 독립 application service와 공통 engine 계약 추출 | `twinpulse_app` service/project/settings/credentials, core command/receipt/snapshot schema 1.0, Extension 호환 연결 및 local auth/TTL ADR 구현. R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9, 전체 actual-Isaac runner PASS(`20260916-152550`). wheel은 setuptools 부재로 NOT RUN. bridge·React·유료 호출·실물 구동·push 없음 |
 | BL-031 | 2026-09-16 | 1.0.30 | R2 actual stage identity·rollback·runtime safety 복구 | 실제 Isaac에서 fresh compiler+동일 scene ID+변경 치수 F4를 재현 후 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only receipt, authored-content 검사, stage reload/new-stage/ownership, rollback 보존, off_route/unstable Reset latch를 구현. R2 전용 actual acceptance, 기존 lifecycle/2WD/mesh-floor/long-route, 통합 9/9·Core 24/24·Provider 13/13 PASS. 유료 호출·visible UI·R3·push·실물 구동 없음 |

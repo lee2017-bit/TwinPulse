@@ -40,6 +40,8 @@ from twinpulse_provider import (  # noqa: E402
 
 from .credential_store import WindowsCredentialStore  # noqa: E402
 from .provider_settings import ProviderSettings, load_provider_settings, save_provider_settings  # noqa: E402
+from .bridge_client import BridgeClient  # noqa: E402
+from .isaac_adapter import IsaacSimulationAdapter  # noqa: E402
 from .runtime import TwinPulseRuntime  # noqa: E402
 
 
@@ -118,6 +120,13 @@ class TwinPulseExtension(omni.ext.IExt):
         global _INSTANCE
         self.ext_id = ext_id
         self.runtime = TwinPulseRuntime(self._set_status)
+        bridge_url = os.environ.get("TWINPULSE_BRIDGE_URL", "").strip()
+        bridge_secret = os.environ.pop("TWINPULSE_ENGINE_BOOTSTRAP", "").strip()
+        self._managed_mode = bool(bridge_url and bridge_secret)
+        self._bridge_client: BridgeClient | None = None
+        self._bridge_update_subscription = None
+        if bool(bridge_url) != bool(bridge_secret):
+            print("[twinpulse.extension] managed bridge disabled: URL/bootstrap configuration is incomplete")
         self._status_label: ui.Label | None = None
         self._generation_status_label: ui.Label | None = None
         self._generate_button: ui.Button | None = None
@@ -172,6 +181,19 @@ class TwinPulseExtension(omni.ext.IExt):
         self._shutdown_complete = False
         self._refresh_provider_header()
         self._restore_generated_draft()
+        if self._managed_mode:
+            adapter = IsaacSimulationAdapter(self.runtime)
+            self._bridge_client = BridgeClient(
+                adapter, base_url=bridge_url, bootstrap_secret=bridge_secret,
+            )
+            self._bridge_update_subscription = (
+                omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+                    lambda _event: self._bridge_client.update() if self._bridge_client is not None else None,
+                    name="TwinPulse managed bridge update",
+                )
+            )
+            self._bridge_client.start()
+            self._set_status("Managed bridge mode - use the authenticated local API")
         print(f"[twinpulse.extension] startup: {ext_id}")
 
     def _configure_provider(self) -> None:
@@ -670,6 +692,8 @@ class TwinPulseExtension(omni.ext.IExt):
         await omni.kit.app.get_app().next_update_async()
 
     def _request_generate(self) -> None:
+        if not self._legacy_control_allowed():
+            return
         if self._busy:
             self._set_status("Please wait for the current operation")
             return
@@ -740,6 +764,8 @@ class TwinPulseExtension(omni.ext.IExt):
         )
 
     def _request_build(self) -> None:
+        if not self._legacy_control_allowed():
+            return
         if self._generated_bundle is None or self._generated_record is None:
             self._set_status("No generated draft - attach or describe, then Generate with LLM")
             self._set_generation_status("Build blocked: no validated generated tool plan")
@@ -790,6 +816,8 @@ class TwinPulseExtension(omni.ext.IExt):
         self._request_build()
 
     def _request_run(self) -> None:
+        if not self._legacy_control_allowed():
+            return
         if self.runtime.compiler.bundle is None:
             self._set_status("Build the generated scene before Run")
             return
@@ -800,10 +828,14 @@ class TwinPulseExtension(omni.ext.IExt):
         self._schedule(self.run)
 
     def _request_reset(self) -> None:
+        if not self._legacy_control_allowed():
+            return
         self._set_status("Resetting simulation...")
         self._schedule(self.reset)
 
     def build_scene(self) -> int:
+        if not self._legacy_control_allowed():
+            raise RuntimeError("Legacy Build is disabled while managed bridge mode owns control")
         revision, _, _ = self._current_input()
         candidate = self._application.build_candidate(revision)
         count = self.runtime.build_scene(candidate.bundle)
@@ -826,18 +858,32 @@ class TwinPulseExtension(omni.ext.IExt):
         return count
 
     def focus_scene(self) -> bool:
+        if not self._legacy_control_allowed():
+            return False
         focused = self.runtime.focus_scene()
         self._set_status("Scene focused" if focused else "No active viewport is available")
         return focused
 
     def run(self) -> None:
+        if not self._legacy_control_allowed():
+            raise RuntimeError("Legacy Run is disabled while managed bridge mode owns control")
         self.runtime.run()
 
     def pause(self) -> None:
+        if not self._legacy_control_allowed():
+            return
         self.runtime.pause()
 
     def reset(self) -> int:
+        if not self._legacy_control_allowed():
+            raise RuntimeError("Legacy Reset is disabled while managed bridge mode owns control")
         return self.runtime.reset()
+
+    def _legacy_control_allowed(self) -> bool:
+        if not self._managed_mode:
+            return True
+        self._set_status("Managed bridge mode owns simulation control; use the local API")
+        return False
 
     def on_shutdown(self) -> None:
         global _INSTANCE
@@ -845,6 +891,11 @@ class TwinPulseExtension(omni.ext.IExt):
         for task in tuple(self._tasks):
             task.cancel()
         self._tasks.clear()
+        self._bridge_update_subscription = None
+        if self._bridge_client is not None:
+            self._bridge_client.adapter.fail_safe_pause("Extension shutdown")
+            self._bridge_client.stop()
+        self._bridge_client = None
         self.runtime.shutdown()
         self._status_label = None
         self._generation_status_label = None

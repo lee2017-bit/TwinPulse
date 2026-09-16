@@ -31,6 +31,9 @@ try {
     python scripts\verify_r3_application.py
     if ($LASTEXITCODE -ne 0) { throw "R3 application-service tests failed" }
 
+    python -B -m unittest -v tests.integration.test_r4_bridge_api
+    if ($LASTEXITCODE -ne 0) { throw "R4 loopback API/bridge contract tests failed" }
+
     if (-not $SkipIsaac) {
         if (-not (Test-Path -LiteralPath $isaacPython)) {
             throw "Isaac Sim Python launcher not found: $isaacPython"
@@ -50,14 +53,23 @@ try {
         if ($r2ExitCode -ne 0 -or $r2Error -or -not $r2Pass) {
             throw "Isaac R2 stage identity/safety acceptance failed"
         }
+
+        $r4Output = & $isaacPython -B scripts\verify_r4_bridge.py 2>&1
+        $r4ExitCode = $LASTEXITCODE
+        $r4Output | ForEach-Object { Write-Output $_ }
+        $r4Pass = $r4Output | Select-String -SimpleMatch 'TWINPULSE_R4_RESULT={"backend_loss_watchdog"'
+        $r4Status = $r4Output | Select-String -SimpleMatch '"status": "PASS"'
+        if ($r4ExitCode -ne 0 -or -not $r4Pass -or -not $r4Status) {
+            throw "Isaac R4 managed bridge acceptance failed"
+        }
     }
 
     $manifest = [ordered]@{
         status = "PASS"
         run_id = $runId
         created_at = (Get-Date).ToString("o")
-        app = "PASS_R3"
-        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY" }
+        app = "PASS_R3_R4_CONTRACTS"
+        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE" }
         artifact_dir = $artifactDir
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDir "manifest.json") -Encoding UTF8

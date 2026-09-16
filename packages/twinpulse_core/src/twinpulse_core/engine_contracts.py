@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import time
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 
-ENGINE_SCHEMA_VERSION = "1.0"
+ENGINE_SCHEMA_VERSION = "1.1"
 COMMAND_TYPES = frozenset({"build_scene", "run", "pause", "reset", "focus_scene", "get_state"})
 COMMAND_STATUSES = frozenset({"accepted", "running", "succeeded", "failed", "cancelled", "expired", "unknown"})
 RUNTIME_STATES = frozenset({
@@ -55,6 +56,7 @@ class CommandEnvelope:
     expected_applied_revision: str | None
     payload: Mapping[str, Any] = field(default_factory=dict)
     ttl_s: float = 30.0
+    issued_at_unix_s: float = field(default_factory=time.time)
     schema_version: str = ENGINE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -74,6 +76,13 @@ class CommandEnvelope:
         ttl = _finite(self.ttl_s, "ttl_s")
         if ttl <= 0 or ttl > 300:
             raise ValueError("ttl_s is outside the supported range")
+        issued = _finite(self.issued_at_unix_s, "issued_at_unix_s")
+        if issued <= 0:
+            raise ValueError("issued_at_unix_s is invalid")
+
+    def expired(self, *, now_unix_s: float | None = None) -> bool:
+        now = time.time() if now_unix_s is None else _finite(now_unix_s, "now_unix_s")
+        return now > self.issued_at_unix_s + self.ttl_s
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +92,7 @@ class CommandEnvelope:
             "control_lease_id": self.control_lease_id,
             "expected_applied_revision": self.expected_applied_revision,
             "payload": dict(self.payload), "ttl_s": self.ttl_s,
+            "issued_at_unix_s": self.issued_at_unix_s,
         }
 
     @classmethod
@@ -90,6 +100,7 @@ class CommandEnvelope:
         expected = {
             "schema_version", "command_id", "command_type", "project_id", "engine_session_id",
             "stage_epoch", "control_lease_id", "expected_applied_revision", "payload", "ttl_s",
+            "issued_at_unix_s",
         }
         if set(value) != expected:
             raise ValueError("command envelope shape is unsupported")

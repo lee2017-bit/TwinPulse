@@ -1,7 +1,7 @@
 # TwinPulse progress
 
 - Updated: 2026-09-16 KST
-- App migration R0/R1/R2/R3: **PASS for the tested local scope.** D1 is local React web App + separate Isaac 3D window; D2 is this GitHub-connected clone as the sole development root. R1 fixed input/measurement/draft/receipt integrity. R2 passed actual-Isaac stage identity, rollback and Reset-required safety acceptance. R3 extracted a UI-independent application service, credential-free project/settings persistence and strict engine command/receipt/snapshot contracts; the existing Extension now uses the service and its actual-Isaac legacy regression passed. R4-R10 and the React UI remain NOT RUN. See `docs/verification/R3-application-service-contracts.md`.
+- App migration R0/R1/R2/R3/R4: **PASS for the tested local scope.** D1 is local React web App + separate Isaac 3D window; D2 is this GitHub-connected clone as the sole development root. R1 fixed input/measurement/draft/receipt integrity, R2 passed actual-Isaac identity/rollback/safety acceptance, R3 extracted the UI-independent application service and common contracts, and R4 connected an authenticated loopback broker to the real Isaac Extension with a disconnect watchdog. R5-R10 and the React UI remain NOT RUN. See `docs/verification/R4-loopback-isaac-bridge.md`.
 - M0-A: PASS
 - M0-B: limited PASS
 - M1-A: PASS
@@ -13,7 +13,7 @@
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
 - Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
 - Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored) and the repair was published as GitHub main commit `1c5ed27`. Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
-- Next: only when the user approves it, execute R4 loopback API and actual Isaac bridge. Do not start the React UI ahead of the bridge contract. A fresh paid drawing evaluation remains deferred to R9; general navigation and obstacle avoidance remain future work.
+- Next: only when the user approves it, execute R5 React product UI against the verified R4 bridge. A fresh paid drawing evaluation remains deferred to R9; general navigation and obstacle avoidance remain future work.
 
 ## Implemented
 
@@ -41,6 +41,7 @@
 - Applied USD now carries explicit TwinPulse ownership, canonical build fingerprint, compiler/catalog versions and an authored-static-content digest. A matching receipt is published only after the actual stage validates.
 - Runtime commands are invalidated on stage change. Off-route/unstable states remain latched through Pause and require a successful Reset before Run.
 - `twinpulse_app` now owns generation epochs, immutable input promotion, active-project persistence and Build eligibility without importing Isaac modules. `twinpulse_core.engine_contracts` defines the versioned R4-facing command, receipt and simulation snapshot vocabulary.
+- The R4 backend owns one authenticated product session, one engine writer and a bounded broker queue. The managed Extension bridge executes commands on the Kit thread, publishes telemetry, blocks competing legacy controls and stops on lease/backend loss.
 
 ## Current constraints
 
@@ -56,6 +57,7 @@
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
 - The Windows credential target contains a value and the later one-attempt M2-D request authenticated successfully. No secret was printed or serialized. The current acceptance blocker is the 27/29 rack-height reading, not authentication.
 - R3 general-Python tests passed 9/9 and the full actual-Isaac runner passed at `artifacts/runs/20260916-152550` (git-ignored). In isolated git-ignored virtual environments, `setuptools 84.0.0`/`wheel 0.48.0` built core/provider/app 0.1.0 wheels; a clean offline install of `twinpulse-app` resolved all three, `pip check` passed, and imports loaded no Kit modules. The system and Isaac Python environments were not modified; publication and company-PC installation remain NOT RUN.
+- R4 integration tests passed 6/6. Full verification at `artifacts/runs/20260916-212014` passed Core 24/24, Provider 13/13, R1 9/9, R3 9/9, R4 6/6 and all actual-Isaac regressions. Managed HTTP control authored 32 prims, moved the AGV 0.670145454 m, produced zero Pause drift and Reset error, paused with `bridge_disconnected` after owned-backend termination, and completed three clean lifecycle/reconnect cycles. This is loopback-only and does not prove remote or physical safety.
 
 ## Current approval boundary
 

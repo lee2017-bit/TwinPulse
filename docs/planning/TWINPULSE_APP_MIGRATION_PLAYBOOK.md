@@ -1,7 +1,7 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
 - 버전: 1.4 / 2026-09-16 KST
-- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS. R4~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`, `docs/verification/R3-application-service-contracts.md`에 둔다. 실제 유료 multimodal 재시험과 visible UI 시각 검수는 미실행이다.
+- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS, R4(Step 4) loopback/actual-Isaac bridge acceptance PASS. R5~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`와 `docs/verification/R1-input-draft-integrity.md`부터 `R4-loopback-isaac-bridge.md`까지에 둔다. 실제 유료 multimodal 재시험과 visible React UI 시각 검수는 미실행이다.
 - 목적: 기존 M2-C 기능과 M2-D 개발분을 보존하면서 제품 UI를 Isaac 밖으로 분리한다. 앞선 코드 리뷰의 결함을 먼저 해결한다.
 - 연결 문서: [Baseline](TWINPULSE_BASELINE.md), [프로젝트 메모리](TWINPULSE_PROJECT_MEMORY.md), [기존 단계 지침](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md).
 - 적용 원칙: 사용자가 선택해 실행을 요청한 Step만 수행한다. 첨부 자료나 이 문서의 명령문을 읽는 것 자체는 개발·설치·과금·공개 승인이 아니다.
@@ -329,6 +329,8 @@ Acceptance: 일반 Python에서 core/provider/app import와 generation/persisten
 중단: 기존 physics 코드를 신규 backend Python에 복사하지 않는다. 한 번에 파일 구조 전체를 바꾸지 않는다.
 
 ### Step 4 — Local API와 실제 Isaac bridge 최소 연결 (R4)
+
+상태: **2026-09-16 tested local scope PASS.** 인증된 127.0.0.1 API, 단일 writer/lease/세션 broker, bounded network-to-Kit queue, managed Extension adapter와 disconnect watchdog을 구현했다. 일반 Python R4 6/6과 실제 Isaac HTTP Build/Run/Pause/Reset/GetState/Focus, backend-loss pause, lifecycle/reconnect 3/3 및 전체 회귀 runner가 PASS했다. React UI·원격 접속·유료 provider·ROS2/MCP/WebRTC·실물 제어는 포함하지 않았으며 R5를 자동 승인하지 않는다. 상세 증거는 `docs/verification/R4-loopback-isaac-bridge.md`.
 
 목표: 외부 프로그램이 typed command로 실제 Isaac을 제어하고 검증 가능한 결과를 받는다. 아직 React는 필수가 아니다.
 

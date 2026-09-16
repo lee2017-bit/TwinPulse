@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0 R4 authenticated loopback bridge
+
+- Add the managed Isaac adapter and worker-thread bridge client while keeping USD, PhysX, compiler and runtime mutation on the Kit update thread.
+- Add product/engine role separation, session/stage/revision/lease/TTL checks, deduplication, reconciliation telemetry, cancellation/expiry handling, and a bounded command queue.
+- Disable competing legacy product controls in managed mode and pause locally when the backend/lease disappears; reconnect never resumes motion automatically.
+- Pass actual-Isaac HTTP Build/Run/Pause/Reset/GetState/Focus, owned-backend-loss watchdog, three lifecycle/reconnect cycles, and all preserved regressions.
+
 ## 0.1.0 R3 application-service compatibility
 
 - Route generation, draft persistence and Build eligibility through the UI-independent `twinpulse_app.ApplicationService` while retaining the legacy Isaac window.
