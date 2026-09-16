@@ -1,6 +1,6 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
-- 버전: 1.3 / 2026-09-16 KST
+- 버전: 1.4 / 2026-09-16 KST
 - 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS. R4~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md`, `docs/verification/R2-stage-identity-safety.md`, `docs/verification/R3-application-service-contracts.md`에 둔다. 실제 유료 multimodal 재시험과 visible UI 시각 검수는 미실행이다.
 - 목적: 기존 M2-C 기능과 M2-D 개발분을 보존하면서 제품 UI를 Isaac 밖으로 분리한다. 앞선 코드 리뷰의 결함을 먼저 해결한다.
 - 연결 문서: [Baseline](TWINPULSE_BASELINE.md), [프로젝트 메모리](TWINPULSE_PROJECT_MEMORY.md), [기존 단계 지침](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md).
@@ -310,7 +310,7 @@ Acceptance: 동일 ID 변경 치수 실제 USD 반영, 같은 내용 반복 prim
 
 ### Step 3 — Application service와 공통 계약 추출 (R3)
 
-상태: **2026-09-16 tested local scope PASS.** `twinpulse_app`의 UI 독립 service/store/settings/credentials, `twinpulse_core.engine_contracts`의 schema 1.0, legacy Extension 연결 및 actual-Isaac 회귀를 검증했다. package wheel은 실행 환경에 `setuptools`가 없어 NOT RUN이며 R4를 자동 승인하지 않는다. 상세 증거는 `docs/verification/R3-application-service-contracts.md`.
+상태: **2026-09-16 tested local scope PASS.** `twinpulse_app`의 UI 독립 service/store/settings/credentials, `twinpulse_core.engine_contracts`의 schema 1.0, legacy Extension 연결 및 actual-Isaac 회귀를 검증했다. 격리된 임시 환경에서 core/provider/app wheel build와 별도 clean install/`pip check`도 PASS했다. wheel 공개·회사 PC 설치는 하지 않았으며 R4를 자동 승인하지 않는다. 상세 증거는 `docs/verification/R3-application-service-contracts.md`.
 
 목표: 화면 종류와 상관없이 동일한 generation/project/build 상태 규칙을 사용한다.
 

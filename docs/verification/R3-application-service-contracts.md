@@ -48,11 +48,30 @@ The actual-Isaac R3 claim is deliberately limited: the existing Extension enable
 python scripts\verify_r3_application.py
 .\scripts\verify_twinpulse.ps1 -SkipIsaac
 .\scripts\verify_twinpulse.ps1 -IsaacRoot C:\isaacsim
+
+python -m venv tmp-r3-wheel-env
+.\tmp-r3-wheel-env\Scripts\python.exe -m pip install setuptools==84.0.0 wheel==0.48.0
+.\tmp-r3-wheel-env\Scripts\python.exe -m pip wheel --no-deps --no-build-isolation . -w tmp-r3-wheels
+.\tmp-r3-wheel-env\Scripts\python.exe -m pip wheel --no-deps --no-build-isolation packages\twinpulse_provider -w tmp-r3-wheels
+.\tmp-r3-wheel-env\Scripts\python.exe -m pip wheel --no-deps --no-build-isolation packages\twinpulse_app -w tmp-r3-wheels
+python -m venv tmp-r3-install-env
+.\tmp-r3-install-env\Scripts\python.exe -m pip install --no-index --find-links tmp-r3-wheels twinpulse-app==0.1.0
+.\tmp-r3-install-env\Scripts\python.exe -m pip check
 ```
 
-## Known gap
+## Wheel and clean-install verification
 
-A local wheel-build attempt was blocked because neither available Python environment had `setuptools`. No dependency was installed and no network access was requested. The `pyproject.toml` files were parsed with the standard library and their names/dependency direction are covered by the R3 suite, but distributable wheel construction remains **NOT RUN**, not PASS. Fresh-install/package acceptance belongs to a later distribution gate.
+The first wheel attempt exposed that the available Python environments did not contain `setuptools`. With user approval, packaging tools were installed only in the git-ignored `tmp-r3-wheel-env` virtual environment (`setuptools 84.0.0`, `wheel 0.48.0`). No system or Isaac Python package was changed.
+
+All three wheels then built successfully without build isolation and were installed from the local wheel directory into a second clean, git-ignored virtual environment. Installing only `twinpulse-app==0.1.0` resolved and installed the exact `twinpulse-provider==0.1.0` and `twinpulse-core==0.1.0` wheels. `pip check` reported `No broken requirements found`; all three packages imported and no `omni`, `pxr` or `carb` module was loaded.
+
+```text
+twinpulse_app-0.1.0-py3-none-any.whl      sha256 4e49c01f5a3f078febeeca9c57f5c82ea3832181617b934288e197a02bd31d86
+twinpulse_core-0.1.0-py3-none-any.whl     sha256 8d8a1a5e792df17551b0274a4d790954b2cf504d972ebca8c83bd8027455b88b
+twinpulse_provider-0.1.0-py3-none-any.whl sha256 441be05c688c6f90427f69b26796e1d915238ad4264b3623a5ad974eaab5c44c
+```
+
+This closes the local R3 package-build and clean-install check. Publishing the wheels, installing them on the company PC, and producing a locked release artifact remain separate future actions.
 
 ## Scope boundary and next gate
 

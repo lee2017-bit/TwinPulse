@@ -1,6 +1,6 @@
 # TwinPulse — 프로젝트 메모리
 
-- 연결된 기준: **Baseline v1.0.31**
+- 연결된 기준: **Baseline v1.0.32**
 - 갱신일: **2026-09-16 (KST)**
 - 상세 기준 문서: [TWINPULSE_BASELINE.md](TWINPULSE_BASELINE.md)
 - 단계별 Sol 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
@@ -14,7 +14,7 @@
 - M2-D 치수 도면 결과: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
 - M2 RobotProfile v2 교정: [TWINPULSE_M2_ROBOT_PROFILE_V2.md](TWINPULSE_M2_ROBOT_PROFILE_V2.md)
 - generated-floor 안정성 결과: [TwinPulse repository `docs/verification/M2-generated-floor-stability.md`](../verification/M2-generated-floor-stability.md)
-- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2 actual-Isaac acceptance PASS·R3 application/contract acceptance PASS·R4~R10 미착수**. R3는 UI 독립 service와 engine schema, legacy Extension 회귀를 검증했으며 bridge/React/wheel 배포는 포함하지 않는다. M2-D 실제 provider의 랙 높이 오류로 27/29와 동일 bundle의 Isaac 주행 PASS는 보존한다.
+- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2 actual-Isaac acceptance PASS·R3 application/contract acceptance PASS·R4~R10 미착수**. R3는 UI 독립 service와 engine schema, legacy Extension 회귀, 격리된 wheel build/clean install을 검증했으며 bridge/React/wheel 공개·회사 PC 설치는 포함하지 않는다. M2-D 실제 provider의 랙 높이 오류로 27/29와 동일 bundle의 Isaac 주행 PASS는 보존한다.
 - 성격: 프로젝트 파일 기반의 지속 기록. 계정 전체 내장 메모리 저장을 의미하지 않음.
 
 ### 최신 결정·R0/R1/R2/R3 실행 — 2026-09-16 (아래 과거 상태 설명보다 우선)
@@ -24,7 +24,7 @@
 - **R0 완료:** clone의 clean M2-C `c35e9fc`에 M2-D 신규 6·수정 11 소스 파일을 정확한 원본 해시로 이관; clone 전용 제품 사양서 보존. 기준 root에서 Core 24/24, Provider 13/13 PASS. 이관은 M2-D 29/29 또는 새 UI/Isaac runtime 검증이 아니다. 증거/rollback은 기준 저장소 `docs/planning/TWINPULSE_R0_HANDOFF.md`.
 - **R1 로컬 검증 PASS:** 입력 bytes/prompt/측정/profile/settings revision, 변경 시 generation supersede와 stale Build gate, v2 receipt의 저장·복원·Build 재검증, v1 legacy-unverified 및 별도 이전 draft 검토/rebind를 구현. 실제 generator sidecar의 정답 PASS/높이·좌표 오답 FAIL, 통합 9/9·Core 24/24·Provider 13/13, Isaac 6.0.1 headless Extension smoke PASS. 증거는 [R1-input-draft-integrity.md](../verification/R1-input-draft-integrity.md). 실제 유료 multimodal/visible UI는 미실행.
 - **R2 actual-Isaac 검증 PASS:** 동일 scene ID의 변경 치수 미반영(F4)을 실제 USD에서 재현한 뒤 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only build receipt, authored-content 검사·복구, reload/new-stage/단위·ownership, replacement rollback, stage binding 무효화 및 off_route/unstable Reset latch를 구현했다. R2 전용 acceptance와 기존 lifecycle 3/3, short run 3/3, 2WD+2 passive support, large mesh-floor/6.9m route가 PASS했다. 증거는 [R2-stage-identity-safety.md](../verification/R2-stage-identity-safety.md).
-- **R3 application/contract 검증 PASS:** `twinpulse_app`로 generation/input epoch/project persistence/Build gate를 추출하고, `twinpulse_core.engine_contracts` schema 1.0과 Windows credential/non-secret settings adapter를 고정했다. 일반 Python R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9 및 full actual-Isaac runner가 PASS했다. 증거는 [R3-application-service-contracts.md](../verification/R3-application-service-contracts.md). wheel은 `setuptools` 부재로 NOT RUN.
+- **R3 application/contract 검증 PASS:** `twinpulse_app`로 generation/input epoch/project persistence/Build gate를 추출하고, `twinpulse_core.engine_contracts` schema 1.0과 Windows credential/non-secret settings adapter를 고정했다. 일반 Python R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9 및 full actual-Isaac runner가 PASS했다. 격리된 환경에서 core/provider/app 0.1.0 wheel build와 별도 clean install/`pip check`도 PASS했다. 증거는 [R3-application-service-contracts.md](../verification/R3-application-service-contracts.md).
 - **현재 다음 단계:** R4 loopback API/actual Isaac bridge는 사용자 선택 전 미착수. R3에서 설치·유료 호출·GitHub push·실물 구동 없음.
 
 ### 이전 검토·요청 — 2026-09-15 (이하 이력)
@@ -175,4 +175,5 @@
 - BL-030 / 2026-09-16 / Baseline v1.0.29: R1 입력/sidecar/draft provenance 정합성 복구. 실제 도면 sidecar 정답/오답, revision·receipt·legacy Build gate, Isaac 6.0.1 headless Extension smoke와 통합 9/9·Core 24/24·Provider 13/13 PASS. 실제 유료 multimodal/visible UI는 미실행. 증거 `docs/verification/R1-input-draft-integrity.md`.
 - BL-031 / 2026-09-16 / Baseline v1.0.30: R2 actual stage identity/rollback/runtime safety 복구. 동일 ID 변경 actual USD, idempotence·damage repair·reload/new-stage·ownership·failure rollback·safety latch와 기존 physics/lifecycle 회귀 PASS. 증거 `docs/verification/R2-stage-identity-safety.md`.
 - BL-032 / 2026-09-16 / Baseline v1.0.31: R3 UI 독립 application service/common engine contract 추출. 순수 import와 R3 9/9, full actual-Isaac legacy 회귀 PASS. wheel NOT RUN. 증거 `docs/verification/R3-application-service-contracts.md`.
+- BL-033 / 2026-09-16 / Baseline v1.0.32: 사용자 승인 아래 git-ignored 격리 venv에 packaging 도구를 설치하고 core/provider/app wheel build, 별도 clean offline install, `pip check`, pure import PASS. 시스템/Isaac Python 및 공개 배포 변경 없음.
 - 다음 단계: 사용자 승인이 있으면 R4부터. R3 완료가 후속 단계 실행 승인은 아니다.

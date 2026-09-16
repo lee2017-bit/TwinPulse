@@ -55,7 +55,7 @@
 - The former persisted-plan failure (roll 9.0393 deg at frame 187) was isolated to the large non-uniformly scaled floor cube and is resolved by the mesh-floor compiler. This verifies the tested plan, not arbitrary future generated scenes. Do not use generated scenes for physical deployment.
 - a.biz endpoint protocol/model/vision/schema behavior remains unverified. The current custom-Base-URL path requires modern Responses API compatibility.
 - The Windows credential target contains a value and the later one-attempt M2-D request authenticated successfully. No secret was printed or serialized. The current acceptance blocker is the 27/29 rack-height reading, not authentication.
-- R3 general-Python tests passed 9/9 and the full actual-Isaac runner passed at `artifacts/runs/20260916-152550` (git-ignored). Wheel construction was not run because neither available Python environment contains `setuptools`; package metadata was parsed and dependency declarations were tested instead. This is a packaging-toolchain gap for a later distribution gate, not a wheel PASS.
+- R3 general-Python tests passed 9/9 and the full actual-Isaac runner passed at `artifacts/runs/20260916-152550` (git-ignored). In isolated git-ignored virtual environments, `setuptools 84.0.0`/`wheel 0.48.0` built core/provider/app 0.1.0 wheels; a clean offline install of `twinpulse-app` resolved all three, `pip check` passed, and imports loaded no Kit modules. The system and Isaac Python environments were not modified; publication and company-PC installation remain NOT RUN.
 
 ## Current approval boundary
 

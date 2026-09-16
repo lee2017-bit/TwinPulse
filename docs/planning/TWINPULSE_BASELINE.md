@@ -1,8 +1,8 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.31**
+- 문서 버전: **Baseline v1.0.32**
 - 기준일: **2026-09-16 (KST)**
-- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4~R10 미착수**. R3는 UI 독립 service/공통 계약과 legacy Extension 회귀의 tested local 범위이며 loopback bridge·React UI·wheel 배포를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
+- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4~R10 미착수**. R3는 UI 독립 service/공통 계약, legacy Extension 회귀와 격리된 wheel build/clean install의 tested local 범위이며 loopback bridge·React UI·wheel 공개/회사 PC 설치를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
@@ -337,7 +337,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ### 다음 구현 작업의 시작점
 
-2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance가 완료**됐다. [R3 증거](../verification/R3-application-service-contracts.md)는 일반 Python의 순수 import, generation/persistence/fake-port 9/9, 실제 Isaac legacy Extension 회귀와 전체 runner PASS를 포함한다. wheel 생성은 `setuptools` 부재로 NOT RUN이고, 실제 유료 multimodal 재시험 및 visible React UI 검수도 하지 않았다. 다음 재개점은 사용자에게 선택된 **R4 loopback API/actual Isaac bridge**이며 R5 React와 R6 E2E는 후속이다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
+2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance가 완료**됐다. [R3 증거](../verification/R3-application-service-contracts.md)는 일반 Python의 순수 import, generation/persistence/fake-port 9/9, 실제 Isaac legacy Extension 회귀, 전체 runner, 세 wheel build와 별도 clean install/`pip check` PASS를 포함한다. wheel 공개·회사 PC 설치, 실제 유료 multimodal 재시험 및 visible React UI 검수는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R4 loopback API/actual Isaac bridge**이며 R5 React와 R6 E2E는 후속이다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
 
 ## 11. Blocking risk와 fallback
 
@@ -413,6 +413,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-033 | 2026-09-16 | 1.0.32 | R3 package build/clean-install gap 종료 | 사용자 승인으로 git-ignored 임시 venv에만 setuptools 84.0.0/wheel 0.48.0 설치. core/provider/app 0.1.0 wheel 3개 build PASS, 별도 clean venv에서 app 단독 지정으로 세 패키지 offline 설치·`pip check`·pure import PASS. 시스템/Isaac Python 변경, wheel 공개, 회사 PC 설치 없음 |
 | BL-032 | 2026-09-16 | 1.0.31 | R3 UI 독립 application service와 공통 engine 계약 추출 | `twinpulse_app` service/project/settings/credentials, core command/receipt/snapshot schema 1.0, Extension 호환 연결 및 local auth/TTL ADR 구현. R3 9/9, Core 24/24, Provider 13/13, R1 통합 9/9, 전체 actual-Isaac runner PASS(`20260916-152550`). wheel은 setuptools 부재로 NOT RUN. bridge·React·유료 호출·실물 구동·push 없음 |
 | BL-031 | 2026-09-16 | 1.0.30 | R2 actual stage identity·rollback·runtime safety 복구 | 실제 Isaac에서 fresh compiler+동일 scene ID+변경 치수 F4를 재현 후 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only receipt, authored-content 검사, stage reload/new-stage/ownership, rollback 보존, off_route/unstable Reset latch를 구현. R2 전용 actual acceptance, 기존 lifecycle/2WD/mesh-floor/long-route, 통합 9/9·Core 24/24·Provider 13/13 PASS. 유료 호출·visible UI·R3·push·실물 구동 없음 |
 | BL-030 | 2026-09-16 | 1.0.29 | R1 입력·치수·생성 기록 정합성 복구 | 기준 clone에서 M2-D ground_truth→sidecar 단일화, InputRevision 및 immutable snapshot, generation supersede, v2 receipt/Build·restore 재검증, v1 legacy-unverified/명시 review·rebind 구현. R1 통합 9/9, Core 24/24, Provider 13/13, Isaac 6.0.1 headless Extension smoke PASS. 실제 유료 multimodal/visible UI/R2는 미실행, push·설치·실물 구동 없음 |
