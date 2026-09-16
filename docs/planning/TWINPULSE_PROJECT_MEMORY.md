@@ -1,10 +1,10 @@
 # TwinPulse — 프로젝트 메모리
 
-- 연결된 기준: **Baseline v1.0.29**
+- 연결된 기준: **Baseline v1.0.30**
 - 갱신일: **2026-09-16 (KST)**
 - 상세 기준 문서: [TWINPULSE_BASELINE.md](TWINPULSE_BASELINE.md)
 - 단계별 Sol 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
-- 최신 App 전환/결함 수정 지침: [TWINPULSE_APP_MIGRATION_PLAYBOOK.md](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). **D1/D2·R0 완료, R1 로컬 자동 acceptance PASS; R2~R10 미착수.** 다음 구현 요청은 선택한 Step만 따른다.
+- 최신 App 전환/결함 수정 지침: [TWINPULSE_APP_MIGRATION_PLAYBOOK.md](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). **D1/D2·R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS; R3~R10 미착수.** 다음 구현 요청은 선택한 Step만 따른다.
 - M0-A 결과: [TWINPULSE_M0A_READINESS.md](TWINPULSE_M0A_READINESS.md)
 - M0-B 결과: [TWINPULSE_M0B_RUNTIME_PRECHECK.md](TWINPULSE_M0B_RUNTIME_PRECHECK.md)
 - M1 결과: [TWINPULSE_M1_IMPLEMENTATION.md](TWINPULSE_M1_IMPLEMENTATION.md)
@@ -14,16 +14,17 @@
 - M2-D 치수 도면 결과: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
 - M2 RobotProfile v2 교정: [TWINPULSE_M2_ROBOT_PROFILE_V2.md](TWINPULSE_M2_ROBOT_PROFILE_V2.md)
 - generated-floor 안정성 결과: [TwinPulse repository `docs/verification/M2-generated-floor-stability.md`](../verification/M2-generated-floor-stability.md)
-- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2~R10 미착수**. M2-D 실제 provider의 랙 높이 오류로 27/29, 동일 bundle의 Isaac 주행 PASS는 보존한다. R1은 sidecar 연결·입력/Build/복원 provenance를 로컬 테스트로 복구했으나 실제 유료 multimodal 재시험과 visible UI 시각 검수는 하지 않았다.
+- 현재 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료·R1 로컬 자동 acceptance PASS·R2 actual-Isaac acceptance PASS·R3~R10 미착수**. M2-D 실제 provider의 랙 높이 오류로 27/29, 동일 bundle의 Isaac 주행 PASS는 보존한다. R1은 sidecar 연결·입력/Build/복원 provenance를 복구했고, R2는 실제 stage identity/rollback/Run safety를 복구했다. 실제 유료 multimodal 재시험과 visible UI 시각 검수는 하지 않았다.
 - 성격: 프로젝트 파일 기반의 지속 기록. 계정 전체 내장 메모리 저장을 의미하지 않음.
 
-### 최신 결정·R0/R1 실행 — 2026-09-16 (아래 과거 상태 설명보다 우선)
+### 최신 결정·R0/R1/R2 실행 — 2026-09-16 (아래 과거 상태 설명보다 우선)
 
 - **D1 확정:** 첫 제품 UI는 로컬 React 웹 App, 3D/물리는 별도 Isaac 창. legacy Extension UI는 대체 검증 전 보존.
 - **D2 확정:** `C:\Users\jaewo\Documents\TwinPulse` 기존 GitHub 연결 clone이 단일 기준 개발 root. 새 폴더 불필요. `C:\Users\jaewo\Documents\Codex\TwinPulse`는 삭제·이동하지 않은 보존 개발본.
 - **R0 완료:** clone의 clean M2-C `c35e9fc`에 M2-D 신규 6·수정 11 소스 파일을 정확한 원본 해시로 이관; clone 전용 제품 사양서 보존. 기준 root에서 Core 24/24, Provider 13/13 PASS. 이관은 M2-D 29/29 또는 새 UI/Isaac runtime 검증이 아니다. 증거/rollback은 기준 저장소 `docs/planning/TWINPULSE_R0_HANDOFF.md`.
 - **R1 로컬 검증 PASS:** 입력 bytes/prompt/측정/profile/settings revision, 변경 시 generation supersede와 stale Build gate, v2 receipt의 저장·복원·Build 재검증, v1 legacy-unverified 및 별도 이전 draft 검토/rebind를 구현. 실제 generator sidecar의 정답 PASS/높이·좌표 오답 FAIL, 통합 9/9·Core 24/24·Provider 13/13, Isaac 6.0.1 headless Extension smoke PASS. 증거는 [R1-input-draft-integrity.md](../verification/R1-input-draft-integrity.md). 실제 유료 multimodal/visible UI는 미실행.
-- **현재 다음 단계:** R2 실제 stage identity/Run 안전 계약은 사용자 선택 전 미착수. R1에서 설치·유료 호출·GitHub push·실물 구동 없음.
+- **R2 actual-Isaac 검증 PASS:** 동일 scene ID의 변경 치수 미반영(F4)을 실제 USD에서 재현한 뒤 canonical bundle/compiler/catalog/resolved-profile fingerprint, success-only build receipt, authored-content 검사·복구, reload/new-stage/단위·ownership, replacement rollback, stage binding 무효화 및 off_route/unstable Reset latch를 구현했다. R2 전용 acceptance와 기존 lifecycle 3/3, short run 3/3, 2WD+2 passive support, large mesh-floor/6.9m route가 PASS했다. 증거는 [R2-stage-identity-safety.md](../verification/R2-stage-identity-safety.md).
+- **현재 다음 단계:** R3 application service/공통 계약 추출은 사용자 선택 전 미착수. R2에서 설치·유료 호출·GitHub push·실물 구동 없음.
 
 ### 이전 검토·요청 — 2026-09-15 (이하 이력)
 
@@ -123,7 +124,7 @@
 | M6 | 독립 RL/최적화와 검증된 parameter artifact | 미착수 |
 | M7 | 실물 scan·보정·Deploy | 미착수 |
 
-현재 재개점은 R1 로컬 acceptance 뒤의 **R2**이며 사용자 선택 전 실행하지 않는다. 과거 도면 유료 재시험부터 자동 재개하지 않는다. R1은 입력/검증/빌드/복원 결함을 로컬 경계에서 닫았고, 다음에는 실제 stage identity와 Run 안전을 검증한 후 외부 UI를 단계적으로 연결한다. Full viewport/UI screenshot evidence는 새 R6에서 실제 검증해야 한다.
+현재 재개점은 R2 actual-Isaac acceptance 뒤의 **R3**이며 사용자 선택 전 실행하지 않는다. 과거 도면 유료 재시험부터 자동 재개하지 않는다. R1은 입력/검증/빌드/복원 결함을, R2는 stage identity/rollback/Run 안전 결함을 닫았다. 다음에는 application service와 공통 계약을 추출한 후 외부 UI를 단계적으로 연결한다. Full viewport/UI screenshot evidence는 R6에서 실제 검증해야 한다.
 
 ## 승인과 기록 규칙
 
@@ -171,4 +172,5 @@
 - BL-028 / 2026-09-15 / Baseline v1.0.27: 전체 검토 결함과 외부 App 전환 요구를 R0~R10 지침으로 정리했다. Phase 1은 R0~R6, 당시 D1/D2 확인 대기. 문서 작업만 수행했으며 제품 코드/기동/설치/유료 호출/push 없음.
 - BL-029 / 2026-09-15 / Baseline v1.0.28: D1/D2 결정과 R0 선택적 소스 이관/문서 기준 통일. Core 24/24·Provider 13/13 PASS, 원본 보존. 새 UI/API/물리 수정/유료 호출/Isaac 기동/push 없음.
 - BL-030 / 2026-09-16 / Baseline v1.0.29: R1 입력/sidecar/draft provenance 정합성 복구. 실제 도면 sidecar 정답/오답, revision·receipt·legacy Build gate, Isaac 6.0.1 headless Extension smoke와 통합 9/9·Core 24/24·Provider 13/13 PASS. 실제 유료 multimodal/visible UI는 미실행. 증거 `docs/verification/R1-input-draft-integrity.md`.
-- 다음 단계: 사용자 승인이 있으면 R2부터. stage identity/Run safety를 UI 전환보다 선행한다. R1 완료가 후속 단계 실행 승인은 아니다.
+- BL-031 / 2026-09-16 / Baseline v1.0.30: R2 actual stage identity/rollback/runtime safety 복구. 동일 ID 변경 actual USD, idempotence·damage repair·reload/new-stage·ownership·failure rollback·safety latch와 기존 physics/lifecycle 회귀 PASS. 증거 `docs/verification/R2-stage-identity-safety.md`.
+- 다음 단계: 사용자 승인이 있으면 R3부터. R2 완료가 후속 단계 실행 승인은 아니다.

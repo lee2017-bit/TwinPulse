@@ -264,6 +264,7 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
             "twinpulseSceneId"
         )
         before_failed_replace_count = extension.runtime.compiler.owned_prim_count()
+        before_failed_replace_receipt = extension.runtime.compiler.build_receipt
         original_create_scene_object = extension.runtime.compiler._create_scene_object
 
         def fail_scene_object(_item: object) -> None:
@@ -274,7 +275,7 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
         try:
             extension.runtime.build_scene(generated)
         except RuntimeError as error:
-            failed_replace_raised = str(error) == "intentional replacement failure"
+            failed_replace_raised = "previous geometry and identity restored" in str(error)
         finally:
             extension.runtime.compiler._create_scene_object = original_create_scene_object
         after_failed_replace_id = stage.GetPrimAtPath("/World/TwinPulse").GetCustomDataByKey(
@@ -284,6 +285,7 @@ def exercise_enabled_extension(manager: object, lifecycle_cycle: int) -> tuple[b
             failed_replace_raised
             and before_failed_replace_id == after_failed_replace_id
             and before_failed_replace_count == extension.runtime.compiler.owned_prim_count()
+            and before_failed_replace_receipt == extension.runtime.compiler.build_receipt
             and extension.runtime.compiler.bundle == fixed
         )
 

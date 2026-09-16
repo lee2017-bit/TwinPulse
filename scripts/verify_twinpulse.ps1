@@ -14,6 +14,8 @@ Push-Location $repoRoot
 try {
     Start-Transcript -Path (Join-Path $artifactDir "verification-console.txt") -Force | Out-Null
     $transcriptStarted = $true
+    $isaacPython = Join-Path $IsaacRoot "python.bat"
+    $r1TestPython = if (Test-Path -LiteralPath $isaacPython) { $isaacPython } else { "python" }
     python -m compileall -q packages extensions\twinpulse.extension\twinpulse scripts
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 
@@ -23,21 +25,35 @@ try {
     python packages\twinpulse_provider\tests\test_provider.py
     if ($LASTEXITCODE -ne 0) { throw "provider tests failed" }
 
+    & $r1TestPython -B -m unittest discover -s tests\integration -p test_r1_workflow.py
+    if ($LASTEXITCODE -ne 0) { throw "R1 integration tests failed" }
+
     if (-not $SkipIsaac) {
-        $isaacPython = Join-Path $IsaacRoot "python.bat"
         if (-not (Test-Path -LiteralPath $isaacPython)) {
             throw "Isaac Sim Python launcher not found: $isaacPython"
         }
         $env:TWINPULSE_ARTIFACT_DIR = $artifactDir
-        & $isaacPython scripts\verify_m1_extension.py
-        if ($LASTEXITCODE -ne 0) { throw "Isaac acceptance failed" }
+        $m1Output = & $isaacPython -B scripts\verify_m1_extension.py 2>&1
+        $m1ExitCode = $LASTEXITCODE
+        $m1Output | ForEach-Object { Write-Output $_ }
+        $m1Pass = $m1Output | Select-String -SimpleMatch '"status": "PASS"'
+        if ($m1ExitCode -ne 0 -or -not $m1Pass) { throw "Isaac M1/M2 acceptance failed" }
+
+        $r2Output = & $isaacPython -B scripts\verify_r2_stage_identity.py 2>&1
+        $r2ExitCode = $LASTEXITCODE
+        $r2Output | ForEach-Object { Write-Output $_ }
+        $r2Error = $r2Output | Select-String -SimpleMatch 'R2 ERROR:'
+        $r2Pass = $r2Output | Select-String -SimpleMatch 'R2 SAFETY PASS:'
+        if ($r2ExitCode -ne 0 -or $r2Error -or -not $r2Pass) {
+            throw "Isaac R2 stage identity/safety acceptance failed"
+        }
     }
 
     $manifest = [ordered]@{
         status = "PASS"
         run_id = $runId
         created_at = (Get-Date).ToString("o")
-        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS" }
+        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2" }
         artifact_dir = $artifactDir
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDir "manifest.json") -Encoding UTF8

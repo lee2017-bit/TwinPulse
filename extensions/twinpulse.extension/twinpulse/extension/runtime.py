@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable
 import isaacsim.core.experimental.utils.app as app_utils
 import omni.physics.core
 import omni.timeline
+import omni.usd
 from isaacsim.core.simulation_manager import SimulationManager
 from isaacsim.robot.experimental.wheeled_robots.controllers import DifferentialController
 from isaacsim.robot.experimental.wheeled_robots.robots import WheeledRobot
@@ -33,6 +34,11 @@ class TwinPulseRuntime:
         self._physics_steps = 0
         self._robot = None
         self._controller = None
+        self._safety_latch: str | None = None
+        self._bound_stage_identifier: tuple[int, str] | None = None
+        self._stage_subscription = omni.usd.get_context().get_stage_event_stream().create_subscription_to_pop(
+            self._on_stage_event, name="TwinPulse stage lifecycle"
+        )
 
     @property
     def state(self) -> str:
@@ -44,11 +50,16 @@ class TwinPulseRuntime:
 
     @property
     def shutdown_complete(self) -> bool:
-        return self._shutdown and self._physics_subscription is None
+        return (self._shutdown and self._physics_subscription is None
+                and self._stage_subscription is None)
 
     @property
     def physics_steps(self) -> int:
         return self._physics_steps
+
+    @property
+    def safety_latch(self) -> str | None:
+        return self._safety_latch
 
     def robot_position(self) -> tuple[float, float, float]:
         """Return the live physics pose, falling back to authored USD before initialization."""
@@ -86,22 +97,27 @@ class TwinPulseRuntime:
         if bundle is None:
             raise RuntimeError("A validated generated draft is required before Build")
         target = bundle
-        if self.compiler.bundle == target:
-            count = self.compiler.ensure_presentation()
-            self.focus_scene()
-            self._status(f"Ready - {count} TwinPulse prims")
-            return count
         self._stop_control()
         if self._timeline.is_playing():
             app_utils.stop()
         previous = self.compiler.bundle
-        count = self.compiler.compile(target) if previous is None else self.compiler.replace(target)
+        previous_state = self._state
+        try:
+            count = self.compiler.compile(target)
+        except Exception:
+            self._state = "ready" if previous is not None else previous_state
+            if previous is not None:
+                self._status("Build failed; previous scene restored and remains stopped")
+            raise
         self._configure_robot(target)
         SimulationManager.setup_simulation(dt=1.0 / 60.0, device="cpu")
         physics_scenes = SimulationManager.get_physics_scenes()
         if physics_scenes:
             physics_scenes[0].set_enabled_gpu_dynamics(False)
         self._state = "ready"
+        self._safety_latch = None
+        stage = omni.usd.get_context().get_stage()
+        self._bound_stage_identifier = self._stage_key(stage) if stage is not None else None
         self._physics_steps = 0
         self.focus_scene()
         self._status(f"Ready - {count} TwinPulse prims")
@@ -141,6 +157,9 @@ class TwinPulseRuntime:
     def run(self) -> None:
         if self.compiler.bundle is None:
             raise RuntimeError("Build a validated generated scene before Run")
+        if self._safety_latch is not None:
+            raise RuntimeError(f"Safety latch '{self._safety_latch}' is active; Reset is required before Run")
+        self._assert_current_stage()
         if self._physics_subscription is None:
             self._physics_subscription = self._physics_interface.subscribe_physics_on_step_events(
                 pre_step=True,
@@ -156,10 +175,11 @@ class TwinPulseRuntime:
 
     def pause(self) -> None:
         if self.compiler.bundle is not None:
+            self._assert_current_stage()
             self.compiler.set_drive_velocity(0.0, 0.0)
         app_utils.pause()
         self._state = "paused"
-        self._status("Paused")
+        self._status("Paused - Reset required before Run" if self._safety_latch else "Paused")
 
     def reset(self) -> int:
         if self.compiler.bundle is None:
@@ -167,7 +187,9 @@ class TwinPulseRuntime:
             return 0
         self._stop_control()
         app_utils.stop()
+        self._assert_current_stage()
         self._physics_steps = 0
+        self._safety_latch = None
         self._state = "ready"
         count = self.compiler.owned_prim_count()
         self._status("Reset complete")
@@ -179,15 +201,55 @@ class TwinPulseRuntime:
             app_utils.stop()
         self._state = "shutdown"
         self._shutdown = True
+        self._bound_stage_identifier = None
+        self.compiler.invalidate_stage()
+        self._robot = None
+        self._controller = None
+        self._stage_subscription = None
         self._status_callback = None
 
     def _stop_control(self) -> None:
-        if self.compiler.bundle is not None:
+        self._physics_subscription = None
+        active_stage = omni.usd.get_context().get_stage()
+        if (self.compiler.bundle is not None and active_stage is not None
+                and self.compiler.stage is active_stage):
             try:
                 self.compiler.set_drive_velocity(0.0, 0.0)
-            except RuntimeError:
+            except Exception:
+                # A stage-close event can invalidate the USD handle between the
+                # identity check and the stop command.  Dropping the subscription
+                # remains the fail-safe action; no stale stage may be written.
                 pass
-        self._physics_subscription = None
+
+    def _assert_current_stage(self) -> None:
+        stage = omni.usd.get_context().get_stage()
+        bundle = self.compiler.bundle
+        if (stage is None or bundle is None or self._bound_stage_identifier != self._stage_key(stage)
+                or not self.compiler.matches_stage(bundle, stage=stage)):
+            self._invalidate_stage_binding("Stage changed or authored TwinPulse content no longer matches the build")
+            raise RuntimeError("Current Isaac stage does not match the validated TwinPulse build; Build again")
+
+    def _invalidate_stage_binding(self, reason: str) -> None:
+        self._stop_control()
+        if self._timeline.is_playing():
+            app_utils.stop()
+        self.compiler.invalidate_stage()
+        self._robot = None
+        self._controller = None
+        self._bound_stage_identifier = None
+        self._state = "stage_invalid"
+        self._status(reason)
+
+    def _on_stage_event(self, event: object) -> None:
+        if self._shutdown or self._bound_stage_identifier is None:
+            return
+        stage = omni.usd.get_context().get_stage()
+        if stage is None or self._stage_key(stage) != self._bound_stage_identifier:
+            self._invalidate_stage_binding("Isaac stage changed; TwinPulse commands invalidated")
+
+    @staticmethod
+    def _stage_key(stage: object) -> tuple[int, str]:
+        return id(stage), stage.GetRootLayer().identifier
 
     def _on_physics_step(self, step: float, context: object) -> None:
         del step, context
@@ -212,6 +274,7 @@ class TwinPulseRuntime:
         if abs(roll_rad) > maximum_tilt_rad or abs(pitch_rad) > maximum_tilt_rad:
             self._robot.apply_wheel_actions(self._controller.forward([0.0, 0.0]))
             self.compiler.set_drive_velocity(0.0, 0.0)
+            self._safety_latch = "unstable"
             self._state = "unstable"
             self._status(
                 f"Safety stop - unstable attitude roll {math.degrees(roll_rad):.1f} deg, "
@@ -237,6 +300,7 @@ class TwinPulseRuntime:
         elif command.off_route:
             self._robot.apply_wheel_actions(self._controller.forward([0.0, 0.0]))
             self.compiler.set_drive_velocity(0.0, 0.0)
+            self._safety_latch = "off_route"
             self._state = "off_route"
             self._status(
                 f"Safety stop - aisle deviation {command.cross_track_error_m:.3f} m; Reset required"

@@ -1,7 +1,7 @@
 # TwinPulse progress
 
-- Updated: 2026-09-15 KST
-- App migration R0: PASS for source handoff only. D1 is local React web App + separate Isaac 3D window; D2 is this existing GitHub-connected clone as the sole development root. M2-D 6 new and 11 changed source files were hash-matched from the preserved development copy. Core 24/24 and Provider 13/13 passed in this clone. R1-R10, UI/backend, fresh Isaac workflow, and GitHub publication remain NOT RUN. See `docs/planning/TWINPULSE_R0_HANDOFF.md`.
+- Updated: 2026-09-16 KST
+- App migration R0/R1/R2: **PASS for the tested local scope.** D1 is local React web App + separate Isaac 3D window; D2 is this GitHub-connected clone as the sole development root. R1 fixed input/measurement/draft/receipt integrity. R2 reproduced the same-scene-ID stale-build defect in actual Isaac, then passed fingerprint/receipt, authored-content repair, reload/new-stage, rollback/ownership and Reset-required safety-latch acceptance. R3-R10 and the UI/backend remain NOT RUN. See `docs/planning/TWINPULSE_R0_HANDOFF.md`, `docs/verification/R1-input-draft-integrity.md` and `docs/verification/R2-stage-identity-safety.md`.
 - M0-A: PASS
 - M0-B: limited PASS
 - M1-A: PASS
@@ -13,7 +13,7 @@
 - M2 robot-dynamics repair: PASS in local headless Isaac. `agv_compact_2wd_caster_v2` separates two driven wheels from two passive supports, adds fixed center-of-mass/inertia and an attitude safety stop, and records automated episode evidence. Core 23/23, provider 8/8, lifecycle 3/3, short run/reset 3/3, generated/fallback/rollback, and 6.9 m route passed. Long-route maximum pitch 0.0306 deg, roll 0.0433 deg, cross-track error 0.000825 m, goal error 0.049306 m, geometric collision samples 0.
 - Generated-layout floor repair: PASS. The persisted real-image plan exposed a PhysX contact defect caused by compiling a large, thin floor as a non-uniformly scaled cube. Floors are now authored as actual-size closed meshes with identity scale. The same 8 m route completed in 1,889 frames with maximum roll 0.0862 deg, pitch 0.0738 deg, and final goal error 0.2465 m (within the 0.25 m task tolerance).
 - Distribution checkpoint: the post-repair full local verification passed on 2026-09-13 (`artifacts/runs/20260913-234455`, intentionally git-ignored) and the repair was published as GitHub main commit `1c5ed27`. Its 18 x 12 m floor regression confirmed Mesh geometry with no scale operation; the 6.9 m route completed with maximum roll 0.0762 deg, pitch 0.0668 deg, cross-track error 0.00435 m, goal error 0.04929 m, and zero geometric collision samples.
-- Next: only when the user approves it, execute migration R1 input/measurement/draft/build/restore consistency repair, then R2 stage identity and safety. Do not claim sidecar or end-to-end accuracy from the R0 unit tests. A fresh paid drawing evaluation and the old M3 plan are deferred until these gates are addressed. General navigation and obstacle avoidance remain future work.
+- Next: only when the user approves it, execute R3 application-service/common-contract extraction. Do not start the web UI or bridge ahead of that contract. A fresh paid drawing evaluation remains deferred to R9; general navigation and obstacle avoidance remain future work.
 
 ## Implemented
 
@@ -38,6 +38,8 @@
 - The M2-C manifest plus fetch/provider/Isaac runners reproduce the three-image gate without requiring manual screenshot relay. The API key remains in Windows Credential Manager and paid retries are disabled.
 - The generalized manifest runners also accept PNG and any non-empty fixture count. `create_m2d_floorplan_fixture.py`, `evaluate_m2d_floorplan_result.py`, and the explicitly non-provider reference report isolate diagram-reading accuracy from deterministic 3D compiler/physics behavior.
 - Dimensioned inputs use high-detail image inference and optional trusted `<stem>.measurements.json` constraints. The Extension labels unconstrained images as exact-dimensions-unverified; constrained mismatches stop before the tool registry and Isaac Build.
+- Applied USD now carries explicit TwinPulse ownership, canonical build fingerprint, compiler/catalog versions and an authored-static-content digest. A matching receipt is published only after the actual stage validates.
+- Runtime commands are invalidated on stage change. Off-route/unstable states remain latched through Pause and require a successful Reset before Run.
 
 ## Current constraints
 
@@ -55,6 +57,6 @@
 
 ## Current approval boundary
 
-- Repository changes are allowed under `C:\Users\jaewo\Documents\Codex\TwinPulse` for the requested Extension implementation.
+- The canonical repository is `C:\Users\jaewo\Documents\TwinPulse`; the older `C:\Users\jaewo\Documents\Codex\TwinPulse` copy is preserved history and is not the development root.
 - TwinPulse runtime scratch/install work is allowed under existing `C:\isaacsim`.
 - System files, drivers, WSL, Docker, firewall, ROS2/Lab installation, external paid API/VM use, publication, and physical AGV control remain separate approval gates.

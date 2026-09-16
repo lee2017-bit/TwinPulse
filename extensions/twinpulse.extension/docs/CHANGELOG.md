@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0 R2 stage identity and runtime safety
+
+- Replace scene-ID-only reuse with a canonical build fingerprint, authored-content validation and a success-only build receipt.
+- Repair changed/corrupt owned content, preserve external prims, and restore geometry, identity, bundle and receipt after replacement failure.
+- Reject incompatible user stages without changing their up-axis, units or foreign `/World/TwinPulse` content.
+- Bind runtime commands to the active matching stage and add Reset-required off-route/unstable safety latches.
+- Add actual-Isaac coverage for same-ID changes, idempotence, reload/new-stage handling, rollback, ownership and safety-stop bypass.
+
 ## 0.1.0 M2-D measurement guard hardening
 
 - Select high image detail automatically for dimensioned plans and technical-drawing cues while retaining low detail for ordinary photos.
