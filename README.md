@@ -14,7 +14,7 @@ For an explicit Isaac location or install without launching:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_twinpulse.ps1 -IsaacRoot "D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64"
 ```
 
-Add `-Launch` to start the App after installation. See [company-PC instructions](docs/COMPANY_PC_INSTALL.md) for verification, secret setup, and limitations. One-click installation passed on the development PC; a fresh clone and company PC are not yet verified.
+Add `-Launch` to start the App after installation. See [company-PC instructions](docs/COMPANY_PC_INSTALL.md) for verification, secret setup, and limitations. The install/build and non-Isaac tests passed both in the development checkout and a clean local clone; actual Isaac startup from that clone and the company PC remain unverified.
 
 ## Current scope
 

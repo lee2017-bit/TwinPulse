@@ -1,8 +1,8 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.50**
+- 문서 버전: **Baseline v1.0.51**
 - 기준일: **2026-09-25 (KST)**
-- 상태: **과거 M0~M2-C 및 R0~R5의 tested-scope PASS 보존; M2-D PARTIAL; R6 PARTIAL; 개선 계획 S0~S3b PASS, S3c product wiring 및 local live→Isaac Build/Run gate PASS; R7~R10 미착수.** 실제 사진 1장의 Nebius draft→Isaac 90-prim Build/2WD 완주는 확인했다. 이후 겹친 랙 row를 local gate에서 거부하는 guard를 추가했으나 같은 live 입력의 재생성·시각 충실도 검수는 하지 않았다. 개발 PC 원클릭 의존성 설치/웹 빌드는 PASS; fresh-clone/회사 PC 재현은 미검증이다.
+- 상태: **과거 M0~M2-C 및 R0~R5의 tested-scope PASS 보존; M2-D PARTIAL; R6 PARTIAL; 개선 계획 S0~S3b PASS, S3c product wiring 및 local live→Isaac Build/Run gate PASS; R7~R10 미착수.** 실제 사진 1장의 Nebius draft→Isaac 90-prim Build/2WD 완주는 확인했다. 이후 겹친 랙 row를 local gate에서 거부하는 guard를 추가했으나 같은 live 입력의 재생성·시각 충실도 검수는 하지 않았다. 개발 PC와 깨끗한 로컬 clone의 원클릭 의존성 설치/웹 빌드 및 비-Isaac 회귀 PASS; 회사 PC/clean-clone actual Isaac은 미검증이다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
@@ -366,7 +366,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 새 웹 App의 `ProductWorkflow`는 이제 presentation/ack adapter이고 generation 상태는 `ApplicationService`가 단독 소유한다. production launcher는 `live_provider`, 테스트는 명시적 `--fixture-mode`이며 live 오류를 sample 장면으로 대체하지 않는다. Windows Credential Manager 영속화는 존재하지만 provider origin/profile과 credential reference의 결합, 실제 재부팅·새 App live 호출·다른 provider 전환 검증을 동일한 PASS로 묶지 않는다.
 
-S3c local finite live→Isaac Build/Run gate는 2026-09-25 통과했다. 겹친 rack-row footprint를 사전 거부하는 guard와 원클릭 설치기를 추가했고 비-Isaac 회귀는 통과했다. 다음 작업은 **사진 대비 시각 충실도와 geometry/axis validation 강화**, fresh-clone/회사 PC 재현이다. 사용자에게 선택받은 하위 단계만 실행한다. B0 실물 inventory 이전에 OS/ROS 설치 또는 motor 명령을 시작하지 않는다.
+S3c local finite live→Isaac Build/Run gate는 2026-09-25 통과했다. 겹친 rack-row footprint를 사전 거부하는 guard와 원클릭 설치기를 추가했고 비-Isaac 회귀는 개발 checkout과 깨끗한 로컬 clone에서 통과했다. 다음 작업은 **사진 대비 시각 충실도와 geometry/axis validation 강화**, 회사 PC/clean-clone actual Isaac 재현이다. 사용자에게 선택받은 하위 단계만 실행한다. B0 실물 inventory 이전에 OS/ROS 설치 또는 motor 명령을 시작하지 않는다.
 
 ## 11. Blocking risk와 fallback
 
@@ -442,6 +442,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-052 | 2026-09-25 | 1.0.51 | Clean local clone installer verification | 로컬 커밋 `213ff45`를 격리 새 폴더에 clone하여 venv/node_modules/dist 없는 상태에서 원클릭 설치기 의존성 설치/React build PASS, 공식 비-Isaac `20260925-165310` PASS. 회사 PC/clean-clone actual Isaac/사진 충실도는 미검증. 원격 push는 이 기록 시점 미실행 |
 | BL-051 | 2026-09-25 | 1.0.50 | Release audit와 원클릭 설치 | 겹친 rack-row physical footprint를 `SceneToolRegistry`에서 Build 전에 거부하고 edge-touch 허용 회귀 2개를 추가. `Install-TwinPulse.cmd` 및 격리 venv/hash-locked Python/frozen pnpm install+build launcher, 문서와 `artifacts/` ignore를 추가. 개발 PC 설치 PASS, official SkipIsaac Core 30/Provider 27/R1 9/R3 9/R4 6/R5+S2 34/R6 11/React 10+build PASS. fresh clone/회사 PC와 변경 후 actual Isaac 회귀, photo fidelity는 별도 미검증. commit/push는 이 기록 시점 아직 미실행 |
 | BL-050 | 2026-09-25 | 1.0.49 | S3c local live→Isaac Build/Run | LLM이 반환한 AGV 시작/목표 z를 local resolver에서 바닥 0m로 투영하는 교정 후 targeted Core+Provider 42/42 PASS. 동일 사진/프롬프트의 Gemma→Nemotron 2단계 실응답을 7 tools/35 objects draft `f658ca7d…c0dc`로 검증. 사용자가 개략성을 확인한 revision을 실제 Isaac stage에 적용해 90 prim/revision matched/build succeeded를 확인했고 2WD 주행은 completed, goal 약 0.0013m, cross-track 약 0.00002m. 랙 배열의 사진 대비 시각 충실도와 viewport capture, fresh clone/회사 PC는 미검증. 실물·commit/push 없음 |
 | BL-049 | 2026-09-25 | 1.0.48 | S3c finite live PARTIAL 및 local safety route ownership | 승인된 동일 이미지·프롬프트의 최대 2-request/retry-0 live 시도에서 Gemma observer와 Nemotron planner 응답은 완료됐으나 후보 경로가 `rack_row_left_shelf_1`과 겹쳐 local validation이 거부. 추가 API 호출 없이 geometry는 LLM, 2WD straight-route 좌표는 local AABB resolver가 확정하도록 수정하고 최종 persisted plan/provenance에 반영. Core+Provider 53/53, S3c 4/4, compileall PASS 및 새 launcher backend ready 확인. live 재검증·Isaac Build/Run·commit/push는 미실행 |

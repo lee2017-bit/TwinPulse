@@ -1,6 +1,6 @@
 # TwinPulse — 프로젝트 메모리
 
-- 연결된 기준: **Baseline v1.0.50**
+- 연결된 기준: **Baseline v1.0.51**
 - 갱신일: **2026-09-25 (KST)**
 - 상세 기준 문서: [TWINPULSE_BASELINE.md](TWINPULSE_BASELINE.md)
 - 단계별 Sol 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
@@ -14,11 +14,12 @@
 - M2-D 치수 도면 결과: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
 - M2 RobotProfile v2 교정: [TWINPULSE_M2_ROBOT_PROFILE_V2.md](TWINPULSE_M2_ROBOT_PROFILE_V2.md)
 - generated-floor 안정성 결과: [TwinPulse repository `docs/verification/M2-generated-floor-stability.md`](../verification/M2-generated-floor-stability.md)
-- 현재 상태: **과거 M0~M2-C 및 R0~R5의 제한된 PASS 기록 보존; M2-D PARTIAL; R6 PARTIAL; S0~S3b PASS, S3c product wiring 및 local live→Isaac Build/Run gate PASS; R7~R10 미착수.** 동일 사진의 Nebius→Isaac 90-prim Build/2WD goal 도착 뒤 겹친 랙 row를 사전 거부하는 guard를 추가했다. 개발 PC 원클릭 설치 PASS; 사진 충실도, fresh clone/회사 PC 재현은 별도 미검증이다.
+- 현재 상태: **과거 M0~M2-C 및 R0~R5의 제한된 PASS 기록 보존; M2-D PARTIAL; R6 PARTIAL; S0~S3b PASS, S3c product wiring 및 local live→Isaac Build/Run gate PASS; R7~R10 미착수.** 동일 사진의 Nebius→Isaac 90-prim Build/2WD goal 도착 뒤 겹친 랙 row를 사전 거부하는 guard를 추가했다. 개발 checkout과 깨끗한 로컬 clone에서 원클릭 설치/비-Isaac 회귀 PASS. 사진 충실도, 회사 PC 및 clean-clone actual Isaac은 미검증이다.
 - 성격: 프로젝트 파일 기반의 지속 기록. 계정 전체 내장 메모리 저장을 의미하지 않음.
 
 ### 최신 실행 — 2026-09-25 (이하 2026-09-24의 다음 단계 표현보다 우선)
 
+- 로컬 커밋 `213ff45`를 `artifacts/fresh-clone-213ff45`에 깨끗하게 clone해 `.venv`, node_modules, dist 없이 시작했다. 원클릭 설치기가 새 `.venv`, Pillow 12.3.0, pnpm 101 package 및 React build를 마치고 `TWINPULSE_INSTALL_RESULT=PASS`를 출력했다. 그 clone의 공식 `-SkipIsaac` 실행 `20260925-165310`도 PASS. 회사 PC/해당 clone의 실제 Isaac 기동은 아직 하지 않았다.
 - 배포 전 결함 점검에서 두 rack row의 물리 footprint 겹침을 확인했다. 이후 `SceneToolRegistry`가 이러한 plan을 Isaac Build 전에 거부하도록 수정했고, 겹침 거부/edge-touch 허용 Core 테스트 2개를 추가했다. 저장된 과거 draft의 사진 충실도가 개선된 것은 아니다.
 - `Install-TwinPulse.cmd`는 clone 후 더블클릭하여 Isaac root 검증, repository-local Python 3.12 venv, Pillow hash lock, frozen pnpm lock, React build, 선택적 App/Isaac launch를 실행한다. 개발 PC 설치 단계 PASS, official `-SkipIsaac` Core 30/Provider 27/R1 9/R3 9/R4 6/R5+S2 34/R6 11/React 10+build PASS. artifact 전체는 Git ignore. 회사 PC·fresh clone·변경 후 actual Isaac 회귀는 미실행으로 유지한다.
 - 후속 finite live 시도에서 LLM의 AGV 시작 z가 바닥이 아닌 값으로 반환되어 local gate가 거부했다. local route resolver가 시작점과 목표점의 z를 0으로 투영한 뒤 기존 XY collision gate를 적용하도록 교정했고, Core+Provider targeted 42/42 PASS. 경로 의미/사진 관찰값의 다른 좌표를 자동 보정한 것은 아니다.

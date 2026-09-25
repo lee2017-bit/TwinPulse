@@ -46,7 +46,7 @@ clone 후 탐색기에서 저장소의 **`Install-TwinPulse.cmd`를 더블클릭
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_twinpulse.ps1 -IsaacRoot "D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64"
 ```
 
-마지막에 `TWINPULSE_INSTALL_RESULT=PASS`가 나와야 한다. 실행까지 하려면 `-Launch`를 덧붙인다. 설치기는 재실행 가능하며 기존 `.venv`를 무조건 지우지 않는다. 로컬에서 설치 단계를 통과했으나 회사 PC/fresh clone에서 아직 직접 검증하지 않았다.
+마지막에 `TWINPULSE_INSTALL_RESULT=PASS`가 나와야 한다. 실행까지 하려면 `-Launch`를 덧붙인다. 설치기는 재실행 가능하며 기존 `.venv`를 무조건 지우지 않는다. 개발 PC의 깨끗한 로컬 clone에서 설치/빌드와 비-Isaac 회귀를 통과했다. 그 clone의 실제 Isaac 기동과 회사 PC는 아직 직접 검증하지 않았다.
 
 수동 설치가 필요하면 repository-local virtual environment에 Python 이미지 decoder를 설치한다. 이 명령은 고정된 Pillow wheel hash가 맞지 않으면 실패하며 시스템/Isaac Python을 수정하지 않는다.
 
