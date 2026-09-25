@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+import math
 from pathlib import Path
 import secrets
 from threading import RLock, Thread
@@ -17,7 +18,14 @@ from urllib.parse import urlsplit
 from twinpulse_core import CommandReceipt, SimulationSnapshot
 
 from .command_broker import BrokerError, CommandBroker
-from .product_workflow import ProductWorkflow
+from .credentials import CredentialStore
+from .product_workflow_service import ProductWorkflow
+from .settings import (
+    DEFAULT_PROVIDER_PROFILE,
+    JsonProviderSettingsStore,
+    ProviderSettings,
+    provider_settings_preset,
+)
 
 
 MAX_JSON_BYTES = 256 * 1024
@@ -30,7 +38,8 @@ class _Session:
     session_id: str
     role: str
     csrf: str | None
-    expires_at: float
+    idle_expires_at: float
+    absolute_expires_at: float
     engine_session_id: str | None = None
     stage_epoch: str | None = None
 
@@ -47,25 +56,44 @@ class LocalApiServer:
         host: str = "127.0.0.1",
         port: int = 0,
         bootstrap_ttl_s: float = 30.0,
-        session_ttl_s: float = 1800.0,
+        session_idle_ttl_s: float = 1800.0,
+        session_absolute_ttl_s: float = 28800.0,
         product_workflow: ProductWorkflow | None = None,
         static_root: Path | None = None,
+        supervisor_status_file: Path | None = None,
+        provider_settings_store: JsonProviderSettingsStore | None = None,
+        credential_store: CredentialStore | None = None,
         clock=time.monotonic,
     ) -> None:
         if host != "127.0.0.1":
             raise ValueError("TwinPulse local API may bind only to 127.0.0.1")
         if len(product_bootstrap_secret) < 32 or len(engine_bootstrap_secret) < 32:
             raise ValueError("Bootstrap secrets must contain at least 256 bits of material")
+        if bootstrap_ttl_s <= 0 or session_idle_ttl_s <= 0 or session_absolute_ttl_s <= 0:
+            raise ValueError("Authentication lifetimes must be positive")
         self.broker = broker
         self.product_workflow = product_workflow
         self._static_root = static_root.resolve() if static_root is not None else None
+        self._supervisor_status_file = (
+            supervisor_status_file.resolve() if supervisor_status_file is not None else None
+        )
+        self._provider_settings_store = provider_settings_store
+        self._credential_store = credential_store
+        self._provider_settings_lock = RLock()
         self._clock = clock
-        self._bootstrap_expires_at = clock() + bootstrap_ttl_s
+        self._bootstrap_ttl_s = bootstrap_ttl_s
+        self._product_owner_secret = product_bootstrap_secret
+        bootstrap_expires_at = clock() + bootstrap_ttl_s
+        self._bootstrap_expires_at = {
+            "product": bootstrap_expires_at,
+            "engine": bootstrap_expires_at,
+        }
         self._bootstrap: dict[str, str | None] = {
             "product": product_bootstrap_secret,
             "engine": engine_bootstrap_secret,
         }
-        self._session_ttl_s = session_ttl_s
+        self._session_idle_ttl_s = session_idle_ttl_s
+        self._session_absolute_ttl_s = session_absolute_ttl_s
         self._sessions: dict[str, _Session] = {}
         self._session_lock = RLock()
         owner = self
@@ -107,6 +135,8 @@ class LocalApiServer:
     def stop(self) -> None:
         if self._thread is None:
             return
+        if self.product_workflow is not None:
+            self.product_workflow.shutdown()
         self._httpd.shutdown()
         self._httpd.server_close()
         self._thread.join(timeout=5.0)
@@ -123,14 +153,22 @@ class LocalApiServer:
         try:
             if request.command == "GET" and not parsed.path.startswith("/v1/"):
                 return self._serve_static(request, parsed.path)
+            if request.command == "POST" and parsed.path == "/v1/bootstrap/product/issue":
+                return self._issue_product_bootstrap(request, self._read_json(request))
             if request.command == "POST" and parsed.path == "/v1/bootstrap":
                 return self._bootstrap_session(request, self._read_json(request))
             if parsed.path.startswith("/v1/product/"):
                 session = self._authenticate_product(request, require_csrf=request.command == "POST")
+                if request.command == "GET" and parsed.path == "/v1/product/session":
+                    return self._json(request, 200, self._session_metadata(session))
                 if request.command == "GET" and parsed.path == "/v1/product/state":
                     return self._json(request, 200, self.broker.public_state(session.session_id))
                 if request.command == "GET" and parsed.path == "/v1/product/workflow":
                     return self._json(request, 200, self._workflow().snapshot())
+                if request.command == "GET" and parsed.path == "/v1/product/runtime":
+                    return self._json(request, 200, self._supervisor_status())
+                if request.command == "GET" and parsed.path == "/v1/product/provider-settings":
+                    return self._json(request, 200, self._provider_settings())
                 body = self._read_json(
                     request,
                     maximum=MAX_UPLOAD_JSON_BYTES if parsed.path == "/v1/product/input" else MAX_JSON_BYTES,
@@ -139,7 +177,9 @@ class LocalApiServer:
                     return self._json(request, 200, self._workflow().select_input(body))
                 if parsed.path == "/v1/product/generation":
                     self._require_shape(body, set())
-                    return self._json(request, 202, self._workflow().start_fixture_generation())
+                    return self._json(request, 202, self._workflow().start_generation())
+                if parsed.path == "/v1/product/provider-settings":
+                    return self._json(request, 200, self._save_provider_settings(body))
                 if parsed.path == "/v1/product/generation/cancel":
                     self._require_shape(body, set())
                     return self._json(request, 200, self._workflow().cancel())
@@ -224,6 +264,200 @@ class LocalApiServer:
             raise BrokerError("workflow_unavailable", "Product workflow is not configured", status=503)
         return self.product_workflow
 
+    def _provider_settings(self) -> dict[str, object]:
+        if self._provider_settings_store is None or self._credential_store is None:
+            raise BrokerError("provider_settings_unavailable", "Provider settings are not configured", status=503)
+        try:
+            value = self._provider_settings_store.load().validated()
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            raise BrokerError(
+                "provider_settings_corrupt",
+                "Provider settings could not be read; the original file was preserved for review",
+                status=500,
+            ) from None
+        try:
+            credential_configured = self._credential_store.is_configured()
+        except Exception:
+            raise BrokerError(
+                "credential_status_failed", "Credential status could not be read securely", status=500,
+            ) from None
+        provider_connected = False
+        if self.product_workflow is not None:
+            snapshot = self.product_workflow.snapshot()
+            provider = snapshot.get("provider")
+            provider_connected = bool(
+                snapshot.get("mode") == "live_provider"
+                and isinstance(provider, Mapping)
+                and provider.get("connected")
+            )
+        return {
+            "schema_version": "3.0",
+            "base_url": value.base_url,
+            "model_id": value.model_id,
+            "reasoning_effort": value.reasoning_effort,
+            "adapter_kind": value.adapter_kind,
+            "provider_profile": value.provider_profile,
+            "endpoint_path": value.endpoint_path,
+            "credential_ref": value.credential_ref,
+            "observer_model_id": value.observer_model_id,
+            "fallback_observer_model_id": value.fallback_observer_model_id,
+            "capabilities": {
+                "supports_images": value.supports_images,
+                "supports_structured_output": value.supports_structured_output,
+                "max_images": value.max_images,
+                "accepted_mime_types": list(value.accepted_mime_types),
+            },
+            "settings_saved": self._provider_settings_store.exists(),
+            "capability_checked": value.provider_profile == DEFAULT_PROVIDER_PROFILE or provider_connected,
+            "credential_configured": credential_configured,
+            "live_request_succeeded": provider_connected,
+        }
+
+    def _save_provider_settings(self, body: Mapping[str, object]) -> dict[str, object]:
+        if self._provider_settings_store is None or self._credential_store is None:
+            raise BrokerError("provider_settings_unavailable", "Provider settings are not configured", status=503)
+        legacy_shape = {"base_url", "model_id", "reasoning_effort", "api_key"}
+        current_shape = legacy_shape | {"credential_reapproval"}
+        profile_shape = current_shape | {"provider_profile"}
+        if frozenset(body) not in {
+            frozenset(legacy_shape), frozenset(current_shape), frozenset(profile_shape),
+        }:
+            raise BrokerError("request_shape_invalid", "Request shape is invalid", status=400)
+        api_key = body.get("api_key")
+        if not isinstance(api_key, str) or len(api_key) > 8192:
+            raise BrokerError("request_value_invalid", "api_key is invalid", status=400)
+        reapproval = body.get("credential_reapproval", False)
+        if not isinstance(reapproval, bool):
+            raise BrokerError("request_value_invalid", "credential_reapproval is invalid", status=400)
+        with self._provider_settings_lock:
+            try:
+                previous = self._provider_settings_store.load().validated()
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+                raise BrokerError(
+                    "provider_settings_corrupt",
+                    "Provider settings could not be read; the original file was preserved for review",
+                    status=500,
+                ) from None
+            selected_profile = body.get("provider_profile", previous.provider_profile)
+            if not isinstance(selected_profile, str):
+                raise BrokerError("request_value_invalid", "provider_profile is invalid", status=400)
+            try:
+                preset = provider_settings_preset(selected_profile, credential_ref=previous.credential_ref)
+                if preset.provider_profile == DEFAULT_PROVIDER_PROFILE:
+                    value = ProviderSettings(
+                        self._string(body, "base_url"),
+                        self._string(body, "model_id"),
+                        self._string(body, "reasoning_effort"),
+                        preset.adapter_kind,
+                        preset.provider_profile,
+                        preset.endpoint_path,
+                        preset.credential_ref,
+                        preset.supports_images,
+                        preset.supports_structured_output,
+                        preset.max_images,
+                        preset.accepted_mime_types,
+                        preset.observer_model_id,
+                        preset.fallback_observer_model_id,
+                    ).validated()
+                else:
+                    requested = (
+                        self._string(body, "base_url"), self._string(body, "model_id"),
+                        self._string(body, "reasoning_effort"),
+                    )
+                    expected = (preset.base_url, preset.model_id, preset.reasoning_effort)
+                    if requested != expected:
+                        raise BrokerError(
+                            "provider_preset_mismatch",
+                            "Nebius uses the reviewed S3a endpoint and model pipeline",
+                            status=400,
+                        )
+                    value = preset
+            except ValueError as error:
+                raise BrokerError("provider_settings_invalid", str(error), status=400) from None
+            store_target = getattr(self._credential_store, "target_name", value.credential_ref)
+            if store_target != value.credential_ref:
+                raise BrokerError(
+                    "credential_reference_mismatch",
+                    "The active credential store does not match the selected provider profile",
+                    status=409,
+                )
+            binding_changed = value.binding_identity != previous.binding_identity
+            profile_changed = (
+                value.adapter_kind != previous.adapter_kind
+                or value.provider_profile != previous.provider_profile
+                or value.credential_ref != previous.credential_ref
+            )
+            has_new_key = bool(api_key.strip())
+            if binding_changed and not has_new_key:
+                try:
+                    credential_configured = self._credential_store.is_configured()
+                except Exception:
+                    raise BrokerError(
+                        "credential_status_failed", "Credential status could not be read securely", status=500,
+                    ) from None
+                if profile_changed or not reapproval or not credential_configured:
+                    raise BrokerError(
+                        "credential_rebind_required",
+                        "Endpoint or provider identity changed; enter a new key or explicitly reapprove the existing key",
+                        status=409,
+                    )
+            old_secret: str | None = None
+            if has_new_key:
+                try:
+                    old_secret = self._credential_store.load()
+                    self._credential_store.save(api_key)
+                except Exception:
+                    raise BrokerError(
+                        "credential_save_failed", "The credential could not be stored securely", status=500,
+                    ) from None
+            try:
+                self._provider_settings_store.save(value)
+            except Exception:
+                if has_new_key:
+                    try:
+                        if old_secret:
+                            self._credential_store.save(old_secret)
+                        else:
+                            self._credential_store.delete()
+                    except Exception:
+                        raise BrokerError(
+                            "settings_transaction_rollback_failed",
+                            "Settings were not saved and credential rollback requires manual review",
+                            status=500,
+                        ) from None
+                raise BrokerError(
+                    "provider_settings_save_failed", "Provider settings could not be saved", status=500,
+                ) from None
+        if self.product_workflow is not None:
+            self.product_workflow.provider_settings_changed()
+        return self._provider_settings()
+
+    def _supervisor_status(self) -> dict[str, object]:
+        path = self._supervisor_status_file
+        if path is None:
+            return {
+                "schema_version": "1.0", "status": "unmanaged", "phase": "standalone",
+                "message": "Started without the TwinPulse process manager",
+                "backend": {"owned": False, "state": "running"},
+                "engine": {"owned": False, "state": "unknown"},
+                "browser": {"launched": False},
+            }
+        try:
+            if path.stat().st_size > 64 * 1024:
+                raise ValueError("status file exceeds limit")
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, Mapping):
+                raise ValueError("status must be an object")
+            return _sanitize_supervisor_status(value)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            return {
+                "schema_version": "1.0", "status": "error", "phase": "status_unavailable",
+                "message": str(error)[:240],
+                "backend": {"owned": True, "state": "running"},
+                "engine": {"owned": True, "state": "unknown"},
+                "browser": {"launched": False},
+            }
+
     def _serve_static(self, request: BaseHTTPRequestHandler, path: str) -> None:
         root = self._static_root
         if root is None:
@@ -275,7 +509,7 @@ class LocalApiServer:
         supplied = self._string(body, "secret")
         with self._session_lock:
             expected = self._bootstrap.get(role)
-            if (expected is None or self._clock() >= self._bootstrap_expires_at
+            if (expected is None or self._clock() >= self._bootstrap_expires_at.get(role, 0.0)
                     or not hmac.compare_digest(expected, supplied)):
                 raise BrokerError("bootstrap_rejected", "Bootstrap credential is invalid or expired", status=401)
             engine_id = stage_epoch = None
@@ -288,20 +522,49 @@ class LocalApiServer:
             self._bootstrap[role] = None
             session_id = secrets.token_urlsafe(32)
             csrf = secrets.token_urlsafe(24) if role == "product" else None
+            now = self._clock()
+            absolute_expires_at = now + self._session_absolute_ttl_s
             self._sessions[session_id] = _Session(
-                session_id, role, csrf, self._clock() + self._session_ttl_s, engine_id, stage_epoch,
+                session_id=session_id,
+                role=role,
+                csrf=csrf,
+                idle_expires_at=min(now + self._session_idle_ttl_s, absolute_expires_at),
+                absolute_expires_at=absolute_expires_at,
+                engine_session_id=engine_id,
+                stage_epoch=stage_epoch,
             )
         headers = None
-        result: dict[str, object] = {"role": role, "expires_in_s": self._session_ttl_s}
+        session = self._sessions[session_id]
+        result = self._session_metadata(session)
         if role == "product":
-            result["csrf_token"] = csrf
             headers = {"Set-Cookie": (
                 f"{PRODUCT_COOKIE}={session_id}; HttpOnly; SameSite=Strict; Path=/; "
-                f"Max-Age={int(self._session_ttl_s)}"
+                f"Max-Age={math.ceil(self._session_absolute_ttl_s)}"
             )}
         else:
             result["session_token"] = session_id
         self._json(request, 200, result, headers=headers)
+
+    def _issue_product_bootstrap(
+        self, request: BaseHTTPRequestHandler, body: Mapping[str, object],
+    ) -> None:
+        self._require_shape(body, {"owner_secret"})
+        supplied = self._string(body, "owner_secret")
+        if not hmac.compare_digest(self._product_owner_secret, supplied):
+            raise BrokerError(
+                "bootstrap_owner_rejected",
+                "Product bootstrap owner credential is invalid",
+                status=401,
+            )
+        with self._session_lock:
+            bootstrap_secret = secrets.token_urlsafe(32)
+            self._bootstrap["product"] = bootstrap_secret
+            self._bootstrap_expires_at["product"] = self._clock() + self._bootstrap_ttl_s
+        self._json(request, 200, {
+            "role": "product",
+            "bootstrap_secret": bootstrap_secret,
+            "expires_in_s": self._bootstrap_ttl_s,
+        })
 
     def _authenticate_product(self, request: BaseHTTPRequestHandler, *, require_csrf: bool) -> _Session:
         cookies = self._parse_cookies(request.headers.get("Cookie", ""))
@@ -319,10 +582,30 @@ class LocalApiServer:
     def _session(self, session_id: str | None, role: str) -> _Session:
         with self._session_lock:
             session = self._sessions.get(session_id or "")
-            if session is None or session.role != role or self._clock() >= session.expires_at:
+            now = self._clock()
+            if (session is None or session.role != role
+                    or now >= session.idle_expires_at or now >= session.absolute_expires_at):
+                if session is not None and (
+                    now >= session.idle_expires_at or now >= session.absolute_expires_at
+                ):
+                    self._sessions.pop(session.session_id, None)
                 raise BrokerError("session_rejected", "Session is invalid, expired, or has the wrong role", status=401)
-            session.expires_at = self._clock() + self._session_ttl_s
+            session.idle_expires_at = min(
+                now + self._session_idle_ttl_s,
+                session.absolute_expires_at,
+            )
             return session
+
+    def _session_metadata(self, session: _Session) -> dict[str, object]:
+        now = self._clock()
+        result: dict[str, object] = {
+            "role": session.role,
+            "idle_expires_in_s": max(0, math.ceil(session.idle_expires_at - now)),
+            "absolute_expires_in_s": max(0, math.ceil(session.absolute_expires_at - now)),
+        }
+        if session.role == "product":
+            result["csrf_token"] = session.csrf or ""
+        return result
 
     def _read_json(
         self, request: BaseHTTPRequestHandler, *, maximum: int = MAX_JSON_BYTES,
@@ -399,3 +682,37 @@ class LocalApiServer:
     @classmethod
     def _error(cls, request: BaseHTTPRequestHandler, status: int, code: str, message: str) -> None:
         cls._json(request, status, {"error": {"code": code, "message": message}})
+
+
+def _sanitize_supervisor_status(value: Mapping[str, object]) -> dict[str, object]:
+    def text(name: str, default: str = "") -> str:
+        item = value.get(name, default)
+        return str(item)[:240]
+
+    def component(name: str) -> dict[str, object]:
+        raw = value.get(name)
+        if not isinstance(raw, Mapping):
+            raw = {}
+        result: dict[str, object] = {
+            "owned": bool(raw.get("owned", False)),
+            "state": str(raw.get("state", "unknown"))[:64],
+        }
+        if isinstance(raw.get("pid"), int) and int(raw["pid"]) > 0:
+            result["pid"] = int(raw["pid"])
+        if isinstance(raw.get("exit_code"), int):
+            result["exit_code"] = int(raw["exit_code"])
+        return result
+
+    browser_raw = value.get("browser")
+    browser = browser_raw if isinstance(browser_raw, Mapping) else {}
+    return {
+        "schema_version": "1.0",
+        "status": text("status", "unknown"),
+        "phase": text("phase", "unknown"),
+        "message": text("message"),
+        "started_at_utc": text("started_at_utc") or None,
+        "updated_at_utc": text("updated_at_utc") or None,
+        "backend": component("backend"),
+        "engine": component("engine"),
+        "browser": {"launched": bool(browser.get("launched", False))},
+    }

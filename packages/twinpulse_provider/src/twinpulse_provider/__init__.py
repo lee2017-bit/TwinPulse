@@ -15,7 +15,18 @@ from .errors import (
     ProviderCapabilityError,
     ProviderConfigurationError,
     ProviderRateLimitError,
+    ProviderRequestError,
     ProviderTimeoutError,
+    ProviderUnavailableError,
+)
+from .nebius_pipeline import (
+    ChatCompletion,
+    ChatCompletionsTransport,
+    NebiusChatCompletionsPipelineProvider,
+    ObservationArtifact,
+    UrllibChatCompletionsTransport,
+    observation_json_schema,
+    parse_chat_completion,
 )
 from .providers import MockMode, MockProvider, OpenAIResponsesProvider, StructuredJsonHttpProvider
 from .measurement_constraints import (
@@ -53,8 +64,17 @@ __all__ = [
     "ProviderConfig",
     "ProviderConfigurationError",
     "ProviderRateLimitError",
+    "ProviderRequestError",
     "ProviderResponse",
     "ProviderTimeoutError",
+    "ProviderUnavailableError",
+    "ChatCompletion",
+    "ChatCompletionsTransport",
+    "NebiusChatCompletionsPipelineProvider",
+    "ObservationArtifact",
+    "UrllibChatCompletionsTransport",
+    "observation_json_schema",
+    "parse_chat_completion",
     "StructuredJsonHttpProvider",
     "scene_tool_plan_json_schema",
     "spec_bundle_json_schema",

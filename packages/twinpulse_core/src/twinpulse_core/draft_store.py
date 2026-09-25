@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,7 +17,8 @@ from .scene_tools import SceneToolPlan, SceneToolRegistry, scene_tool_plan_to_js
 
 
 _LEGACY_RECORD_VERSION = "1.0"
-_RECORD_VERSION = "2.0"
+_PREVIOUS_RECORD_VERSION = "2.0"
+_RECORD_VERSION = "3.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,10 @@ class GeneratedDraftRecord:
     input_revision: InputRevision | None = None
     validation_receipt: ValidationReceipt | None = None
     origin_status: str = "generated"
+    provider_provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provider_provenance", _provider_provenance(self.provider_provenance))
 
     @property
     def bundle(self) -> SpecBundle:
@@ -89,6 +94,7 @@ class GeneratedDraftRecord:
         plan: SceneToolPlan,
         input_revision: InputRevision | None = None,
         origin_status: str = "generated",
+        provider_provenance: Mapping[str, Any] | None = None,
     ) -> "GeneratedDraftRecord":
         if origin_status not in {"generated", "legacy_rebound"}:
             raise ValueError("draft origin status is unsupported")
@@ -118,6 +124,7 @@ class GeneratedDraftRecord:
             input_revision=input_revision,
             validation_receipt=receipt,
             origin_status=origin_status,
+            provider_provenance=_provider_provenance(provider_provenance or {}),
         )
 
     @property
@@ -144,6 +151,7 @@ class GeneratedDraftRecord:
             request_id=self.request_id, provider_name=self.provider_name, model_id=self.model_id,
             image_count=len(revision.images), plan=self.plan, input_revision=revision,
             origin_status="legacy_rebound",
+            provider_provenance=self.provider_provenance,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,6 +169,7 @@ class GeneratedDraftRecord:
             value["input_revision"] = self.input_revision.to_dict()
             value["validation_receipt"] = self.validation_receipt.to_dict()
             value["origin_status"] = self.origin_status
+            value["provider_provenance"] = dict(self.provider_provenance)
         return value
 
     @classmethod
@@ -177,6 +186,8 @@ class GeneratedDraftRecord:
         }
         version = value.get("record_version")
         if version == _RECORD_VERSION:
+            expected.update({"input_revision", "validation_receipt", "origin_status", "provider_provenance"})
+        elif version == _PREVIOUS_RECORD_VERSION:
             expected.update({"input_revision", "validation_receipt", "origin_status"})
         elif version != _LEGACY_RECORD_VERSION:
             raise ValueError("generated draft record version is unsupported")
@@ -191,7 +202,7 @@ class GeneratedDraftRecord:
             raise ValueError("generated draft image_count must be 0 or 1")
         input_revision = None
         validation_receipt = None
-        if version == _RECORD_VERSION:
+        if version in {_RECORD_VERSION, _PREVIOUS_RECORD_VERSION}:
             if not isinstance(value["input_revision"], Mapping) or not isinstance(value["validation_receipt"], Mapping):
                 raise ValueError("generated draft provenance must be objects")
             input_revision = InputRevision.from_dict(value["input_revision"])
@@ -208,14 +219,21 @@ class GeneratedDraftRecord:
             plan=plan,
             input_revision=input_revision,
             validation_receipt=validation_receipt,
-            origin_status=value["origin_status"] if version == _RECORD_VERSION else "generated",
+            origin_status=(
+                value["origin_status"]
+                if version in {_RECORD_VERSION, _PREVIOUS_RECORD_VERSION} else "generated"
+            ),
+            provider_provenance=(
+                _provider_provenance(value["provider_provenance"])
+                if version == _RECORD_VERSION else {}
+            ),
         )
         if record.plan_sha256 != _plan_hash(plan):
             raise ValueError("generated draft plan hash does not match")
         # Re-execute the allowlisted plan during load so stale or invalid plans
         # never become eligible for an Isaac stage mutation.
         bundle = record.bundle
-        if version == _RECORD_VERSION:
+        if version in {_RECORD_VERSION, _PREVIOUS_RECORD_VERSION}:
             if record.image_count != len(input_revision.images):
                 raise ValueError("generated draft image_count differs from input")
             checked = validate_plan_measurements(plan, input_revision.measurement_constraints)
@@ -272,3 +290,39 @@ def _metadata(value: object, name: str) -> str:
     if not text or len(text) > 256:
         raise ValueError(f"generated draft {name} is invalid")
     return text
+
+
+def _provider_provenance(value: object) -> dict[str, Any]:
+    """Accept bounded JSON metadata while rejecting secret or image-bearing fields."""
+    forbidden = {"authorization", "api_key", "secret", "image_url", "data_uri", "image_base64"}
+
+    def check(item: object, depth: int = 0) -> Any:
+        if depth > 6:
+            raise ValueError("provider provenance exceeds nesting limit")
+        if isinstance(item, Mapping):
+            result: dict[str, Any] = {}
+            for key, child in item.items():
+                if not isinstance(key, str) or not key or len(key) > 64 or key.lower() in forbidden:
+                    raise ValueError("provider provenance key is invalid or secret-bearing")
+                result[key] = check(child, depth + 1)
+            return result
+        if isinstance(item, (list, tuple)):
+            if len(item) > 32:
+                raise ValueError("provider provenance list exceeds limit")
+            return [check(child, depth + 1) for child in item]
+        if isinstance(item, str):
+            if len(item) > 1024 or "base64," in item.lower() or "bearer " in item.lower():
+                raise ValueError("provider provenance string is invalid or secret-bearing")
+            return item
+        if isinstance(item, bool) or item is None:
+            return item
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            return item
+        raise ValueError("provider provenance contains an unsupported value")
+
+    checked = check(value)
+    if not isinstance(checked, dict):
+        raise ValueError("provider provenance must be an object")
+    if len(json.dumps(checked, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 32 * 1024:
+        raise ValueError("provider provenance exceeds size limit")
+    return checked

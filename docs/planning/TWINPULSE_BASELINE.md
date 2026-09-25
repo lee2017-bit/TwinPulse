@@ -1,13 +1,13 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.34**
-- 기준일: **2026-09-16 (KST)**
-- 상태: **기존 M0-A/B, M1-A/B, M2-A/B/C의 제한된 PASS 기록 보존; M2-D PARTIAL; App 전환 R0 완료, R1 로컬 자동 acceptance PASS, R2 actual-Isaac acceptance PASS, R3 application/contract acceptance PASS, R4 loopback/actual-Isaac bridge acceptance PASS, R5 React→actual-Isaac vertical-slice acceptance PASS, R6~R10 미착수**. R5는 strict upload부터 deterministic generation/review/ack, 실제 applied revision과 Build/Run/Pause/Reset/Focus까지 연결한 tested local 범위이며 새 유료 provider App smoke·R6 launcher·원격 접속·wheel 공개/회사 PC 설치를 포함하지 않는다. M2-D 실제 provider는 랙 높이 3.0m를 두 행 모두 2.0m로 오독해 scorer 27/29 FAIL이었고, 동일 bundle의 Isaac 84 prim/8m physics는 PASS였다.
+- 문서 버전: **Baseline v1.0.50**
+- 기준일: **2026-09-25 (KST)**
+- 상태: **과거 M0~M2-C 및 R0~R5의 tested-scope PASS 보존; M2-D PARTIAL; R6 PARTIAL; 개선 계획 S0~S3b PASS, S3c product wiring 및 local live→Isaac Build/Run gate PASS; R7~R10 미착수.** 실제 사진 1장의 Nebius draft→Isaac 90-prim Build/2WD 완주는 확인했다. 이후 겹친 랙 row를 local gate에서 거부하는 guard를 추가했으나 같은 live 입력의 재생성·시각 충실도 검수는 하지 않았다. 개발 PC 원클릭 의존성 설치/웹 빌드는 PASS; fresh-clone/회사 PC 재현은 미검증이다.
 - 목적: 이후 단계별 구현, 검증, 의사결정 및 변경 관리의 기준 문서.
 - 프로젝트 메모리: [TWINPULSE_PROJECT_MEMORY.md](TWINPULSE_PROJECT_MEMORY.md)
 - 단계별 실행 지시서: [TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md)
 - 최신 단계 기록: [TWINPULSE_M2D_IMPLEMENTATION.md](TWINPULSE_M2D_IMPLEMENTATION.md)
-- 최신 검토·실행 계획: [App 전환 및 정합성 복구 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md). D1/D2와 R0/R1/R2/R3/R4/R5 검증은 확정됐다. 다음 R6은 사용자에게 선택될 때만 승인된다. R5 증거는 [R5-react-product-ui.md](../verification/R5-react-product-ui.md)에 둔다.
+- 최신 검토: [2026-09-22 종합 검토](TWINPULSE_ASTRA_REVIEW_2026-09-22.md), [Sol 하위 단계 실행 계획](TWINPULSE_SOL_EXECUTION_PLAN_2026-09-22.md), [TurtleBot3 실험 계획](TWINPULSE_TURTLEBOT3_EXPERIMENT_PLAN.md). 기존 [App 전환 지침](TWINPULSE_APP_MIGRATION_PLAYBOOK.md)의 R 번호/공통 안전 규칙은 유지한다. 새 문서의 범위 조정은 권고이며 읽기만으로 구현·과금·설치·실물·공개 승인이 되지 않는다.
 - 2026-09-15 검토 보정: M2-C 과거 실행 증거는 보존한다. M2-D sidecar 규격 불일치와 새 입력 뒤 이전 draft Build 가능성을 확인했으며, stage identity/안전상태/복원 provenance도 보강 대상이다. 기존 13 Provider/24 Core 테스트 PASS는 이 연결까지 보장하지 않는다. BL-027의 `detail=low` 원인 단정은 비교 검증되지 않았으며, 통로 정확도는 기존 scorer 검사 범위와 구분해야 한다. 상세 근거/우선순위는 새 지침 F1~F10을 따른다.
 
 ## 1. 문서의 권위와 읽는 방법
@@ -119,6 +119,12 @@ RPLIDAR C1은 저가 센서 후보로 조사되었으나 구매 결정은 아니
 
 2m 트랙에 임의의 큰 clearance 수치를 고정하지 않는다. 로봇 폭 0.21m에 좌우 각각 0.5m를 더하면 1.21m 통로가 필요하므로 실제 footprint와 측정 오차·제동 여유로 결정한다.
 
+### 4.3 확보된 실물 플랫폼 — 2026-09-22
+
+사용자는 가정용 실험 플랫폼으로 **TurtleBot3 Burger, Raspberry Pi 4 4 GB 구성**을 확보했다. 도착 사실만 확인했으며 OS/ROS 배포판, OpenCR·펌웨어, LiDAR 모델, 배터리 상태, 네트워크, URDF와 실제 구동은 아직 점검하지 않았다.
+
+TurtleBot3 Burger의 differential-drive 구조는 기존 2WD 방향과 개념적으로 맞지만, 현재 generic AGV RobotProfile을 실물 디지털 트윈으로 간주하지 않는다. M7 실물 단계 전 별도 TurtleBot profile/ROS adapter, 실제 치수·질량·관성·wheel parameters, topic/TF 계약과 비상정지·통신 끊김 정지를 검증한다. 이 기록은 설치나 모터 구동 승인이 아니다.
+
 ## 5. 주행 최적화와 강화학습
 
 ### 5.1 사용자가 원하는 결과
@@ -144,6 +150,23 @@ Nav2의 기존 smoother/controller도 곡선 경로를 만들 수 있다. 잘못
 안전 제약과 성능 보상을 분리하고, 학습에 사용하지 않은 배치/seed에서도 평가한다. 마찰·센서 잡음·지연 변화에 대한 검증 범위를 점진적으로 추가한다.
 
 배포 산출물에는 최소한 navigation parameters, RobotProfile 버전, 환경/map revision, controller 버전, 평가 결과, 생성 실행 ID를 묶는다. 개선율·허용 오차의 수치 목표는 baseline 실측 후 결정한다.
+
+### 5.4 장기 연구 아이디어 — 초파리 뇌지도 기반 자율주행
+
+영감의 출처는 **초파리 뇌지도(connectome)를 제약으로 사용한 신경 시뮬레이션에 Doom/ViZDoom의 감각 입력과 행동 출력을 연결한 탐색적 데모**다. TwinPulse의 장기 아이디어는 살아 있는 초파리 뇌나 신경 조직을 로봇에 연결하는 것이 아니라, 공개 connectome의 연결 구조와 단순화한 neural dynamics를 계산 모델로 실행해 TurtleBot/가상 AGV의 navigation controller로 시험하는 것이다. [S19]
+
+이 사례는 실제 생물학적 뇌 전체의 기능을 완전히 재현했거나 범용 지능이 Doom을 학습했다는 증거로 취급하지 않는다. 프로젝트 자체가 exploratory/for-fun 성격임을 밝히고 있으므로, TwinPulse에서도 **connectome-derived controller 가설을 검증하는 연구 출발점**으로만 사용한다.
+
+초기 연구안은 다음과 같다.
+
+1. 사용할 connectome 데이터셋·버전·라이선스와 neuron/synapse subset을 고정한다.
+2. 카메라·LiDAR·odom 관측을 sensory population 입력으로 변환하는 encoder를 별도 정의한다.
+3. connectome-constrained spiking/recurrent simulation을 Isaac 및 제품 UI와 분리된 worker에서 실행한다.
+4. neural activity를 직접 wheel PWM으로 보내지 않고 정지·전진·회전 또는 제한된 `cmd_vel` 후보로 decode한다.
+5. 로봇 측 safety supervisor가 속도·가속도·작업 구역·통신 timeout·비상정지를 항상 강제한다.
+6. Replay와 Isaac shadow mode에서 Nav2/기존 controller와 성공률·충돌·경로 효율·지연·연산량·강건성을 비교한 뒤에만 제한된 실물 저속 시험 후보로 승격한다.
+
+첫 제품·R6~R10·M5~M7의 완료 조건은 아니며 현재 개발 우선순위를 바꾸지 않는다. connectome 구조가 자율주행 성능·효율·강건성을 높인다고 미리 가정하지 않고 대조 실험으로 판단한다.
 
 ## 6. 실행 모드와 프로세스 경계
 
@@ -226,6 +249,8 @@ provider adapter는 endpoint/model/capability를 분리한다. vision 미지원�
 | Nebius AI Cloud | GPU VM에서 full Isaac Sim/worker 실행 | RT 지원 GPU, region/quota, 드라이버, 스토리지, 네트워크, 예산 |
 
 Token Factory 크레딧은 GPU VM 사용 가능 여부를 증명하지 않는다. 프로모션·계정 quota·실시간 GPU 재고·실제 결제 가능 범위는 확인하지 않았다. 특정 Nemotron 모델이 이미지와 구조화 출력을 동시에 지원한다고 단정하지 않는다. [S12, S13]
+
+2026-09-24 S3a 결정에서는 현재 계정의 public serverless 목록에 있는 `google/gemma-3-27b-it`를 visual observer, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`를 scene/tool constrained planner로 사용한다. `openbmb/MiniCPM-V-4_5`는 자동 retry가 아닌 명시적 observer fallback이다. broad catalog의 `nvidia/Cosmos3-Super-Reasoner`는 관찰된 UI에서 Dedicated H100 endpoint만 제공되어 기본 경로에서 제외한다. 구현 protocol은 OpenAI-compatible Chat Completions 기반의 명시적 2단계 adapter이며, 현재 single-stage Responses adapter를 조용히 재사용하지 않는다. S3b fake transport는 2026-09-25 통과했지만 모델별 image/JSON schema/tool calling, 정확한 serverless 가격·license·region은 아직 live 검증되지 않았다. 상세 ADR과 증거 경계는 `docs/verification/S3a-nebius-provider-selection.md`와 `docs/verification/S3b-nebius-fake-transport.md`다.
 
 ### 8.3 GPU 선택 기준
 
@@ -318,7 +343,7 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ## 10. 단계별 구현과 Acceptance Test
 
-현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 기준 개발 root `C:\Users\jaewo\Documents\TwinPulse`의 `twinpulse.extension-0.1.0`은 legacy UI와 deterministic Isaac 실행을 보존하며, R4의 인증 loopback managed bridge 위에 R5 same-origin React 제품 UI가 연결됐다. R5는 backend draft와 실제 Isaac applied revision을 구분하고 strict upload→deterministic generation/review/ack→Build/Run/Pause/Reset/Focus를 브라우저에서 수행한다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
+현재 상태는 Baseline, **M0-A/B**, **M1-A/B**, **M2-A/B/C**까지 완료했고 **M2-D 치수 도면 시험은 PARTIAL**이다. 기준 개발 root `C:\Users\jaewo\Documents\TwinPulse`의 `twinpulse.extension-0.1.0`은 legacy UI와 deterministic Isaac 실행을 보존하며, R4의 인증 loopback managed bridge 위에 R5 same-origin React 제품 UI와 R6 managed launcher/process manager가 연결됐다. 개선 계획은 S0 audit와 S1a~S1d process/session hardening까지 PASS했다. R6 자동 runner는 반복 PowerShell 입력이나 사용자 screenshot 중계 없이 browser와 actual Isaac을 기동해 Build/Run/Pause/Reset/Focus, revision, trajectory와 official viewport capture를 기록한다. M2-D 실제 Luna는 10 calls/32 objects를 생성했고 실제 Isaac 84 prim/8m 무충돌 주행까지 성공했지만, 이미지의 랙 높이 3.0m를 2.0m로 두 번 오독해 정밀 scorer는 27/29 FAIL이다. 장거리 주행은 현재 pose/yaw를 매 physics step 읽는 폐루프 조향과 통로 이탈 안전정지를 사용한다. 내장 hardware checker의 VRAM/RAM 실패와 사진 기반 치수의 개략성은 유지된다.
 
 | 단계 | 산출물과 완료 기준 | Acceptance test |
 |---|---|---|
@@ -337,7 +362,11 @@ Windows에서는 공식 Windows 11/Jazzy/Pixi 경로를 우선 검토하되, Lin
 
 ### 다음 구현 작업의 시작점
 
-2026-09-16 현재 **D1/D2와 R0, R1 로컬 자동 acceptance, R2 actual-Isaac acceptance, R3 application/contract acceptance, R4 loopback/actual-Isaac bridge acceptance, R5 React→actual-Isaac vertical-slice acceptance가 완료**됐다. [R5 증거](../verification/R5-react-product-ui.md)는 R5 product API 7/7, React 3/3, strict upload/cancel/revision gate, 실제 Isaac 32 prim·0.412375m 이동·Run/Pause/Reset/Focus, desktop/mobile/125%/한글/scroll/keyboard screenshot과 전체 runner `20260916-235245` PASS를 포함한다. wheel 공개·회사 PC 설치, 실제 유료 multimodal App smoke 및 R6 launcher/공식 Isaac viewport capture는 하지 않았다. 다음 재개점은 사용자에게 선택된 **R6 자동 기동·관찰·회귀**다. 사용자가 해당 단계를 선택하기 전 구현하지 않는다. M2-D 유료 29/29 재시험부터 자동 시작하지 않는다. 도면 정확도는 후속 R9로 유지한다.
+2026-09-22 현재 D1/D2와 R0~R5 tested scope 기록은 유지한다. R6는 `20260922-100347`의 제한된 성공 이후 full run `20260922-102341`가 캡처 gate에서 실패했으므로 **PARTIAL/최신 full-run FAIL**이다. 같은 실패 run에서도 browser와 실제 Isaac 제어·32 prim·약 0.262762m 이동은 확인됐다. 나중에 PNG가 생긴 것을 근거로 당시 실패를 성공으로 변경하지 않는다.
+
+새 웹 App의 `ProductWorkflow`는 이제 presentation/ack adapter이고 generation 상태는 `ApplicationService`가 단독 소유한다. production launcher는 `live_provider`, 테스트는 명시적 `--fixture-mode`이며 live 오류를 sample 장면으로 대체하지 않는다. Windows Credential Manager 영속화는 존재하지만 provider origin/profile과 credential reference의 결합, 실제 재부팅·새 App live 호출·다른 provider 전환 검증을 동일한 PASS로 묶지 않는다.
+
+S3c local finite live→Isaac Build/Run gate는 2026-09-25 통과했다. 겹친 rack-row footprint를 사전 거부하는 guard와 원클릭 설치기를 추가했고 비-Isaac 회귀는 통과했다. 다음 작업은 **사진 대비 시각 충실도와 geometry/axis validation 강화**, fresh-clone/회사 PC 재현이다. 사용자에게 선택받은 하위 단계만 실행한다. B0 실물 inventory 이전에 OS/ROS 설치 또는 motor 명령을 시작하지 않는다.
 
 ## 11. Blocking risk와 fallback
 
@@ -413,6 +442,22 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-051 | 2026-09-25 | 1.0.50 | Release audit와 원클릭 설치 | 겹친 rack-row physical footprint를 `SceneToolRegistry`에서 Build 전에 거부하고 edge-touch 허용 회귀 2개를 추가. `Install-TwinPulse.cmd` 및 격리 venv/hash-locked Python/frozen pnpm install+build launcher, 문서와 `artifacts/` ignore를 추가. 개발 PC 설치 PASS, official SkipIsaac Core 30/Provider 27/R1 9/R3 9/R4 6/R5+S2 34/R6 11/React 10+build PASS. fresh clone/회사 PC와 변경 후 actual Isaac 회귀, photo fidelity는 별도 미검증. commit/push는 이 기록 시점 아직 미실행 |
+| BL-050 | 2026-09-25 | 1.0.49 | S3c local live→Isaac Build/Run | LLM이 반환한 AGV 시작/목표 z를 local resolver에서 바닥 0m로 투영하는 교정 후 targeted Core+Provider 42/42 PASS. 동일 사진/프롬프트의 Gemma→Nemotron 2단계 실응답을 7 tools/35 objects draft `f658ca7d…c0dc`로 검증. 사용자가 개략성을 확인한 revision을 실제 Isaac stage에 적용해 90 prim/revision matched/build succeeded를 확인했고 2WD 주행은 completed, goal 약 0.0013m, cross-track 약 0.00002m. 랙 배열의 사진 대비 시각 충실도와 viewport capture, fresh clone/회사 PC는 미검증. 실물·commit/push 없음 |
+| BL-049 | 2026-09-25 | 1.0.48 | S3c finite live PARTIAL 및 local safety route ownership | 승인된 동일 이미지·프롬프트의 최대 2-request/retry-0 live 시도에서 Gemma observer와 Nemotron planner 응답은 완료됐으나 후보 경로가 `rack_row_left_shelf_1`과 겹쳐 local validation이 거부. 추가 API 호출 없이 geometry는 LLM, 2WD straight-route 좌표는 local AABB resolver가 확정하도록 수정하고 최종 persisted plan/provenance에 반영. Core+Provider 53/53, S3c 4/4, compileall PASS 및 새 launcher backend ready 확인. live 재검증·Isaac Build/Run·commit/push는 미실행 |
+| BL-046 | 2026-09-24 | 1.0.45 | S3a Nebius/NVIDIA 호출 없는 provider 선택 | 계정 public `/v1/models`와 broad/Dedicated catalog를 구분하고 `google/gemma-3-27b-it` observer → `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` constrained planner → local validator를 확정. MiniCPM-V는 수동 fallback, Cosmos3 Dedicated는 보류. Chat Completions 2단계 adapter를 선택했으며 live/유료 요청·endpoint 생성·Isaac·실물·commit·push 없음; model별 capability는 S3b fake/S3c finite live gate로 남김 |
+| BL-047 | 2026-09-25 | 1.0.46 | S3b Nebius 2단계 fake transport | Gemma bounded observation과 Nemotron 전체 allowlisted plan을 분리한 Chat Completions adapter, exact model/endpoint binding, typed HTTP/refusal/truncation/timeout/cancel/late-result/no-retry, image hash/bytes·stage usage provenance와 secret/data-URI 차단을 구현. draft record 3.0과 2.0 호환 로드, Core 26/26·Provider 21/21·preserved regression 35/35·official non-Isaac `20260925-000253`(Python 112, React 10/build) PASS. live/유료 요청·Isaac·endpoint·실물·commit·push 없음; S3c product wiring/finite live gate 다음 |
+| BL-048 | 2026-09-25 | 1.0.47 | S3c 무호출 product wiring | settings schema 3.0 migration, exact Nebius preset, adapter composition root, React preset UI, provider 전환 시 새 key 강제, capability/live-success 분리를 구현. S3c 4/4와 official non-Isaac `20260925-002818`(Python 116, React 10/build) PASS. user credential/API/live/Isaac/endpoint/실물/commit/push 없음; finite live 승인 gate 남음 |
+| BL-042 | 2026-09-24 | 1.0.41 | S2a bounded image decode와 immutable measurement binding | Pillow verify+load 기반 PNG/JPEG/VP8/VP8L 10MiB/40MP/single-frame gate, sidecar 1.1 image SHA-256+pixel dimensions, MIME·typed constraints·profile·settings·tool catalog revision identity를 구현. isolated Pillow 12.3 S2a 4/4, Isaac bundled 12.2 S2a 4/4, 관련 Python 100/100, React 10/10/build, official `-SkipIsaac` `20260924-091108` PASS. runner-only `20260924-091023` FAIL은 보존. 유료 요청·실제 Isaac 앱·commit·push 없음; A-01/S2b 및 full R6은 남음 |
+| BL-043 | 2026-09-24 | 1.0.42 | S2b ApplicationService 단일 generation owner | React product generation을 immutable `GenerationContext`→`ApplicationService`→validated dynamic broker artifact 경로로 연결. production 기본 live/명시적 `--fixture-mode`, fallback 금지, cancel/input/settings/shutdown late-result 폐기, input+draft ack, restore/corrupt review를 구현. S2b 7/7, Core 24/24, Provider 13/13, React 10/10/build 및 official non-Isaac `20260924-140336` PASS. 실제 Isaac·유료 API·실물·commit·push 없음; S2c 다음 |
+| BL-044 | 2026-09-24 | 1.0.43 | S2c provider profile/secret/settings hardening | settings schema 2.0에 adapter/profile/origin/endpoint/capability/credential reference를 분리하고 binding 변경 시 새 키 또는 명시 재승인을 요구. unique-temp atomic replace, credential rollback, corrupt JSON 보존, secret canary 및 saved/capability/key/live 상태 분리를 구현. S2c 7/7, R3+R5+S2b+S2c 32/32, Core 24/24, Provider 13/13, React 10/10/build, official non-Isaac `20260924-143027` PASS. 실제 Isaac·live/유료 API·실물·commit·push 없음; S2d 다음 |
+| BL-045 | 2026-09-24 | 1.0.44 | S2d stored M2-C managed replay | 저장 결과 PASS/hash/plan/bundle/tool-object identity를 엄격 재검증하고 명시적 replay mode와 generation 금지 gateway를 통해 broker에 등록. 실제 visible Isaac 3장면에서 Build/Run/Pause/중간 Reset/완주/완료 Reset, viewport capture, 서로 다른 scene/plan/layout을 provider 요청 0회로 검증. actual `20260924-185750-s2d-replay`, official non-Isaac `20260924-190555` PASS. 실물·live/유료 API·commit·push 없음; S3a 다음 |
+| BL-041 | 2026-09-23 | 1.0.40 | S1d 실제 프로세스 경계와 상태 격리 검증 | backend/engine별 Windows Job Object tree ownership, persistent settings/credential와 per-launch runtime/engine state 경계, stale heartbeat `engine_unresponsive` 및 Run 차단을 구현. fake wrapper child 2개 이상 Job member/후손 정리, Python 28/28, 웹 10/10/build, actual Isaac graceful exit 0과 forced exit 1(각 26 Job members) PASS. 유료 요청·commit·push 없음. full R6는 M2-C replay/fresh clone/company PC/live-provider가 남아 PARTIAL |
+| BL-040 | 2026-09-23 | 1.0.39 | S0~S1c 결함 복구 진행 및 인증 수명/안전 재열기 검증 | S1c에서 30분 renewable idle, 8시간 absolute lifetime, absolute cookie `Max-Age`, owner-only one-time ticket 발급, same-origin `/v1/product/session` 복구와 401 CSRF 제거/non-retry를 구현. R4+R5+S1c 20/20, manager 10/10, 웹 9/9/build, actual Chrome owner-ticket/bootstrap scrub/reload/new-tab PASS. artifact secret scan 0, 유료 요청·Isaac·push 없음. full R6는 S1d/M2-C replay/fresh clone/live-provider가 남아 PARTIAL |
+| BL-039 | 2026-09-22 | 1.0.38 | 전체 검토·해커톤 전략·Sol 실행 계획·TurtleBot3 실험 계획 추가 | 새 웹 fixture 경로, 비소유 launcher stop 신호, 불완전 PNG 수락을 격리 재현. earlier R6 PASS와 later full-run capture FAIL을 구분. Nebius/NVIDIA 필수 사용 및 실물 비교 중심의 범위 축소를 권고. 문서/진단만 수행; 제품 수정·설치·유료 호출·Isaac 재기동·실물·push 없음. 새 방향/예산은 제안이며 단계별 승인 필요 |
+| BL-038 | 2026-09-22 | 1.0.37 | 초파리 장기 아이디어를 Doom connectome 시뮬레이션 영감으로 교정 | 사용자가 의도한 것은 생물학적 조직 연결이 아니라 초파리 뇌지도 기반 신경 시뮬레이션으로 Doom/ViZDoom을 구동한 탐색적 사례에서 착안한 자율주행 controller임을 확정. wet-lab 트랙을 제거하고 dataset→sensor encoder→connectome worker→bounded action decoder→safety supervisor→Isaac/Nav2 비교 순서로 구체화. 구현·실물 구동 없음 |
+| BL-037 | 2026-09-22 | 1.0.36 | TurtleBot3 도착 및 초파리 신경회로 자율주행 장기 아이디어 기록 | TurtleBot3 Burger RPi4 4 GB 도착 사실을 미점검 실물 플랫폼으로 기록. 초파리 신경회로 모사 controller를 우선 계산 모델 연구 트랙으로, 실제 생물학적 조직 연결은 윤리·생물안전·전문기관이 필요한 별도 미확정 트랙으로 구분. 기존 R6~R10/M5~M7 우선순위와 완료 상태는 변경하지 않았고 설치·실물 구동·생물학 실험은 수행하지 않음 |
+| BL-036 | 2026-09-22 | 1.0.35 | R6 자동 기동·관찰 local deterministic E2E 및 provider 설정 영속화 | 소유 backend/Isaac process manager, authenticated readiness, one-command browser launch, finite failure/status, browser screenshot+official Isaac viewport capture와 credential-safe 웹 Settings 구현. R6 manager 5/5, product API 9/9, React 5/5/build, actual runner `20260922-100347` PASS(32 prim, revision 일치, 0.329136m 이동, 960×640 capture). 새 유료 요청 없음. M2-C 저장 출력 3개 R6 replay·fresh clone/회사 PC·live-provider App smoke는 미실행이므로 R6/Phase 1 PARTIAL |
 | BL-035 | 2026-09-16 | 1.0.34 | R5 React 제품 UI와 실제 Isaac vertical slice 연결 | same-origin React/TypeScript UI, strict image/optional sidecar upload, async deterministic generation/cancel/review/ack, backend draft와 Isaac applied revision 분리, permitted Build/Run/Pause/Reset/Focus 구현. R5 API 7/7, React 3/3, 실제 Isaac 32 prim·0.412375m 이동과 desktop/mobile/125%/한글/scroll/keyboard 전체 runner PASS(`20260916-235245`). 새 유료 provider App smoke·R6 launcher·원격·실물 제어 없음 |
 | BL-034 | 2026-09-16 | 1.0.33 | R4 인증 loopback API와 실제 Isaac bridge 연결 | 127.0.0.1 product/engine auth, 단일 writer/lease/session broker, bounded network-to-Kit queue, managed adapter와 backend-loss watchdog 구현. R4 6/6, 실제 HTTP Build/Run/Pause/Reset/GetState/Focus, backend-loss pause, lifecycle/reconnect 3/3, 전체 runner PASS(`20260916-212014`). React·원격 접속·유료 provider·ROS2/MCP/WebRTC·실물 제어 없음 |
 | BL-033 | 2026-09-16 | 1.0.32 | R3 package build/clean-install gap 종료 | 사용자 승인으로 git-ignored 임시 venv에만 setuptools 84.0.0/wheel 0.48.0 설치. core/provider/app 0.1.0 wheel 3개 build PASS, 별도 clean venv에서 app 단독 지정으로 세 패키지 offline 설치·`pip check`·pure import PASS. 시스템/Isaac Python 변경, wheel 공개, 회사 PC 설치 없음 |
@@ -484,6 +529,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 - **S16**: [OpenAI model catalog](https://developers.openai.com/api/docs/models), [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna), [GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
 - **S17**: [OpenAI Responses API create](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 - **S18**: [OpenAI API key permissions](https://help.openai.com/en/articles/8867743-assign-api-key-permissions)
+- **S19**: [`fly-brain-plays-doom` — connectome-based Drosophila neural simulation/ViZDoom exploratory project](https://github.com/ahmetefesensoy/fly-brain-plays-doom), [NIMH — fruit fly connectome overview](https://www.nimh.nih.gov/news/science-updates/2024/researchers-fully-map-neural-connections-of-the-fruit-fly-brain)
 
 ---
 

@@ -1,6 +1,8 @@
 param(
     [switch]$SkipIsaac,
-    [string]$IsaacRoot = "C:\isaacsim"
+    [switch]$RunR6,
+    [string]$IsaacRoot = "C:\isaacsim",
+    [string]$PythonExecutable = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,36 +11,50 @@ $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $artifactDir = Join-Path $repoRoot "artifacts\runs\$runId"
 New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
 $transcriptStarted = $false
+$repoPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$appPython = if ($PythonExecutable) {
+    $PythonExecutable
+} elseif (Test-Path -LiteralPath $repoPython) {
+    $repoPython
+} else {
+    "python"
+}
 
 Push-Location $repoRoot
 try {
     Start-Transcript -Path (Join-Path $artifactDir "verification-console.txt") -Force | Out-Null
     $transcriptStarted = $true
     $isaacPython = Join-Path $IsaacRoot "python.bat"
-    $r1TestPython = if (Test-Path -LiteralPath $isaacPython) { $isaacPython } else { "python" }
-    python -m compileall -q packages extensions\twinpulse.extension\twinpulse scripts
+    $r1TestPython = if (Test-Path -LiteralPath $isaacPython) { $isaacPython } else { $appPython }
+    & $appPython -c "import PIL; assert tuple(map(int, PIL.__version__.split('.')[:2])) >= (12, 2)"
+    if ($LASTEXITCODE -ne 0) { throw "Pillow >=12.2 is required; install config\python-runtime-requirements.lock" }
+    & $appPython -m compileall -q packages extensions\twinpulse.extension\twinpulse scripts
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 
-    python scripts\generate_engine_ts.py --check
+    & $appPython scripts\generate_engine_ts.py --check
     if ($LASTEXITCODE -ne 0) { throw "generated TypeScript engine contract is stale" }
 
-    python packages\twinpulse_core\tests\test_contracts.py
+    & $appPython packages\twinpulse_core\tests\test_contracts.py
     if ($LASTEXITCODE -ne 0) { throw "core tests failed" }
 
-    python packages\twinpulse_provider\tests\test_provider.py
+    & $appPython -m unittest discover -s packages\twinpulse_provider\tests -p "test_*.py"
     if ($LASTEXITCODE -ne 0) { throw "provider tests failed" }
 
     & $r1TestPython -B -m unittest discover -s tests\integration -p test_r1_workflow.py
     if ($LASTEXITCODE -ne 0) { throw "R1 integration tests failed" }
 
-    python scripts\verify_r3_application.py
+    & $appPython scripts\verify_r3_application.py
     if ($LASTEXITCODE -ne 0) { throw "R3 application-service tests failed" }
 
-    python -B -m unittest -v tests.integration.test_r4_bridge_api
+    & $appPython -B -m unittest -v tests.integration.test_r4_bridge_api
     if ($LASTEXITCODE -ne 0) { throw "R4 loopback API/bridge contract tests failed" }
 
-    python -B -m unittest -v tests.integration.test_r5_product_api
+    & $appPython -B -m unittest -v tests.integration.test_r5_product_api tests.integration.test_s2a_input_integrity tests.integration.test_s2b_generation_ownership tests.integration.test_s2c_provider_settings tests.integration.test_s2d_managed_replay tests.integration.test_s3c_product_wiring
     if ($LASTEXITCODE -ne 0) { throw "R5 product API tests failed" }
+
+    $env:TWINPULSE_TEST_TMP = Join-Path $artifactDir "r6-process-manager-tests"
+    & $appPython -B -m unittest -v tests.integration.test_r6_process_manager
+    if ($LASTEXITCODE -ne 0) { throw "R6 process-manager tests failed" }
 
     pnpm --dir apps\twinpulse-web test
     if ($LASTEXITCODE -ne 0) { throw "R5 React tests failed" }
@@ -83,14 +99,28 @@ try {
         if ($r5ExitCode -ne 0 -or -not $r5Pass -or -not $r5Status) {
             throw "R5 React browser to actual-Isaac acceptance failed"
         }
+
+        if ($RunR6) {
+            $r6ArtifactDir = Join-Path $artifactDir "r6-app"
+            & $appPython scripts\verify_app_e2e.py --isaac-root $IsaacRoot --artifact-dir $r6ArtifactDir
+            if ($LASTEXITCODE -ne 0) {
+                throw "R6 managed-launcher browser/actual-Isaac acceptance failed"
+            }
+        }
     }
 
     $manifest = [ordered]@{
         status = "PASS"
         run_id = $runId
         created_at = (Get-Date).ToString("o")
-        app = "PASS_R3_R4_R5_CONTRACTS_AND_REACT_BUILD"
-        isaac = if ($SkipIsaac) { "NOT_RUN" } else { "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE_R5_WEB_E2E" }
+        app = "PASS_R3_R4_R5_S2A_S2B_S2C_S2D_S3B_S3C_WIRING_CONTRACTS_REACT_BUILD_R6_PROCESS_MANAGER"
+        isaac = if ($SkipIsaac) {
+            "NOT_RUN"
+        } elseif ($RunR6) {
+            "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE_R5_WEB_E2E_R6_MANAGED_APP_E2E"
+        } else {
+            "PASS_M1_M2_R2_R3_LEGACY_R4_BRIDGE_R5_WEB_E2E_R6_NOT_RUN"
+        }
         artifact_dir = $artifactDir
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDir "manifest.json") -Encoding UTF8
@@ -110,6 +140,7 @@ catch {
 }
 finally {
     Remove-Item Env:TWINPULSE_ARTIFACT_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:TWINPULSE_TEST_TMP -ErrorAction SilentlyContinue
     if ($transcriptStarted) { Stop-Transcript | Out-Null }
     Pop-Location
 }

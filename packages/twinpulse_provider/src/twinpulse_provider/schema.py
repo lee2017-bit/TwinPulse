@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def scene_tool_plan_json_schema() -> dict[str, Any]:
+def scene_tool_plan_json_schema(*, required_call_slots: bool = False) -> dict[str, Any]:
     """Strict schema for an allowlisted, locally executed scene-tool plan."""
 
     def number(*, minimum: float, maximum: float, exclusive_minimum: bool = False) -> dict[str, Any]:
@@ -24,7 +24,12 @@ def scene_tool_plan_json_schema() -> dict[str, Any]:
     coordinate = number(minimum=-20.0, maximum=20.0)
     position2 = vector(2, coordinate)
     position3 = vector(3, coordinate)
-    identifier = {"type": "string", "minLength": 1, "maxLength": 64}
+    identifier = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+    }
 
     def call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -64,7 +69,7 @@ def scene_tool_plan_json_schema() -> dict[str, Any]:
         call(
             "create_rack_row",
             {
-                "id": {"type": "string", "minLength": 1, "maxLength": 42},
+                "id": {**identifier, "maxLength": 42},
                 "center_m": position2,
                 "length_m": number(minimum=0.8, maximum=12.0),
                 "depth_m": number(minimum=0.35, maximum=2.5),
@@ -76,7 +81,7 @@ def scene_tool_plan_json_schema() -> dict[str, Any]:
         call(
             "place_pallet_stack",
             {
-                "id": {"type": "string", "minLength": 1, "maxLength": 48},
+                "id": {**identifier, "maxLength": 48},
                 "center_m": position2,
                 "footprint_m": vector(2, number(minimum=0.0, maximum=2.5, exclusive_minimum=True)),
                 "stack_height_m": number(minimum=0.15, maximum=3.0),
@@ -95,7 +100,7 @@ def scene_tool_plan_json_schema() -> dict[str, Any]:
         call(
             "place_static_agv",
             {
-                "id": {"type": "string", "minLength": 1, "maxLength": 48},
+                "id": {**identifier, "maxLength": 48},
                 "center_m": position2,
                 "yaw_deg": number(minimum=-180.0, maximum=180.0),
             },
@@ -116,17 +121,44 @@ def scene_tool_plan_json_schema() -> dict[str, Any]:
             },
         ),
     ]
+    common_properties: dict[str, Any] = {
+        "plan_version": {"type": "string", "const": "1.0"},
+        "scene_id": identifier,
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "image_observations": {"type": "string", "maxLength": 1000},
+    }
+    if required_call_slots:
+        by_tool = {item["properties"]["tool"]["const"]: item for item in calls}
+        scene_tools = (
+            "create_wall", "create_rack_row", "place_pallet_stack",
+            "create_aisle_marking", "place_static_agv",
+        )
+        properties = {
+            **common_properties,
+            "floor_call": by_tool["create_floor"],
+            "scene_calls": {
+                "type": "array",
+                "items": {"anyOf": [by_tool[name] for name in scene_tools]},
+                "maxItems": 20,
+            },
+            "agv_call": by_tool["place_predefined_agv"],
+            "navigation_call": by_tool["create_navigation_task"],
+        }
+        required = [
+            "plan_version", "scene_id", "summary", "image_observations",
+            "floor_call", "scene_calls", "agv_call", "navigation_call",
+        ]
+    else:
+        properties = {
+            **common_properties,
+            "calls": {"type": "array", "items": {"anyOf": calls}, "minItems": 1, "maxItems": 24},
+        }
+        required = ["plan_version", "scene_id", "summary", "image_observations", "calls"]
     return {
         "type": "object",
         "additionalProperties": False,
-        "properties": {
-            "plan_version": {"type": "string", "const": "1.0"},
-            "scene_id": identifier,
-            "summary": {"type": "string", "minLength": 1, "maxLength": 500},
-            "image_observations": {"type": "string", "maxLength": 1000},
-            "calls": {"type": "array", "items": {"anyOf": calls}, "minItems": 1, "maxItems": 24},
-        },
-        "required": ["plan_version", "scene_id", "summary", "image_observations", "calls"],
+        "properties": properties,
+        "required": required,
     }
 
 

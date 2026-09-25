@@ -129,16 +129,22 @@ def parse_measurement_constraints(
     payload: object,
     *,
     image_name: str | None = None,
+    image_sha256: str | None = None,
+    image_dimensions: tuple[int, int] | None = None,
 ) -> tuple[MeasurementConstraint, ...]:
     """Validate an already decoded sidecar without requiring a filesystem path."""
 
     if not isinstance(payload, Mapping):
         raise MeasurementConstraintError("measurement sidecar root must be an object")
-    allowed = {"schema_version", "source_image", "measurement_constraints"}
+    allowed = {
+        "schema_version", "source_image", "source_image_sha256",
+        "source_image_dimensions_px", "measurement_constraints",
+    }
     if set(payload) - allowed:
         raise MeasurementConstraintError("measurement sidecar contains unexpected fields")
-    if payload.get("schema_version") != "1.0":
-        raise MeasurementConstraintError("measurement sidecar schema_version must be 1.0")
+    schema_version = payload.get("schema_version")
+    if schema_version not in {"1.0", "1.1"}:
+        raise MeasurementConstraintError("measurement sidecar schema_version must be 1.0 or 1.1")
     source_image = payload.get("source_image")
     if source_image is not None:
         if not isinstance(source_image, str) or Path(source_image).name != source_image:
@@ -147,6 +153,31 @@ def parse_measurement_constraints(
             raise MeasurementConstraintError(
                 f"measurement sidecar is for {source_image}, not {image_name}"
             )
+    if schema_version == "1.0" and (
+        "source_image_sha256" in payload or "source_image_dimensions_px" in payload
+    ):
+        raise MeasurementConstraintError("measurement sidecar 1.0 cannot contain hash or dimensions")
+    if schema_version == "1.1":
+        if not {"source_image", "source_image_sha256", "source_image_dimensions_px"}.issubset(payload):
+            raise MeasurementConstraintError("measurement sidecar 1.1 requires image name, hash, and dimensions")
+        declared_hash = payload.get("source_image_sha256")
+        if (
+            not isinstance(declared_hash, str)
+            or len(declared_hash) != 64
+            or any(character not in "0123456789abcdef" for character in declared_hash)
+        ):
+            raise MeasurementConstraintError("measurement sidecar source_image_sha256 is invalid")
+        if image_sha256 is not None and declared_hash != image_sha256:
+            raise MeasurementConstraintError("measurement sidecar image hash does not match the upload")
+        declared_dimensions = payload.get("source_image_dimensions_px")
+        if (
+            not isinstance(declared_dimensions, list)
+            or len(declared_dimensions) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in declared_dimensions)
+        ):
+            raise MeasurementConstraintError("measurement sidecar image dimensions are invalid")
+        if image_dimensions is not None and tuple(declared_dimensions) != image_dimensions:
+            raise MeasurementConstraintError("measurement sidecar image dimensions do not match the upload")
     raw_constraints = payload.get("measurement_constraints")
     if not isinstance(raw_constraints, list) or not raw_constraints:
         raise MeasurementConstraintError("measurement sidecar must contain at least one constraint")

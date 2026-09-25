@@ -79,6 +79,8 @@ def _start_backend(directory: Path) -> tuple[subprocess.Popen[str], dict[str, ob
             sys.executable, str(ROOT / "scripts" / "twinpulse_backend.py"),
             "--ready-file", str(ready_file),
             "--static-root", str(ROOT / "apps" / "twinpulse-web" / "dist"),
+            "--settings-path", str(directory / "provider-settings.json"),
+            "--fixture-mode",
         ],
         cwd=str(ROOT), env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",

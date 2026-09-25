@@ -327,6 +327,23 @@ class CommandBroker:
                 ],
             }
 
+    def supervisor_state(self) -> dict[str, object]:
+        """Return secret-free engine readiness for the local process supervisor.
+
+        This is intentionally an in-process API, not an unauthenticated HTTP
+        endpoint.  The backend serializes it to an owner-only runtime file so
+        the launcher can distinguish a live PID from an authenticated engine
+        handshake and a usable stage snapshot.
+        """
+        with self._lock:
+            self._expire_if_disconnected()
+            return {
+                "engine_connected": self._engine_connected(),
+                "engine_session_id": self._engine_session_id,
+                "stage_epoch": self._stage_epoch,
+                "snapshot": self._snapshot.to_dict() if self._snapshot is not None else None,
+            }
+
     def _assert_product_control(self, product_session_id: str) -> None:
         if not self._lease_valid() or self._lease_owner != product_session_id:
             raise BrokerError("control_lease_required", "An active control lease is required")

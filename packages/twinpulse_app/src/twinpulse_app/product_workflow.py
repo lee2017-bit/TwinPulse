@@ -8,15 +8,15 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import PurePath
-import struct
 from threading import RLock, Thread
 import time
 from typing import Mapping
 from uuid import uuid4
-import zlib
 
 from .command_broker import BrokerError, RegisteredArtifact
+from .image_validation import ImageValidationError, decode_image
 from twinpulse_provider import MeasurementConstraintError, parse_measurement_constraints
+from twinpulse_provider import MeasurementConstraint
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -33,9 +33,13 @@ class ProductInput:
     image_name: str | None
     media_type: str | None
     image_bytes: bytes | None
+    image_sha256: str | None
     width: int | None
     height: int | None
+    image_dimensions_px: tuple[int, int] | None
     sidecar_name: str | None
+    sidecar_sha256: str | None
+    measurement_constraints: tuple[MeasurementConstraint, ...]
     measurement_count: int
 
 
@@ -69,8 +73,10 @@ class ProductWorkflow:
         encoded = value.get("content_base64")
         image_bytes: bytes | None = None
         sidecar_bytes: bytes | None = None
+        measurements: tuple[MeasurementConstraint, ...] = ()
         measurement_count = 0
         width = height = None
+        image_sha256: str | None = None
         if encoded is None:
             if name is not None or media_type is not None:
                 raise BrokerError("image_fields_invalid", "Image fields must be supplied together", status=400)
@@ -87,11 +93,15 @@ class ProductWorkflow:
                 raise BrokerError("image_base64_invalid", "Image encoding is invalid", status=400) from error
             if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
                 raise BrokerError("image_size_invalid", "Image exceeds the 10 MiB limit", status=413)
-            detected_type, width, height = _inspect_image(image_bytes)
+            try:
+                decoded = decode_image(image_bytes, max_pixels=MAX_IMAGE_PIXELS)
+            except ImageValidationError as error:
+                status = 413 if error.code == "image_dimensions_invalid" else 400
+                raise BrokerError(error.code, str(error), status=status) from error
+            detected_type, width, height = decoded.media_type, decoded.width, decoded.height
             if detected_type != media_type:
                 raise BrokerError("image_type_mismatch", "Image content does not match its media type", status=400)
-            if width * height > MAX_IMAGE_PIXELS:
-                raise BrokerError("image_dimensions_invalid", "Image pixel count exceeds the limit", status=413)
+            image_sha256 = hashlib.sha256(image_bytes).hexdigest()
         sidecar_name = value.get("sidecar_name")
         sidecar_encoded = value.get("sidecar_content_base64")
         if sidecar_encoded is None:
@@ -109,24 +119,45 @@ class ProductWorkflow:
                 if not sidecar_bytes or len(sidecar_bytes) > MAX_SIDECAR_BYTES:
                     raise ValueError("sidecar size")
                 payload = json.loads(sidecar_bytes.decode("utf-8"))
-                measurements = parse_measurement_constraints(payload, image_name=str(name))
+                measurements = parse_measurement_constraints(
+                    payload,
+                    image_name=str(name),
+                    image_sha256=image_sha256,
+                    image_dimensions=(width, height) if width is not None and height is not None else None,
+                )
             except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError, MeasurementConstraintError) as error:
                 raise BrokerError("sidecar_invalid", f"Measurement sidecar is invalid: {error}", status=400) from error
             measurement_count = len(measurements)
         if not prompt.strip() and image_bytes is None:
             raise BrokerError("input_empty", "Attach an image or describe the warehouse", status=400)
-        digest = hashlib.sha256()
-        for item in (str(input_kind), prompt, str(media_type or "")):
-            digest.update(item.encode("utf-8"))
-            digest.update(b"\0")
-        digest.update(image_bytes or b"")
-        digest.update(sidecar_bytes or b"")
+        sidecar_sha256 = hashlib.sha256(sidecar_bytes).hexdigest() if sidecar_bytes is not None else None
+        identity = {
+            "input_kind": str(input_kind),
+            "prompt": prompt,
+            "image": None if image_bytes is None else {
+                "name": name,
+                "media_type": media_type,
+                "sha256": image_sha256,
+                "dimensions_px": [width, height],
+            },
+            "sidecar": None if sidecar_bytes is None else {
+                "name": sidecar_name,
+                "sha256": sidecar_sha256,
+                "constraints": [item.to_dict() for item in measurements],
+            },
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
         selected = ProductInput(
             revision=digest.hexdigest(), prompt=prompt, input_kind=str(input_kind),
             image_name=name if isinstance(name, str) else None,
             media_type=media_type if isinstance(media_type, str) else None,
-            image_bytes=image_bytes, width=width, height=height,
+            image_bytes=image_bytes, image_sha256=image_sha256, width=width, height=height,
+            image_dimensions_px=(width, height) if width is not None and height is not None else None,
             sidecar_name=sidecar_name if isinstance(sidecar_name, str) else None,
+            sidecar_sha256=sidecar_sha256,
+            measurement_constraints=measurements,
             measurement_count=measurement_count,
         )
         with self._lock:
@@ -135,6 +166,13 @@ class ProductWorkflow:
             self._generation_id = None
             self._acknowledged_revision = None
             return self.snapshot()
+
+    @property
+    def current_input(self) -> ProductInput:
+        with self._lock:
+            if self._input is None:
+                raise BrokerError("input_required", "Select the current input first")
+            return self._input
 
     def start_fixture_generation(self) -> dict[str, object]:
         with self._lock:
@@ -207,9 +245,11 @@ class ProductWorkflow:
                     "prompt_length": len(selected.prompt),
                     "image_name": selected.image_name,
                     "media_type": selected.media_type,
+                    "image_sha256": selected.image_sha256,
                     "width": selected.width,
                     "height": selected.height,
                     "sidecar_name": selected.sidecar_name,
+                    "sidecar_sha256": selected.sidecar_sha256,
                     "measurement_count": selected.measurement_count,
                 },
                 "draft": draft,
@@ -244,53 +284,6 @@ def _safe_name(value: str) -> bool:
     )
 
 
-def _inspect_image(content: bytes) -> tuple[str, int, int]:
-    if content.startswith(b"\x89PNG\r\n\x1a\n") and len(content) >= 45:
-        if content[8:16] != b"\x00\x00\x00\rIHDR" or content[-12:] != b"\x00\x00\x00\x00IEND\xaeB`\x82":
-            raise BrokerError("image_content_invalid", "PNG structure is invalid", status=400)
-        expected_crc = struct.unpack(">I", content[29:33])[0]
-        if zlib.crc32(content[12:29]) & 0xFFFFFFFF != expected_crc:
-            raise BrokerError("image_content_invalid", "PNG header checksum is invalid", status=400)
-        width, height = struct.unpack(">II", content[16:24])
-        return _dimensions("image/png", width, height)
-    if content.startswith(b"\xff\xd8"):
-        offset = 2
-        while offset + 9 <= len(content):
-            if content[offset] != 0xFF:
-                offset += 1
-                continue
-            marker = content[offset + 1]
-            offset += 2
-            if marker in {0xD8, 0xD9}:
-                continue
-            if offset + 2 > len(content):
-                break
-            length = struct.unpack(">H", content[offset:offset + 2])[0]
-            if length < 2 or offset + length > len(content):
-                break
-            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
-                height, width = struct.unpack(">HH", content[offset + 3:offset + 7])
-                return _dimensions("image/jpeg", width, height)
-            offset += length
-    if content.startswith(b"RIFF") and len(content) >= 30 and content[8:12] == b"WEBP":
-        if content[12:16] == b"VP8X":
-            width = 1 + int.from_bytes(content[24:27], "little")
-            height = 1 + int.from_bytes(content[27:30], "little")
-            return _dimensions("image/webp", width, height)
-        if content[12:16] == b"VP8L" and content[20] == 0x2F:
-            bits = int.from_bytes(content[21:25], "little")
-            width = (bits & 0x3FFF) + 1
-            height = ((bits >> 14) & 0x3FFF) + 1
-            return _dimensions("image/webp", width, height)
-    raise BrokerError("image_content_invalid", "Image content is malformed or unsupported", status=400)
-
-
-def _dimensions(media_type: str, width: int, height: int) -> tuple[str, int, int]:
-    if width < 1 or height < 1:
-        raise BrokerError("image_dimensions_invalid", "Image dimensions are invalid", status=400)
-    return media_type, width, height
-
-
 def _object_summary(item: object) -> dict[str, object]:
     return {
         "id": item.id,
@@ -300,3 +293,9 @@ def _object_summary(item: object) -> dict[str, object]:
         "dimensions_m": list(item.shape.dimensions_m),
         "provenance": "fixture",
     }
+
+
+# Compatibility import for callers that used the original module path.  The
+# production implementation lives in product_workflow_service and owns no
+# generation state itself; ApplicationService remains the single owner.
+from .product_workflow_service import ProductWorkflow as ProductWorkflow  # noqa: E402,F811

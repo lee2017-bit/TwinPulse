@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
+import shutil
 import struct
 import sys
 import tempfile
 import time
 import unittest
+import uuid
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zlib
@@ -23,8 +26,16 @@ for source in (
 ):
     sys.path.insert(0, str(source))
 
-from twinpulse_app import CommandBroker, LocalApiServer, ProductWorkflow  # noqa: E402
-from twinpulse_core import fixed_warehouse_bundle  # noqa: E402
+from twinpulse_app import (  # noqa: E402
+    ApplicationService,
+    CommandBroker,
+    JsonProviderSettingsStore,
+    LocalApiServer,
+    ProductWorkflow,
+    ProjectStore,
+)
+from twinpulse_core import InputArtifactStore  # noqa: E402
+from twinpulse_provider import GenerationService, MockProvider, ProviderCapabilities, ProviderConfig  # noqa: E402
 
 
 def png(width: int = 2, height: int = 3) -> bytes:
@@ -32,25 +43,69 @@ def png(width: int = 2, height: int = 3) -> bytes:
     data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     ihdr = struct.pack(">I", len(data)) + b"IHDR" + data
     ihdr += struct.pack(">I", zlib.crc32(b"IHDR" + data) & 0xFFFFFFFF)
-    return signature + ihdr + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    rows = b"".join(b"\x00" + b"\x20\x40\x60" * width for _ in range(height))
+    compressed = zlib.compress(rows)
+    idat = struct.pack(">I", len(compressed)) + b"IDAT" + compressed
+    idat += struct.pack(">I", zlib.crc32(b"IDAT" + compressed) & 0xFFFFFFFF)
+    return signature + ihdr + idat + b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
 class R5ProductApiTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        static = Path(self.temporary.name)
+        configured = os.environ.get("TWINPULSE_TEST_TMP")
+        if configured:
+            static = Path(configured) / f"r5-{uuid.uuid4().hex}"
+            static.mkdir(parents=True)
+            self.temporary = None
+        else:
+            self.temporary = tempfile.TemporaryDirectory()
+            static = Path(self.temporary.name)
+        self.static = static
         (static / "index.html").write_text("<main>TwinPulse</main>", encoding="utf-8")
         (static / "app.js").write_text("console.log('safe')", encoding="utf-8")
         self.broker = CommandBroker()
-        self.artifact = self.broker.register_artifact("fixed_warehouse_v1", fixed_warehouse_bundle())
-        self.workflow = ProductWorkflow(self.artifact)
+        def gateway() -> GenerationService:
+            return GenerationService(
+                MockProvider(delay_s=0.05),
+                ProviderConfig(
+                    base_url="https://fixture.invalid/v1/", endpoint_path="responses",
+                    model_id="twinpulse-explicit-fixture", api_key_env="TWINPULSE_UNUSED_FIXTURE_KEY",
+                    capabilities=ProviderCapabilities(True, True, 1, ("image/png", "image/jpeg", "image/webp")),
+                    timeout_s=2.0, max_attempts=1,
+                ),
+            )
+        self.workflow = ProductWorkflow(
+            ApplicationService(
+                gateway(), project_store=ProjectStore(static / "active_project.json"),
+                artifact_store=InputArtifactStore(static / "inputs"),
+            ), self.broker, mode="explicit_fixture",
+            generation_settings_getter=lambda: {
+                "base_url": "https://fixture.invalid/v1/", "model_id": "twinpulse-explicit-fixture",
+                "reasoning_effort": "low", "image_detail": "auto", "request_schema": "1.0",
+            },
+            provider_state_getter=lambda: {"configured": True, "label": "Explicit deterministic fixture"},
+            gateway_factory=gateway,
+        )
         self.product_secret = "p" * 43
+        self.credentials = _MemoryCredentialStore()
+        self.settings_store = JsonProviderSettingsStore(static / "provider_settings.json")
+        self.supervisor_status = static / "supervisor.json"
+        self.supervisor_status.write_text(json.dumps({
+            "schema_version": "1.0", "status": "error", "phase": "engine_exited",
+            "message": "engine exited with code 7", "secret": "must-not-leak",
+            "backend": {"owned": True, "state": "running", "pid": 123, "path": "private"},
+            "engine": {"owned": True, "state": "exited", "exit_code": 7},
+            "browser": {"launched": True, "url": "private"},
+        }), encoding="utf-8")
         self.server = LocalApiServer(
             self.broker,
             product_bootstrap_secret=self.product_secret,
             engine_bootstrap_secret="e" * 43,
             product_workflow=self.workflow,
             static_root=static,
+            supervisor_status_file=self.supervisor_status,
+            provider_settings_store=self.settings_store,
+            credential_store=self.credentials,
         )
         self.server.start()
         status, result, headers = self.request(
@@ -62,7 +117,10 @@ class R5ProductApiTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.server.stop()
-        self.temporary.cleanup()
+        if self.temporary is not None:
+            self.temporary.cleanup()
+        else:
+            shutil.rmtree(self.static, ignore_errors=True)
 
     def request(
         self, path: str, body: object | None = None, *, headers: dict[str, str] | None = None,
@@ -109,14 +167,14 @@ class R5ProductApiTests(unittest.TestCase):
         while generated["phase"] == "generating" and time.monotonic() < deadline:
             time.sleep(0.02)
             generated = self.workflow.snapshot()
-        self.assertEqual(generated["mode"], "deterministic_fixture")
+        self.assertEqual(generated["mode"], "explicit_fixture")
         self.assertFalse(generated["provider"]["connected"])
         revision = generated["draft"]["revision"]
         status, rejected, _ = self.request(
             "/v1/product/commands",
             {
                 "client_request_id": "before-ack", "command_type": "build_scene",
-                "artifact_id": self.artifact.artifact_id,
+                "artifact_id": generated["draft"]["artifact_id"],
                 "expected_applied_revision": revision,
             },
             headers=self.product_headers,
@@ -225,6 +283,73 @@ class R5ProductApiTests(unittest.TestCase):
         status, result, _ = self.request("/v1/product/workflow")
         self.assertEqual(status, 401)
         self.assertEqual(result["error"]["code"], "session_rejected")
+
+    def test_runtime_status_is_authenticated_and_strictly_sanitized(self) -> None:
+        status, result, _ = self.request("/v1/product/runtime", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["phase"], "engine_exited")
+        self.assertEqual(result["engine"]["exit_code"], 7)
+        serialized = json.dumps(result)
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertNotIn("private", serialized)
+        status, result, _ = self.request("/v1/product/runtime")
+        self.assertEqual(status, 401)
+        self.assertEqual(result["error"]["code"], "session_rejected")
+
+    def test_provider_settings_persist_nonsecret_values_without_echoing_key(self) -> None:
+        status, initial, _ = self.request(
+            "/v1/product/provider-settings", headers={"Cookie": self.cookie},
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(initial["credential_configured"])
+        secret = "credential-test-never-serialize"
+        status, saved, _ = self.request(
+            "/v1/product/provider-settings",
+            {
+                "base_url": "https://api.openai.com/v1/", "model_id": "gpt-test",
+                "reasoning_effort": "medium", "api_key": secret,
+            },
+            headers=self.product_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(saved["credential_configured"])
+        self.assertEqual(saved["model_id"], "gpt-test")
+        self.assertNotIn(secret, json.dumps(saved))
+        self.assertNotIn(secret, self.settings_store.path.read_text(encoding="utf-8"))
+        self.assertEqual(self.credentials.secret, secret)
+
+        status, kept, _ = self.request(
+            "/v1/product/provider-settings",
+            {
+                "base_url": "https://api.openai.com/v1/", "model_id": "gpt-test-2",
+                "reasoning_effort": "low", "api_key": "",
+            },
+            headers=self.product_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(kept["credential_configured"])
+        self.assertEqual(self.credentials.secret, secret)
+
+
+class _MemoryCredentialStore:
+    def __init__(self) -> None:
+        self.secret: str | None = None
+
+    @property
+    def target_name(self) -> str:
+        return "TwinPulse/OpenAIResponsesAPI"
+
+    def save(self, secret: str) -> None:
+        self.secret = secret
+
+    def load(self) -> str | None:
+        return self.secret
+
+    def is_configured(self) -> bool:
+        return self.secret is not None
+
+    def delete(self) -> None:
+        self.secret = None
 
 
 if __name__ == "__main__":

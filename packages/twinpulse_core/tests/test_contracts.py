@@ -13,6 +13,7 @@ sys.path.insert(0, str(CORE_SRC))
 
 from twinpulse_core import (  # noqa: E402
     GeneratedDraftRecord,
+    InputRevision,
     EpisodeSample,
     SceneObject,
     SceneToolCall,
@@ -28,6 +29,7 @@ from twinpulse_core import (  # noqa: E402
     assess_episode,
     compact_2wd_caster_profile,
     resolve_robot_profile,
+    resolve_current_controller_route,
     straight_route_command,
     validate_bundle,
     validate_current_controller_route,
@@ -221,6 +223,54 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(SpecValidationError, "blocked"):
             validate_current_controller_route(replace(bundle, scene=blocked_scene))
 
+    def test_local_route_resolver_moves_blocked_candidate_and_updates_plan(self) -> None:
+        plan = demo_warehouse_tool_plan()
+        calls = []
+        for call in plan.calls:
+            arguments = dict(call.arguments)
+            if call.tool == "place_predefined_agv":
+                arguments["start_position_m"] = [0.0, 1.6, 0.0]
+            elif call.tool == "create_navigation_task":
+                arguments["goal_position_m"] = [1.5, 1.6, 0.0]
+            calls.append(replace(call, arguments=arguments))
+        blocked = replace(plan, calls=tuple(calls))
+
+        resolved, changed = resolve_current_controller_route(blocked)
+
+        self.assertTrue(changed)
+        start_call = next(call for call in resolved.calls if call.tool == "place_predefined_agv")
+        task_call = next(call for call in resolved.calls if call.tool == "create_navigation_task")
+        self.assertNotEqual(start_call.arguments["start_position_m"][1], 1.6)
+        self.assertEqual(
+            start_call.arguments["start_position_m"][1],
+            task_call.arguments["goal_position_m"][1],
+        )
+        SceneToolRegistry().execute(resolved)
+
+    def test_local_route_resolver_projects_agv_and_goal_to_floor(self) -> None:
+        plan = demo_warehouse_tool_plan()
+        calls = []
+        for call in plan.calls:
+            arguments = dict(call.arguments)
+            if call.tool == "place_predefined_agv":
+                arguments["start_position_m"] = [0.0, 0.0, 0.35]
+            elif call.tool == "create_navigation_task":
+                arguments["goal_position_m"] = [1.5, 0.0, 0.8]
+            calls.append(replace(call, arguments=arguments))
+
+        resolved, changed = resolve_current_controller_route(replace(plan, calls=tuple(calls)))
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            next(call for call in resolved.calls if call.tool == "place_predefined_agv")
+            .arguments["start_position_m"], [0.0, 0.0, 0.0],
+        )
+        self.assertEqual(
+            next(call for call in resolved.calls if call.tool == "create_navigation_task")
+            .arguments["goal_position_m"], [1.5, 0.0, 0.0],
+        )
+        SceneToolRegistry().execute(resolved)
+
     def test_allowlisted_scene_tool_plan_expands_rack_rows(self) -> None:
         plan = demo_warehouse_tool_plan()
         receipt = SceneToolRegistry().execute_with_receipt(plan)
@@ -230,6 +280,25 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(sum(item.kind == "rack" for item in bundle.scene.objects), 16)
         self.assertEqual(receipt.domains, ("scene", "robot", "task"))
         self.assertEqual(receipt.robot_profile_id, "agv_compact_2wd_caster_v2")
+
+    def test_overlapping_rack_rows_are_rejected_before_isaac_build(self) -> None:
+        plan = demo_warehouse_tool_plan()
+        calls = tuple(
+            replace(call, arguments={**call.arguments, "center_m": [2.0, 1.6]})
+            if call.call_id == "rack_right" else call
+            for call in plan.calls
+        )
+        with self.assertRaisesRegex(SceneToolPlanError, "rack rows overlap"):
+            SceneToolRegistry().execute(replace(plan, calls=calls))
+
+    def test_rack_rows_touching_only_at_edge_are_allowed(self) -> None:
+        plan = demo_warehouse_tool_plan()
+        calls = tuple(
+            replace(call, arguments={**call.arguments, "center_m": [1.5, 2.2]})
+            if call.call_id == "rack_right" else call
+            for call in plan.calls
+        )
+        SceneToolRegistry().execute(replace(plan, calls=calls))
 
     def test_unknown_scene_tool_is_rejected(self) -> None:
         plan = demo_warehouse_tool_plan()
@@ -270,6 +339,59 @@ class ContractTests(unittest.TestCase):
         value["plan_sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "hash"):
             GeneratedDraftRecord.from_dict(value)
+
+    def test_generated_draft_preserves_bounded_provider_provenance_and_loads_v2(self) -> None:
+        revision = InputRevision.create(
+            prompt="warehouse",
+            images=(("warehouse.png", "image/png", b"image"),),
+            measurement_constraints=(),
+            profile_id="agv_compact_2wd_caster_v2",
+            generation_settings={
+                "adapter_kind": "nebius_chat_completions_pipeline",
+                "provider_profile": "nebius_token_factory",
+                "endpoint_path": "chat/completions",
+                "model_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+                "observer_model_id": "google/gemma-3-27b-it",
+                "fallback_observer_model_id": "openbmb/MiniCPM-V-4_5",
+            },
+        )
+        self.assertEqual(
+            revision.generation_settings["provider_profile"], "nebius_token_factory",
+        )
+        self.assertEqual(
+            revision.generation_settings["endpoint_path"], "chat/completions",
+        )
+        record = GeneratedDraftRecord.create(
+            request_id="request-nebius",
+            provider_name="Nebius pipeline",
+            model_id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+            image_count=1,
+            plan=demo_warehouse_tool_plan(),
+            input_revision=revision,
+            provider_provenance={
+                "pipeline_version": "1.0",
+                "input_image": {"byte_count": 5, "sha256": "0" * 64},
+            },
+        )
+        value = record.to_dict()
+        self.assertEqual(value["record_version"], "3.0")
+        loaded = GeneratedDraftRecord.from_dict(value)
+        self.assertEqual(loaded.provider_provenance, record.provider_provenance)
+
+        v2 = dict(value)
+        v2["record_version"] = "2.0"
+        v2.pop("provider_provenance")
+        loaded_v2 = GeneratedDraftRecord.from_dict(v2)
+        self.assertEqual(loaded_v2.provider_provenance, {})
+        self.assertEqual(loaded_v2.input_revision, revision)
+
+    def test_generated_draft_rejects_secret_or_image_data_in_provenance(self) -> None:
+        with self.assertRaisesRegex(ValueError, "secret-bearing"):
+            GeneratedDraftRecord(
+                request_id="request-1", provider_name="provider", model_id="model", image_count=0,
+                created_at_utc="2026-09-24T00:00:00+00:00", plan_sha256="0" * 64,
+                plan=demo_warehouse_tool_plan(), provider_provenance={"authorization": "Bearer secret"},
+            )
 
 
 if __name__ == "__main__":

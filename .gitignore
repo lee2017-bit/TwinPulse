@@ -9,8 +9,10 @@ node_modules/
 *.tsbuildinfo
 .vscode/
 .idea/
+.venv/
 *.log
 verification-output/
 artifacts/runs/
+artifacts/
 tmp*/
 .nonexistent-runtime-test-state/

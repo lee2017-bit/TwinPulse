@@ -12,6 +12,11 @@ export interface DraftObject {
 export interface DraftSummary {
   artifact_id: string;
   revision: string;
+  input_revision: string | null;
+  plan_sha256: string;
+  request_id: string;
+  provider_name: string;
+  model_id: string;
   scene_id: string;
   robot_profile_id: string;
   task_id: string;
@@ -23,8 +28,8 @@ export interface DraftSummary {
 }
 
 export interface WorkflowState {
-  schema_version: "1.0";
-  mode: "deterministic_fixture";
+  schema_version: "1.1";
+  mode: "live_provider" | "explicit_fixture";
   provider: { configured: boolean; connected: boolean; label: string };
   phase: string;
   generation_id: string | null;
@@ -34,9 +39,11 @@ export interface WorkflowState {
     prompt_length: number;
     image_name: string | null;
     media_type: string | null;
+    image_sha256: string | null;
     width: number | null;
     height: number | null;
     sidecar_name: string | null;
+    sidecar_sha256: string | null;
     measurement_count: number;
   };
   draft: DraftSummary | null;
@@ -55,4 +62,46 @@ export interface ProductState {
   snapshot: SimulationSnapshot | null;
   operations: Operation[];
   artifacts: { artifact_id: string; revision: string }[];
+}
+
+export interface SupervisorComponent {
+  owned: boolean;
+  state: string;
+  pid?: number;
+  exit_code?: number;
+}
+
+export interface SupervisorState {
+  schema_version: "1.0";
+  status: string;
+  phase: string;
+  message: string;
+  started_at_utc: string | null;
+  updated_at_utc: string | null;
+  backend: SupervisorComponent;
+  engine: SupervisorComponent;
+  browser: { launched: boolean };
+}
+
+export interface ProviderSettingsState {
+  schema_version: "3.0";
+  base_url: string;
+  model_id: string;
+  reasoning_effort: "low" | "medium" | "high";
+  adapter_kind: string;
+  provider_profile: string;
+  endpoint_path: string;
+  credential_ref: string;
+  observer_model_id: string;
+  fallback_observer_model_id: string;
+  capabilities: {
+    supports_images: boolean;
+    supports_structured_output: boolean;
+    max_images: number;
+    accepted_mime_types: string[];
+  };
+  settings_saved: boolean;
+  capability_checked: boolean;
+  credential_configured: boolean;
+  live_request_succeeded: boolean;
 }

@@ -1,5 +1,5 @@
 import type { CommandType } from "./engine-contracts";
-import type { ProductState, WorkflowState } from "./types";
+import type { ProductState, ProviderSettingsState, SupervisorState, WorkflowState } from "./types";
 
 const CSRF_KEY = "twinpulse.csrf";
 
@@ -20,22 +20,55 @@ async function parseResponse<T>(response: Response): Promise<T> {
 export class TwinPulseApi {
   private csrf = sessionStorage.getItem(CSRF_KEY) ?? "";
 
+  private saveCsrf(value: string): void {
+    this.csrf = value;
+    sessionStorage.setItem(CSRF_KEY, value);
+  }
+
+  private clearCsrf(): void {
+    this.csrf = "";
+    sessionStorage.removeItem(CSRF_KEY);
+  }
+
+  private reopenRequired(): ApiError {
+    return new ApiError(
+      "session_reopen_required",
+      "세션이 만료되었습니다. TwinPulse 런처의 안전한 시작 링크로 다시 열어주세요.",
+    );
+  }
+
   async bootstrap(): Promise<void> {
     const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const secret = fragment.get("bootstrap");
     if (!secret) {
-      if (!this.csrf) throw new ApiError("bootstrap_required", "안전한 시작 링크로 다시 열어주세요.");
-      return;
+      try {
+        const recovered = await parseResponse<{ csrf_token: string }>(await fetch(
+          "/v1/product/session",
+          { method: "GET", credentials: "same-origin" },
+        ));
+        this.saveCsrf(recovered.csrf_token);
+        return;
+      } catch (error) {
+        this.clearCsrf();
+        if (error instanceof ApiError && error.code === "session_rejected") {
+          throw this.reopenRequired();
+        }
+        throw error;
+      }
     }
     history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    const result = await parseResponse<{ csrf_token: string }>(await fetch("/v1/bootstrap", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "product", secret }),
-    }));
-    this.csrf = result.csrf_token;
-    sessionStorage.setItem(CSRF_KEY, this.csrf);
+    try {
+      const result = await parseResponse<{ csrf_token: string }>(await fetch("/v1/bootstrap", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "product", secret }),
+      }));
+      this.saveCsrf(result.csrf_token);
+    } catch (error) {
+      this.clearCsrf();
+      throw error;
+    }
   }
 
   private async request<T>(path: string, body?: object): Promise<T> {
@@ -48,11 +81,29 @@ export class TwinPulseApi {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return parseResponse<T>(response);
+    try {
+      return await parseResponse<T>(response);
+    } catch (error) {
+      if (response.status === 401) {
+        this.clearCsrf();
+        throw this.reopenRequired();
+      }
+      throw error;
+    }
   }
 
   workflow(): Promise<WorkflowState> { return this.request("/v1/product/workflow"); }
   productState(): Promise<ProductState> { return this.request("/v1/product/state"); }
+  runtimeState(): Promise<SupervisorState> { return this.request("/v1/product/runtime"); }
+  providerSettings(): Promise<ProviderSettingsState> {
+    return this.request("/v1/product/provider-settings");
+  }
+  saveProviderSettings(body: {
+    base_url: string; model_id: string; reasoning_effort: string; api_key: string;
+    credential_reapproval: boolean; provider_profile: string;
+  }): Promise<ProviderSettingsState> {
+    return this.request("/v1/product/provider-settings", body);
+  }
   selectInput(body: object): Promise<WorkflowState> { return this.request("/v1/product/input", body); }
   generate(): Promise<WorkflowState> { return this.request("/v1/product/generation", {}); }
   cancelGeneration(): Promise<WorkflowState> { return this.request("/v1/product/generation/cancel", {}); }

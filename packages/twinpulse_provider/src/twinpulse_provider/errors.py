@@ -29,5 +29,13 @@ class ProviderRateLimitError(ProviderError):
     pass
 
 
+class ProviderUnavailableError(ProviderError):
+    pass
+
+
+class ProviderRequestError(ProviderError):
+    pass
+
+
 class GenerationCancelledError(ProviderError):
     pass

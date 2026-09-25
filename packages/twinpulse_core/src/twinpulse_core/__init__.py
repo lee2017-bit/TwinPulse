@@ -35,6 +35,8 @@ from .motion_control import RouteCommand, normalize_angle, straight_route_comman
 from .serialization import bundle_from_json, bundle_to_json
 from .scene_tools import (
     SCENE_TOOL_NAMES,
+    SCENE_TOOL_CATALOG_REVISION,
+    LOCAL_ROUTE_RESOLVER_REVISION,
     TOOL_DOMAINS,
     SceneToolCall,
     SceneToolPlan,
@@ -44,6 +46,7 @@ from .scene_tools import (
     demo_warehouse_tool_plan,
     scene_tool_plan_from_json,
     scene_tool_plan_to_json,
+    resolve_current_controller_route,
     validate_scene_tool_plan,
 )
 from .validation import SpecValidationError, ValidationLimits, validate_bundle, validate_current_controller_route
@@ -78,6 +81,8 @@ __all__ = [
     "Transform",
     "ValidationLimits",
     "SCENE_TOOL_NAMES",
+    "SCENE_TOOL_CATALOG_REVISION",
+    "LOCAL_ROUTE_RESOLVER_REVISION",
     "TOOL_DOMAINS",
     "SceneToolCall",
     "SceneToolPlan",
@@ -95,6 +100,7 @@ __all__ = [
     "demo_warehouse_tool_plan",
     "scene_tool_plan_from_json",
     "scene_tool_plan_to_json",
+    "resolve_current_controller_route",
     "validate_scene_tool_plan",
     "validate_plan_measurements",
     "validate_bundle",

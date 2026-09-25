@@ -7,7 +7,7 @@ name = "twinpulse-app"
 version = "0.1.0"
 description = "UI-independent TwinPulse application service and local persistence"
 requires-python = ">=3.12"
-dependencies = ["twinpulse-core==0.1.0", "twinpulse-provider==0.1.0"]
+dependencies = ["twinpulse-core==0.1.0", "twinpulse-provider==0.1.0", "Pillow>=12.2,<13"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -241,13 +241,16 @@ class R3PureImportTests(unittest.TestCase):
         self.assertEqual(app["project"]["name"], "twinpulse-app")
         self.assertEqual(
             app["project"]["dependencies"],
-            ["twinpulse-core==0.1.0", "twinpulse-provider==0.1.0"],
+            ["twinpulse-core==0.1.0", "twinpulse-provider==0.1.0", "Pillow>=12.2,<13"],
         )
 
     def test_general_python_imports_have_no_kit_modules(self) -> None:
-        paths = os.pathsep.join(str(ROOT / "packages" / name / "src") for name in (
+        path_entries = [str(ROOT / "packages" / name / "src") for name in (
             "twinpulse_core", "twinpulse_provider", "twinpulse_app",
-        ))
+        )]
+        if os.environ.get("PYTHONPATH"):
+            path_entries.append(os.environ["PYTHONPATH"])
+        paths = os.pathsep.join(path_entries)
         code = (
             "import json,sys,twinpulse_core,twinpulse_provider,twinpulse_app;"
             "print(json.dumps(sorted(x for x in ('omni','pxr','carb') if x in sys.modules)))"

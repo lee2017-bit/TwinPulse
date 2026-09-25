@@ -16,7 +16,11 @@ command = [
     str(ROOT / "tests" / "integration" / "test_r3_application.py"),
 ]
 environment = __import__("os").environ.copy()
-environment["PYTHONPATH"] = __import__("os").pathsep.join(map(str, sources))
+existing_pythonpath = environment.get("PYTHONPATH")
+path_entries = [*map(str, sources)]
+if existing_pythonpath:
+    path_entries.append(existing_pythonpath)
+environment["PYTHONPATH"] = __import__("os").pathsep.join(path_entries)
 temporary_root = ROOT / "tmp-r3-application"
 temporary_root.mkdir(parents=True, exist_ok=True)
 environment["TWINPULSE_TEST_TMP"] = str(temporary_root)

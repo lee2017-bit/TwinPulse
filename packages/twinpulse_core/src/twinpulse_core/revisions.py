@@ -19,7 +19,11 @@ from .scene_tools import SceneToolPlan, validate_scene_tool_plan
 
 INPUT_REVISION_VERSION = "1.0"
 VALIDATOR_VERSION = "r1.1"
-_NON_SECRET_SETTING_KEYS = frozenset({"base_url", "model_id", "reasoning_effort", "image_detail", "request_schema"})
+_NON_SECRET_SETTING_KEYS = frozenset({
+    "base_url", "model_id", "reasoning_effort", "image_detail", "request_schema",
+    "tool_catalog_revision", "adapter_kind", "provider_profile", "endpoint_path",
+    "observer_model_id", "fallback_observer_model_id",
+})
 
 
 def canonical_sha256(value: Any) -> str:
@@ -75,7 +79,7 @@ class InputRevision:
 
     @classmethod
     def create(
-        cls, *, prompt: str, images: Sequence[tuple[str, bytes]],
+        cls, *, prompt: str, images: Sequence[tuple[str, bytes] | tuple[str, str, bytes]],
         measurement_constraints: Sequence[Any], profile_id: str,
         generation_settings: Mapping[str, str], input_kind: str | None = None,
     ) -> "InputRevision":
@@ -83,8 +87,20 @@ class InputRevision:
             raise ValueError("input prompt is invalid")
         if len(images) > 1:
             raise ValueError("input revision permits at most one image")
-        image_refs = tuple({"name": name, "sha256": hashlib.sha256(content).hexdigest()}
-                           for name, content in images)
+        image_refs_list: list[dict[str, str]] = []
+        for image in images:
+            if len(image) == 2:
+                name, content = image
+                mime_type = None
+            else:
+                name, mime_type, content = image
+            reference = {"name": name, "sha256": hashlib.sha256(content).hexdigest()}
+            if mime_type is not None:
+                if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+                    raise ValueError("input image MIME type is unsupported")
+                reference["mime_type"] = mime_type
+            image_refs_list.append(reference)
+        image_refs = tuple(image_refs_list)
         if any(not ref["name"] or Path(ref["name"]).name != ref["name"] for ref in image_refs):
             raise ValueError("input image name must be a file name")
         constraints = tuple(dict(value.to_dict() if hasattr(value, "to_dict") else value)
@@ -142,11 +158,15 @@ class InputRevision:
                for key, item in settings.items()):
             raise ValueError("input revision settings contain unsupported or secret data")
         for image in images:
-            if not isinstance(image, Mapping) or set(image) != {"name", "sha256"}:
+            if not isinstance(image, Mapping) or set(image) not in (
+                {"name", "sha256"}, {"name", "sha256", "mime_type"},
+            ):
                 raise ValueError("input revision image reference is invalid")
             if not isinstance(image["name"], str) or Path(image["name"]).name != image["name"]:
                 raise ValueError("input revision image name is invalid")
             _hex_digest(image["sha256"], "image")
+            if "mime_type" in image and image["mime_type"] not in {"image/png", "image/jpeg", "image/webp"}:
+                raise ValueError("input revision image MIME type is invalid")
         if not all(isinstance(item, Mapping) for item in constraints):
             raise ValueError("input revision measurement is invalid")
         if not all(isinstance(value[field], str) for field in ("prompt", "input_kind", "profile_id")):

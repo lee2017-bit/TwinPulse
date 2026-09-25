@@ -69,6 +69,7 @@ class ProviderResponse:
     payload: Mapping[str, Any]
     provider_name: str
     model_id: str
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
 class CancellationToken:

@@ -16,6 +16,7 @@ from twinpulse_core import (
     InputArtifactStore,
     InputRevision,
     SimulationPort,
+    SCENE_TOOL_CATALOG_REVISION,
     SpecBundle,
     generation_result_is_current,
 )
@@ -40,6 +41,12 @@ class PreparedInput:
     revision: InputRevision
     images: tuple[ImageInput, ...]
     measurement_constraints: tuple[MeasurementConstraint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationContext:
+    prepared: PreparedInput
+    epoch: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,20 +109,32 @@ class ApplicationService:
         artifact_store: InputArtifactStore | None = None,
         legacy_draft_store: GeneratedDraftStore | None = None,
         project_id: str = "default",
+        allow_invalid_restore: bool = False,
     ) -> None:
         self._generation_gateway = generation_gateway
         self._project_store = project_store or ProjectStore()
-        self._project, self._legacy_imported = self._project_store.load_or_import_legacy(
-            legacy_draft_store, project_id=project_id,
-        )
+        self._restore_error_code: str | None = None
+        self._restore_error_message: str | None = None
+        try:
+            self._project, self._legacy_imported = self._project_store.load_or_import_legacy(
+                legacy_draft_store, project_id=project_id,
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            if not allow_invalid_restore:
+                raise
+            self._project = ProjectRecord(project_id=project_id)
+            self._legacy_imported = False
+            self._restore_error_code = "project_restore_invalid"
+            self._restore_error_message = "Stored project could not be validated; select the current input again"
         self._artifact_store = artifact_store or InputArtifactStore(self._project_store.path.parent / "inputs")
         self._prepared: PreparedInput | None = None
         self._epoch = 0
         self._sequence = 0
         self._phase = "draft_ready" if self._project.draft is not None else "empty"
         self._last_event = self._event(
-            "restored", "legacy_imported" if self._legacy_imported else "project_loaded",
-            "Stored project state loaded",
+            "restored",
+            self._restore_error_code or ("legacy_imported" if self._legacy_imported else "project_loaded"),
+            self._restore_error_message or "Stored project state loaded",
         )
 
     @property
@@ -125,6 +144,12 @@ class ApplicationService:
     @property
     def project_id(self) -> str:
         return self._project.project_id
+
+    @property
+    def restore_error(self) -> tuple[str, str] | None:
+        if self._restore_error_code is None or self._restore_error_message is None:
+            return None
+        return self._restore_error_code, self._restore_error_message
 
     @property
     def last_event(self) -> ApplicationEvent:
@@ -147,12 +172,14 @@ class ApplicationService:
     ) -> PreparedInput:
         image_tuple = tuple(images)
         constraints = tuple(measurement_constraints)
+        settings = dict(generation_settings)
+        settings.setdefault("tool_catalog_revision", SCENE_TOOL_CATALOG_REVISION)
         revision = InputRevision.create(
             prompt=prompt,
-            images=tuple((image.name, image.content) for image in image_tuple),
+            images=tuple((image.name, image.mime_type, image.content) for image in image_tuple),
             measurement_constraints=constraints,
             profile_id=profile_id,
-            generation_settings=generation_settings,
+            generation_settings=settings,
             input_kind=input_kind,
         )
         return PreparedInput(revision, image_tuple, constraints)
@@ -161,6 +188,8 @@ class ApplicationService:
         self._generation_gateway.cancel_active()
         self._epoch += 1
         self._prepared = value
+        self._restore_error_code = None
+        self._restore_error_message = None
         self._phase = "input_ready"
         self._project = ProjectRecord(
             self._project.project_id, latest_input=value.revision,
@@ -181,17 +210,22 @@ class ApplicationService:
     def cancel_generation(self) -> ApplicationEvent:
         return self.invalidate_input("cancelled")
 
-    async def generate(self) -> GenerationOutcome:
+    def generation_context(self) -> GenerationContext:
         prepared = self._prepared
         if prepared is None:
             raise RuntimeError("No current input revision is selected")
+        return GenerationContext(prepared, self._epoch)
+
+    async def generate(self, context: GenerationContext | None = None) -> GenerationOutcome:
+        selected_context = context or self.generation_context()
+        prepared = selected_context.prepared
         if not prepared.revision.prompt and not prepared.images:
             raise ValueError("Attach an image or describe the warehouse before generating")
         self._artifact_store.save(
             prepared.revision,
             tuple((image.name, image.content) for image in prepared.images),
         )
-        ticket = self._epoch
+        ticket = selected_context.epoch
         request_id = str(uuid4())
         self._phase = "generating"
         self._last_event = self._event("generation", "generation_started", "Generation started")
@@ -221,6 +255,7 @@ class ApplicationService:
                 image_count=result.image_count,
                 plan=result.plan,
                 input_revision=prepared.revision,
+                provider_provenance=result.provider_provenance,
             )
             candidate = ProjectRecord(self._project.project_id, prepared.revision, record)
             persisted = True

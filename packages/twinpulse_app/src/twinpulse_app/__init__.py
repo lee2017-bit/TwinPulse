@@ -5,13 +5,16 @@ from .application import (
     ApplicationService,
     ApplicationSnapshot,
     BuildCandidate,
+    GenerationContext,
     GenerationOutcome,
     PreparedInput,
 )
 from .credentials import CredentialStore, WindowsCredentialStore
 from .api import LocalApiServer
 from .command_broker import BrokerError, CommandBroker, RegisteredArtifact
-from .product_workflow import ProductWorkflow
+from .product_workflow_service import ProductWorkflow
+from .process_manager import LaunchResult, ProcessManagerError, TwinPulseProcessManager
+from .replay import ReplayFixture, ReplayOnlyGateway, load_replay_fixture
 from .project_store import ProjectRecord, ProjectStore, default_project_state_path
 from .settings import (
     DEFAULT_BASE_URL,
@@ -19,14 +22,19 @@ from .settings import (
     DEFAULT_REASONING,
     JsonProviderSettingsStore,
     ProviderSettings,
+    provider_settings_preset,
     migrate_legacy_settings_once,
 )
+from .provider_composition import build_live_generation_service
 
 __all__ = [
     "ApplicationEvent", "ApplicationService", "ApplicationSnapshot", "BuildCandidate",
     "BrokerError", "CommandBroker",
     "CredentialStore", "DEFAULT_BASE_URL", "DEFAULT_MODEL_ID", "DEFAULT_REASONING",
-    "GenerationOutcome", "JsonProviderSettingsStore", "LocalApiServer", "PreparedInput", "ProjectRecord",
-    "ProductWorkflow", "ProjectStore", "ProviderSettings", "RegisteredArtifact", "WindowsCredentialStore", "default_project_state_path",
+    "GenerationContext", "GenerationOutcome", "JsonProviderSettingsStore", "LocalApiServer", "PreparedInput", "ProjectRecord",
+    "LaunchResult", "ProcessManagerError", "ProductWorkflow", "ProjectStore", "ProviderSettings", "RegisteredArtifact",
+    "ReplayFixture", "ReplayOnlyGateway", "TwinPulseProcessManager", "WindowsCredentialStore", "default_project_state_path",
+    "load_replay_fixture",
+    "build_live_generation_service", "provider_settings_preset",
     "migrate_legacy_settings_once",
 ]

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
-from typing import Protocol
+from typing import Any, Mapping, Protocol
 
-from twinpulse_core import SceneToolPlan, SceneToolRegistry, SpecBundle, scene_tool_plan_from_json
+from twinpulse_core import (
+    SceneToolPlan,
+    SceneToolRegistry,
+    SpecBundle,
+    LOCAL_ROUTE_RESOLVER_REVISION,
+    resolve_current_controller_route,
+    scene_tool_plan_from_json,
+)
 
 from .contracts import CancellationToken, GenerationRequest, ProviderConfig, ProviderResponse
 from .errors import GenerationCancelledError, InvalidProviderResponseError, ProviderTimeoutError
@@ -30,6 +37,7 @@ class GenerationResult:
     bundle: SpecBundle
     measurement_constraint_count: int = 0
     measurement_checked_value_count: int = 0
+    provider_provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
 class GenerationService:
@@ -61,8 +69,15 @@ class GenerationService:
                 raise GenerationCancelledError("late or cancelled response was ignored")
             try:
                 plan = scene_tool_plan_from_json(json.dumps(response.payload))
+                plan, route_resolved = resolve_current_controller_route(plan)
                 measurement_result = validate_measurement_constraints(plan, request.measurement_constraints)
                 bundle = SceneToolRegistry().execute(plan)
+                provenance = dict(response.provenance)
+                if route_resolved:
+                    provenance["local_route_resolution"] = {
+                        "applied": True,
+                        "revision": LOCAL_ROUTE_RESOLVER_REVISION,
+                    }
                 return GenerationResult(
                     request_id=request.request_id,
                     provider_name=response.provider_name,
@@ -72,6 +87,7 @@ class GenerationService:
                     bundle=bundle,
                     measurement_constraint_count=measurement_result.constraint_count,
                     measurement_checked_value_count=measurement_result.checked_value_count,
+                    provider_provenance=provenance,
                 )
             except (KeyError, TypeError, ValueError) as error:
                 detail = " ".join(str(error).split()) or type(error).__name__

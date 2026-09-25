@@ -16,8 +16,12 @@ _ERROR_NOT_FOUND = 1168
 
 @runtime_checkable
 class CredentialStore(Protocol):
+    @property
+    def target_name(self) -> str: ...
     def save(self, secret: str) -> None: ...
     def load(self) -> str | None: ...
+    def is_configured(self) -> bool: ...
+    def delete(self) -> None: ...
 
 
 class _Credential(ctypes.Structure):
@@ -48,6 +52,12 @@ class WindowsCredentialStore:
             self._api.CredReadW.restype = wintypes.BOOL
             self._api.CredFree.argtypes = [ctypes.c_void_p]
             self._api.CredFree.restype = None
+            self._api.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+            self._api.CredDeleteW.restype = wintypes.BOOL
+
+    @property
+    def target_name(self) -> str:
+        return self._target_name
 
     def save(self, secret: str) -> None:
         if self._api is None:
@@ -86,3 +96,11 @@ class WindowsCredentialStore:
 
     def is_configured(self) -> bool:
         return bool(self.load())
+
+    def delete(self) -> None:
+        if self._api is None:
+            raise RuntimeError("Secure API key storage is available only on Windows")
+        if not self._api.CredDeleteW(self._target_name, _CRED_TYPE_GENERIC, 0):
+            error = ctypes.get_last_error()
+            if error != _ERROR_NOT_FOUND:
+                raise ctypes.WinError(error)

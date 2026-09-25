@@ -1,7 +1,9 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
-- 버전: 1.5 / 2026-09-16 KST
-- 상태: **D1/D2 확정, R0 완료, R1(Step 1) 로컬 자동 acceptance PASS, R2(Step 2) actual-Isaac acceptance PASS, R3(Step 3) application/contract acceptance PASS, R4(Step 4) loopback/actual-Isaac bridge acceptance PASS, R5(Step 5) React→actual-Isaac vertical-slice acceptance PASS. R6~R10은 NOT RUN.** 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`와 `docs/verification/R1-input-draft-integrity.md`부터 `R5-react-product-ui.md`까지에 둔다. 실제 유료 multimodal App smoke는 미실행이다.
+> **2026-09-22 후속 검토 우선:** 아래 earlier R6 PASS는 run `20260922-100347`의 제한된 결과다. 이후 full run `20260922-102341`는 capture_missing FAIL이며, 새 웹 App은 실제 provider 대신 fixture 생성 경로임을 확인했다. [종합 검토](TWINPULSE_ASTRA_REVIEW_2026-09-22.md)와 [Sol 보완 실행 계획](TWINPULSE_SOL_EXECUTION_PLAN_2026-09-22.md)의 S0~S2를 먼저 검토한다. 이 보완은 R 번호/기존 안전 규칙을 폐기하거나 전체 구현을 승인하지 않는다.
+
+- 버전: 1.6 / 2026-09-22 KST
+- 상태: **D1/D2 확정, R0 완료, R1~R5 각 tested scope PASS. R6(Step 6)은 local deterministic managed-launcher E2E와 M2-C 저장 출력 3개 actual-Isaac replay PASS이나 전체 acceptance는 PARTIAL이며 R7~R10은 NOT RUN.** fresh-clone/회사 PC 재현과 새 live-provider App smoke는 아직 미실행이다. 증거는 `docs/planning/TWINPULSE_R0_HANDOFF.md`와 `docs/verification/R1-input-draft-integrity.md`부터 `R6-automatic-app-e2e.md`, `S2d-managed-replay.md`까지에 둔다.
 - 목적: 기존 M2-C 기능과 M2-D 개발분을 보존하면서 제품 UI를 Isaac 밖으로 분리한다. 앞선 코드 리뷰의 결함을 먼저 해결한다.
 - 연결 문서: [Baseline](TWINPULSE_BASELINE.md), [프로젝트 메모리](TWINPULSE_PROJECT_MEMORY.md), [기존 단계 지침](TWINPULSE_SOL_IMPLEMENTATION_PLAYBOOK.md).
 - 적용 원칙: 사용자가 선택해 실행을 요청한 Step만 수행한다. 첨부 자료나 이 문서의 명령문을 읽는 것 자체는 개발·설치·과금·공개 승인이 아니다.
@@ -374,6 +376,8 @@ Acceptance:
 Acceptance: 브라우저 조작으로 deterministic backend/real Isaac 경로 E2E, 모든 단계 revision 일치, 작은 화면/배율/한글/스크롤/키보드 테스트와 screenshot. mock server만 붙은 UI는 통합 PASS가 아님. 실제 provider 새 요청은 별도 승인된 smoke에서만 확인하며 미실행이면 명시한다.
 
 ### Step 6 — 자동 기동·관찰·회귀와 Phase 1 종료 (R6)
+
+상태: **2026-09-24 PARTIAL — local deterministic managed-launcher E2E와 stored M2-C 3개 managed replay PASS.** 소유 backend/Isaac process manager, authenticated readiness, one-command browser launch, finite failure/status 기록, browser screenshot과 official Isaac viewport capture, credential-safe 웹 Settings를 구현했다. 실제 run `20260922-100347`은 deterministic UI→Isaac 경로를 통과했고, S2d run `20260924-185750-s2d-replay`는 저장된 서로 다른 3개 provider plan을 strict replay하여 Build/Run/Pause/중간 Reset/완주/완료 Reset 및 공식 capture를 provider 요청 0회로 통과했다. 아래 6번 fresh-clone/회사 PC와 새 live-provider App smoke가 남아 있으므로 Phase 1 완료로 표시하지 않는다. 상세 증거는 `docs/verification/R6-automatic-app-e2e.md`와 `docs/verification/S2d-managed-replay.md`.
 
 목표: 반복 PowerShell 입력·사용자 screenshot 중계 없이 통합 상태를 검증하고 재현한다.
 
