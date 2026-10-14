@@ -783,6 +783,9 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
                 draft=deepcopy(best_candidate)
                 self._diagnostic['stage']='final_validation'
                 restore_preview(best_preview)
+                # A restored JPEG is static evidence, not current authority in
+                # this new action/engine session. Acquire a fresh exact capture.
+                preview_capture=None
                 await publish_preview()
                 if self._diagnostic.get('generation_preview',{}).get('state')=='ready':
                     best_preview=remember_preview()
