@@ -215,8 +215,9 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
                 ProgressTracker.restore(parent['geometry_progress'])
             elif parent.get('best_candidate'):
                 raise ProviderConfigurationError('CONTINUATION_PROGRESS_HISTORY_UNAVAILABLE')
-            if old_budget.get('stalled_repairs',0)>=self.policy.stalled_repairs:
-                raise ProviderConfigurationError('CONTINUATION_STALLED_POLICY_EXHAUSTED')
+            # An exhausted HTTP/repair policy does not invalidate the retained
+            # candidate. Explicit resume may recheck/display it locally; the
+            # carried terminal latch below blocks every external dispatch.
             if parent.get('quality_progress',{}).get('history') and (
                     parent.get('scope_revision')!=SCOPE_REVISION or
                     parent.get('quality_repair_revision')!=QUALITY_REPAIR_REVISION):
@@ -240,11 +241,15 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
             budget.final_used_s=previous.get('final_used_s',0)
             budget.carried_requests=previous.get('cumulative_requests',previous['requests'])
             budget.carried_elapsed_s=previous.get('cumulative_active_s',previous['elapsed_s'])
+            if budget.no_progress>=self.policy.stalled_repairs:
+                budget.stop('REPAIR_STALLED')
         self._budget = budget
         token.generation_budget = budget
         self._diagnostic = {'request_id': request.request_id, 'input_kind': 'photo' if request.images else 'text',
             'status': 'running', 'sequence': 0, 'attempts': [], 'repair_count': 0,
             'max_repairs': self.policy.max_repairs, 'policy_sha256': self.policy.sha256}
+        if parent and budget.terminal=='REPAIR_STALLED':
+            self._diagnostic['resume_local_only']=True
         self._stage_started = time.monotonic()
         checkpoints = deepcopy(parent.get('completed_stages', [])) if parent else []
         draft = deepcopy(parent.get('draft')) if parent else None

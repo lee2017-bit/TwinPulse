@@ -11,7 +11,7 @@ for name in ('twinpulse_core','twinpulse_provider'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
 from twinpulse_core.geometry_checks import GeometryChecks
 from twinpulse_core import canonical_sha256
-from twinpulse_provider.generation_policy import ProgressTracker
+from twinpulse_provider.generation_policy import ProgressTracker, ExecutionBudget, GenerationPolicy, GenerationBudgetError
 from twinpulse_provider.errors import ProviderConfigurationError
 
 
@@ -22,6 +22,16 @@ def ledger(rev, **statuses):
 
 
 class PartialProgressTests(unittest.TestCase):
+    def test_terminal_stall_allows_local_preview_time_but_zero_external_dispatch(self):
+        budget=ExecutionBudget(GenerationPolicy())
+        budget.stop('REPAIR_STALLED')
+        self.assertGreater(budget.timeout_for('final_review'),0)
+        for role in ('initial','repair','final_review'):
+            with self.subTest(role=role),self.assertRaises(GenerationBudgetError):
+                budget.reserve({'model':'explicit-fixture-no-network','max_tokens':10},role=role)
+        self.assertEqual(budget.rows,[])
+        self.assertEqual(budget.terminal,'REPAIR_STALLED')
+
     def test_partial_is_valid_unfinished_and_protects_passed_floor(self):
         t=ProgressTracker()
         partial=ledger('a'*64,support_packing='partial')
