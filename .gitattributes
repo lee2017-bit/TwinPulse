@@ -1,0 +1,22 @@
+# Keep canonical legal text byte-identical on Windows without altering source,
+# raw evidence, upstream assets or their existing line-ending conventions.
+/LICENSE text eol=lf
+/NOTICE text eol=lf
+/CITATION.cff text eol=lf
+/packages/twinpulse_app/LICENSE text eol=lf
+/packages/twinpulse_app/NOTICE text eol=lf
+/packages/twinpulse_provider/LICENSE text eol=lf
+/packages/twinpulse_provider/NOTICE text eol=lf
+/packages/twinpulse_robot_safety/LICENSE text eol=lf
+/packages/twinpulse_robot_safety/NOTICE text eol=lf
+/extensions/twinpulse.extension/LICENSE text eol=lf
+/extensions/twinpulse.extension/NOTICE text eol=lf
+/apps/twinpulse-web/LICENSE text eol=lf
+/apps/twinpulse-web/NOTICE text eol=lf
+/apps/twinpulse-web/public/LICENSE text eol=lf
+/apps/twinpulse-web/public/NOTICE text eol=lf
+/apps/twinpulse-web/THIRD_PARTY_LICENSES.txt text eol=lf
+/apps/twinpulse-web/public/THIRD_PARTY_LICENSES.txt text eol=lf
+# These exact reviewed hashes are build inputs; checkout must not rewrite bytes.
+/assets/simulation/turtlebot3_burger/** -text
+**/*.patch -text

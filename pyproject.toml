@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -6,12 +9,18 @@ build-backend = "setuptools.build_meta"
 name = "twinpulse-core"
 version = "0.1.0"
 description = "Validated data contracts for the TwinPulse Isaac Sim Extension"
+authors = [{name = "Jaewon Lee / 이재원"}]
+license = {file = "LICENSE"}
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 requires-python = ">=3.12"
 dependencies = []
 
+[project.urls]
+Repository = "https://github.com/lee2017-bit/TwinPulse"
+
 [tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
 package-dir = {"" = "packages/twinpulse_core/src"}
 
 [tool.setuptools.packages.find]
 where = ["packages/twinpulse_core/src"]
-

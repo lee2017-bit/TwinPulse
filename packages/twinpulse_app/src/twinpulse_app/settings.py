@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Credential-free application settings and explicit legacy migration."""
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ NEBIUS_OBSERVER_MODEL_ID = "google/gemma-3-27b-it"
 NEBIUS_FALLBACK_OBSERVER_MODEL_ID = "openbmb/MiniCPM-V-4_5"
 NEBIUS_ADAPTER_KIND = "nebius_chat_completions_pipeline"
 NEBIUS_PROVIDER_PROFILE = "nebius_token_factory"
+NEBIUS_SITE_PROVIDER_PROFILE = "nebius_site_v2"
 NEBIUS_ENDPOINT_PATH = "chat/completions"
 DEFAULT_ACCEPTED_MIME_TYPES = ("image/png", "image/jpeg", "image/webp")
 ALLOWED_REASONING = frozenset({"low", "medium", "high"})
@@ -89,7 +93,7 @@ class ProviderSettings:
                 raise ValueError("OpenAI provider must not define observer models")
         else:
             if (
-                profile != NEBIUS_PROVIDER_PROFILE
+                profile not in {NEBIUS_PROVIDER_PROFILE, NEBIUS_SITE_PROVIDER_PROFILE}
                 or base_url != NEBIUS_BASE_URL
                 or endpoint != NEBIUS_ENDPOINT_PATH
                 or model_id != NEBIUS_PLANNER_MODEL_ID
@@ -202,13 +206,13 @@ def provider_settings_preset(profile: str, *, credential_ref: str = DEFAULT_CRED
     normalized = profile.strip().lower()
     if normalized == DEFAULT_PROVIDER_PROFILE:
         return ProviderSettings(credential_ref=credential_ref).validated()
-    if normalized == NEBIUS_PROVIDER_PROFILE:
+    if normalized in {NEBIUS_PROVIDER_PROFILE, NEBIUS_SITE_PROVIDER_PROFILE}:
         return ProviderSettings(
             base_url=NEBIUS_BASE_URL,
             model_id=NEBIUS_PLANNER_MODEL_ID,
             reasoning_effort="low",
             adapter_kind=NEBIUS_ADAPTER_KIND,
-            provider_profile=NEBIUS_PROVIDER_PROFILE,
+            provider_profile=normalized,
             endpoint_path=NEBIUS_ENDPOINT_PATH,
             credential_ref=credential_ref,
             observer_model_id=NEBIUS_OBSERVER_MODEL_ID,

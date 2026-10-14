@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible TwinPulse SIM alpha problem.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version and build ID
+      placeholder: 0.1.0-alpha.1 / build ID from the release manifest
+    validations:
+      required: true
+  - type: input
+    id: execution
+    attributes:
+      label: Execution ID
+      description: Include the execution ID shown in diagnostics, if available.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps and result
+      description: Describe clicks/input type, expected result, actual result, and whether restarting changes it.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version, GPU, Isaac version, selected model IDs, and input type.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Optional evidence
+      description: Share only screenshots or diagnostic summaries you want public. Do not include keys, auth headers, private photos, personal paths, or full raw logs.

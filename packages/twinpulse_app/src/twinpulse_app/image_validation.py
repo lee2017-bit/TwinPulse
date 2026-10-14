@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Bounded, full-decode validation for untrusted product image uploads."""
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 SUPPORTED_FORMATS = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
+    "MPO": "image/jpeg",
     "WEBP": "image/webp",
 }
 
@@ -43,10 +47,14 @@ def decode_image(content: bytes, *, max_pixels: int) -> DecodedImage:
                     )
                 width, height = opened.size
                 _validate_dimensions(width, height, max_pixels)
-                if getattr(opened, "n_frames", 1) != 1:
+                frames=getattr(opened, "n_frames", 1)
+                mpo=opened.format=='MPO'
+                if frames != 1 and not mpo:
                     raise ImageValidationError(
                         "image_content_invalid", "Animated images are not supported"
                     )
+                if mpo and not 1<=frames<=8:
+                    raise ImageValidationError('image_content_invalid','MPO component count is invalid')
                 opened.verify()
 
             # Pillow's verify() checks container integrity but does not decode pixels.
@@ -62,6 +70,15 @@ def decode_image(content: bytes, *, max_pixels: int) -> DecodedImage:
                     raise ImageValidationError(
                         "image_content_invalid", "Image dimensions changed during decoding"
                     )
+                if mpo:
+                    total=width*height
+                    for index in range(1,frames):
+                        decoded.seek(index)
+                        _validate_dimensions(decoded.width,decoded.height,max_pixels)
+                        total+=decoded.width*decoded.height
+                        if total>max_pixels:
+                            raise ImageValidationError('image_dimensions_invalid','Total MPO pixel count exceeds the limit')
+                        decoded.load()
         return DecodedImage(detected, width, height)
     except ImageValidationError:
         raise

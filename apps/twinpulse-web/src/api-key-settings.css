@@ -1,0 +1,17 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jaewon Lee
+ * SPDX-License-Identifier: Apache-2.0
+ * Source: https://github.com/lee2017-bit/TwinPulse
+ */
+.key-settings-backdrop { position:fixed; inset:0; background:#15253588; z-index:50; display:grid; place-items:center; padding:16px; }
+.key-settings-panel { background:#fff; color:#17202a; border-radius:16px; padding:24px; width:min(680px,100%); max-height:90dvh; overflow:auto; box-shadow:0 16px 60px #0004; }
+.key-settings-panel header { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.key-settings-panel article { padding:14px; border:1px solid #d9dfe5; border-radius:10px; margin:12px 0; overflow-wrap:anywhere; }
+.key-settings-panel label { display:grid; gap:6px; margin-bottom:14px; }
+.key-settings-panel input,.key-settings-panel select { width:100%; box-sizing:border-box; font:inherit; padding:10px; border:1px solid #98a6b2; border-radius:8px; }
+.key-settings-panel fieldset { border:0; padding:0; min-width:0; }
+.key-settings-panel button { margin:4px; }.key-settings-panel [role=alert] { background:#fff1de; padding:10px; }
+.stage-routing-settings { border:1px solid #a7c8c2; background:#f2f9f7; border-radius:12px; padding:16px; margin:16px 0; }
+.stage-route-summary { overflow-wrap:anywhere; }
+.stage-routing-settings small { display:block; margin-top:10px; }
+@media(max-width:600px) { .key-settings-panel { padding:16px; } }

@@ -1,126 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Strict JSON Schema sent to modern structured-output providers."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from twinpulse_core.tool_catalog import tool_call_schemas
+
 
 def scene_tool_plan_json_schema(*, required_call_slots: bool = False) -> dict[str, Any]:
     """Strict schema for an allowlisted, locally executed scene-tool plan."""
 
-    def number(*, minimum: float, maximum: float, exclusive_minimum: bool = False) -> dict[str, Any]:
-        result: dict[str, Any] = {"type": "number", "maximum": maximum}
-        result["exclusiveMinimum" if exclusive_minimum else "minimum"] = minimum
-        return result
-
-    def vector(length: int, items: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "type": "array",
-            "items": items,
-            "minItems": length,
-            "maxItems": length,
-        }
-
-    coordinate = number(minimum=-20.0, maximum=20.0)
-    position2 = vector(2, coordinate)
-    position3 = vector(3, coordinate)
+    calls = tool_call_schemas("1.0")
     identifier = {
         "type": "string",
         "minLength": 1,
         "maxLength": 64,
         "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
     }
-
-    def call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "call_id": identifier,
-                "tool": {"type": "string", "const": tool},
-                "arguments": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": arguments,
-                    "required": list(arguments),
-                },
-            },
-            "required": ["call_id", "tool", "arguments"],
-        }
-
-    calls = [
-        call(
-            "create_floor",
-            {
-                "id": identifier,
-                "center_m": position2,
-                "size_m": vector(2, number(minimum=0.0, maximum=20.0, exclusive_minimum=True)),
-            },
-        ),
-        call(
-            "create_wall",
-            {
-                "id": identifier,
-                "position_m": position3,
-                "dimensions_m": vector(3, number(minimum=0.0, maximum=20.0, exclusive_minimum=True)),
-                "yaw_deg": number(minimum=-180.0, maximum=180.0),
-            },
-        ),
-        call(
-            "create_rack_row",
-            {
-                "id": {**identifier, "maxLength": 42},
-                "center_m": position2,
-                "length_m": number(minimum=0.8, maximum=12.0),
-                "depth_m": number(minimum=0.35, maximum=2.5),
-                "height_m": number(minimum=0.5, maximum=6.0),
-                "bay_count": {"type": "integer", "minimum": 1, "maximum": 8},
-                "level_count": {"type": "integer", "minimum": 1, "maximum": 5},
-            },
-        ),
-        call(
-            "place_pallet_stack",
-            {
-                "id": {**identifier, "maxLength": 48},
-                "center_m": position2,
-                "footprint_m": vector(2, number(minimum=0.0, maximum=2.5, exclusive_minimum=True)),
-                "stack_height_m": number(minimum=0.15, maximum=3.0),
-                "stack_levels": {"type": "integer", "minimum": 1, "maximum": 4},
-            },
-        ),
-        call(
-            "create_aisle_marking",
-            {
-                "id": identifier,
-                "center_m": position2,
-                "length_m": number(minimum=0.2, maximum=20.0),
-                "width_m": number(minimum=0.01, maximum=1.0),
-            },
-        ),
-        call(
-            "place_static_agv",
-            {
-                "id": {**identifier, "maxLength": 48},
-                "center_m": position2,
-                "yaw_deg": number(minimum=-180.0, maximum=180.0),
-            },
-        ),
-        call(
-            "place_predefined_agv",
-            {
-                "profile_id": {"type": "string", "const": "agv_compact_2wd_caster_v2"},
-                "start_position_m": position3,
-            },
-        ),
-        call(
-            "create_navigation_task",
-            {
-                "id": identifier,
-                "goal_position_m": position3,
-                "position_tolerance_m": number(minimum=0.01, maximum=0.25),
-            },
-        ),
-    ]
     common_properties: dict[str, Any] = {
         "plan_version": {"type": "string", "const": "1.0"},
         "scene_id": identifier,
@@ -160,6 +59,56 @@ def scene_tool_plan_json_schema(*, required_call_slots: bool = False) -> dict[st
         "properties": properties,
         "required": required,
     }
+
+
+def site_tool_plan_json_schema(plan_version: str = '2.0') -> dict[str, Any]:
+    """H3a site proposal: generic static boxes and per-call evidence, locally validated."""
+
+    if plan_version not in {'2.0','2.1','2.2'}:
+        raise ValueError('Unsupported site schema version')
+    schema = scene_tool_plan_json_schema(required_call_slots=False)
+    schema["properties"]["plan_version"] = {"type": "string", "const": plan_version}
+    identifier = {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$", "maxLength": 64}
+    schema["properties"]["calls"]["items"]["anyOf"] = tool_call_schemas(plan_version)
+    if plan_version == '2.2':
+        schema['properties']['calls']['maxItems'] = 40
+    schema["properties"]["call_evidence"] = {
+        "type": "array", "minItems": 1, "maxItems": 40 if plan_version == '2.2' else 24,
+        "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "call_id": identifier,
+                "observation_ids": {"type": "array", "items": identifier, "maxItems": 8},
+                "basis": {"type": "string", "enum": ["visual", "user", "inferred", "trusted_measurement"]},
+                "note": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+            "required": ["call_id", "observation_ids", "basis", "note"],
+        },
+    }
+    schema["required"].append("call_evidence")
+    return schema
+
+
+def site_proposal_json_schema(*, photo: bool):
+    """Provider wire contract; stored Site2.2 remains unchanged after validation."""
+    from copy import deepcopy
+    from .scene_contract import PROPOSAL_REVISION
+    schema=site_tool_plan_json_schema('2.2')
+    calls=schema['properties'].pop('calls')['items']['anyOf']
+    by_tool={c['properties']['tool']['const']:c for c in calls}
+    evidence=schema['properties']['call_evidence']['items']
+    evidence['properties']['user_quote']={'type':['string','null'],'maxLength':256}
+    evidence['required'].append('user_quote')
+    schema['properties']['call_evidence']['minItems']=0
+    schema['properties']['call_evidence']['maxItems']=39
+    schema['properties'].update(proposal_version={'const':PROPOSAL_REVISION},
+        coordinate_frame={'const':'photo_view_right_rear' if photo else 'local_xy'},
+        floor_call=by_tool['create_floor'],floor_evidence=deepcopy(evidence),
+        scene_calls=dict(type='array',minItems=0,maxItems=39,
+            items={'anyOf':[c for k,c in by_tool.items() if k!='create_floor']}))
+    schema['required'].remove('calls')
+    schema['required'] += ['proposal_version','coordinate_frame','floor_call','floor_evidence','scene_calls']
+    return schema
 
 
 def spec_bundle_json_schema() -> dict[str, Any]:

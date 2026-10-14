@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 param(
     [string]$IsaacRoot = "",
     [switch]$Launch,
@@ -105,6 +108,9 @@ try {
     }
     Write-Host "TWINPULSE_INSTALL_RESULT=PASS"
     Write-Host "API key is not part of this installer. Configure it in the local App."
+    $localRuntime = Join-Path $repoRoot ".runtime"
+    New-Item -ItemType Directory -Path $localRuntime -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $localRuntime "isaac-root.txt") -Value $resolvedIsaacRoot -Encoding UTF8
 
     if ($Launch) {
         & $venvPython scripts\twinpulse_launcher.py --isaac-root $resolvedIsaacRoot

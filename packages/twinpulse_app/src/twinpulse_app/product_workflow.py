@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """R5 product-facing input, draft review, and acknowledgement state."""
 
 from __future__ import annotations
@@ -129,7 +132,7 @@ class ProductWorkflow:
                 raise BrokerError("sidecar_invalid", f"Measurement sidecar is invalid: {error}", status=400) from error
             measurement_count = len(measurements)
         if not prompt.strip() and image_bytes is None:
-            raise BrokerError("input_empty", "Attach an image or describe the warehouse", status=400)
+            raise BrokerError("input_empty", "Attach a site image or describe the scene", status=400)
         sidecar_sha256 = hashlib.sha256(sidecar_bytes).hexdigest() if sidecar_bytes is not None else None
         identity = {
             "input_kind": str(input_kind),

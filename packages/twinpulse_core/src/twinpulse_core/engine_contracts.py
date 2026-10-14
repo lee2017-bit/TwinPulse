@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Pure, versioned application-to-engine contracts.
 
 These records intentionally contain no Isaac, HTTP, or UI objects.  R4 may
@@ -13,7 +16,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 
 ENGINE_SCHEMA_VERSION = "1.1"
-COMMAND_TYPES = frozenset({"build_scene", "run", "pause", "reset", "focus_scene", "get_state"})
+COMMAND_TYPES = frozenset({"build_scene", "build_site_scene", "run", "pause", "reset", "focus_scene", "get_state"})
 COMMAND_STATUSES = frozenset({"accepted", "running", "succeeded", "failed", "cancelled", "expired", "unknown"})
 RUNTIME_STATES = frozenset({
     "disconnected", "idle", "built", "running", "paused", "completed",
@@ -257,6 +260,60 @@ class SimulationSnapshot:
         if data["position_m"] is not None:
             data["position_m"] = _vector3(data["position_m"], "position_m")
         return cls(**data)
+
+
+# Implemented features and momentary permission are separate facts.  These
+# requirements describe the existing Isaac adapter; they do not authorize a
+# physical robot or infer a feature from a model/provider's metadata.
+_ENGINE_FEATURE_REQUIREMENTS: dict[str, tuple[frozenset[str], str]] = {
+    # Older bridge snapshots exposed "simulation" plus a permitted Build command.
+    "legacy_scene_build": (frozenset({"simulation"}), "build_scene"),
+    "site_scene_build_v2": (frozenset({"site_scene_build_v2"}), "build_site_scene"),
+    "generation_room_visual_v1": (frozenset({"site_scene_build_v2", "generation_room_visual_v1"}), "build_site_scene"),
+    "automatic_mission_visual_v1": (frozenset({"site_scene_build_v2", "automatic_mission_visual_v1"}), "build_site_scene"),
+    "current_inspection_visual_v1": (frozenset({"site_scene_build_v2", "current_inspection_visual_v1"}), "build_site_scene"),
+    "bedroom_visual_v1": (frozenset({"site_scene_build_v2", "bedroom_visual_v1"}), "build_site_scene"),
+    "project_room_visual_v1": (frozenset({"site_scene_build_v2", "project_room_visual_v1"}),
+                                "build_site_scene"),
+    "bedroom_replay_v1": (frozenset({"site_scene_build_v2", "bedroom_visual_v1", "bedroom_replay_v1"}),
+                          "build_site_scene"),
+    "room_scan_replay_v1": (frozenset({"site_scene_build_v2", "bedroom_visual_v1", "room_scan_replay_v1"}),
+                             "build_site_scene"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class EngineFeatureReadiness:
+    feature: str
+    ready: bool
+    code: str
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {"feature": self.feature, "ready": self.ready, "code": self.code}
+
+
+def evaluate_engine_feature(
+    feature: str, *, snapshot: SimulationSnapshot | None, connected: bool,
+    engine_session_id: str | None, stage_epoch: str | None,
+) -> EngineFeatureReadiness:
+    """Classify a requested simulation feature without granting run authority."""
+    if feature not in _ENGINE_FEATURE_REQUIREMENTS:
+        raise ValueError("engine feature is unsupported")
+    if not connected:
+        code = "runtime_disconnected"
+    elif snapshot is None:
+        code = "runtime_snapshot_missing"
+    elif (snapshot.engine_session_id != engine_session_id or snapshot.stage_epoch != stage_epoch):
+        code = "runtime_identity_stale"
+    elif not _ENGINE_FEATURE_REQUIREMENTS[feature][0].issubset(snapshot.capabilities):
+        code = "capability_unavailable"
+    elif snapshot.safety_state is not None:
+        code = "runtime_safety_latched"
+    elif _ENGINE_FEATURE_REQUIREMENTS[feature][1] not in snapshot.permitted_commands:
+        code = "runtime_command_unavailable"
+    else:
+        code = "ready"
+    return EngineFeatureReadiness(feature, code == "ready", code)
 
 
 @runtime_checkable

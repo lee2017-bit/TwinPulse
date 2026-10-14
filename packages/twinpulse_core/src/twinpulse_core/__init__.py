@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """TwinPulse versioned data contracts and validation."""
 
 from .fixtures import fixed_warehouse_bundle
@@ -10,8 +13,10 @@ from .engine_contracts import (
     ENGINE_SCHEMA_VERSION,
     CommandEnvelope,
     CommandReceipt,
+    EngineFeatureReadiness,
     SimulationPort,
     SimulationSnapshot,
+    evaluate_engine_feature,
 )
 from .revisions import (InputArtifactStore, InputRevision, VALIDATOR_VERSION, bundle_digest,
                         canonical_sha256, generation_result_is_current, plan_digest)
@@ -32,6 +37,8 @@ from .robot_profiles import (
     resolve_robot_profile,
 )
 from .motion_control import RouteCommand, normalize_angle, straight_route_command
+from .world_observation import WorldObservationRef
+from .m2d_evaluation import evaluate_m2d_score
 from .serialization import bundle_from_json, bundle_to_json
 from .scene_tools import (
     SCENE_TOOL_NAMES,
@@ -49,10 +56,40 @@ from .scene_tools import (
     resolve_current_controller_route,
     validate_scene_tool_plan,
 )
-from .validation import SpecValidationError, ValidationLimits, validate_bundle, validate_current_controller_route
+from .validation import (SpecValidationError, ValidationLimits, current_controller_route_prompt,
+                         validate_bundle, validate_current_controller_route)
+from .site_contracts import (
+    SITE_SCHEMA_VERSION, STRAIGHT_CONTROLLER_CAPABILITY, DEMO_SAFETY_POLICY_ID, MissionSpecV2, NavigationMapRevision,
+    ObservationBinding, RobotInstance, RunIntent, SceneRevision, SiteGateReport, SitePlan,
+    evaluate_site_plan, import_legacy_bundle,
+)
+from .site_tools import (SITE_TOOL_CATALOG_REVISION, SITE_TOOL_PLAN_VERSION, SITE_TOOL_NAMES,
+                         SiteCallEvidence, SiteToolPlan,
+                         execute_site_tool_plan, site_tool_plan_from_json, validate_site_tool_plan)
 
 __all__ = [
     "RobotProfile",
+    "SITE_TOOL_CATALOG_REVISION",
+    "SITE_TOOL_PLAN_VERSION",
+    "SITE_TOOL_NAMES",
+    "SiteCallEvidence",
+    "SiteToolPlan",
+    "execute_site_tool_plan",
+    "site_tool_plan_from_json",
+    "validate_site_tool_plan",
+    "SITE_SCHEMA_VERSION",
+    "STRAIGHT_CONTROLLER_CAPABILITY",
+    "DEMO_SAFETY_POLICY_ID",
+    "SceneRevision",
+    "NavigationMapRevision",
+    "ObservationBinding",
+    "RobotInstance",
+    "MissionSpecV2",
+    "RunIntent",
+    "SitePlan",
+    "SiteGateReport",
+    "evaluate_site_plan",
+    "import_legacy_bundle",
     "EpisodeAssessment",
     "EpisodeCriteria",
     "EpisodeSample",
@@ -64,6 +101,8 @@ __all__ = [
     "CommandEnvelope",
     "CommandReceipt",
     "RouteCommand",
+    "WorldObservationRef",
+    "evaluate_m2d_score",
     "GeneratedDraftRecord",
     "GeneratedDraftStore",
     "InputArtifactStore",
@@ -77,6 +116,8 @@ __all__ = [
     "SpecValidationError",
     "SimulationPort",
     "SimulationSnapshot",
+    "EngineFeatureReadiness",
+    "evaluate_engine_feature",
     "TaskSpec",
     "Transform",
     "ValidationLimits",
@@ -105,6 +146,7 @@ __all__ = [
     "validate_plan_measurements",
     "validate_bundle",
     "validate_current_controller_route",
+    "current_controller_route_prompt",
     "normalize_angle",
     "straight_route_command",
     "accepted_robot_profile_ids",

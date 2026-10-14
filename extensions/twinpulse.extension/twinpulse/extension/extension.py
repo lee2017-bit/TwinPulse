@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """TwinPulse Extension lifecycle and Copilot-inspired playground interface."""
 
 from __future__ import annotations
@@ -163,38 +166,86 @@ class TwinPulseExtension(omni.ext.IExt):
         )
         if hasattr(self._prompt_model, "add_value_changed_fn"):
             self._prompt_model.add_value_changed_fn(lambda _model: self._on_input_changed())
-        self._window = ui.Window("TwinPulse Copilot", width=480, height=760, visible=True)
+        self._managed_connection_label=None
+        self._managed_log_label=None
+        self._managed_error_label=None
+        self._managed_ui_updated=0.
+        self._window = ui.Window("TwinPulse" if self._managed_mode else "TwinPulse Copilot",
+            width=440 if self._managed_mode else 480,height=190 if self._managed_mode else 760,visible=True)
         self._window.frame.style = STYLE
         with self._window.frame:
-            with ui.ScrollingFrame(
-                horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
-                style=STYLE,
-            ):
-                with ui.VStack(spacing=10, height=ui.Pixel(870), style={"margin": 12}):
-                    self._build_header()
-                    self._build_stage_indicator()
-                    self._build_prompt_card()
-                    self._build_draft_card()
-                    self._build_simulation_card()
-                    self._build_status_bar()
+            if self._managed_mode:
+                with ui.VStack(spacing=6,style={"margin":12}):
+                    self._managed_connection_label=ui.Label('● Connecting…',height=24)
+                    ui.Label('App–Isaac connection · scene quality is checked separately',
+                        name='muted',word_wrap=True,height=30)
+                    self._managed_error_label=ui.Label('',name='warning',word_wrap=True,height=32)
+                    with ui.CollapsableFrame('작업 로그 / Command log',collapsed=True):
+                        with ui.ScrollingFrame(height=300):
+                            self._managed_log_label=ui.Label('Waiting for an App command',
+                                name='muted',word_wrap=True,alignment=ui.Alignment.LEFT_TOP)
+            else:
+                with ui.ScrollingFrame(horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,style=STYLE):
+                    with ui.VStack(spacing=10,height=ui.Pixel(870),style={"margin":12}):
+                        self._build_header()
+                        self._build_stage_indicator()
+                        self._build_prompt_card()
+                        self._build_draft_card()
+                        self._build_simulation_card()
+                        self._build_status_bar()
         _INSTANCE = self
         self._shutdown_complete = False
         self._refresh_provider_header()
-        self._restore_generated_draft()
+        if not self._managed_mode:self._restore_generated_draft()
         if self._managed_mode:
-            adapter = IsaacSimulationAdapter(self.runtime)
+            from twinpulse_app import checked_project_id
+            adapter = IsaacSimulationAdapter(
+                self.runtime, project_id=checked_project_id(os.environ.get("TWINPULSE_PROJECT_ID", "default")),
+                project_state_root=Path(os.environ["TWINPULSE_PROJECT_STATE_ROOT"])
+                if os.environ.get("TWINPULSE_PROJECT_STATE_ROOT") else None,
+                session_history_root=Path(os.environ["TWINPULSE_SESSION_HISTORY_ROOT"])
+                if os.environ.get("TWINPULSE_SESSION_HISTORY_ROOT") else None)
             self._bridge_client = BridgeClient(
                 adapter, base_url=bridge_url, bootstrap_secret=bridge_secret,
             )
             self._bridge_update_subscription = (
                 omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
-                    lambda _event: self._bridge_client.update() if self._bridge_client is not None else None,
+                    self._managed_update,
                     name="TwinPulse managed bridge update",
                 )
             )
             self._bridge_client.start()
             self._set_status("Managed bridge mode - use the authenticated local API")
         print(f"[twinpulse.extension] startup: {ext_id}")
+
+    def _managed_update(self, _event):
+        client=self._bridge_client
+        if client is None:return
+        client.update()
+        import time
+        now=time.monotonic()
+        if now-self._managed_ui_updated<.5:return
+        self._managed_ui_updated=now
+        # UI refresh failure must never interrupt bridge/adapter updates.
+        try:
+            connected=client.connected
+            self._managed_connection_label.text=('● TwinPulse Connected' if connected else
+                '● Disconnected' if client.last_error else '● Connecting…')
+            self._managed_connection_label.style={'color':COLORS['green'] if connected else COLORS['amber']}
+            rows=client.activity_snapshot()
+            failures=[r for r in rows if r.get('error_code')]
+            self._managed_error_label.text=('Latest command error: '+failures[-1]['error_code'] if failures else
+                'Connection interrupted' if client.last_error else '')
+            self._managed_log_label.text='\n\n'.join(
+                time.strftime('%H:%M:%S',time.localtime(r['timestamp']))+' · '+r['project_id']+' · '+
+                r['command_type']+' · '+r['status']+
+                (' · '+str(r['elapsed_s'])+'s' if 'elapsed_s' in r else '')+
+                '\nCommand ID: '+r['command_id']+
+                ('\nExecution ID: '+r['execution_id'] if r.get('execution_id') else '')+
+                ('\nRevision: '+r['revision'] if r.get('revision') else '')+
+                ('\nError: '+r['error_code'] if r.get('error_code') else '') for r in rows[-40:]) or 'Waiting for an App command'
+        except Exception as error:
+            print('[twinpulse.extension] connection panel refresh: '+type(error).__name__)
 
     def _configure_provider(self) -> None:
         value = self._provider_settings

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Provider boundary for TwinPulse structured scene generation."""
 
 from .contracts import (
@@ -38,8 +41,10 @@ from .measurement_constraints import (
     parse_measurement_constraints,
     validate_measurement_constraints,
 )
-from .schema import scene_tool_plan_json_schema, spec_bundle_json_schema
-from .service import GenerationResult, GenerationService
+from .schema import scene_tool_plan_json_schema, site_tool_plan_json_schema, spec_bundle_json_schema
+from .scene_edit_provider import (SceneEditProposalService, scene_edit_generation_request,
+                                  scene_edit_proposal_json_schema)
+from .service import GenerationResult, GenerationService, SiteGenerationResult
 
 __all__ = [
     "CancellationToken",
@@ -47,6 +52,7 @@ __all__ = [
     "GenerationRequest",
     "GenerationResult",
     "GenerationService",
+    "SiteGenerationResult",
     "ImageInput",
     "InvalidProviderResponseError",
     "load_measurement_constraints",
@@ -77,6 +83,10 @@ __all__ = [
     "parse_chat_completion",
     "StructuredJsonHttpProvider",
     "scene_tool_plan_json_schema",
+    "SceneEditProposalService",
+    "scene_edit_generation_request",
+    "scene_edit_proposal_json_schema",
+    "site_tool_plan_json_schema",
     "spec_bundle_json_schema",
     "validate_measurement_constraints",
 ]

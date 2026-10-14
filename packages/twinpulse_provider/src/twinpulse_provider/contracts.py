@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Credential-free request, response, and configuration contracts."""
 
 from __future__ import annotations
@@ -57,6 +60,13 @@ class GenerationRequest:
     schema_version: str = "1.0"
     image_detail: str = "auto"
     measurement_constraints: tuple[MeasurementConstraint, ...] = ()
+    # Internal context only: excluded from provider bodies and canonical hashes.
+    diagnostics: Any = field(default=None, repr=False, compare=False)
+    # Trusted internal scope adapter only. Never serialized into a model body.
+    inference_scope: Any = field(default=None, repr=False, compare=False)
+    # Explicit trusted continuation only; GET/reopen never supplies this field.
+    continuation_checkpoint: str | None = None
+    render_review_port: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.image_detail not in {"auto", "low", "high"}:
@@ -77,6 +87,7 @@ class CancellationToken:
 
     def __init__(self) -> None:
         self._event = Event()
+        self.diagnostics = None
 
     def cancel(self) -> None:
         self._event.set()

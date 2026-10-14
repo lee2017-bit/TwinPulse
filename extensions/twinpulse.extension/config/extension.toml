@@ -1,9 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 [package]
 title = "TwinPulse Playground"
 version = "0.1.0"
 description = "Fixed-scene 3D warehouse playground with a procedural differential-drive AGV"
 category = "Simulation"
-authors = ["TwinPulse"]
+authors = ["Jaewon Lee / 이재원"]
+license = "Apache-2.0"
+repository = "https://github.com/lee2017-bit/TwinPulse"
 keywords = ["isaac sim", "warehouse", "agv", "physical ai"]
 readme = "docs/Overview.md"
 changelog = "docs/CHANGELOG.md"
