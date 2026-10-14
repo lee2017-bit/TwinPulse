@@ -10,6 +10,11 @@ import sys
 import traceback
 
 
+def should_show_error_dialog(arguments):
+    """Interactive launches may show errors; headless install must terminate."""
+    return bool(getattr(sys,'frozen',False)) and '--internal-role' not in arguments and '--quiet' not in arguments
+
+
 def main():
     sys.dont_write_bytecode = True
     frozen = bool(getattr(sys, 'frozen', False))
@@ -101,14 +106,14 @@ def main():
 
 
 if __name__ == '__main__':
-    is_launcher = '--internal-role' not in sys.argv
+    show_error_dialog = should_show_error_dialog(sys.argv[1:])
     try:
         raise SystemExit(main())
     except SystemExit:
         raise
     except BaseException as error:
         traceback.print_exc()
-        if getattr(sys, 'frozen', False) and is_launcher:
+        if show_error_dialog:
             import ctypes
             ctypes.windll.user32.MessageBoxW(None,
                 'TwinPulse could not start.\n' + type(error).__name__ + ': ' + str(error)[:600]

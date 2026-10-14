@@ -5,6 +5,7 @@
 from pathlib import Path
 import hashlib
 import json
+import runpy
 import socket
 import sys
 import tempfile
@@ -22,6 +23,14 @@ from twinpulse_app.windows_package import verify_package
 
 
 class DesktopContractTests(unittest.TestCase):
+    def test_quiet_install_failure_never_waits_for_a_native_error_dialog(self):
+        entry=runpy.run_path(str(ROOT/'scripts/twinpulse_desktop_entry.py'))
+        with patch.object(sys,'frozen',True,create=True):
+            self.assertFalse(entry['should_show_error_dialog'](['--install','--quiet']))
+            self.assertFalse(entry['should_show_error_dialog'](['--internal-role','backend']))
+            self.assertTrue(entry['should_show_error_dialog'](['--install']))
+            self.assertTrue(entry['should_show_error_dialog']([]))
+
     def test_remember_actual_bound_port_without_overwriting_isaac_location(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
