@@ -330,7 +330,7 @@ class ProgressTracker:
         valid_ledger=bool(rows) and report.get('check_ledger_version')==CHECK_REVISION and not report.get('checks_truncated')
         valid_ledger=valid_ledger and report.get('mandatory_checks')==list(PHASES) and len(rows)==len(PHASES)
         valid_ledger=valid_ledger and all(isinstance(r,dict) and r.get('status') in
-            ('passed','failed','blocked','not_run','error') and r.get('candidate_revision')==report.get('candidate_revision')
+            ('passed','partial','failed','blocked','not_run','error') and r.get('candidate_revision')==report.get('candidate_revision')
             and r.get('checker_revision')==CHECK_REVISION and r.get('check_id') in PHASES
             and isinstance(r.get('depends_on'),list) and isinstance(r.get('issue_refs'),list)
             for r in rows)
@@ -366,7 +366,7 @@ class ProgressTracker:
         self.regressed = bool(diagnosis is not None and self.best_errors is not None and
             any(e not in exposed_problems for e in new_errors))
         if same_versions:
-            self.regressed = self.regressed or any(old['status']=='passed' and checks[k]['status']=='failed'
+            self.regressed = self.regressed or any(old['status']=='passed' and checks[k]['status'] in ('failed','partial')
                 for k,old in self.best_checks.items())
         if self.best_metrics is not None:
             self.regressed = self.regressed or any(metrics[k]>self.best_metrics[k]+1e-6
@@ -374,7 +374,7 @@ class ProgressTracker:
         insufficient=(bool(rows) and not valid_ledger or report.get('issues_truncated') is True or
             any(r['status']=='error' for r in checks.values()) or
             bool(self.best_checks) and valid_ledger and not same_versions or
-            same_versions and not self.regressed and any(old['status'] in ('passed','failed') and checks[k]['status'] in ('blocked','not_run')
+            same_versions and not self.regressed and any(old['status'] in ('passed','partial','failed') and checks[k]['status'] in ('blocked','not_run')
                 for k,old in self.best_checks.items()))
         if self.advanced_checks and not self.regressed:progressed=True
         if self.comparison_uncertain:progressed=False
@@ -394,3 +394,26 @@ class ProgressTracker:
             comparison_uncertain=self.comparison_uncertain,
             **({'comparison_basis':'same_unresolved_bounded_floor_packing_phase'} if self.comparison_uncertain else {})))
         return progressed
+
+    def rebind_locally_checked_best(self, candidate, report):
+        """Repair a legacy tracker baseline only from a fresh compiler report.
+
+        Partial is valid incomplete evidence, never whole-scene PASS. Preserve
+        seen candidates, history and the caller's request/repair/stall budgets.
+        """
+        from copy import deepcopy
+        probe=type(self)()
+        probe.observe(candidate,[],report)
+        if (not probe.best_checks or not all(r['status'] in ('passed','partial')
+                for r in probe.best_checks.values()) or not (
+                report.get('checks_complete') is True or report.get('materialized_subset_checked') is True)):
+            raise ProviderConfigurationError('CONTINUATION_BEST_REVALIDATION_INVALID')
+        self.best_checks=deepcopy(probe.best_checks)
+        self.best_metrics=deepcopy(probe.best_metrics)
+        self.best_errors=probe.best_errors
+        self.best_previous=probe.best_previous
+        self.seen.add(probe.best_previous[0])
+        self.history.append(dict(decision='best_locally_revalidated',
+            candidate_sha256=probe.best_previous[0],progressed=False,
+            checks_complete=report.get('checks_complete') is True,
+            materialized_subset_checked=report.get('materialized_subset_checked') is True))

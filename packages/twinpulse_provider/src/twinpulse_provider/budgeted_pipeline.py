@@ -285,6 +285,23 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
         if parent and parent.get('generation_preview'):
             self._diagnostic['generation_preview']=deepcopy(parent['generation_preview'])
             self._diagnostic['generation_preview'].update(state='blocked',error_code='PREVIEW_REBUILD_REQUIRED')
+        if parent and best_candidate is not None:
+            # Old checkpoints may have stored a partial best while their
+            # tracker rejected its official partial ledger status. Recompute
+            # evidence locally; do not infer PASS from saved flags or reset debt.
+            try:
+                with (token.diagnostics.span('best_local_revalidation') if token.diagnostics else nullcontext()):
+                    _, checked_best=compile_scene(best_candidate,observation,request,progressive=True)
+                tracker.rebind_locally_checked_best(best_candidate,checked_best)
+                best_diagnosis={**checked_best,'issues':[]}
+                self._diagnostic['best_local_revalidation']={
+                    'candidate_revision':revision(best_candidate),'external_call':False,
+                    'checks_complete':checked_best.get('checks_complete') is True,
+                    'materialized_subset_checked':checked_best.get('materialized_subset_checked') is True}
+            except (ValueError,InvalidProviderResponseError,ProviderConfigurationError) as revalidation_error:
+                self._diagnostic['best_local_revalidation']={
+                    'candidate_revision':revision(best_candidate),'external_call':False,
+                    'error_code':str(revalidation_error).split(':',1)[0]}
 
         def checkpoint(state, error=None):
             from .scene_contract import role_of
@@ -330,6 +347,7 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
                     'scope_decision':deepcopy(self._diagnostic.get('scope_decision')),
                     'working_branch':deepcopy(self._diagnostic.get('repair_decision')),
                     'local_revalidation':deepcopy(self._diagnostic.get('local_revalidation')),
+                    'best_local_revalidation':deepcopy(self._diagnostic.get('best_local_revalidation')),
                     'rollback_revalidation':deepcopy(self._diagnostic.get('rollback_revalidation')),
                     'quality_review':deepcopy(self._diagnostic.get('quality_review')),
                     'progressive_twin':deepcopy(self._diagnostic.get('progressive_twin')),
