@@ -73,10 +73,52 @@ class GenerationPreviewTests(unittest.TestCase):
         self.assertEqual(parameter_order(draft,f.empty_observation()),['bed','trinket'])
         self.assertEqual(draft['inventory'],original)
 
-    def provider(self,transport,folder):
-        return f.BudgetedPipeline(transport,policy=replace(GenerationPolicy(),external_final_review=False),
+    def provider(self,transport,folder,policy=None):
+        return f.BudgetedPipeline(transport,policy=policy or replace(GenerationPolicy(),external_final_review=False),
             store_root=folder,observer_model_id=f.OBSERVER_MODEL,planner_model_id=f.PLANNER_MODEL,
             site_plan_version='2.2',planner_template_no_thinking=True)
+
+    def test_explicit_resume_rebuilds_checked_best_without_renewing_exhausted_repairs(self):
+        from pathlib import Path
+        from test_geometry_repair_loop import fixture
+        from twinpulse_provider.generation_policy import GenerationBudgetError
+        from twinpulse_provider.generation_store import input_digest
+        from twinpulse_app.generation_scope import OrdinaryInferenceScope
+        shape,parameters,_=fixture()
+        policy=replace(GenerationPolicy(),external_final_review=False,max_repairs=1)
+        with TemporaryDirectory() as folder:
+            root=Path(folder); request=f.text_request(identity='legacy-preview-parent')
+            parent_provider=self.provider(f.FixtureTransport([shape,parameters,
+                ChatCompletion('length',f.PLANNER_MODEL,'','length',{})]),root/'store',policy)
+            with self.assertRaises(InvalidProviderResponseError):
+                asyncio.run(GenerationService(parent_provider,f.config(timeout_s=300),plan_version='2.2').generate(request))
+            parent_key=parent_provider.diagnostic_for(request.request_id)['checkpoint_id']
+            original=parent_provider.store.read('checkpoint',parent_key)
+            parent=deepcopy(original);parent['best_preview_snapshot']=None
+            legacy_key=canonical_sha256({'legacy_preview_missing':parent_key})
+            parent_provider.store.save('checkpoint',legacy_key,parent)
+            scope=OrdinaryInferenceScope('ordinary-generation:legacy-preview-resume',input_digest(request),
+                'b'*64,policy.sha256,root/'scope.json',{},'1',12,
+                approved_checkpoint_sha256=canonical_sha256(parent))
+            transport=f.FixtureTransport([]);port=PreviewPort()
+            provider=self.provider(transport,root/'store',policy)
+            provider.route_sha256='b'*64
+            continued=replace(request,request_id='legacy-preview-resumed',inference_scope=scope,
+                continuation_checkpoint=legacy_key,render_review_port=port)
+            with self.assertRaises(GenerationBudgetError):
+                asyncio.run(GenerationService(provider,f.config(timeout_s=300),plan_version='2.2').generate(continued))
+            diagnostic=provider.diagnostic_for(continued.request_id)
+            saved=provider.store.read('checkpoint',diagnostic['checkpoint_id'])
+            self.assertEqual(transport.bodies,[])
+            self.assertTrue(port.plans)
+            self.assertEqual(saved['budget']['requests'],0)
+            self.assertEqual(saved['budget']['repairs'],1)
+            self.assertEqual(saved['budget']['cumulative_requests'],parent['budget']['cumulative_requests'])
+            exact=saved['best_preview_snapshot']
+            self.assertIsNotNone(exact,{'revalidation':saved.get('best_local_revalidation'),
+                'progress':saved.get('generation_preview'),'decision':saved.get('working_branch')})
+            self.assertEqual(exact['capture_metadata']['candidate_revision'],saved['generation_preview']['candidate_revision'])
+            self.assertEqual(parent_provider.store.read('checkpoint',parent_key),original)
 
     def test_metadata_count_preserved_without_furniture_expansion(self):
         raw=grouped(2)

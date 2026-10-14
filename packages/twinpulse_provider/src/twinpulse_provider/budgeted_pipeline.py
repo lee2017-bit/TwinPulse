@@ -772,6 +772,21 @@ class BudgetedPipeline(NebiusChatCompletionsPipelineProvider):
             return result
 
         try:
+            if parent and best_candidate is not None:
+                # Explicit resume recompiles the best displayable subset. A
+                # legacy checkpoint may have no exact image for that candidate;
+                # rebuild it through the normal revision-bound preview port
+                # before an exhausted repair budget stops this action. This is
+                # local display work, not another HTTP request or budget reset.
+                # publish_preview validates the subset; saved flags alone
+                # cannot authorize a Build or mark the whole candidate valid.
+                draft=deepcopy(best_candidate)
+                self._diagnostic['stage']='final_validation'
+                restore_preview(best_preview)
+                await publish_preview()
+                if self._diagnostic.get('generation_preview',{}).get('state')=='ready':
+                    best_preview=remember_preview()
+                checkpoint('DRAFT_INCOMPLETE')
             if (request.images and observation is None and room_seed is None
                     and getattr(request.render_review_port,'supports_incremental_preview',False)):
                 # First visible shell does not wait for a full object inventory.
