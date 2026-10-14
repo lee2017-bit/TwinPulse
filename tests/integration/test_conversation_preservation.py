@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
@@ -16,6 +16,37 @@ from twinpulse_app.command_broker import BrokerError
 
 
 class ConversationPreservationTests(unittest.TestCase):
+    def test_resume_without_checkpoint_never_falls_through_to_fresh_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            approvals=SimpleNamespace(enabled=lambda:True,product_mode=True,
+                checkpoint_for_approval=lambda _:None,scope=Mock())
+            workflow=SimpleNamespace(_broker=SimpleNamespace(project_id='example'),
+                select_input=Mock(),generation_approvals=approvals,start_generation=Mock())
+            service=ConversationService(workflow,Path(directory)/'example.conversation.json')
+            service._state['generation']={'state':'failed','approval_id':'previous'}
+            previous=service._state['generation']
+            with self.assertRaises(BrokerError) as raised:
+                service._start_generation('resume-click',review_resume=True)
+            self.assertEqual(raised.exception.code,'generation_checkpoint_unavailable')
+            self.assertIs(service._state['generation'],previous)
+            approvals.scope.assert_not_called();workflow.start_generation.assert_not_called()
+
+    def test_resume_start_failure_preserves_checkpoint_progress_without_live_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflow=SimpleNamespace(_broker=SimpleNamespace(project_id='example'),select_input=Mock(),
+                start_generation=Mock(side_effect=BrokerError('fixture_preflight','Explicit fixture failure',status=409)))
+            service=ConversationService(workflow,Path(directory)/'example.conversation.json')
+            service._state['pending_input']={'prompt':'synthetic input','name':None}
+            service._state['generation']={'state':'failed','progress':{'checkpoint_id':'a'*64,
+                'generation_preview':{'state':'ready','rendered_count':1}}}
+            service._start_generation('resume-click',inference_scope=SimpleNamespace(approval_id='new'),
+                continuation_checkpoint='a'*64,review_resume=True)
+            job=service._state['generation']
+            self.assertEqual(job['state'],'failed')
+            self.assertEqual(job['progress']['checkpoint_id'],'a'*64)
+            self.assertEqual(job['progress']['generation_preview']['rendered_count'],1)
+            self.assertEqual(job['progress']['generation_preview']['state'],'blocked')
+
     def test_invalid_history_cannot_be_replaced_by_polling_or_transaction_sync(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'example.conversation.json'

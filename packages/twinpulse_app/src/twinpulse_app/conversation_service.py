@@ -1493,6 +1493,7 @@ class ConversationService:
                 self._persist()
 
     def _start_generation(self, request_id, *, inference_scope=None, continuation_checkpoint=None, review_resume=False):
+        previous=self._state.get('generation')
         # Revalidate persisted input with the existing validator after a restart.
         self.workflow.select_input(self._state["pending_input"])
         approvals = getattr(self.workflow, 'generation_approvals', None)
@@ -1501,8 +1502,11 @@ class ConversationService:
             checkpoint=(previous.get('progress') or {}).get('checkpoint_id') if previous and review_resume else None
             if review_resume and previous and not checkpoint and previous.get('approval_id'):
                 checkpoint=approvals.checkpoint_for_approval(previous['approval_id'])
+            if review_resume and not checkpoint:
+                raise BrokerError('generation_checkpoint_unavailable',
+                    'The retained checkpoint is unavailable. Resume did not start a new generation. No request was sent.',status=409)
             scope=approvals.scope(checkpoint=checkpoint)
-            self._start_generation(request_id,inference_scope=scope,continuation_checkpoint=checkpoint)
+            self._start_generation(request_id,inference_scope=scope,continuation_checkpoint=checkpoint,review_resume=review_resume)
             return
         if approvals and approvals.enabled() and inference_scope is None:
             previous = self._state['generation']
@@ -1535,6 +1539,13 @@ class ConversationService:
         job = {"operation_id": operation, "state": "accepted", "generation_id": None, "request_id": request_id,
                "summary": "Starting the existing scene generation service…", "started_at": now(),
                "last_progress_at": now(), "can_cancel": True, "error": None}
+        if review_resume and continuation_checkpoint:
+            from copy import deepcopy
+            retained=deepcopy((previous or {}).get('progress') or {})
+            retained['checkpoint_id']=continuation_checkpoint
+            if retained.get('generation_preview'):
+                retained['generation_preview'].update(state='blocked',error_code='PREVIEW_REBUILD_REQUIRED')
+            job['progress']=retained
         # The SIM/robot choice is a user reply, not the generation input.
         pending=self._state['pending_input']
         origin=next((m for m in self._state['messages'] if m['role']=='user' and
