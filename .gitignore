@@ -27,3 +27,4 @@ runtime/
 *.key
 saved-projects/
 captures/
+/output/pdf/

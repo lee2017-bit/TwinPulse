@@ -1,0 +1,188 @@
+{
+  "schema": "twinpulse-sim-alpha-public-metrics-1.0",
+  "status": "PARTIAL_NOT_PUBLIC_RELEASE_ACCEPTED",
+  "build_id": "20261014T142621Z-ac0c3c730f55",
+  "commit": "655e543b470d09317cadf407232e56cc9e6f6cb2",
+  "source_sha256": "ac0c3c730f5506db293778a7d4934427fb2e074fbe3f7df82289f309d6037092",
+  "zip_sha256": "a556978008ca1b6003685ba1bdd2d28cc91c35441123d1b33c85607c71e19eef",
+  "scope": "Seven development acceptance cases plus one related mixed-input retest and one unintended fresh restart, explicitly separated; changing source cohorts, not a comparative model benchmark.",
+  "cases": [
+    {
+      "id": "S01",
+      "mode": "text",
+      "source_cohort": "alpha02",
+      "prepared": 5,
+      "rendered": 5,
+      "pending": 0,
+      "repairs": 0,
+      "durable_scene": true,
+      "error_code": null,
+      "elapsed_s": null,
+      "receipt_http": 3,
+      "estimated_usd": "0.0056154"
+    },
+    {
+      "id": "S02",
+      "mode": "photo #1",
+      "source_cohort": "alpha05",
+      "prepared": 30,
+      "rendered": 30,
+      "pending": 0,
+      "repairs": 3,
+      "durable_scene": true,
+      "error_code": null,
+      "elapsed_s": 208.411,
+      "receipt_http": 12,
+      "estimated_usd": "0.0847359"
+    },
+    {
+      "id": "S03",
+      "mode": "photo #2",
+      "source_cohort": "alpha06",
+      "prepared": 26,
+      "rendered": 26,
+      "pending": 0,
+      "repairs": 2,
+      "durable_scene": true,
+      "error_code": null,
+      "elapsed_s": 246.544,
+      "receipt_http": 11,
+      "estimated_usd": "0.0651429"
+    },
+    {
+      "id": "S04",
+      "mode": "photo #3",
+      "source_cohort": "alpha06",
+      "prepared": 27,
+      "rendered": 23,
+      "pending": 4,
+      "repairs": 3,
+      "durable_scene": false,
+      "error_code": "REPAIR_LIMIT_REACHED",
+      "elapsed_s": 346.223,
+      "receipt_http": 12,
+      "estimated_usd": "0.0873762"
+    },
+    {
+      "id": "S05",
+      "mode": "text+photo",
+      "source_cohort": "alpha07",
+      "prepared": 27,
+      "rendered": 23,
+      "pending": 4,
+      "repairs": 3,
+      "durable_scene": false,
+      "error_code": "REPAIR_LIMIT_REACHED",
+      "elapsed_s": 52.767,
+      "receipt_http": 2,
+      "estimated_usd": "0.0290502"
+    },
+    {
+      "id": "S06",
+      "mode": "public photo A",
+      "source_cohort": "alpha08",
+      "prepared": 21,
+      "rendered": 20,
+      "pending": 1,
+      "repairs": 1,
+      "durable_scene": true,
+      "error_code": null,
+      "elapsed_s": 294.106,
+      "receipt_http": 10,
+      "estimated_usd": "0.0516348"
+    },
+    {
+      "id": "S07",
+      "mode": "public photo B",
+      "source_cohort": "alpha08",
+      "prepared": 16,
+      "rendered": 16,
+      "pending": 0,
+      "repairs": 3,
+      "durable_scene": false,
+      "error_code": "REPAIR_LIMIT_REACHED",
+      "elapsed_s": 300.155,
+      "receipt_http": 10,
+      "estimated_usd": "0.0617379"
+    },
+    {
+      "id": "R05",
+      "mode": "mixed impact retest",
+      "source_cohort": "alpha11",
+      "prepared": 26,
+      "rendered": 22,
+      "pending": 4,
+      "repairs": 3,
+      "durable_scene": false,
+      "error_code": "REPAIR_STALLED",
+      "elapsed_s": 444.615,
+      "receipt_http": 12,
+      "estimated_usd": "0.0888207"
+    },
+    {
+      "id": "X14",
+      "mode": "unintended fresh restart",
+      "source_cohort": "alpha14",
+      "prepared": 24,
+      "rendered": 24,
+      "pending": 2,
+      "repairs": 0,
+      "durable_scene": false,
+      "error_code": null,
+      "elapsed_s": 155.979,
+      "receipt_http": 9,
+      "estimated_usd": "0.0450909"
+    }
+  ],
+  "http_metrics": [
+    {
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "n": 17,
+      "p50_s": 63.094,
+      "p95_s": 180.257,
+      "maximum_s": 232.531,
+      "finish_reasons": [
+        "stop"
+      ],
+      "estimated_usd": "0.0794781",
+      "held_usd": "0"
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "n": 77,
+      "p50_s": 9.781,
+      "p95_s": 23.984,
+      "maximum_s": 48.89,
+      "finish_reasons": [
+        "stop"
+      ],
+      "estimated_usd": "0.5351199",
+      "held_usd": "0"
+    }
+  ],
+  "accounting": {
+    "at_utc": "2026-10-14T14:49:53.450257+00:00",
+    "protected_usd": "4.4934696",
+    "current_http": 94,
+    "current_estimated_usd": "0.6145980",
+    "current_held_usd": "0",
+    "price_status": "Recorded reviewed estimates, not invoice or a product pricing gate"
+  },
+  "package_checks": {
+    "files": 1359,
+    "all_hashes_match": true,
+    "resources_pyc": 0,
+    "personal_path_matches": 0,
+    "signed": false,
+    "public_release_status": "LOCAL_CANDIDATE_REQUIRES_REVIEW"
+  },
+  "not_run": [
+    "Native Explorer launch",
+    "OS image Ctrl+V",
+    "Native Isaac compact panel",
+    "Independent clean Windows/GPU PC",
+    "Physical robot",
+    "Paid Cloud"
+  ],
+  "excluded": "Original photographs, private prompts, coordinates, response bodies, project data, personal paths and credentials."
+}
