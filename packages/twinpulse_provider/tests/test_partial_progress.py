@@ -10,6 +10,7 @@ ROOT=Path(__file__).resolve().parents[3]
 for name in ('twinpulse_core','twinpulse_provider'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
 from twinpulse_core.geometry_checks import GeometryChecks
+from twinpulse_core import canonical_sha256
 from twinpulse_provider.generation_policy import ProgressTracker
 from twinpulse_provider.errors import ProviderConfigurationError
 
@@ -49,3 +50,13 @@ class PartialProgressTests(unittest.TestCase):
         self.assertFalse(t.history[-1]['checks_complete'])
         with self.assertRaises(ProviderConfigurationError):
             t.rebind_locally_checked_best({'value':3},ledger('c'*64,floor_packing='failed'))
+
+    def test_rebind_uses_the_pipeline_object_identity_representation(self):
+        raw={'room':{'width_m':5},'inventory':[{'id':'example'}],
+             'objects':{'example':{'region':'rear_left'}}}
+        report=ledger(canonical_sha256(raw),support_packing='partial')
+        public={**raw,'objects':[dict(id=i,**v) for i,v in raw['objects'].items()]}
+        t=ProgressTracker();t.observe(public,[],report)
+        prior=t.best_previous
+        t.rebind_locally_checked_best(raw,report)
+        self.assertEqual(t.best_previous,prior)

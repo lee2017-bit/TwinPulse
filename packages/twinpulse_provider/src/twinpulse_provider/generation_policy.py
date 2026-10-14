@@ -402,6 +402,9 @@ class ProgressTracker:
         seen candidates, history and the caller's request/repair/stall budgets.
         """
         from copy import deepcopy
+        if isinstance(candidate,dict) and isinstance(candidate.get('objects'),dict):
+            candidate={**candidate,'objects':[dict(id=identity,**value)
+                for identity,value in candidate['objects'].items()]}
         probe=type(self)()
         probe.observe(candidate,[],report)
         if (not probe.best_checks or not all(r['status'] in ('passed','partial')
