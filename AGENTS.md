@@ -19,6 +19,13 @@
 - Distinguish software-path readiness from actual hardware outcomes. Robot OFF may leave physical acquisition/motion NOT_RUN, but it cannot excuse an unimplemented App action, circular prerequisites or a failed SIM journey. This rule never authorizes physical operation.
 - Before a readiness handoff, run the evidence gate and inspect its result. Instructions or a reviewer saying PASS cannot replace the gate's current-release evidence. If a reviewer is authorized, give it the original goal, acceptance list and raw failures, not only a scoped success summary. Only actual permission/budget/tool limits justify a blocked handoff; do not silently shrink the goal.
 
+## Build retention and disk-pressure checks
+
+- Do not preserve every historical executable, installer ZIP and `work`/`staging`/`dist` copy as if it were irreplaceable test evidence. Preserve current, the last actually passing rollback for its stated scope, and explicitly needed reproduction builds. Keep source identities, manifests, original failure logs, user photos/projects/sensor data and cost ledgers separately.
+- Before another full build/install or recorded Isaac session, measure free space and existing generated build/install accumulation. Investigate project-owned copies before asking the user to keep clearing unrelated files. Logical file sizes and actual allocated/free-space changes are different measurements.
+- Deletion needs an exact reviewed absolute-path inventory and applicable user authorization. Protect active/pinned/running releases and raw data; reject reparse/out-of-scope paths. Verify required remote preservation first when the user requests backup-before-cleanup. Do not touch pagefile, Docker/WSL, Isaac installations, credentials or user data as a build cleanup shortcut.
+- `scripts/prune_preserved_builds.ps1` is the date-specific reviewed maintenance path with dry-run/Apply, not proof that the installed executable already implements automatic retention. Update its pins/proof only after reviewing new acceptance and preserve original cleanup receipts.
+
 ## License and honest provenance
 
 - TwinPulse-owned code uses the unmodified Apache-2.0 license in `LICENSE`. Preserve applicable copyright/license/NOTICE information and prominent notices of modifications when redistributing reused code; keep third-party licenses and notices separate and unchanged.

@@ -1,6 +1,10 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.536**
+- 문서 버전: **Baseline v1.0.537**
+
+> **v537 / 2026-10-18 · 원격 보존 후 검토된 정리 실행 완료.** 기존private GitHub main source`90a7b82679f9e848fa13c4cb4589cb0498595ca2` push/remote exact, frozen SIM06 ZIP/SHA256SUMS를 `sim-alpha-2026-10-18-archive` prerelease에 보존하고 실제 다운로드 SHA exact 확인 후 삭제했다. 실제SIM06의scope와 이후소스08의미완료실물상태는명확히분리한다. 삭제820/실패0(설치139+ZIP167+중간폴더514), installed142→현재08/rollback06/시작재현01의3개. 각installed/local package1609파일·3ZIP SHA PASS. 사용자데이터14049파일/2033906967B 사전/사후SHA UNCHANGED. raw/사진/프로젝트/장부·원자산·시스템파일삭제0,공개전환0. 여유3522523136→71882428416B, 관측증가68359905280B(63.66GiB);논리120GB삭제합과실제여유증가를구분한다. [결과/재현방법](../verification/STORAGE_RETENTION_2026-10-18.md), [로컬영수증](../../outputs/github-preservation-20261018/report.html).
+
+> 설치EXE 자체의자동GC는미반영이며날짜별reviewed script/AGENTS보관규칙으로이번정리를수행했다. 다음설치전보관상한/pin/원격proof갱신을검토해야한다. 삭제한모든과거바이너리의exact복구를보장하지않으며06은GitHub+로컬원본복구가능. 이번physical0/모델0HTTP/USD0/새설치0·기존비용불변. 실제로봇freshness/원시저장/완성녹화는잔여로유지한다.
 
 > **v536 / 2026-10-18 · 비공개 GitHub 보존/용량 정리 기준.** 사용자 요청으로 업로드 확인→삭제 순서를 지킨다. 정상 전체 SIM 인수본06/source `d0d4e62d67010295e5b30e6350a352fbe0dd6344b4ad964e7919997c11a33a93`와 최신08 개발 소스의 검증 범위를 분리한다. 현재08·rollback06·시작 실패 재현01 및 원사진/프로젝트/원시 실패/장부를 보호한다. GitHub 공개 전환·실물 전체 성공을 뜻하지 않는다. installer의 무제한 release 누적142개/42.45GB와 출력 ZIP146개/17.76GB를 확인했다(논리 크기). 정리 전 명세/절대경로/현재프로세스/manifest/SHA 확인, 원격 소스·ZIP 다운로드 SHA 확인 뒤 구설치/중간 빌드만 삭제한다. pagefile·Docker·Isaac 설치/자산·사용자 데이터는 범위 밖이다. 결과는 검증 후 후속 기록한다.
 

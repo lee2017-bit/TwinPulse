@@ -1,5 +1,7 @@
 # Private preservation snapshot — 2026-10-18
 
+Uploaded and verified: https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-18-archive . Original source preservation commit: `90a7b82679f9e848fa13c4cb4589cb0498595ca2`. Both release assets were downloaded again and matched local SHA256 before cleanup. The repository remains private.
+
 This is an archival **pre-release**, not a public release or a claim that all robot functions work. The existing `lee2017-bit/TwinPulse` repository remains private.
 
 ## Frozen package with actual SIM evidence
@@ -22,3 +24,5 @@ Current installed development package: `20261018T060740Z-eb840a4afcaa`, source-m
 Extract the entire frozen package, verify SHA256 and read its README. Isaac Sim remains a separately installed prerequisite. Use your own provider credentials; personal credentials, photos, user projects and raw robot captures are not release assets. The frozen package contains development robot features and a known physical Connect UI defect: use it as a **SIM rollback**, not for physical driving.
 
 Keep current08, last SIM rollback06 and boot-timeout reproduction build01 locally. Do not delete projects, settings, raw logs, source manifests or pinned original assets to reclaim space. Obsolete installer copies and reproducible intermediate build trees can be removed only after source push and remote ZIP download/hash verification. No force push, history rewrite, repository visibility change or system pagefile/Docker/Isaac cleanup is part of this request.
+
+Execution receipt:820 reviewed obsolete targets removed/0failures; installed142→3; observed free-space increase63.66GiB. Protected user data14049files/2,033,906,967bytes were SHA-identical. Retained installed/build packages and ZIPs remained verified. This does not resolve physical native/ROS freshness failures. See `docs/verification/STORAGE_RETENTION_2026-10-18.md` for the exact maintenance scope and remaining automatic-retention limitation.

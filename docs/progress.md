@@ -1,5 +1,11 @@
 # TwinPulse progress
 
+## 2026-10-18 — v537 private preservation and reviewed pruning completed
+
+Source was pushed to existing private main (`90a7b82679f9e848fa13c4cb4589cb0498595ca2`). The [frozen SIM archive](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-18-archive) ZIP and checksum were uploaded, re-downloaded and SHA256 verified before deleting anything. The source checkout includes later08 fixes; it is not mislabelled as a byte-identical source rebuild of frozen06.
+
+Removed820 reviewed targets with0failures:139 obsolete installed releases,167 ZIPs,514 intermediate folders. Installed releases142→3(current08/SIM rollback06/startup repro01), all six retained package directories(1609files each)/three ZIPs verified. Free space3.28→66.95GiB; observed recovery63.66GiB. Protected local user-data14049files/2033906967B SHA comparison UNCHANGED. Original/raw/pinned assets/projects/credentials/system files were not removed. Small build/source manifests remain in the local receipt. [Retention record](verification/STORAGE_RETENTION_2026-10-18.md). The reusable reviewed script/rules are present; automatic retention in the installed EXE remains follow-up, not falsely completed. Robot freshness, full hardware acceptance and complete recording remain NOT_READY/unfinished. No new model calls, devices, paid Cloud or installs.
+
 ## 2026-10-18 — v536 preservation and retention investigation
 
 The existing private GitHub repository will preserve source and the frozen SIM acceptance package before old binaries are removed. Exact SIM baseline: `20261018T044930Z-d0d4e62d6701`; current development/installed package: `20261018T060740Z-eb840a4afcaa`. Do not conflate their acceptance. Actual robot operation `f28b9e909309481084c8679301e832cd` connected and received native LiDAR, but stationary trial `4bf36ea0ee0045c99ff89762eaf88f2b` was INCONCLUSIVE after1.234s/7frames. No wheel commands. Subsequent zero/OFF Prepare paused on ROS freshness. Disconnect cleanup was observed in App; the PC receipt is incomplete after ENOSPC. Full physical readiness is NOT_READY. Battery missing-percent crash was fixed; source-age diagnostics/processing latency remain.
