@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--commit',required=True)
     parser.add_argument('--review',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--refresh-notes',action='store_true',help='Update only our generated notes, without touching assets')
     args=parser.parse_args()
     if not re.fullmatch('[0-9a-f]{40}',args.commit):raise ValueError('EXACT_COMMIT_REQUIRED')
     review=json.loads(args.review.read_text(encoding='utf-8-sig'))
@@ -56,10 +57,10 @@ def main():
              'X-GitHub-Api-Version':'2022-11-28','User-Agent':'TwinPulse-approved-private-release'}
     opener=urllib.request.build_opener(NoRedirect())
 
-    def api(route,data=None):
+    def api(route,data=None,method=None):
         payload=json.dumps(data).encode() if data is not None else None
         request=urllib.request.Request('https://api.github.com/repos/'+REPO+route,payload,
-            headers|({'Content-Type':'application/json'} if payload is not None else {}))
+            headers|({'Content-Type':'application/json'} if payload is not None else {}),method=method)
         try:
             with opener.open(request,timeout=60) as response:return json.load(response)
         except urllib.error.HTTPError as error:
@@ -76,6 +77,15 @@ def main():
         release=api('/releases',dict(tag_name=tag,target_commitish=args.commit,name=review['title'],
             body=notes+'\n\nVerified source commit: `'+args.commit+'`\n',draft=False,prerelease=True,make_latest='false'))
     if release.get('tag_name')!=tag or release.get('prerelease') is not True:raise ValueError('RELEASE_IDENTITY_MISMATCH')
+    if args.refresh_notes:
+        notes=(ROOT/review['notes_path']).read_text(encoding='utf-8')+'\n\nVerified source commit: `'+args.commit+'`\n'
+        updated=api('/releases/'+str(release['id']),dict(body=notes),method='PATCH')
+        if updated.get('body')!=notes or updated.get('tag_name')!=tag:raise ValueError('RELEASE_NOTES_NOT_VERIFIED')
+        from hashlib import sha256
+        with args.output.open('x',encoding='utf-8') as stream:
+            json.dump(dict(status='PRIVATE_RELEASE_NOTES_VERIFIED',url=updated['html_url'],body_sha256=sha256(notes.encode()).hexdigest(),assets_unchanged=True),stream,indent=2)
+        print(json.dumps(dict(status='PRIVATE_RELEASE_NOTES_VERIFIED',url=updated['html_url'])))
+        return
     result=dict(schema='verified-private-release-upload-1.0',repository=REPO,private=True,commit=args.commit,
                 **identity,release_url=release['html_url'],tag=tag,assets=[])
     for path,row in assets:

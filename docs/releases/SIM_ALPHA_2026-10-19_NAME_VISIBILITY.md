@@ -34,7 +34,7 @@ Local detailed evidence: `outputs/robot-name-visibility-20261019/report.html`. T
 
 [Latest SIM demo and Windows ZIP](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-name-visibility)
 
-![Actual new installed UI](../media/twinpulse-sim-20261019.png)
+![Actual new installed UI](https://github.com/lee2017-bit/TwinPulse/blob/68d24dec7b09df9ee7a3e2a628245d2f0f8fb71f/docs/media/twinpulse-sim-20261019.png?raw=true)
 
 `TwinPulse-SIM-Demo-2026-10-19.mp4`:195.200s,3393276bytes, SHA256 `c5bbf99bd96618ea46113cb2253b1b714f8fac791ffda0580d9f02c87b3d7601`.
 

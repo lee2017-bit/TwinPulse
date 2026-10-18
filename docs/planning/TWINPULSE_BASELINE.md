@@ -1,6 +1,12 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.547**
+- 문서 버전: **Baseline v1.0.548**
+
+> **v548 / 2026-10-19 · 작은 이름표·현재판 재인수·비공개 GitHub 보존.** Twin 이름표의 음영/테두리/그림자/배터리 부행/leader를 제거하고 연결점+이름72×16px만 남겼다. 이름 또는 신선한 실제 canvas의 로봇 투영영역 클릭으로 하단 상태·조종기를 연다. 투영 hint 선택은mesh picking/측위가 아니며 자동Connect·이동권한을부여하지않는다. 원revision/epoch/카메라현재프레임/시간·속도·기하검사 유지. 새 설치 `20261018T223143Z-307ba690d100`/source `307ba690d1002b5ec59e3f8b3bae788093fda6e2eaa160acaa9a20da67bc36c8`/1619파일 exact의 실제 동일 Test BrowserWindow+realFlash/Nemotron+Isaac whole fresh32/cold13/edit-Undo-lineage8/history4 PASS;245표시관측 최대476.977ms/원1초 초과0. 실제 두body click·5CSS크기·60초hold·90°/단일360°scan·정확ACK/applied Stopall·별도fault창·복원·이력까지 현재SHA gate READY_FOR_SUPERVISED_POWERED_TEST/issues0와원FAIL/Stop고장 negative거절을확인했다. 일반 동일Start41.120/재시작56.559초·동일owner/8765하나/debug0·실제native AltF4두번의현재owned정리PASS. [모든시도·화면/영상·ID/SHA·비용/잔여·Git영수증 단일보고서](../../outputs/robot-name-visibility-20261019/report.html).
+>
+> 기존private main source `68d24dec7b09df9ee7a3e2a628245d2f0f8fb71f`/원격SHA일치, [새 private prerelease](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-name-visibility)의ZIP188992874B/SHA2ebe556f…be039·데모3393276B/195.200초/SHA c5bbf99b…d7601·SUMS236B 실제재다운로드SHA exact. 영상/ZIP은Git이력에서분리하고실제합성텍스트SIM원본38.5–234.0초만발췌했다(배속/보간0). 공개전환/개인사진·프로젝트·원시센서·키업로드0. 원4영상PTS최대20ms대조. 이번5HTTP추정USD.0451653/새UNKNOWN0,추가50누적2.2043013/잔여47.7956987·이전20별도불변. 문서후속commit은동결ZIP소스재빌드가아니다.
+>
+> 한계: Native graphics capture두번timeout은보존했고새AX에서인증Home/실제AltF4만확인;전체native/Explorer/OSpaste/실제DPI·다른PC·새사진품질은NOT_RUN. 로봇OFF로실물Pi/저장·센서·제동/주행·정합NOT_RUN이며감독시험진입의순환선행PASS는아니다. 과거AV/startup/driveabort/1014.789ms 원인은UNKNOWN/clean rerun으로원인해결주장0. 공개용header검사는기존HEAD동일model-library.css누락에서FAIL이며public clearance완료가아니다. unit fixture최초1FAIL도보존했다. 원사진/프로젝트/장부/실패/미검토PNG7개유지·새의존성/OS·Isaac변경/실물/Cloud/삭제0. 현재App/ownedIsaac종료. 아래v547은이전설치이력이다.
 
 > **v547 / 2026-10-19 · 감독된 로봇 집중시험 진입 준비 PASS_SCOPED.** 동일 동결08 `20261018T205722Z-49d354d5c4c1`/source `49d354d5c4c1e644ec34e7190fd325e40465093c41be2dc1f983c25407a46885`·1619파일 exact의 새10 actual Test BrowserWindow/Isaac 여정 fresh32·cold13·lineage8·history4가 각각 whole PASS다. 일반 Start60.154/재시작58.821초·debug0·실제 native AltF4 두 번 정리와 진단08b7은 같은 제품의 별도 근거로 유지한다. 원1초·200/250/350/400ms·속도/기하 완화0, 직접 변경API/고정 모델응답/상태 주입0. 새10의60초hold/90도/단일2π+142scan·242표시관측 최대402.490ms/1초 초과0, 정확 Stop all `55fa7e96-e6ab-45d8-925f-c49048885325` HTTP200·두 SIM의 새motion=applied/PAUSED·CONNECTED/STREAMING·후속 같은장면 갱신을 결속했다. 최종 SHA gate `READY_FOR_SUPERVISED_POWERED_TEST`/issues0, Stop고장·원fresh08FAIL negative는 거절한다. [모든 시도·실제 화면/녹화·ID/SHA·판정·비용·정확 잔여 단일보고서](../../outputs/robot-test-entry-20261019/report.html).
 >

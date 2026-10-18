@@ -1,5 +1,13 @@
 # TwinPulse progress
 
+## 2026-10-19 — v548 compact name-only labels, same-installed acceptance and private GitHub upload
+
+Installed `20261018T223143Z-307ba690d100` /source307ba690d100/1619files exact. No shaded name/status cards or leaders in the Twin; small connected-dot/name only, current projected-body/name selection opens bottom controls without granting motion. Actual name style72×16/transparent/border0/shadow none and both canvas clicks PASS. Whole fresh32/cold13/edit-Undo-lineage8/history4 PASS;245motion-display samples max476.977ms/original1s exceeded0. Normal same Start41.120s/restart56.559s, singleowner/debug0, native AltF4 twice and owned cleanup PASS. Current SHA gate READY_FOR_SUPERVISED_POWERED_TEST/issues0; originalFAIL and brokenStop negatives reject.
+
+Private source checkpoint `68d24dec7b09df9ee7a3e2a628245d2f0f8fb71f` pushed/remote SHA matched. [New private SIM Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-name-visibility):188992874B ZIP,3393276B/195.200s actualSIMdemo and236B SHA256SUMS all re-downloaded/SHA verified. Binaries/video are not source-history blobs; only reviewed synthetic-UI poster added. [Build/acceptance/limits](releases/SIM_ALPHA_2026-10-19_NAME_VISIBILITY.md) · [Single local report:actual screens/videos,all attempts/IDs/SHA,cost and upload receipts](../outputs/robot-name-visibility-20261019/report.html).
+
+Physical/Pi/storage/braking/driving/alignment,full native/Explorer/OSpaste/DPI/anotherPC/newphoto-quality NOT_RUN. Native graphics capture timed out;fresh AX confirmed authenticatedHome and actualnativeclose,not fullnativecontrol. Historical UNKNOWN roots remain;no guarantee of no recurrence. Existing unchanged model-library.css header-check FAIL is retained;full public clearance not asserted. Repository remains private;photos/raws/projects/keys not uploaded. No newdependency/OS/Isaac/physical/Cloud/deletion.5HTTP estimatedUSD.0451653/newUNKNOWN0,additional50 total2.2043013/remaining47.7956987. App/ownedIsaac closed. Older entries are history.
+
 ## 2026-10-19 — v547 supervised powered-test entry ready; physical outcomes NOT_RUN
 
 Same frozen08/source49d/1619exact files: actual installed Test BrowserWindow+Isaac new whole10 fresh32/cold13/edit-Undo-lineage8/history4 PASS; SHA gate `READY_FOR_SUPERVISED_POWERED_TEST`,issues0. Original 60s hold/90°/single2π scan142points,242motion-display samples max402.490ms/over1s0,exact Stop all HTTP200→both same-operation/connection/new-applied epochs PAUSED/CONNECTED/STREAMING confirmed. Normal08/native shutdown and diagnostics08b are same-product independent evidence. Original timing/speed/geometry criteria unchanged; no direct mutation API/fixed model/state injection.
