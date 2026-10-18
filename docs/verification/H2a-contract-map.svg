@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="380" viewBox="0 0 1120 380" role="img" aria-labelledby="title desc">
+  <title id="title">TwinPulse H2a contract map</title>
+  <desc id="desc">The scene, map, robot, and mission have distinct identities. A separate run gate needs review, a matching build receipt, current Isaac snapshot, and a controller capability. H2a is core-only.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#7fb0ff"/></marker></defs>
+  <rect width="1120" height="380" rx="20" fill="#111827"/>
+  <text x="36" y="48" fill="#fff" font-family="Arial,sans-serif" font-size="26" font-weight="700">H2a · One site, separate identities</text>
+  <text x="36" y="77" fill="#aab8ce" font-family="Arial,sans-serif" font-size="15">Core contract + safety fixtures only · no live Isaac wiring yet</text>
+  <g font-family="Arial,sans-serif" font-size="17" text-anchor="middle">
+    <rect x="35" y="119" width="220" height="78" rx="12" fill="#203450" stroke="#5c9aff"/><text x="145" y="150" fill="#fff" font-weight="700">Scene revision</text><text x="145" y="174" fill="#c5d8ff" font-size="14">photo / plan / scan lineage</text>
+    <rect x="324" y="119" width="220" height="78" rx="12" fill="#203450" stroke="#5c9aff"/><text x="434" y="150" fill="#fff" font-weight="700">Map revision</text><text x="434" y="174" fill="#c5d8ff" font-size="14">free / blocked / unknown</text>
+    <rect x="35" y="224" width="220" height="78" rx="12" fill="#254a43" stroke="#62d2ac"/><text x="145" y="255" fill="#fff" font-weight="700">Robot instance</text><text x="145" y="279" fill="#bbf5e2" font-size="14">confirmed profile + pose</text>
+    <rect x="324" y="224" width="220" height="78" rx="12" fill="#254a43" stroke="#62d2ac"/><text x="434" y="255" fill="#fff" font-weight="700">Mission revision</text><text x="434" y="279" fill="#bbf5e2" font-size="14">explicit start + goal</text>
+    <rect x="652" y="165" width="192" height="92" rx="12" fill="#4d3c25" stroke="#e5ad53"/><text x="748" y="200" fill="#fff" font-weight="700">Run gate</text><text x="748" y="226" fill="#ffe4ab" font-size="14">independent checks</text>
+    <rect x="906" y="154" width="175" height="115" rx="12" fill="#303346" stroke="#a2a9c6"/><text x="993" y="184" fill="#fff" font-weight="700">Not yet live</text><text x="993" y="208" fill="#d3d8ea" font-size="13">H2b: app + API</text><text x="993" y="230" fill="#d3d8ea" font-size="13">H2c: Isaac test</text><text x="993" y="252" fill="#d3d8ea" font-size="13">No physical robot</text>
+  </g>
+  <g stroke="#7fb0ff" stroke-width="3" fill="none" marker-end="url(#arrow)"><path d="M255 158H318"/><path d="M255 263H318"/><path d="M545 158 646 194"/><path d="M545 263 646 229"/></g>
+  <path d="M844 211H899" stroke="#a2a9c6" stroke-width="3" stroke-dasharray="7 6" fill="none" marker-end="url(#arrow)"/>
+  <text x="36" y="350" fill="#aab8ce" font-family="Arial,sans-serif" font-size="14">Run requires review + matching receipt + current stage snapshot + named controller capability. Valid scene ≠ safe route.</text>
+</svg>

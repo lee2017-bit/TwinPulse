@@ -1,0 +1,39 @@
+{
+  "commit": "90a68bd2e3c61c12966779da89d8eeaec82730e9",
+  "composed_scene_comparison": "equal_after_documentation_removal",
+  "composed_scene_sha256": "37f88a8f7a5eda57dae728bf3b3b9a0e56964cb2e446891bd68333fb7c2d16ff",
+  "converter": "URDF USD Converter v0.1.3",
+  "license": "Apache-2.0",
+  "mesh_sha256": {
+    "meshes\\bases\\burger_base.stl": "7d7f3329a437b43bbcbbec59f9a2d1df1d88b59c3882c543d979baf73670f025",
+    "meshes\\sensors\\lds.stl": "98f0bd7046159f83caab9509293112ef13534368535669124b91b5114c3132f6",
+    "meshes\\wheels\\left_tire.stl": "578c9452ee51c2f71e5e6723b503d784e58a6ac317fa53ee308e645f204c8d6a",
+    "meshes\\wheels\\right_tire.stl": "407aaf271ba7051c6186b220e1dc36b2a6eca688fced66a3347f49747b684596"
+  },
+  "modification": "TwinPulse removed exporter documentation containing local absolute paths. Geometry, physics, materials and relative references are unchanged.",
+  "original_usd_sha256": {
+    "payloads/Physics/mujoco.usda": "a613ea9405af764aac0b31758b7703e18f74708d238fd8ad158d81a86b65cd98",
+    "payloads/Physics/physics.usda": "8c1e6353f364638bd6e8d823351811a353ab5235588d395cf3f56f71c3482195",
+    "payloads/Physics/physx.usda": "218b0c0f2b82c3859d184c59b8fd36b2b8c28b633609df7325906e370307408a",
+    "payloads/base.usda": "750889ff799fbe55efe50af7a47e32c38d664ce50fb360aa1802d2daacfcb4f7",
+    "payloads/geometries.usd": "0bda8f94edce82b534d2d58013ecaf8b33d6854a99827fe6fccfbd84a47cf43d",
+    "payloads/instances.usda": "06798e126ee49d958c4201abdd8ef578eb9a6fc48eed7951c3171e005162aa55",
+    "payloads/materials.usda": "2be307ad3d46d77b19c0bea7f229c66af8b35e3dcf7d00455f9ef44927b1328b",
+    "payloads/robot.usda": "f384b6a2b53094a18e10b02b18f254f10c2c972a8b9cf8fcccbf2f0159f5ed36",
+    "turtlebot3_burger.usda": "58af6e5f75f5cf96362f4abb175971dd555870add77c50a0baaa8028d2293b37"
+  },
+  "public_usd_sha256": {
+    "payloads/Physics/mujoco.usda": "63c2a9a8834c470d1424cb4c0e406ccbb293584ee20d392a00bd3f2dded4d659",
+    "payloads/Physics/physics.usda": "b4c6d8013f5fd7fcdddc4ff39ac769d5b13f976bee0813d8242aa28eb58f0acd",
+    "payloads/Physics/physx.usda": "078530d6b2799caf6bdcb40deaff34092e6b5686b26f21a9bcbd9448eb4eace2",
+    "payloads/base.usda": "17767908c3bac46f453b00fe2c566f45f06e57e818b83315fc5e281b92888cf1",
+    "payloads/geometries.usd": "f9ccb9c2716a19289d6ef05e15e57e5c8dbcd1425049317ff462b29bed96d2c0",
+    "payloads/instances.usda": "c194290f05f7dfd9a9b90a8c0dacf2b436e3d4bd032106268d61a9497a20416b",
+    "payloads/materials.usda": "6d75e07acabbab8f417564dfe8713a62d8d87d2ae47a32bd41c82be70657bd12",
+    "payloads/robot.usda": "7de52ca7ad6471aed9fde8c6ef130436e7395dea1c2c3949aed7c952bbfdbbef",
+    "turtlebot3_burger.usda": "3b657533bd802d137c066728e4df1e7b225cd9d5c5738c34c178ed84b4cb1f69"
+  },
+  "scope": "ROBOTIS-derived geometry only; no Isaac/Kit runtime, importer binary, model weights, or asset packs",
+  "source": "https://github.com/ROBOTIS-GIT/turtlebot3.git",
+  "source_urdf_sha256": "7b0cdc0f9241efa8a4f316f54f81f081aea79d29393fde81867185d07ca57572"
+}

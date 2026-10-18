@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="370" viewBox="0 0 1120 370">
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#60a5fa"/></marker></defs>
+  <rect width="1120" height="370" fill="#111827"/>
+  <text x="40" y="48" fill="#f8fafc" font-family="Arial" font-size="25" font-weight="bold">H2b-3 · Versioned site scene Build</text>
+  <text x="40" y="75" fill="#94a3b8" font-family="Arial" font-size="14">Local implementation map · fake transport verified · actual Isaac and paid Nebius request NOT RUN</text>
+  <rect x="35" y="112" width="245" height="169" rx="14" fill="#1e293b" stroke="#475569"/>
+  <text x="55" y="143" fill="#93c5fd" font-family="Arial" font-size="17" font-weight="bold">1  Provider choice</text>
+  <text x="55" y="177" fill="#e2e8f0" font-family="Arial" font-size="14">v1 legacy profile kept</text>
+  <text x="55" y="203" fill="#e2e8f0" font-family="Arial" font-size="14">Nebius site v2 explicit</text>
+  <text x="55" y="236" fill="#94a3b8" font-family="Arial" font-size="13">No forced robot or goal</text>
+  <path d="M286 195H310" stroke="#60a5fa" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect x="319" y="112" width="245" height="169" rx="14" fill="#1e293b" stroke="#475569"/>
+  <text x="339" y="143" fill="#93c5fd" font-family="Arial" font-size="17" font-weight="bold">2  Review + receipt</text>
+  <text x="339" y="177" fill="#e2e8f0" font-family="Arial" font-size="14">Input + scene revision</text>
+  <text x="339" y="203" fill="#e2e8f0" font-family="Arial" font-size="14">User acknowledgement</text>
+  <text x="339" y="236" fill="#94a3b8" font-family="Arial" font-size="13">Persisted site plan 2.0</text>
+  <path d="M570 195H594" stroke="#60a5fa" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect x="603" y="112" width="245" height="169" rx="14" fill="#1e293b" stroke="#475569"/>
+  <text x="623" y="143" fill="#93c5fd" font-family="Arial" font-size="17" font-weight="bold">3  Broker gate</text>
+  <text x="623" y="177" fill="#e2e8f0" font-family="Arial" font-size="14">site_scene_build_v2</text>
+  <text x="623" y="203" fill="#e2e8f0" font-family="Arial" font-size="14">Separate Build command</text>
+  <text x="623" y="236" fill="#94a3af" font-family="Arial" font-size="13">Old engine = reject</text>
+  <path d="M854 195H878" stroke="#60a5fa" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect x="887" y="112" width="198" height="169" rx="14" fill="#1e293b" stroke="#475569"/>
+  <text x="907" y="143" fill="#93c5fd" font-family="Arial" font-size="17" font-weight="bold">4  Isaac compiler</text>
+  <text x="907" y="177" fill="#e2e8f0" font-family="Arial" font-size="14">/World/TwinPulse</text>
+  <text x="907" y="203" fill="#e2e8f0" font-family="Arial" font-size="14">Geometry only</text>
+  <text x="907" y="236" fill="#94a3b8" font-family="Arial" font-size="13">No dummy robot/task</text>
+  <rect x="35" y="306" width="1050" height="42" rx="10" fill="#3b1f26" stroke="#f87171"/>
+  <text x="55" y="333" fill="#fecaca" font-family="Arial" font-size="15" font-weight="bold">RUN remains blocked. Actual Isaac Build, live Nebius v2 schema compatibility, and visual fidelity require H2c validation.</text>
+</svg>

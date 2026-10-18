@@ -6,6 +6,8 @@
 - 기존 R0~R10 번호는 유지한다. 아래 S0~S9는 이번 검토의 작업 묶음이며 R 단계를 완료로 바꾸는 우회 경로가 아니다.
 - 사용자에게 선택받은 **한 하위 단계**만 진행한다. 이 문서의 존재는 설치·과금·실물·push 승인이 아니다.
 
+> **2026-09-25 후속 범위 정정:** 최신 [영어 UX·최종 데모 통합계획 H0~H8](TWINPULSE_HACKATHON_DEMO_MASTER_PLAN_2026-09-25.md)을 우선한다. S0~S3b 및 S3c local live→Isaac의 tested-scope 이력은 PROJECT_MEMORY에 있다. 아래 초기 `아직 구현 안 함`/S3c `live NOT RUN`은 작성 당시 상태다. H는 기존 S/R/B 작업에 영어 UX, scene/mission 분리, 실제 scan 갱신, **같은 보정 지도에서 기존/새 경로 비교**를 연결한다. S6 cloud full Isaac은 제출 필수 선행조건에서 제외하고, 회사 배포 검증은 별도 경로로 유지한다. 이 변경은 새 runtime PASS를 의미하지 않는다.
+
 ## 0. Sol의 필수 작업 규칙
 
 ### 시작 / 중단 / 재개
@@ -286,6 +288,8 @@ S3a의 공식 capability 조사와 B0 inventory는 초기에 할 수 있다. clo
 
 ## S6 — Nebius full Isaac 서버 검증
 
+2026-09-25 기준 **선택적 후속 확장**이다. Token Factory 실제 Nemotron 호출과 로컬 Isaac 경로를 먼저 완성한다. S6 미실행은 H4~H7 로컬 데모의 blocker가 아니다.
+
 ### S6a: 유료 실행 이전
 
 - 계정 quota/region/GPU RT 지원/driver/Isaac 버전/container 또는 standalone/license/storage/총비용을 확인한다. H100 등의 VRAM 크기만으로 renderer 호환을 결정하지 않음.
@@ -310,6 +314,8 @@ S3a의 공식 capability 조사와 B0 inventory는 초기에 할 수 있다. clo
 - Sim/Replay/LiveObserve/LiveControl은 enum뿐 아니라 command sink 권한이 다르다. Replay가 real `/cmd_vel`을 publish할 수 없게 구성/테스트한다.
 
 ## S8 — 차이를 보여주는 비교 보고서
+
+2026-09-25 정정: 아래 A/B 보정 실험은 **지도 보정 효과(E1)**다. 최종 데모에는 별도로 **동일 보정 지도·로봇·시작/목표·안전 상한에서 기존/새 navigation 설정을 비교하는 E2**, 실제 TurtleBot에서 재현하는 E3가 필요하다. 세 실험과 개선율·실패 처리 기준은 최신 통합계획 H7을 따른다. 서로 다른 지도에서 나온 시간 차이를 경로 최적화 개선율로 보고하지 않는다.
 
 - 데이터 계약: run ID, software/profile/model/map/scene/mission revision, modes, timestep, sensor timestamps, initial pose, input/calibration source, config, operator interventions, terminal reason.
 - A(보정 전)/B(scan 보정 후)를 같은 mission과 고정된 Nav2 설정으로 각 5회 제안. tuning train set과 평가 scene를 구분한다. 표본이 작은 데모 실험임을 명시한다.

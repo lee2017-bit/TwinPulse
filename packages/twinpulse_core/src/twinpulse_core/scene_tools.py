@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Allowlisted scene-tool plans and their deterministic compiler."""
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from typing import Any, Mapping
 
 from .models import RobotProfile, SceneObject, SceneSpec, ShapeSpec, SpecBundle, TaskSpec, Transform
 from .robot_profiles import accepted_robot_profile_ids, resolve_robot_profile
+from .tool_catalog import static_tool_definitions, tool_domains, tool_names
 from .validation import SpecValidationError, validate_current_controller_route
 
 
@@ -19,29 +23,9 @@ _MAX_TOOL_CALLS = 24
 SCENE_TOOL_CATALOG_REVISION = "scene-tools-1.0"
 LOCAL_ROUTE_RESOLVER_REVISION = "straight-x-aabb-v1"
 
-SCENE_TOOL_NAMES = frozenset(
-    {
-        "create_floor",
-        "create_wall",
-        "create_rack_row",
-        "place_pallet_stack",
-        "create_aisle_marking",
-        "place_static_agv",
-        "place_predefined_agv",
-        "create_navigation_task",
-    }
-)
-
-TOOL_DOMAINS = {
-    "create_floor": "scene",
-    "create_wall": "scene",
-    "create_rack_row": "scene",
-    "place_pallet_stack": "scene",
-    "create_aisle_marking": "scene",
-    "place_static_agv": "scene",
-    "place_predefined_agv": "robot",
-    "create_navigation_task": "task",
-}
+SCENE_TOOL_NAMES = tool_names(_PLAN_VERSION)
+TOOL_DOMAINS = tool_domains(_PLAN_VERSION)
+_STATIC_TOOL_DEFINITIONS = static_tool_definitions(_PLAN_VERSION)
 
 
 class SceneToolPlanError(ValueError):
@@ -167,18 +151,8 @@ class _SceneToolRegistryExecutor:
 
         for call in plan.calls:
             args = call.arguments
-            if call.tool == "create_floor":
-                objects.append(self._create_floor(args))
-            elif call.tool == "create_wall":
-                objects.append(self._create_wall(args))
-            elif call.tool == "create_rack_row":
-                objects.extend(self._create_rack_row(args))
-            elif call.tool == "place_pallet_stack":
-                objects.extend(self._place_pallet_stack(args))
-            elif call.tool == "create_aisle_marking":
-                objects.append(self._create_aisle_marking(args))
-            elif call.tool == "place_static_agv":
-                objects.extend(self._place_static_agv(args))
+            if call.tool in _STATIC_TOOL_DEFINITIONS:
+                objects.extend(self.execute_static_tool(call.tool, args))
             elif call.tool == "place_predefined_agv":
                 if robot_start is not None:
                     raise SceneToolPlanError("place_predefined_agv may be called only once")
@@ -462,6 +436,17 @@ def _validate_rack_row_overlap(calls: tuple[SceneToolCall, ...]) -> None:
 
 class SceneToolRegistry(_SceneToolRegistryExecutor):
     """Scene-tool registry completed with the deterministic tool builders."""
+
+    def execute_static_tool(self, name: str, args: Mapping[str, Any]) -> list[SceneObject]:
+        """Dispatch only catalogued, local static builders with existing validators."""
+        if name == 'place_model_recipe':
+            from .model_recipe import expand_model_recipe
+            return list(expand_model_recipe(dict(args)))
+        definition = _STATIC_TOOL_DEFINITIONS.get(name)
+        if definition is None or definition.handler_name is None:
+            raise SceneToolPlanError(f"tool is not a local static builder: {name}")
+        result = getattr(self, definition.handler_name)(args)
+        return result if definition.returns_many else [result]
 
     @staticmethod
     def _create_floor(args: Mapping[str, Any]) -> SceneObject:

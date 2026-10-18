@@ -1,0 +1,11 @@
+# Adaptive A4 — fixed M2-D drawing score adapter
+
+Status: **PARTIAL**. This is an offline adapter around the existing M2-D scorer, not a new model evaluation, image measurement or Isaac/robot run.
+
+The optional `--a4-output` on `scripts/evaluate_m2d_floorplan_result.py` writes a separate `adaptive-evaluation-1.0` report after the unchanged legacy score. It binds the fixed manifest evaluation/fixture/image SHA and the exact 29 check names, recomputes pass count and rejects a forged summary. The new report separates drawing scene fidelity from simulation quality, task success, latency, cost, tool validity and collision. No overall score is emitted. A drawing score alone leaves Isaac/physical task and collision `NOT_RUN`/`NOT_MEASURED`, and cost `UNKNOWN`; `source_verified=false` because the report hash is identity, not authorship or independent raw-image verification.
+
+Local deterministic reference compilation through the existing scripts scored **29/29 PASS**. A separate negative fixture copied the reference report and changed only the two rack heights from 3.0 m to 2.0 m; the unchanged scorer returned **27/29 FAIL**, measurement validation FAIL, and the new scene-fidelity axis retained FAIL with `rack_1_height_m` and `rack_2_height_m`. This is a **fresh offline mutation**, not a replay of the historical paid-provider bytes. The historical M2-D 27/29 failure remains recorded separately in `M2-D-dimensioned-floorplan-e2e.md` and has not been promoted to PASS. Summary, image SHA and check-name forgery were rejected. The original manifest and scripts' default output were not rewritten.
+
+Verification: new CLI integration test 1 PASS; full offline `scripts/verify_twinpulse.ps1 -SkipIsaac` PASS at `artifacts/runs/20260929-071446`, core 176, web 126, production build PASS. No model/paid API call, cloud, robot connection, sensor, motor, deployment or physical test.
+
+Remaining A4: genuine saved provider report attestation/provenance and held-out photos; separate tool-schema, latency/cost receipt and physics/contact adapters; repeated evaluations with fixed conditions and failure counts; browser JSON export identity fix. The physical stop FAIL and live mission lock remain unchanged.

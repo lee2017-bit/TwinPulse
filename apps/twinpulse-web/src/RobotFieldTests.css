@@ -1,0 +1,18 @@
+.robot-field-tests {margin:12px 0;padding:10px;border:1px solid var(--border,#39465b);border-radius:8px;font-size:.8rem;}
+.robot-field-tests h5 {margin:8px 0;}
+.robot-field-tests p,.robot-field-tests small {overflow-wrap:anywhere;}
+.robot-field-tests small {display:block;}
+.robot-field-tests details {margin:10px 0;}
+.robot-field-tests pre {max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;}
+.robot-field-tests .robot-field-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.robot-field-tests label {display:block;margin:8px 0;}
+.robot-field-tests input,.robot-field-tests select {box-sizing:border-box;width:100%;}
+.robot-field-tests .robot-fleet-confirm {display:flex;align-items:flex-start;gap:8px;}
+.robot-field-tests .robot-fleet-confirm input {width:16px;flex-shrink:0;}
+.robot-field-tests li {margin:10px 0;}
+/* The drawer is light even though the diagnostic shell's root is dark. */
+.chat-workspace .robot-fleet-drawer {color:#203e4a;--ink:#203e4a;--line:#c6d5df;--muted:#506576;color-scheme:light;}
+.chat-workspace .robot-fleet-drawer label {color:#203e4a;}
+.chat-workspace .robot-fleet-drawer input:not([type=checkbox]),
+.chat-workspace .robot-fleet-drawer textarea,
+.chat-workspace .robot-fleet-drawer select {color:#203e4a;background:#fff;border-color:#b8cbd4;}

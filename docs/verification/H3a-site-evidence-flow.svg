@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="350" viewBox="0 0 1180 350" role="img" aria-label="H3a site evidence to 3D object flow">
+  <rect width="1180" height="350" fill="#101827"/>
+  <text x="40" y="52" fill="#f4f7fb" font-family="Segoe UI,Arial,sans-serif" font-size="27" font-weight="700">H3a  |  From site evidence to reviewable 3D objects</text>
+  <text x="40" y="80" fill="#9fb1c8" font-family="Segoe UI,Arial,sans-serif" font-size="15">Contract + fake-transport verification only; no live model or Isaac run in this step</text>
+  <g font-family="Segoe UI,Arial,sans-serif" font-size="18" text-anchor="middle">
+    <rect x="40" y="116" width="192" height="104" rx="14" fill="#24354f" stroke="#668bca"/>
+    <text x="136" y="157" fill="white" font-weight="700">Site image</text>
+    <text x="136" y="185" fill="#c2d1e6" font-size="14">photo / drawing</text>
+    <rect x="265" y="116" width="192" height="104" rx="14" fill="#24354f" stroke="#668bca"/>
+    <text x="361" y="157" fill="white" font-weight="700">Observation IDs</text>
+    <text x="361" y="185" fill="#c2d1e6" font-size="14">barrier_seen, ground</text>
+    <rect x="490" y="116" width="192" height="104" rx="14" fill="#24483f" stroke="#52b79a"/>
+    <text x="586" y="157" fill="white" font-weight="700">Call evidence</text>
+    <text x="586" y="185" fill="#c8eadf" font-size="14">basis + IDs + note</text>
+    <rect x="715" y="116" width="192" height="104" rx="14" fill="#24483f" stroke="#52b79a"/>
+    <text x="811" y="157" fill="white" font-weight="700">Allowlisted tool</text>
+    <text x="811" y="185" fill="#c8eadf" font-size="14">create_box_obstacle</text>
+    <rect x="940" y="116" width="192" height="104" rx="14" fill="#30425d" stroke="#9ab8ea"/>
+    <text x="1036" y="157" fill="white" font-weight="700">Scene object IDs</text>
+    <text x="1036" y="185" fill="#d5e4fa" font-size="14">binding to 3D geometry</text>
+  </g>
+  <g stroke="#7d92af" stroke-width="3" fill="none">
+    <path d="M232 168h25m-8-7 8 7-8 7"/>
+    <path d="M457 168h25m-8-7 8 7-8 7"/>
+    <path d="M682 168h25m-8-7 8 7-8 7"/>
+    <path d="M907 168h25m-8-7 8 7-8 7"/>
+  </g>
+  <rect x="40" y="251" width="1092" height="66" rx="12" fill="#4a3524" stroke="#c89049"/>
+  <text x="62" y="279" fill="#ffe3b5" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="700">Safety boundary</text>
+  <text x="62" y="301" fill="#ffe3b5" font-family="Segoe UI,Arial,sans-serif" font-size="14">A photographed robot is a candidate, not an authorized drive profile. Hidden space stays unknown; Build remains review-required.</text>
+</svg>

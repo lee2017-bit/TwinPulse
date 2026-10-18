@@ -1,4 +1,7 @@
 @echo off
+rem SPDX-FileCopyrightText: 2026 Jaewon Lee
+rem SPDX-License-Identifier: Apache-2.0
+rem Source: https://github.com/lee2017-bit/TwinPulse
 setlocal
 cd /d "%~dp0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install_twinpulse.ps1" -Launch

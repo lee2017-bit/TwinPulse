@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 from __future__ import annotations
 
 import asyncio
@@ -30,6 +33,7 @@ from twinpulse_provider import (  # noqa: E402
     ProviderConfig,
     ProviderRateLimitError,
     ProviderTimeoutError,
+    site_tool_plan_json_schema,
 )
 
 
@@ -45,6 +49,14 @@ def config(*, images: bool = True, timeout_s: float = 0.2) -> ProviderConfig:
 
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
+    def test_v2_site_schema_is_distinct_from_required_v1_slots(self) -> None:
+        schema = site_tool_plan_json_schema()
+        self.assertEqual(schema["properties"]["plan_version"]["const"], "2.0")
+        self.assertIn("calls", schema["required"])
+        self.assertNotIn("agv_call", schema["required"])
+        self.assertNotIn("navigation_call", schema["required"])
+        self.assertFalse(schema["additionalProperties"])
+
     async def test_mock_success_returns_validated_bundle(self) -> None:
         result = await GenerationService(MockProvider(), config()).generate(GenerationRequest("ok", "warehouse"))
         self.assertEqual(result.bundle.bundle_version, "1.0")

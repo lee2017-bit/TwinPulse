@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 from __future__ import annotations
 
 import json
@@ -94,6 +97,16 @@ class S3cProductWiringTests(unittest.TestCase):
         self.assertEqual(nebius._config.endpoint_path, "chat/completions")  # noqa: SLF001
         self.assertEqual(nebius._config.max_attempts, 1)  # noqa: SLF001
         self.assertEqual(reads, 0)
+
+    def test_site_v2_profile_is_explicit_and_keeps_legacy_profile(self) -> None:
+        site = provider_settings_preset("nebius_site_v2")
+        self.assertEqual(site.provider_profile, "nebius_site_v2")
+        self.assertEqual(site.base_url, NEBIUS_BASE_URL)
+        legacy = build_live_generation_service(provider_settings_preset(NEBIUS_PROVIDER_PROFILE), lambda: None)
+        selected = build_live_generation_service(site, lambda: None)
+        self.assertEqual(legacy._plan_version, "1.0")  # noqa: SLF001
+        self.assertEqual(selected._plan_version, "2.2")  # noqa: SLF001
+        self.assertEqual(selected._provider.site_plan_version, "2.2")  # noqa: SLF001
 
     def test_api_switch_requires_new_key_and_reports_unverified_capability(self) -> None:
         with TemporaryDirectory(prefix="s3c-", dir=TEST_TMP) as directory:

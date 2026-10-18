@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Finite R6 launcher -> browser -> actual Isaac acceptance runner.
 
 This runner reuses the deterministic R5 browser journey. It never performs a

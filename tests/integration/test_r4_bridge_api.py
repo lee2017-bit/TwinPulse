@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """R4 loopback API, security, deduplication, and broker acceptance."""
 
 from __future__ import annotations
@@ -40,6 +43,11 @@ class FakeClock:
 
 
 class R4ApiTests(unittest.TestCase):
+    def test_local_transport_accepts_bursts_without_expanding_bind_or_authority(self):
+        self.assertEqual(self.server._httpd.request_queue_size,64)
+        self.assertEqual(self.server._httpd.server_address[0],'127.0.0.1')
+        self.assertEqual(self.request('/v1/product/state')[0],401)
+
     def setUp(self) -> None:
         self.clock = FakeClock()
         self.broker = CommandBroker(clock=self.clock)
@@ -203,6 +211,9 @@ class R4ApiTests(unittest.TestCase):
         status, state, _ = self.request("/v1/product/state", headers={"Cookie": cookie}, method="GET")
         self.assertEqual(status, 200)
         self.assertEqual(state["snapshot"]["applied_revision"], self.artifact.revision)
+        self.assertEqual(state["engine_readiness"]["legacy_scene_build"]["code"], "ready")
+        self.assertEqual(state["engine_readiness"]["site_scene_build_v2"]["code"],
+                         "capability_unavailable")
         self.assertEqual(state["operations"][0]["status"], "succeeded")
 
     def test_lease_conflict_expiry_old_session_and_stage_transition(self) -> None:

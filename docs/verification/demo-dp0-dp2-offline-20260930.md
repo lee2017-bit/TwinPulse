@@ -1,0 +1,31 @@
+# Demo preparation DP0–DP2 offline checkpoint — 2026-09-30
+
+Scope: robot OFF. No SSH, serial, sensor, motor, deployment, system install, paid service, or physical qualification was run. Existing physical successes and stop failures remain historical records; this checkpoint does not renew them.
+
+## Implemented and exercised
+
+- `demo_contract.py` declares 17 demo operation IDs (forward, reverse, left turn and right turn are separate) and audits each production/test symbol. The current audit deliberately reports `pc_demo_ready=false` and gaps for product integration and missing functions. It does not confuse a test file's existence with a full demo pass.
+- Four distinct fake owned-pipe tests now exercise `forward`, `backward` (the actual reverse wire action), `left` and `right` through `PhysicalController`. The first draft of the reverse test used the nonexistent `reverse` wire action and failed; correcting the test to match the existing App/worker protocol made all four pass. This checks the PC transport boundary only, **not** checked robot output, actual direction, encoder/odom response, or field safety; the operation audit retains `INTEGRATION_GAP`.
+- The stationary ROS subscriber and the qualified control worker record the exact received serialized message bytes for their designated topics, including values subsequently rejected by validation. The raw file has ordered frames, clock-domain receipt stamps, SHA-256 and an explicit footer. The recorder now uses a bounded asynchronous write queue rather than disk I/O in the subscription callback. Exhausted recording or queue capacity and write failures are incomplete, not success.
+- Fixed allowlist exporters fetch saved robot reports/logs/raw files to the PC only after a completed operation. Repeating a saved session transfer fetches only missing/corrupted files, never reruns robot actions. The offline inspector checks file sizes, digests, frame sequence, topic/type, footer and declared drops. Manual/control raw hash and topic counts must also match the worker report. Remote originals are retained. These are prepared code paths, not evidence of a new robot transfer.
+- A transfer-only `resume-evidence` mode now accepts an existing, path-constrained stationary report. It validates action/run/boot/release and only invokes the fixed SCP allowlist; it does not repeat prepare, qualification, deployment, or motor commands. The PC receipt remains separate from the saved report. Raw frame verification additionally rejects footer schema/path mismatch and repeated close returns the same result. App reconnection is **not** yet wired to this mode, and no actual robot transfer has been retried.
+- Latest targeted offline regression: 119 tests run (116 passed, 3 Linux-only tests skipped). `git diff --check` passed for the canonical repository (line-ending warnings only). The demo operation audit currently exits nonzero as intended because the integrated demo remains incomplete.
+
+## Driver source review and unverified patch
+
+- Pinned COIN D4 source: the existing scratch checkout at ROBOTIS commit `8277b288` (as recorded in the earlier parser review). Existing parser bounds patch remains separate.
+- `coin-d4-lifecycle-20260930.patch` addresses the base destructor's close-before-flush/possible missing STOP fallback, null buffer initialization and cleanup, bounded serial flush, incomplete STOP-write diagnostic, and a missing mutex unlock in synchronization. `git apply --cached --check` against the pinned checkout's clean index and `git apply --reverse --check` against the patched scratch worktree both passed.
+- This is **not a built or device-tested driver**. The current Windows host has no discovered `colcon`, `g++`, or `clang++`. A later read-only elevated query found an existing Ubuntu-22.04 WSL distribution, but starting it failed with `Wsl/Service/RPC_S_CALL_FAILED`; no WSL repair, installation or system setting change was attempted. The patch cannot be included in a robot release or automatically started until an authorized compatible Linux/ROS build, normal/error/cancel lifecycle test, and observed rotor-stop result exist.
+
+## Still blocking the requested 1→5 completion
+
+1. DP0/DP1 are partial: the audit has integration gaps; a raw ROS byte bundle is integrity-inspectable but a portable message-level ROS replay and App-driven post-disconnect transfer-only resume are not yet accepted. The saved-report CLI resume has only fake-transfer coverage. No real throughput/disk budget has been measured.
+2. DP2 is partial: actual ROS `scan` publisher lifecycle/build and current as-built sensor pose, odom/TF and room↔odom metric correspondences are absent. The saved photo/nominal URDF cannot supply those values. Live mission remains locked.
+3. DP2 mission/replanning and DP3 one-session product runner are not integrated. Synthetic fixed-route rehearsals are not real navigation.
+4. DP4/DP5 full same-build Chrome→App→Isaac→fake device→raw→Twin→comparison acceptance has not run. PC demo readiness is false; no field-test request should be based on this checkpoint.
+
+Next offline work: complete the audit's operation contract/coverage, exact replay and transfer-only recovery, then connect the reviewed calibration inputs and a bounded simulated mission through the existing App service. Resolve the Linux/ROS target build blocker before treating the ROS driver as deployable. Preserve the physical lock until a new, explicitly scoped on-site session.
+
+Later update: the saved real-transport session now has explicit App/API transfer-only recovery and stronger raw-frame binding. The statement above that App recovery is not wired describes this earlier checkpoint, not the current product state. The newer [DP1 evidence recovery checkpoint](demo-dp1-evidence-recovery-20260930.md) records what passed and what is still absent (real transfer and ROS message-level decoding).
+
+Further DP1 offline review: a partial or forged export receipt can no longer claim `COMPLETE` merely because its listed files hash correctly; see [saved-bundle contract regression](demo-dp1-offline-bundle-contract-20260930.md). This narrows a local false-positive but does not close DP1, validate real ROS messages, or unlock the physical demo.

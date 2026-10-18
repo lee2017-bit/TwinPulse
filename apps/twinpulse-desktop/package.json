@@ -1,0 +1,13 @@
+{
+  "name": "twinpulse-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TwinPulse desktop host for the existing Python application engine",
+  "license": "Apache-2.0",
+  "author": "Jaewon Lee / 이재원",
+  "repository": "https://github.com/lee2017-bit/TwinPulse",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {"start": "electron .", "test": "node --test --test-isolation=none *.test.mjs", "package": "node package.mjs"},
+  "devDependencies": {"electron": "44.7.2", "@electron/packager": "20.3.0"}
+}

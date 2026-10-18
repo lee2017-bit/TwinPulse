@@ -1,14 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 param(
     [switch]$SkipIsaac,
     [switch]$RunR6,
     [string]$IsaacRoot = "C:\isaacsim",
-    [string]$PythonExecutable = ""
+    [string]$PythonExecutable = "",
+    [string]$ArtifactDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
-$artifactDir = Join-Path $repoRoot "artifacts\runs\$runId"
+$artifactDir = if ($ArtifactDirectory) { [IO.Path]::GetFullPath($ArtifactDirectory) } else { Join-Path $repoRoot "artifacts\runs\$runId" }
+if ($ArtifactDirectory -and (Test-Path -LiteralPath $artifactDir)) {
+    throw "Explicit artifact directory must be new; existing evidence will not be overwritten."
+}
 New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
 $transcriptStarted = $false
 $repoPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
@@ -34,8 +41,17 @@ try {
     & $appPython scripts\generate_engine_ts.py --check
     if ($LASTEXITCODE -ne 0) { throw "generated TypeScript engine contract is stale" }
 
-    & $appPython packages\twinpulse_core\tests\test_contracts.py
+    & $appPython -m unittest discover -s packages\twinpulse_core\tests -p "test_*.py"
     if ($LASTEXITCODE -ne 0) { throw "core tests failed" }
+
+    & $appPython -m unittest -v tests.integration.test_scan_replay_cli tests.integration.test_robot_reports tests.integration.test_scan_review tests.integration.test_scan_archive tests.integration.test_derived_site_review tests.integration.test_derived_review_selection tests.integration.test_native_scan_review tests.integration.test_native_hour_summary tests.integration.test_four_hour_summary tests.integration.test_photo_scan_review tests.integration.test_lidar_recording_review tests.integration.test_offline_rehearsal_summary
+    if ($LASTEXITCODE -ne 0) { throw "offline scan/report tests failed" }
+
+    & $appPython -m unittest -v tests.integration.test_bedroom_twin tests.integration.test_bedroom_review tests.integration.test_bedroom_rehearsal tests.integration.test_robot_geometry_evidence tests.integration.test_room_localization_review
+    if ($LASTEXITCODE -ne 0) { throw "photo bedroom draft tests failed" }
+
+    & $appPython -B -m unittest -v tests.integration.test_robot_diagnostics tests.integration.test_robot_connection tests.integration.test_manual_controller tests.integration.test_physical_controller packages.twinpulse_robot_safety.tests.teleop_test packages.twinpulse_robot_safety.tests.stop_policy_test packages.twinpulse_robot_safety.tests.mission_test
+    if ($LASTEXITCODE -ne 0) { throw "robot console offline tests failed" }
 
     & $appPython -m unittest discover -s packages\twinpulse_provider\tests -p "test_*.py"
     if ($LASTEXITCODE -ne 0) { throw "provider tests failed" }
@@ -46,11 +62,17 @@ try {
     & $appPython scripts\verify_r3_application.py
     if ($LASTEXITCODE -ne 0) { throw "R3 application-service tests failed" }
 
-    & $appPython -B -m unittest -v tests.integration.test_r4_bridge_api
+    & $appPython -B -m unittest -v tests.integration.test_r4_bridge_api tests.integration.test_http_rejection_delivery
     if ($LASTEXITCODE -ne 0) { throw "R4 loopback API/bridge contract tests failed" }
 
     & $appPython -B -m unittest -v tests.integration.test_r5_product_api tests.integration.test_s2a_input_integrity tests.integration.test_s2b_generation_ownership tests.integration.test_s2c_provider_settings tests.integration.test_s2d_managed_replay tests.integration.test_s3c_product_wiring
     if ($LASTEXITCODE -ne 0) { throw "R5 product API tests failed" }
+
+    & $appPython -B -m unittest -v tests.integration.test_a2_project_isolation tests.integration.test_a2_room_recipe tests.integration.test_scene_edit_proposals tests.integration.test_a2_project_catalog tests.integration.test_h2b2_site_review
+    if ($LASTEXITCODE -ne 0) { throw "A2 project/room and H2b2 saved-site review tests failed" }
+
+    & $appPython -B -m unittest -v tests.integration.test_a4_m2d_evaluation tests.integration.test_a4_saved_provider_evaluation
+    if ($LASTEXITCODE -ne 0) { throw "A4 stored evaluation tests failed" }
 
     $env:TWINPULSE_TEST_TMP = Join-Path $artifactDir "r6-process-manager-tests"
     & $appPython -B -m unittest -v tests.integration.test_r6_process_manager

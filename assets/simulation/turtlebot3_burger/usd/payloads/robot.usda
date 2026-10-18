@@ -1,0 +1,100 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.3"
+        string twinpulseModification = "TwinPulse 2026: removed exporter documentation with local paths; geometry, physics and relative references preserved. ROBOTIS origin and Apache-2.0 notice: ../SOURCE.json and ../ROBOTIS-LICENSE."
+    }
+    defaultPrim = "turtlebot3_burger"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "turtlebot3_burger" (
+    prepend apiSchemas = ["IsaacRobotAPI"]
+)
+{
+    prepend rel isaac:physics:robotJoints = [
+        </turtlebot3_burger/Physics/wheel_left_joint>,
+        </turtlebot3_burger/Physics/wheel_right_joint>,
+        </turtlebot3_burger/Physics/caster_back_joint>,
+        </turtlebot3_burger/Physics/scan_joint>,
+    ]
+    prepend rel isaac:physics:robotLinks = [
+        </turtlebot3_burger/Geometry/base_footprint/base_link>,
+        </turtlebot3_burger/Geometry/base_footprint/base_link/wheel_left_link>,
+        </turtlebot3_burger/Geometry/base_footprint/base_link/wheel_right_link>,
+        </turtlebot3_burger/Geometry/base_footprint/base_link/caster_back_link>,
+        </turtlebot3_burger/Geometry/base_footprint/base_link/base_scan>,
+    ]
+    token isaac:robotType = "Default"
+
+    over "Geometry"
+    {
+        over "base_footprint"
+        {
+            over "base_link" (
+                prepend apiSchemas = ["IsaacLinkAPI"]
+            )
+            {
+                over "wheel_left_link" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                }
+
+                over "wheel_right_link" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                }
+
+                over "base_scan" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                }
+
+                over "caster_back_link" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                }
+
+                over "imu_link" (
+                    prepend apiSchemas = ["IsaacSiteAPI"]
+                )
+                {
+                }
+            }
+        }
+    }
+
+    over "Physics"
+    {
+        over "wheel_left_joint" (
+            prepend apiSchemas = ["IsaacJointAPI"]
+        )
+        {
+        }
+
+        over "wheel_right_joint" (
+            prepend apiSchemas = ["IsaacJointAPI"]
+        )
+        {
+        }
+
+        over "caster_back_joint" (
+            prepend apiSchemas = ["IsaacJointAPI"]
+        )
+        {
+        }
+
+        over "scan_joint" (
+            prepend apiSchemas = ["IsaacJointAPI"]
+        )
+        {
+        }
+    }
+}
+

@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
+"""Metadata fixtures only; real metadata setup is a separate verification."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from tests.integration.test_provider_key_registry import Credential
+from twinpulse_app.key_registry import KeyRegistry
+from twinpulse_app.settings import JsonProviderSettingsStore,provider_settings_preset
+from twinpulse_app.credentials import DEFAULT_CREDENTIAL_TARGET
+from twinpulse_app.provider_onboarding import configure_first_nebius_key
+from twinpulse_app.stage_routing import StageRoutingSettings
+
+class OnboardingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup);Credential.secrets={}
+        self.registry=KeyRegistry(JsonProviderSettingsStore(Path(self.temp.name)/'settings.json'),Credential(DEFAULT_CREDENTIAL_TARGET),Credential)
+        result=self.registry.register(dict(name='Nebius',provider_profile='nebius_token_factory',
+            model_id=provider_settings_preset('nebius_token_factory').model_id,api_key='local-test-canary'))
+        self.key=result['entries'][-1]['id'];self.calls=[]
+    def get(self,url,credential):
+        self.calls.append(url)
+        models=['deepseek-ai/DeepSeek-V4.1-Flash','nvidia/nemotron-3-super-120b-a12b']
+        if url.endswith('models_info'):
+            return [dict(flavors=[dict(model_id=m,use_cases=['text','image'] if i==0 else ['text'],
+                max_model_len=262144,input_price_per_million_tokens=.3,output_price_per_million_tokens=.9)
+                for i,m in enumerate(models)])],'a'*64
+        return dict(data=[dict(id=m) for m in models]),'b'*64
+    def test_first_key_applies_exact_models_from_current_metadata_without_inference(self):
+        changed=[];result=configure_first_nebius_key(self.registry,self.key,lambda:changed.append(True),get=self.get)
+        route=StageRoutingSettings(self.registry).load()
+        self.assertEqual(route['observer']['model_id'],'deepseek-ai/DeepSeek-V4.1-Flash')
+        self.assertEqual(route['planner']['model_id'],'nvidia/nemotron-3-super-120b-a12b')
+        self.assertEqual(result['state'],'applied');self.assertEqual(len(self.calls),2);self.assertEqual(changed,[True])
+        self.assertNotIn('local-test-canary',StageRoutingSettings(self.registry).path.read_text())
+    def test_existing_choice_is_never_automatically_replaced(self):
+        configure_first_nebius_key(self.registry,self.key,lambda:None,get=self.get)
+        self.calls=[]
+        with self.assertRaisesRegex(Exception,'기존 모델 설정'):
+            configure_first_nebius_key(self.registry,self.key,lambda:None,get=self.get)
+        self.assertEqual(self.calls,[])
+    def test_unavailable_model_preserves_key_and_does_not_save_route(self):
+        def unavailable(url,credential):
+            result,sha=self.get(url,credential)
+            if url.endswith('/models'):result={'data':[]}
+            return result,sha
+        with self.assertRaisesRegex(Exception,'사용 가능하지'):
+            configure_first_nebius_key(self.registry,self.key,lambda:None,get=unavailable)
+        self.assertFalse(StageRoutingSettings(self.registry).path.exists())
+        self.assertTrue(self.registry.state()['entries'][-1]['configured'])
+
+if __name__=='__main__':unittest.main()

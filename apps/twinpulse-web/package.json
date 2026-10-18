@@ -2,6 +2,12 @@
   "name": "twinpulse-web",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
+  "author": "Jaewon Lee / 이재원",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lee2017-bit/TwinPulse.git"
+  },
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "scripts": {

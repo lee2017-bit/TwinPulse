@@ -1,0 +1,149 @@
+diff --git a/src/lidar_sdk/timer.cpp b/src/lidar_sdk/timer.cpp
+--- a/src/lidar_sdk/timer.cpp
++++ b/src/lidar_sdk/timer.cpp
+@@ -44,15 +44,8 @@
+ uint64_t getTime()
+ {
+-#if HAS_CLOCK_GETTIME
+   struct timespec tim;
+-  clock_gettime(CLOCK_REALTIME, &tim);
++  if (clock_gettime(CLOCK_MONOTONIC, &tim) != 0) {return 0;}
+   return static_cast<uint64_t>(tim.tv_sec) * 1000000000LL + tim.tv_nsec;
+-#else
+-  struct timeval timeofday;
+-  gettimeofday_t(&timeofday, NULL);
+-  return static_cast<uint64_t>(timeofday.tv_sec) * 1000000000LL +
+-         static_cast<uint64_t>(timeofday.tv_usec) * 1000LL;
+-#endif
+ }
+ 
+ void delay(uint32_t ms)
+diff --git a/src/coin_d4_base_handler.cpp b/src/coin_d4_base_handler.cpp
+--- a/src/coin_d4_base_handler.cpp
++++ b/src/coin_d4_base_handler.cpp
+@@ -21,2 +21,3 @@
+ #include "coin_d4_driver/coin_d4_base_handler.hpp"
++#include "coin_d4_driver/scan_clock_contract.hpp"
+ 
+@@ -313,2 +314,3 @@
+       std::this_thread::sleep_for(std::chrono::seconds(lidar_general_info_.warmup_time));
++      int64_t previous_offset = INT64_MIN;
+       while (!skip_publish_) {
+@@ -316,2 +318,22 @@
+         if (grab_synchronized_data(scan)) {
++          // SDK stamps host sync-packet receipt, NOT calibrated hardware time.
++          // This candidate must retain HOST_SYNC_APPROXIMATE provenance.
++          if (lidar_general_info_.reverse || scan.points.size() < 2) {
++            RCLCPP_ERROR(logging_interface_->get_logger(), "SCAN_REVERSE_OR_COUNT_UNSUPPORTED");
++            continue;
++          }
++          std::vector<double> angles;
++          for (const auto & point : scan.points) {angles.push_back(point.angle * M_PI / 180.0);}
++          robotis::coin_d4::ScanContract contract;
++          try {
++            const auto mono_now = getTime();
++            const auto ros_now = get_node_time().nanoseconds();
++            contract = robotis::coin_d4::scan_contract(
++              scan.stamp, scan.stamp + static_cast<uint64_t>(scan.config.scan_time * 1e9),
++              mono_now, ros_now, angles, previous_offset);
++            previous_offset = ros_now - static_cast<int64_t>(mono_now);
++          } catch (const std::exception & error) {
++            RCLCPP_ERROR(logging_interface_->get_logger(), "%s", error.what());
++            continue;
++          }
+           auto scan_msg = std::make_unique<sensor_msgs::msg::LaserScan>();
+@@ -322,6 +345,6 @@
+-          scan_msg->header.stamp = get_node_time();
++          scan_msg->header.stamp = rclcpp::Time(contract.stamp_ns).to_msg();
+           scan_msg->header.frame_id = lidar_general_info_.frame_id;
+ 
+-          scan_msg->angle_min = scan.config.min_angle;
+-          scan_msg->angle_max = scan.config.max_angle;
+-          scan_msg->angle_increment = scan.config.angle_increment;
++          scan_msg->angle_min = contract.first_angle;
++          scan_msg->angle_max = contract.last_angle;
++          scan_msg->angle_increment = contract.angle_increment;
+@@ -329,1 +352,1 @@
+-          scan_msg->time_increment = scan.config.time_increment;
++          scan_msg->time_increment = contract.time_increment;
+@@ -481,2 +504,4 @@
+-  if (count < MAX_SCAN_NODES && count > 0) {
++  if (count < MAX_SCAN_NODES && count >= 2 && count <= 720 &&
++    lidar_time_->scan_end_time > lidar_time_->scan_start_time &&
++    lidar_time_->scan_end_time - lidar_time_->scan_start_time <= 2000000000ULL) {
+     uint64_t scan_time = (lidar_time_->scan_end_time - lidar_time_->scan_start_time);
+@@ -490,1 +515,1 @@
+-    outscan.config.time_increment = outscan.config.scan_time / static_cast<double>(count - 1);
++    outscan.config.time_increment = outscan.config.scan_time / static_cast<double>(count);
+@@ -498,1 +523,1 @@
+-      for (int i = count - 1; i > 0; i--) {
++      for (size_t i = 0; i < count; i++) {
+@@ -502,1 +527,1 @@
+-          (scan_node_buf_[count - i].angle_q6_checkbit >>
++          (scan_node_buf_[i].angle_q6_checkbit >>
+diff --git a/include/coin_d4_driver/scan_clock_contract.hpp b/include/coin_d4_driver/scan_clock_contract.hpp
+new file mode 100644
+--- /dev/null
++++ b/include/coin_d4_driver/scan_clock_contract.hpp
+@@ -0,0 +1,61 @@
++// TwinPulse offline candidate; host sync receipt is NOT hardware calibration.
++#pragma once
++#include <cmath>
++#include <cstdint>
++#include <climits>
++#include <stdexcept>
++#include <vector>
++namespace robotis {namespace coin_d4 {
++struct ScanContract {
++  int64_t stamp_ns;
++  double first_angle, last_angle, angle_increment, time_increment;
++};
++inline ScanContract scan_contract(uint64_t start, uint64_t end, uint64_t now,
++  int64_t ros_now, const std::vector<double> & angles, int64_t previous_offset)
++{
++  constexpr double tau = 6.2831853071795864769;
++  if (angles.size() < 2 || angles.size() > 720) {
++    throw std::runtime_error("SCAN_COUNT_UNSUPPORTED");
++  }
++  if (start == 0 || end <= start || now < end || now > INT64_MAX ||
++    now - start > 2000000000ULL || ros_now <= 0) {
++    throw std::runtime_error("SCAN_CLOCK_DOMAIN_WRAP_OR_LATENCY");
++  }
++  const auto elapsed = static_cast<int64_t>(now - start);
++  if (ros_now < elapsed) {throw std::runtime_error("SCAN_ROS_CLOCK_UNDERFLOW");}
++  const auto offset = ros_now - static_cast<int64_t>(now);
++  if (previous_offset != INT64_MIN &&
++    std::abs(static_cast<long double>(offset) - previous_offset) > 50000000.L) {
++    throw std::runtime_error("SCAN_ROS_CLOCK_JUMP");
++  }
++  std::vector<double> unwrapped;
++  for (const auto a : angles) {
++    if (!std::isfinite(a) || a < 0 || a > tau) {
++      throw std::runtime_error("SCAN_ANGLE_NONFINITE_OR_RANGE");
++    }
++    if (unwrapped.empty()) {unwrapped.push_back(a);} else {
++      const auto previous = unwrapped.back();
++      const auto delta = std::atan2(std::sin(a - previous), std::cos(a - previous));
++      unwrapped.push_back(previous + delta);
++    }
++  }
++  const auto step = (unwrapped.back() - unwrapped.front()) / (angles.size() - 1);
++  if (!std::isfinite(step) || std::abs(step) < 1e-6 || std::abs(step) > 0.1 ||
++    std::abs(step) * (angles.size() - 1) > tau + .001) {
++    throw std::runtime_error("SCAN_ANGLE_ORDER_OR_SPAN");
++  }
++  for (size_t i = 1; i < angles.size(); ++i) {
++    if ((unwrapped[i] - unwrapped[i-1]) * step <= 0 ||
++      std::abs(unwrapped[i] - (unwrapped[0] + i * step)) > .002) {
++      throw std::runtime_error("SCAN_NONUNIFORM_BEAM_GRID");
++    }
++  }
++  return {ros_now - elapsed, unwrapped.front(), unwrapped.back(), step,
++    static_cast<double>(end - start) / (1e9 * angles.size())};
++}
++// Positive per-index time follows original array acquisition order. Signed
++// angular increment permits clockwise data without reversing time or ranges.
++// Reject reverse=true rather than silently preserving wrong beam timestamps.
++// The host-sync bridge is only a candidate. It is not a physical first-ray
++// timing assertion; measured sensor latency and axes are still required.
++}}  // namespace robotis::coin_d4

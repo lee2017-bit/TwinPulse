@@ -1,0 +1,19 @@
+{
+  "schema_version": "robot-package-1.0",
+  "profile": "twinpulse-burger",
+  "architecture": "aarch64",
+  "ros_distro": "humble",
+  "domain_id": 86,
+  "namespace": "/tp_guard_stationary",
+  "device": "/dev/serial/by-id/usb-ROBOTIS_OpenCR_Virtual_ComPort_in_FS_Mode_FFFFFFFEFFFF-if00",
+  "resolved_device": "/dev/ttyACM0",
+  "guard_sha256": "403b148b2bdbf0e4c6fc0540888768f9a5eddd38649b1d20883e61fb7fcdc042",
+  "vendor_commit": "90a68bd2e3c61c12966779da89d8eeaec82730e9",
+  "import_guard": "/home/twinpulse/guard-validation.RIUO8r/base-build/turtlebot3_ros",
+  "import_params": "/home/twinpulse/guard-validation.RIUO8r/vendor/turtlebot3_bringup/param/humble/burger.yaml",
+  "import_params_sha256": "86ed01b39837504895d274882a72057bf9ffef72efeccb554e4306fb6aa8137b",
+  "charge_estimate_percent": 20,
+  "physical_stop_qualification": "INCOMPLETE",
+  "motion_enabled": false,
+  "manual_control_policy": "explicit_session_and_same_boot_release_stop_receipt"
+}

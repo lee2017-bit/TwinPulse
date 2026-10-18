@@ -10,9 +10,24 @@ node_modules/
 .vscode/
 .idea/
 .venv/
+.build-venv/
+.runtime/
 *.log
 verification-output/
 artifacts/runs/
 artifacts/
 tmp*/
 .nonexistent-runtime-test-state/
+outputs/
+runtime/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+saved-projects/
+captures/
+/output/pdf/
+# Project-local Electron build dependencies/output; sources and lock stay in Git.
+apps/twinpulse-desktop/node_modules/
+apps/twinpulse-desktop/out/

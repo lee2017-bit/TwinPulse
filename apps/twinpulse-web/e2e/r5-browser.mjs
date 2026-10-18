@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jaewon Lee
+// SPDX-License-Identifier: Apache-2.0
+// Source: https://github.com/lee2017-bit/TwinPulse
 import { chromium } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,32 +32,32 @@ const result = {
 let browser;
 try {
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "ko-KR" });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
   await page.goto(`${baseUrl}/#bootstrap=${encodeURIComponent(bootstrap)}`, { waitUntil: "networkidle" });
   await page.getByText("Backend ready", { exact: true }).waitFor({ timeout: 15_000 });
   await page.getByText(/Isaac (idle|built|paused|completed)/).waitFor({ timeout: 15_000 });
   result.stages.push("authenticated_ready");
 
-  await page.getByLabel("입력 종류").selectOption("drawing");
-  await page.getByLabel("자연어 설명").fill(
+  await page.getByRole("combobox", { name: "Input type" }).selectOption("drawing");
+  await page.getByLabel("Instructions (optional)").fill(
     "치수 도면을 바탕으로 중앙 통로와 2WD AGV 경로가 있는 밝은 창고를 구성하세요.",
   );
   await page.locator('input[type="file"]').first().setInputFiles(imagePath);
-  await page.getByRole("button", { name: "검증 초안 생성" }).click();
-  await page.getByRole("heading", { name: "장면 초안 검토" }).waitFor();
-  const build = page.getByRole("button", { name: "Isaac에 3D 적용" });
+  await page.getByRole("button", { name: "Create Draft" }).click();
+  await page.getByRole("heading", { name: "Review the draft" }).waitFor();
+  const build = page.getByRole("button", { name: "Build in Isaac Sim" });
   if (!(await build.isDisabled())) throw new Error("Build was enabled before draft acknowledgement");
   // The checkbox is server-controlled: its checked state changes only after
   // the acknowledgement response returns, so click and wait on the real gate.
-  await page.getByRole("checkbox").click();
+  await page.getByRole("checkbox", { name: "I reviewed the limits of this draft version." }).click();
   await page.waitForFunction(() => {
-    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("Isaac에 3D 적용"));
+    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("Build in Isaac Sim"));
     return button instanceof HTMLButtonElement && !button.disabled;
   });
   result.stages.push("draft_reviewed_acknowledged");
 
   await build.click();
-  await page.getByText("Revision matched", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText("Scene version matched", { exact: true }).waitFor({ timeout: 30_000 });
   result.stages.push("actual_revision_applied");
   result.desktop_screenshot = path.join(screenshotDir, "r5-desktop-applied.png");
   await page.screenshot({ path: result.desktop_screenshot, fullPage: true });
@@ -73,8 +76,8 @@ try {
 
   await page.getByRole("button", { name: /Reset/ }).click();
   await page.locator(".stage-caption strong").filter({ hasText: "built" }).waitFor({ timeout: 15_000 });
-  await page.getByRole("button", { name: "Focus 3D" }).click();
-  await page.getByText("focus_scene · succeeded", { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Show 3D View" }).click();
+  await page.getByText("focus_scene · Completed and confirmed", { exact: true }).waitFor({ timeout: 15_000 });
   result.stages.push("reset_focus");
 
   await page.evaluate(() => { document.body.style.zoom = "1.25"; });
@@ -83,7 +86,7 @@ try {
   await page.evaluate(() => { document.body.style.zoom = ""; });
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /입력 및 생성/ }).click();
+  await page.getByRole("button", { name: /Add Photo/ }).click();
   await page.keyboard.press("Home");
   await page.keyboard.press("Tab");
   result.keyboard_focus = await page.evaluate(() => {
@@ -91,7 +94,7 @@ try {
     return Boolean(element && ["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(element.tagName));
   });
   result.mobile_overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  result.mobile_screenshot = path.join(screenshotDir, "r5-mobile-korean.png");
+  result.mobile_screenshot = path.join(screenshotDir, "r5-mobile-english.png");
   await page.screenshot({ path: result.mobile_screenshot, fullPage: true });
   if (!result.keyboard_focus) throw new Error("Keyboard focus did not reach an interactive control");
   if (result.mobile_overflow > 1) throw new Error(`Mobile layout overflows by ${result.mobile_overflow}px`);

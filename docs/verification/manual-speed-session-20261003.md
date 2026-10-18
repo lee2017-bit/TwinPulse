@@ -1,0 +1,28 @@
+# Manual speed and until-Stop session — 2026-10-03
+
+## Scope and rationale
+
+User requested higher manual speed and removal of the repeated 60-second reconnect. The 60-second deadline was a TwinPulse commissioning limit, not a manufacturer requirement. New manual `control`/`control_scan` sessions have no total elapsed-time expiry. Normal joystick release stops wheels and keeps the connection/scanning; explicit Stop/Force STOP ends it. Loss of focus/presence/transport, battery, sensor, ownership or recording faults still stop it, with no automatic restart.
+
+Reviewed fixed manual output: forward/backward ±0.05 m/s (previously ±0.03), in-place turns ±0.30 rad/s (previously ±0.20). The existing C++ output guard already caps 0.05/0.30; its imported binary and 400 ms source-age cutoff are unchanged. [ROBOTIS specifications](https://emanual.robotis.com/docs/en/platform/turtlebot3/features/) list Burger maxima of 0.22 m/s and 2.84 rad/s; these maxima do not establish stopping distance/safety in the user's room.
+
+## Implemented boundaries
+
+- Worker advertises `session_policy=until-stop-1.0` and exact manual speed. UI uses this explicit advertisement, not guesswork: Until Stop replaces the countdown only for supported workers. Scan-only/older workers retain their existing bounded behaviour.
+- Fresh nonce/sequence, movement age <250 ms, post-arm fresh input and existing output expiry stay intact. Idle presence requires validated input within 500 ms. A dropped connection cannot silently retain a sensor session. Release readback remains bounded and gives the next idle presence interval only after local readback completes.
+- Manual higher-speed output is separately opted in at the final ROS boundary. Shared autonomous/scan-enveloped decisions remain limited to 0.03 m/s/0.20 rad/s; shipped autonomous profile/calibration lock unchanged. Displayed LiDAR is not collision prevention or room alignment.
+- Only manual total 60-second expiry and PC total 135-second monitor limit removed. Robot watchdog is renewed to 10 seconds while the owned loop runs; a stalled loop still interrupts. Preparation/qualification/standalone scan limits stay bounded.
+- Full append-only PC/robot journals support explicit 1.1 schemas while retaining 1.0 acceptance limits. Manual budgets: robot 131072 events/64 MiB, PC 262144 events/64 MiB; raw exact-byte recorder remains 64 MiB with bounded queue and explicit incomplete footer on failure. Robot log files retain 8 MiB guards and 128 MiB free-disk reserve. Thus Until Stop is NOT unconditional infinite recording: reaching capacity/fault safely ends the session, not silently losing logs.
+- PC live memory uses a rolling <=8192-event window, robot telemetry and moving-command timestamps use a rolling <=10000-entry tail; originals remain in journals/serialized raw. During bounded release observation, telemetry is not rotated under its sample cursor (a 10100-entry guard applies); a regression explicitly verifies this boundary. Live counters say Recent window. Saved review shows the latest 1000 timeline events with an explicit omitted count, while full original hashes/counts remain. Manual trace export accepts its matching 64 MiB bound. No old log is overwritten or old FAIL promoted.
+- Stop policy version 2.1 changes the speed scope only: 500 ms deceleration + 300 ms verification, 10 mm travel, 1 mm/s residual and sensor coverage criteria are unchanged. New fixed qualification uses 0.05 m/s for 0.6 seconds. Old receipt cannot authorize the changed release/policy; this linear trial is not a measured rotational/body braking guarantee.
+
+## Verification and honest completion boundary
+
+- Python focused: 132 PASS + 7 subtests, `artifacts/manual-speed-session-20261003-python-r4.xml`. Covers production control loop >150 simulated seconds followed by Force STOP, motion/idle expiry, legacy expiry, manual vs autonomous output limits, disk error/incomplete handling, full 10001-event archive with bounded memory/review, release cursor stability, stop metrics/raw recording.
+- Additional mission/preparation/export/stop-analysis regression: 43 PASS + 20 subtests, `artifacts/manual-speed-session-20261003-boundaries-r2.xml`.
+- Web 199/199 PASS, `artifacts/manual-speed-session-20261003-web-r3.json`; TypeScript/Vite build PASS. New fixture asserts an advertised session remains READY beyond 180 simulated seconds without a timer-triggered close; old countdown regression retained.
+- Synthetic Chrome joystick/scanning/second gesture/mobile/stop/failure rehearsal PASS, `artifacts/manual-speed-session-20261003-browser-r3/result.json`. No external requests/physical server calls/page errors. This is not physical acceptance.
+- Canonical offline bundle `artifacts/robot-preparation/20261003T124410Z-bc9aa76c/result/report.json`: OFFLINE_BUNDLE_READY, no robot validation/motion authorization. Robot source ID `582714f7984692f4d7bc769352d3d27e57de2f46dace3752fd3869ad46be0bd2`.
+- Initial failures preserved: Python r1 test sink omitted new keyword argument; Web r1 new test fixture lacked required passing stop assessment; boundary r1 offline test redirected the source root to an empty temporary tree. Test doubles were corrected without weakening production requirements. Final reruns above pass.
+
+No robot SSH, deployment, sensor/motor command or new physical trial performed. New code is NOT_DEPLOYED; actual higher-speed stopping, long-session stability and room/autonomy remain unverified. Applying requires ending the old active session, restarting only the PC console, explicit Prepare package and one new release's qualification, then Connect. No robot reboot required. Merely refreshing the PC UI cannot change already-running robot source or legitimately reuse the old low-speed receipt.

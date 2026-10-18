@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Credential-free request, response, and configuration contracts."""
 
 from __future__ import annotations
@@ -57,10 +60,28 @@ class GenerationRequest:
     schema_version: str = "1.0"
     image_detail: str = "auto"
     measurement_constraints: tuple[MeasurementConstraint, ...] = ()
+    # Internal context only: excluded from provider bodies and canonical hashes.
+    diagnostics: Any = field(default=None, repr=False, compare=False)
+    # Trusted internal scope adapter only. Never serialized into a model body.
+    inference_scope: Any = field(default=None, repr=False, compare=False)
+    # Explicit trusted continuation only; GET/reopen never supplies this field.
+    continuation_checkpoint: str | None = None
+    render_review_port: Any = field(default=None, repr=False, compare=False)
+    model_library_port: Any = field(default=None, repr=False, compare=False)
+    # Host-only frozen feedback evidence. The transmitted prompt contains a
+    # compact summary bound to its full context SHA, never mesh geometry.
+    feedback_context: Any = field(default=None, repr=False, compare=False)
+    # Trusted App-only candidate compiler/fence; never part of a model body.
+    feedback_candidate_validator: Any = field(default=None, repr=False, compare=False)
+    feedback_deadline: float | None = field(default=None, repr=False, compare=False)
+    # Host-selected acceptance purpose. Never sent as executable/model content.
+    draft_goal: str = 'photo_reconstruction'
 
     def __post_init__(self) -> None:
         if self.image_detail not in {"auto", "low", "high"}:
             raise ValueError("image_detail must be auto, low, or high")
+        if self.draft_goal not in {'photo_reconstruction','editable_obstacle_prior'}:
+            raise ValueError('unsupported draft goal')
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +98,7 @@ class CancellationToken:
 
     def __init__(self) -> None:
         self._event = Event()
+        self.diagnostics = None
 
     def cancel(self) -> None:
         self._event.set()

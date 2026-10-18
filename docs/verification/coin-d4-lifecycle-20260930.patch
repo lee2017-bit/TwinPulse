@@ -1,0 +1,108 @@
+warning: in the working copy of 'include/coin_d4_driver/coin_d4_base_handler.hpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/coin_d4_base_handler.cpp', LF will be replaced by CRLF the next time Git touches it
+diff --git a/include/coin_d4_driver/coin_d4_base_handler.hpp b/include/coin_d4_driver/coin_d4_base_handler.hpp
+index e00cfb5..55e3256 100644
+--- a/include/coin_d4_driver/coin_d4_base_handler.hpp
++++ b/include/coin_d4_driver/coin_d4_base_handler.hpp
+@@ -79,7 +79,7 @@ private:
+   const std::string parameter_prefix_;
+ 
+   // handling variables
+-  node_info * scan_node_buf_;
++  node_info * scan_node_buf_ = nullptr;
+   std::shared_ptr<LidarTimeStatus> lidar_time_;
+   std::shared_ptr<LidarHardwareStatus> lidar_status_;
+ 
+diff --git a/src/coin_d4_base_handler.cpp b/src/coin_d4_base_handler.cpp
+index ecf16fb..551b61b 100644
+--- a/src/coin_d4_base_handler.cpp
++++ b/src/coin_d4_base_handler.cpp
+@@ -14,6 +14,7 @@
+ //
+ // Authors: Hyeongjun Jeon
+ 
++#include <algorithm>
+ #include <chrono>
+ #include <memory>
+ #include <string>
+@@ -37,6 +38,8 @@ CoinD4BaseHandler::CoinD4BaseHandler(
+ 
+ CoinD4BaseHandler::~CoinD4BaseHandler()
+ {
++  // Do not call deactivate_publish_thread() here: it invokes a pure virtual
++  // publisher hook after the derived handler has already been destroyed.
+   skip_grab_ = true;
+   if (grab_thread_.joinable()) {
+     grab_thread_.join();
+@@ -45,10 +48,23 @@ CoinD4BaseHandler::~CoinD4BaseHandler()
+   if (publish_thread_.joinable()) {
+     publish_thread_.join();
+   }
+-  serial_port_->close();
+-  lidar_status_->lidar_ready = false;
+-  lidar_status_->close_lidar = true;
+-  flush_serial();
++  if (serial_port_ && lidar_status_ && lidar_status_->serial_connected) {
++    if (!lidar_status_->close_lidar) {
++      const size_t written = serial_port_->write_data(end_lidar, sizeof(end_lidar));
++      if (written != sizeof(end_lidar)) {
++        RCLCPP_ERROR(logging_interface_->get_logger(), "LiDAR STOP write incomplete on %s",
++          lidar_general_info_.port.c_str());
++      }
++    }
++    flush_serial();
++    serial_port_->close();
++    lidar_status_->serial_connected = false;
++  }
++  if (lidar_status_) {
++    lidar_status_->lidar_ready = false;
++    lidar_status_->close_lidar = true;
++  }
++  delete[] scan_node_buf_;
+   RCLCPP_INFO(
+     logging_interface_->get_logger(),
+     "Closed lidar for port %s",
+@@ -156,14 +172,14 @@ bool CoinD4BaseHandler::init_lidar_port()
+ 
+ void CoinD4BaseHandler::flush_serial()
+ {
+-  if (!lidar_status_->serial_connected) {
++  if (!serial_port_ || !lidar_status_ || !lidar_status_->serial_connected) {
+     return;
+   }
+ 
+-  size_t len = serial_port_->available();
++  const size_t len = std::min(serial_port_->available(), static_cast<size_t>(4096));
+ 
+   if (len) {
+-    uint8_t * buffer = static_cast<uint8_t *>(alloca(len * sizeof(uint8_t)));
++    uint8_t buffer[4096];
+     serial_port_->read_data(buffer, len);
+   }
+ 
+@@ -271,11 +287,15 @@ void CoinD4BaseHandler::deactivate_grab_thread()
+     grab_thread_.join();
+   }
+ 
+-  lidar_status_->close_lidar = true;
+   lidar_status_->lidar_ready = false;
+   lidar_status_->lidar_last_status = lidar_status_->lidar_ready;
+   lidar_status_->lidar_trap_restart = false;
+-  serial_port_->write_data(end_lidar);
++  const size_t written = serial_port_->write_data(end_lidar, sizeof(end_lidar));
++  lidar_status_->close_lidar = written == sizeof(end_lidar);
++  if (written != sizeof(end_lidar)) {
++    RCLCPP_ERROR(logging_interface_->get_logger(), "LiDAR STOP write incomplete on %s",
++      lidar_general_info_.port.c_str());
++  }
+   RCLCPP_INFO(
+     logging_interface_->get_logger(),
+     "Deactivated lidar grab thread for port %s",
+@@ -440,6 +460,7 @@ result_t CoinD4BaseHandler::check_data_synchronization(uint32_t timeout)
+       {
+         lock_.lock();
+         if (scan_node_count_ == 0) {
++          lock_.unlock();
+           return RESULT_FAIL;
+         }
+         lock_.unlock();

@@ -1,0 +1,23 @@
+{
+  "schema_version": "h3b-corpus-1.0",
+  "cases": [
+    {
+      "id": "warehouse_regression",
+      "status": "existing_structured_fixture_only",
+      "source": "fixtures/fixed_warehouse.json",
+      "real_site_photo": false
+    },
+    {
+      "id": "nonwarehouse_contract",
+      "status": "synthetic_generic_obstacle_only",
+      "source": "packages/twinpulse_core/tests/test_site_tools.py",
+      "real_site_photo": false
+    },
+    {
+      "id": "final_physical_test_site",
+      "status": "awaiting_user_capture_and_measurement",
+      "source": null,
+      "real_site_photo": false
+    }
+  ]
+}

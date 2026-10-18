@@ -1,0 +1,29 @@
+# DP2/DP4/DP5 partial — synthetic product-path checkpoint (2026-09-30)
+
+## Scope and boundary
+
+The robot was OFF. No SSH, serial, sensor, motor, deployment, paid provider, or physical test occurred. This checkpoint is **not** DP3 field-session completion, PC-ready certification, or physical demo acceptance. Prior field stop PASS, odom `INVALID_MESSAGE`, missing ROS scan/TF evidence, and historical failures remain unchanged.
+
+The saved user-room photo provides approximate furniture geometry only. The new obstacle and all ray distances, pose integration, detour, no-path case, and route metrics are synthetic. Unknown real free space is not inferred. `bounded_grid_plan.py` is a bounded geometric candidate planner with no robot command authority; its result is consumed only by the offline bedroom rehearsal. On the obstacle event, the recorded output is zero before a candidate detour. A no-path result terminates without resuming; stale scan remains a separate terminal result. The old route/direct canonical records and comparison were retained.
+
+## Product connection and evidence
+
+- `BedroomReview.offline_acceptance` computes route, direct, detour, no-path and stale-scan records, a route/direct same-condition comparison, and the existing evaluation in one read-only product operation. Every check has an explicit Boolean result. The response and deterministic export contain `physical_validation=NOT_RUN`, `motion_authorized=false`, `robot_connection=false`, `isaac_run=false`; `SYNTHETIC_PASS` does not mean physical success.
+- Authenticated/CSRF-protected App API endpoints expose this operation and a revision-checked export. A stale revision is rejected; no automatic retry or engine/motion command occurs.
+- The Bedroom Twin panel provides one PC synthetic-suite action, visible pass/fail checks, individual record selection and replay, and a hash-verified JSON export. Its read-only import accepts the exact server-exported file only when its content revision still matches the pinned room source; changed, truncated, non-finite, and stale records are rejected. The separate explicit Build/replay controls remain required for Isaac scene display.
+- A real local Chrome → App API/broker/production bridge → Isaac Sim 6.0 product rehearsal succeeded using the same build. It rendered the approximate room and existing Burger, ran the new suite by one App action, exported the server bytes, reloaded the page, re-imported and reviewed the no-path record, then explicitly displayed start/mid/end synthetic frames in actual Isaac. It also checked current lease/scene state and disconnected-state behavior. Isaac timeline physics was **not** run and the robot was not driven.
+
+Evidence: [result.json](../../artifacts/runs/20260930-bedroom-suite-r4/result.json), [browser-result.json](../../artifacts/runs/20260930-bedroom-suite-r4/browser-result.json), [server-exported-synthetic-suite.json](../../artifacts/runs/20260930-bedroom-suite-r4/server-exported-synthetic-suite.json). The run records source/build hashes, `robot_connections=0`, `provider_calls=0`, `physics_run=NOT_RUN`, `physical_validation=NOT_RUN`, and `BEDROOM_PRODUCT_REHEARSAL=PASS`. The comparison only ranks route versus direct under its declared synthetic conditions; it does not rank the detour fixture against a different obstacle condition. Collision count remains unmeasured, not zero.
+
+## Checks and corrected issue
+
+- Final combined Python room review/rehearsal/planner regression: 31/31 PASS, including old record identity, bounded planning, detour/stop/no-path, service suite/export/import with altered/truncated rejection, and real local HTTP auth/CSRF/shape/product route/import.
+- Web UI: 169/169 PASS. Type check and production Vite build PASS. The saved-session replay test previously used `fireEvent.input` on a range slider and failed in isolation; changing the test to the actual change event made the same replay expectation pass. No production replay behavior or safety threshold was changed.
+- Initial detour dry-run failed `SCAN_COVERAGE_UNKNOWN` because the synthetic ray/disc intersection treated a disc behind the ray as a zero-range hit. The ray check was fixed before the reported passing run. This is a synthetic fixture correction, not a real LiDAR diagnosis.
+- The first service import test failed because Python tuples and JSON lists were compared as objects despite matching canonical serialized content. The importer now requires a valid content hash and the freshly recomputed source-bound revision. Local Isaac browser runs r2/r3 failed while using a `JSON.stringify` copy of the response, which is not the exact server-exported artifact; r4 exercised the real export→page reload→import path and passed. r2/r3 FAIL results are preserved. The Isaac `python.bat` wrapper returned process code 0 even when the script printed FAIL, so require the `BEDROOM_PRODUCT_REHEARSAL=PASS` marker and `result.json.status=PASS`, not shell exit code alone.
+
+## Still open against DP0–DP5 completion
+
+The one-click suite is only for the fixed saved bedroom fixture; it is **not** the DP3 robot session state machine. DP0 operation mapping and DP1 full ROS reparse/reconnect remain partial. Pinned COIN driver Linux/ROS build, actual ROS scan lifecycle/stop, real odom rejection cause, TF and room↔odom calibration, profile/autonomous policy, measured clearance/collision response, real goal→robot runtime connection, raw field bundle reparse, and normal/fault product-path acceptance across those real adapters remain open. The local Isaac proof is visual/static-frame replay, not physics navigation. Reopening is limited to this exact server-exported fixed-fixture bundle, not arbitrary measured field bundles.
+
+The latest [DP0–DP7 plan](../planning/TWINPULSE_DEMO_END_TO_END_PREPARATION_PLAN_2026-09-30.md) remains the acceptance authority. Neither `PC ready` nor `field accepted` nor `demo possible` may be set true from this checkpoint.

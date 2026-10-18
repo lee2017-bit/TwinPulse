@@ -1,5 +1,7 @@
 # TwinPulse App 전환 및 정합성 복구 — GPT 5.6 단계별 개발 지침
 
+> **2026-09-25 현재 작업 우선:** 이 문서의 한국어 우선·회사/cloud 선행 및 과거 상태 설명은 최신 사용자 결정으로 대체됐다. 현재는 쉬운 영어 기본 UI, 창고 비한정 photo→scan→Twin→경로 비교→TurtleBot 데모다. [H0 검토·Sol 작업 계약](TWINPULSE_H0_REVIEW_SOL_HANDOFF_2026-09-25.md)의 선택 단계와 최신 PROJECT_MEMORY를 우선하며 아래 R 공통 안전·증거 규칙은 유지한다. H0 문서 검토만 완료, H1~H8 구현 미착수다.
+
 > **2026-09-22 후속 검토 우선:** 아래 earlier R6 PASS는 run `20260922-100347`의 제한된 결과다. 이후 full run `20260922-102341`는 capture_missing FAIL이며, 새 웹 App은 실제 provider 대신 fixture 생성 경로임을 확인했다. [종합 검토](TWINPULSE_ASTRA_REVIEW_2026-09-22.md)와 [Sol 보완 실행 계획](TWINPULSE_SOL_EXECUTION_PLAN_2026-09-22.md)의 S0~S2를 먼저 검토한다. 이 보완은 R 번호/기존 안전 규칙을 폐기하거나 전체 구현을 승인하지 않는다.
 
 - 버전: 1.6 / 2026-09-22 KST

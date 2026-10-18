@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Validated SceneSpec to USD/PhysX compiler for the M1 fixed scene."""
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ import omni.usd
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics
 
 if TYPE_CHECKING:
-    from twinpulse_core import RobotProfile, SceneObject, SpecBundle
+    from twinpulse_core import RobotProfile, SceneObject, SpecBundle, SceneRevision
 
 
 OWNED_ROOT = Sdf.Path("/World/TwinPulse")
@@ -31,6 +34,24 @@ _COLORS = {
     "box": Gf.Vec3f(0.76, 0.48, 0.16),
     "equipment": Gf.Vec3f(0.30, 0.46, 0.42),
 }
+_FURNITURE_COLORS = {
+    "bed": Gf.Vec3f(.52, .40, .36), "wardrobe": Gf.Vec3f(.54, .42, .28),
+    "desk": Gf.Vec3f(.45, .34, .22), "chair": Gf.Vec3f(.24, .45, .53),
+    "sofa": Gf.Vec3f(.27, .42, .58), "dining_table": Gf.Vec3f(.59, .39, .23),
+    "storage": Gf.Vec3f(.58, .55, .43),
+}
+
+
+def _display_color(item: "SceneObject") -> Gf.Vec3f:
+    if item.kind == 'equipment' and item.id.endswith('_keepout'):
+        return Gf.Vec3f(.95, .35, .12)
+    # Only the new local furniture IDs get presentation colors. Older scene
+    # objects retain their exact authored geometry and material behavior.
+    if item.kind == "equipment" and item.id.startswith("furn_"):
+        for family, color in _FURNITURE_COLORS.items():
+            if f"_{family}_" in item.id:
+                return color
+    return _COLORS[item.kind]
 
 COMPILER_VERSION = "r2.1"
 ASSET_CATALOG_VERSION = "r2.1"
@@ -71,11 +92,16 @@ class SceneCompiler:
     def __init__(self) -> None:
         self._stage: Usd.Stage | None = None
         self._bundle: SpecBundle | None = None
+        self._site_scene: SceneRevision | None = None
         self._build_receipt: StageBuildReceipt | None = None
 
     @property
     def bundle(self) -> "SpecBundle | None":
         return self._bundle
+
+    @property
+    def site_scene(self) -> "SceneRevision | None":
+        return self._site_scene
 
     @property
     def stage(self) -> Usd.Stage | None:
@@ -89,7 +115,264 @@ class SceneCompiler:
         """Forget stale Python bindings without mutating any stage."""
         self._stage = None
         self._bundle = None
+        self._site_scene = None
         self._build_receipt = None
+
+    def bind_restored_scene(self, stage, bundle, scene, receipt) -> None:
+        """Rebind a verified USD backup without recompiling/mutating that backup."""
+        self.invalidate_stage()
+        if stage is not omni.usd.get_context().get_stage():
+            raise RuntimeError('RESTORED_STAGE_CHANGED')
+        if receipt is None:
+            if bundle is not None or scene is not None:
+                raise RuntimeError('RESTORED_RECEIPT_MISSING')
+            return
+        matched = self.matches_site_scene(scene, stage=stage) if scene is not None else self.matches_stage(bundle, stage=stage) if bundle is not None else False
+        if not matched or receipt.stage_identifier != stage.GetRootLayer().identifier:
+            raise RuntimeError('RESTORED_SCENE_IDENTITY_MISMATCH')
+        self._stage, self._bundle, self._site_scene, self._build_receipt = stage, bundle, scene, receipt
+
+    @staticmethod
+    def site_fingerprint(scene: "SceneRevision") -> str:
+        from twinpulse_core import canonical_sha256
+
+        return canonical_sha256({"scene_revision": scene.revision,
+                                 "compiler_version": COMPILER_VERSION,
+                                 "asset_catalog_version": ASSET_CATALOG_VERSION,
+                                 "build_kind": "site_scene_only_v2"})
+
+    def compile_site_scene(self, scene: "SceneRevision", *, presentation: dict | None = None) -> int:
+        """Build only reviewed v2 geometry; never infer a robot, goal or route."""
+        from twinpulse_core import SceneRevision
+        from twinpulse_core.presentation import checked_presentation
+
+        checked = SceneRevision.from_dict(scene.to_dict())
+        presentation = checked_presentation(presentation) if presentation is not None else None
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError("No USD stage is open")
+        self._assert_or_initialize_stage_units(stage)
+        if self._stage is not stage:
+            self._bundle = None
+            self._site_scene = None
+            self._build_receipt = None
+        root = stage.GetPrimAtPath(OWNED_ROOT)
+        backup = None
+        edit_layer = stage.GetEditTarget().GetLayer()
+        previous_bundle, previous_site, previous_receipt = self._bundle, self._site_scene, self._build_receipt
+        if root.IsValid():
+            if not self._is_owned_root(root):
+                raise RuntimeError("Refusing to replace an unowned /World/TwinPulse root")
+            active_presentation = stage.GetPrimAtPath(PRESENTATION_PATH).GetCustomDataByKey("twinpulsePresentation")
+            if self.matches_site_scene(checked, stage=stage) and active_presentation == presentation:
+                self._stage = stage
+                self._bundle = None
+                self._site_scene = checked
+                count = self.owned_prim_count()
+                self._build_receipt = StageBuildReceipt(
+                    fingerprint=self.site_fingerprint(checked),
+                    stage_identifier=stage.GetRootLayer().identifier,
+                    compiler_version=COMPILER_VERSION,
+                    asset_catalog_version=ASSET_CATALOG_VERSION,
+                    prim_count=count,
+                )
+                return count
+            if stage.GetPrimAtPath(PHYSICS_SCENE_PATH).IsValid():
+                return self._replace_site_scene_preserving_physics(checked, stage, presentation=presentation)
+            if edit_layer.GetPrimAtPath(OWNED_ROOT) is None:
+                raise RuntimeError("Cannot safely replace composed TwinPulse content")
+            backup = Sdf.Layer.CreateAnonymous("twinpulse-site-backup.usda")
+            Sdf.CreatePrimInLayer(backup, "/World")
+            if not Sdf.CopySpec(edit_layer, OWNED_ROOT, backup, OWNED_ROOT):
+                raise RuntimeError("Unable to snapshot TwinPulse root")
+            stage.RemovePrim(OWNED_ROOT)
+        self._stage = stage
+        try:
+            if not stage.GetPrimAtPath("/World").IsValid():
+                UsdGeom.Xform.Define(stage, "/World")
+            owned = UsdGeom.Xform.Define(stage, OWNED_ROOT).GetPrim()
+            owned.SetCustomDataByKey("twinpulseOwner", _OWNER)
+            owned.SetCustomDataByKey("twinpulseSceneId", checked.id)
+            owned.SetCustomDataByKey("twinpulseSiteSceneRevision", checked.revision)
+            owned.SetCustomDataByKey("twinpulseBuildFingerprint", self.site_fingerprint(checked))
+            UsdGeom.Xform.Define(stage, ENVIRONMENT_PATH)
+            physics = UsdPhysics.Scene.Define(stage, PHYSICS_SCENE_PATH)
+            physics.CreateGravityDirectionAttr(Gf.Vec3f(0.0, 0.0, -1.0))
+            physics.CreateGravityMagnitudeAttr(9.81)
+            for item in checked.objects:
+                self._create_scene_object(item,asset=next((a for a in checked.library_assets if a.asset_ref==item.asset_id),None))
+            self._ensure_presentation(None, checked, presentation=presentation)
+            if not self.matches_site_scene(checked, stage=stage):
+                raise RuntimeError("Authored site scene does not match the reviewed revision")
+            self._bundle = None
+            self._site_scene = checked
+            self._build_receipt = StageBuildReceipt(
+                fingerprint=self.site_fingerprint(checked),
+                stage_identifier=stage.GetRootLayer().identifier,
+                compiler_version=COMPILER_VERSION,
+                asset_catalog_version=ASSET_CATALOG_VERSION,
+                prim_count=self.owned_prim_count(),
+            )
+            return self._build_receipt.prim_count
+        except Exception as build_error:
+            if stage.GetPrimAtPath(OWNED_ROOT).IsValid():
+                stage.RemovePrim(OWNED_ROOT)
+            if backup is not None:
+                if not Sdf.CopySpec(backup, OWNED_ROOT, edit_layer, OWNED_ROOT):
+                    self.invalidate_stage()
+                    raise RuntimeError("Site scene rollback failed") from build_error
+            self._bundle, self._site_scene, self._build_receipt = previous_bundle, previous_site, previous_receipt
+            raise
+
+    def _replace_site_scene_preserving_physics(self, scene: "SceneRevision", stage: Usd.Stage,
+                                                *, presentation: dict | None = None) -> int:
+        """Keep the PhysicsScene prim live across v1/v2 replacement and rollback."""
+        root = stage.GetPrimAtPath(OWNED_ROOT)
+        physics_scene = stage.GetPrimAtPath(PHYSICS_SCENE_PATH)
+        edit_layer = stage.GetEditTarget().GetLayer()
+        backup = Sdf.Layer.CreateAnonymous("twinpulse-site-mutable-backup.usda")
+        Sdf.CreatePrimInLayer(backup, "/World")
+        Sdf.CreatePrimInLayer(backup, OWNED_ROOT)
+        mutable_paths = (ENVIRONMENT_PATH, ROBOT_PATH, PRESENTATION_PATH, TASK_PATH)
+        for path in mutable_paths:
+            if stage.GetPrimAtPath(path).IsValid():
+                if edit_layer.GetPrimAtPath(path) is None:
+                    raise RuntimeError(f"Cannot safely replace composed TwinPulse path {path}")
+                if not Sdf.CopySpec(edit_layer, path, backup, path):
+                    raise RuntimeError(f"Unable to snapshot TwinPulse path {path}")
+        previous_custom_data = root.GetCustomData()
+        gravity_direction = physics_scene.GetAttribute("physics:gravityDirection")
+        gravity_magnitude = physics_scene.GetAttribute("physics:gravityMagnitude")
+        previous_gravity = (gravity_direction.Get(), gravity_magnitude.Get())
+        previous_bundle, previous_site, previous_receipt = self._bundle, self._site_scene, self._build_receipt
+        self._stage = stage
+        try:
+            for path in mutable_paths:
+                if path == PRESENTATION_PATH and stage.GetPrimAtPath(path).IsValid():
+                    # Keep the live camera/light identities across a hot rebuild.
+                    # Deleting/recreating the active RTX camera at the same path
+                    # loses its exposure state and can wash the next room white.
+                    # Discard every old scene overlay; pose and light intensity
+                    # are refreshed by _ensure_presentation below. This changes
+                    # only owned presentation, not collision/physics or settings.
+                    presentation_prim=stage.GetPrimAtPath(path)
+                    for child in list(presentation_prim.GetChildren()):
+                        if child.GetPath() not in (CAMERA_PATH,DOME_LIGHT_PATH,SUN_LIGHT_PATH):
+                            stage.RemovePrim(child.GetPath())
+                    presentation_prim.SetCustomData({})
+                    continue
+                if stage.GetPrimAtPath(path).IsValid():
+                    stage.RemovePrim(path)
+            root.SetCustomData({"twinpulseOwner": _OWNER, "twinpulseSceneId": scene.id,
+                                "twinpulseSiteSceneRevision": scene.revision,
+                                "twinpulseBuildFingerprint": self.site_fingerprint(scene)})
+            gravity_direction.Set(Gf.Vec3f(0.0, 0.0, -1.0))
+            gravity_magnitude.Set(9.81)
+            UsdGeom.Xform.Define(stage, ENVIRONMENT_PATH)
+            for item in scene.objects:
+                self._create_scene_object(item,asset=next((a for a in scene.library_assets if a.asset_ref==item.asset_id),None))
+            self._ensure_presentation(None, scene, presentation=presentation)
+            if not self.matches_site_scene(scene, stage=stage):
+                raise RuntimeError("Authored site scene does not match the reviewed revision")
+            self._bundle = None
+            self._site_scene = scene
+            self._build_receipt = StageBuildReceipt(
+                fingerprint=self.site_fingerprint(scene),
+                stage_identifier=stage.GetRootLayer().identifier,
+                compiler_version=COMPILER_VERSION,
+                asset_catalog_version=ASSET_CATALOG_VERSION,
+                prim_count=self.owned_prim_count(),
+            )
+            return self._build_receipt.prim_count
+        except Exception as build_error:
+            try:
+                for path in mutable_paths:
+                    if stage.GetPrimAtPath(path).IsValid():
+                        stage.RemovePrim(path)
+                    if backup.GetPrimAtPath(path) is not None:
+                        if not Sdf.CopySpec(backup, path, edit_layer, path):
+                            raise RuntimeError(f"Rollback failed for {path}")
+                root.SetCustomData(previous_custom_data)
+                gravity_direction.Set(previous_gravity[0])
+                gravity_magnitude.Set(previous_gravity[1])
+                self._bundle, self._site_scene, self._build_receipt = previous_bundle, previous_site, previous_receipt
+            except Exception as rollback_error:
+                self.invalidate_stage()
+                raise RuntimeError(f"Site scene replacement failed and rollback FAILED: {rollback_error}") from build_error
+            raise RuntimeError("Site scene replacement failed; previous geometry and identity restored") from build_error
+
+    def matches_site_scene(self, scene: "SceneRevision", *, stage: Usd.Stage | None = None) -> bool:
+        stage = stage or omni.usd.get_context().get_stage()
+        if stage is None or stage is not omni.usd.get_context().get_stage():
+            return False
+        root = stage.GetPrimAtPath(OWNED_ROOT)
+        env = stage.GetPrimAtPath(ENVIRONMENT_PATH)
+        if (not root.IsValid() or not self._is_owned_root(root) or not env.IsValid()
+                or root.GetCustomDataByKey("twinpulseSceneId") != scene.id
+                or root.GetCustomDataByKey("twinpulseSiteSceneRevision") != scene.revision
+                or root.GetCustomDataByKey("twinpulseBuildFingerprint") != self.site_fingerprint(scene)
+                or stage.GetPrimAtPath(ROBOT_PATH).IsValid() or stage.GetPrimAtPath(TASK_PATH).IsValid()
+                or not stage.GetPrimAtPath(PHYSICS_SCENE_PATH).IsA(UsdPhysics.Scene)
+                or not stage.GetPrimAtPath(CAMERA_PATH).IsA(UsdGeom.Camera)
+                or {child.GetName() for child in env.GetChildren()} != {item.id for item in scene.objects}):
+            return False
+        physics = stage.GetPrimAtPath(PHYSICS_SCENE_PATH)
+        if (not _vector_close(physics.GetAttribute("physics:gravityDirection").Get(), (0.0, 0.0, -1.0))
+                or not _number_close(physics.GetAttribute("physics:gravityMagnitude").Get(), 9.81)):
+            return False
+        for item in scene.objects:
+            obj = stage.GetPrimAtPath(ENVIRONMENT_PATH.AppendChild(item.id))
+            geom = stage.GetPrimAtPath(ENVIRONMENT_PATH.AppendChild(item.id).AppendChild("geometry"))
+            asset=next((a for a in scene.library_assets if a.asset_ref==item.asset_id),None)
+            if (not obj.IsA(UsdGeom.Xform)
+                    or not _vector_close(obj.GetAttribute("xformOp:translate").Get(), item.transform.position_m)
+                    or not _vector_close(obj.GetAttribute("xformOp:rotateXYZ").Get(), item.transform.rotation_rpy_deg)
+                    or {child.GetName() for child in obj.GetChildren()} != ({"geometry","visual_mesh"} if asset else {"geometry"})
+                    or geom.HasAPI(UsdPhysics.CollisionAPI) != item.collision
+                    or obj.HasAPI(UsdPhysics.RigidBodyAPI) != item.dynamic):
+                return False
+            if item.asset_id is not None:
+                if asset is None or obj.GetCustomDataByKey('twinpulseAssetVersion')!=asset.version:return False
+                visual=stage.GetPrimAtPath(obj.GetPath().AppendChild('visual_mesh'))
+                points=visual.GetAttribute('points').Get();indices=visual.GetAttribute('faceVertexIndices').Get()
+                counts=visual.GetAttribute('faceVertexCounts').Get()
+                if (not visual.IsA(UsdGeom.Mesh) or visual.HasAPI(UsdPhysics.CollisionAPI) or
+                    not points or len(points)!=len(asset.points) or any(not _vector_close(a,b) for a,b in zip(points,asset.points)) or
+                    list(indices or [])!=[n for t in asset.triangles for n in t] or
+                    list(counts or [])!=[3]*len(asset.triangles) or
+                    list(visual.GetAttribute('holeIndices').Get() or []) or
+                    UsdGeom.Xformable(visual).GetOrderedXformOps() or
+                    visual.GetAttribute('subdivisionScheme').Get()!='none' or
+                    UsdGeom.Imageable(visual).ComputePurpose()!='default' or
+                    geom.GetAttribute('visibility').Get()!='invisible' or
+                    UsdGeom.Imageable(visual).ComputeVisibility()=='invisible'):
+                    return False
+            if item.dynamic and not _number_close(obj.GetAttribute("physics:mass").Get(), item.mass_kg):
+                return False
+            if item.kind == "floor" and item.shape.type == "box":
+                if not geom.IsA(UsdGeom.Mesh):
+                    return False
+                dx, dy, dz = item.shape.dimensions_m
+                hx, hy, hz = dx / 2.0, dy / 2.0, dz / 2.0
+                expected_points = [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+                                   (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz)]
+                points = geom.GetAttribute("points").Get()
+                if points is None or len(points) != 8 or any(
+                    not _vector_close(actual, expected) for actual, expected in zip(points, expected_points, strict=True)
+                ):
+                    return False
+            elif item.shape.type == "box":
+                if (not geom.IsA(UsdGeom.Cube) or not _number_close(geom.GetAttribute("size").Get(), 1.0)
+                        or not _vector_close(geom.GetAttribute("xformOp:scale").Get(), item.shape.dimensions_m)):
+                    return False
+            elif item.shape.type == "cylinder":
+                if (not geom.IsA(UsdGeom.Cylinder)
+                        or not _number_close(geom.GetAttribute("radius").Get(), item.shape.dimensions_m[0])
+                        or not _number_close(geom.GetAttribute("height").Get(), item.shape.dimensions_m[1])):
+                    return False
+            else:
+                return False
+        return True
 
     @staticmethod
     def build_fingerprint(bundle: "SpecBundle") -> str:
@@ -115,6 +398,7 @@ class SceneCompiler:
         if self._stage is not stage:
             self._bundle = None
             self._build_receipt = None
+            self._site_scene = None
         self._stage = stage
 
         world = stage.GetPrimAtPath("/World")
@@ -126,6 +410,7 @@ class SceneCompiler:
                 raise RuntimeError("Existing /World/TwinPulse content lacks valid TwinPulse ownership metadata")
             if self.matches_stage(bundle, stage=stage):
                 self._bundle = bundle
+                self._site_scene = None
                 return self._record_build_receipt(bundle).prim_count
             if stage.GetPrimAtPath(PHYSICS_SCENE_PATH).IsValid():
                 return self.replace(bundle)
@@ -147,6 +432,7 @@ class SceneCompiler:
                 self._create_scene_object(item)
             self._create_robot(bundle.robot, bundle.task.start.position_m)
             self._bundle = bundle
+            self._site_scene = None
             self._ensure_presentation(bundle)
             self._write_identity_metadata(bundle)
             return self._record_build_receipt(bundle).prim_count
@@ -402,6 +688,7 @@ class SceneCompiler:
 
         self._stage = stage
         previous_bundle = self._bundle
+        previous_site = self._site_scene
         previous_receipt = self._build_receipt
         previous_custom_data = root.GetCustomData()
         gravity_direction = physics_scene.GetAttribute("physics:gravityDirection")
@@ -427,11 +714,16 @@ class SceneCompiler:
                     stage.RemovePrim(path)
             root.SetCustomDataByKey("twinpulseSceneId", bundle.scene.id)
             root.SetCustomDataByKey("twinpulseRobotProfileId", bundle.robot.id)
+            if root.GetCustomDataByKey("twinpulseSiteSceneRevision") is not None:
+                current_custom_data = root.GetCustomData()
+                current_custom_data.pop("twinpulseSiteSceneRevision", None)
+                root.SetCustomData(current_custom_data)
             UsdGeom.Xform.Define(stage, ENVIRONMENT_PATH)
             for item in bundle.scene.objects:
                 self._create_scene_object(item)
             self._create_robot(bundle.robot, bundle.task.start.position_m)
             self._bundle = bundle
+            self._site_scene = None
             self._ensure_presentation(bundle)
             gravity_direction.Set(Gf.Vec3f(0.0, 0.0, -1.0))
             gravity_magnitude.Set(9.81)
@@ -452,6 +744,7 @@ class SceneCompiler:
                 gravity_direction.Set(previous_gravity_direction)
                 gravity_magnitude.Set(previous_gravity_magnitude)
                 self._bundle = previous_bundle
+                self._site_scene = previous_site
                 self._build_receipt = previous_receipt
             except Exception as rollback_error:
                 self.invalidate_stage()
@@ -492,9 +785,69 @@ class SceneCompiler:
                 raise RuntimeError(f"Scene rebuild failed and rollback FAILED: {rollback_error}") from replacement_error
             raise RuntimeError("Scene rebuild failed; previous root restored") from replacement_error
 
-    def _ensure_presentation(self, bundle: "SpecBundle") -> None:
+    def _ensure_presentation(self, bundle: "SpecBundle | None",
+                             site_scene: "SceneRevision | None" = None,
+                             *, presentation: dict | None = None) -> None:
         assert self._stage is not None
-        UsdGeom.Xform.Define(self._stage, PRESENTATION_PATH)
+        presentation_xform = UsdGeom.Xform.Define(self._stage, PRESENTATION_PATH)
+
+        # Presentation is TwinPulse-owned and deliberately independent of the
+        # reviewed geometry revision. Fit a site room using only its reviewed
+        # floor bounds; this is a view aid, never a measured scale or TF.
+        center_x = center_y = 0.0
+        radius = None
+        open_side = None
+        if site_scene is not None:
+            floor = next((item for item in site_scene.objects if item.kind == "floor"), None)
+            if floor is not None and floor.shape.type == "box":
+                center_x, center_y = floor.transform.position_m[:2]
+                radius = max(floor.shape.dimensions_m[:2])
+                width, depth = floor.shape.dimensions_m[:2]
+                # Prefer a boundary without an authored wall. This is only a
+                # presentation choice, not a claim about a physical doorway.
+                blocked = set()
+                for item in site_scene.objects:
+                    if item.kind != "wall" or item.shape.type != "box":
+                        continue
+                    x, y = item.transform.position_m[:2]
+                    wall_width, wall_depth = item.shape.dimensions_m[:2]
+                    if wall_width >= width * 0.55:
+                        if abs(y - (center_y - depth / 2)) <= depth * 0.1:
+                            blocked.add("-y")
+                        if abs(y - (center_y + depth / 2)) <= depth * 0.1:
+                            blocked.add("+y")
+                    if wall_depth >= depth * 0.55:
+                        if abs(x - (center_x - width / 2)) <= width * 0.1:
+                            blocked.add("-x")
+                        if abs(x - (center_x + width / 2)) <= width * 0.1:
+                            blocked.add("+x")
+                open_side = next((side for side in ("-y", "+y", "-x", "+x")
+                                  if side not in blocked), "-y")
+        if radius is None:
+            eye = Gf.Vec3d(8.5, -9.5, 7.0)
+            target = Gf.Vec3d(0.0, 0.0, 0.35)
+        else:
+            radius = max(2.5, min(float(radius), 20.0))
+            view = presentation["view"] if presentation is not None else "auto"
+            if view != "auto" and view != "top":
+                open_side = {"front": "-y", "back": "+y", "left": "-x", "right": "+x"}[view]
+            side_x, side_y = {"-y": (0.0, -1.0), "+y": (0.0, 1.0),
+                              "-x": (-1.0, 0.0), "+x": (1.0, 0.0)}[open_side]
+            eye = (Gf.Vec3d(center_x, center_y, radius * 1.8) if view == "top"
+                   else Gf.Vec3d(center_x + side_x * radius * 1.15,
+                                  center_y + side_y * radius * 1.15, radius * 0.95))
+            target = Gf.Vec3d(center_x, center_y, 0.25)
+        presentation_xform.GetPrim().SetCustomDataByKey(
+            "twinpulseViewPreset", ("fit-open-side-v1" if presentation is None or presentation["view"] == "auto"
+                                     else f"user-{presentation['view']}-v1") if radius is not None else "legacy-overview-v1")
+        if presentation is not None:
+            presentation_xform.GetPrim().SetCustomDataByKey("twinpulsePresentation", dict(presentation))
+        if open_side is not None:
+            presentation_xform.GetPrim().SetCustomDataByKey("twinpulseCameraSide", "top" if presentation is not None and presentation["view"] == "top" else open_side)
+        elif presentation_xform.GetPrim().GetCustomDataByKey("twinpulseCameraSide") is not None:
+            presentation_data = presentation_xform.GetPrim().GetCustomData()
+            presentation_data.pop("twinpulseCameraSide", None)
+            presentation_xform.GetPrim().SetCustomData(presentation_data)
 
         camera = UsdGeom.Camera.Define(self._stage, CAMERA_PATH)
         camera.CreateFocalLengthAttr(20.0)
@@ -505,24 +858,31 @@ class SceneCompiler:
         camera_xform.AddTransformOp().Set(
             Gf.Matrix4d(1.0)
             .SetLookAt(
-                Gf.Vec3d(8.5, -9.5, 7.0),
-                Gf.Vec3d(0.0, 0.0, 0.35),
-                Gf.Vec3d(0.0, 0.0, 1.0),
+                eye,
+                target,
+                Gf.Vec3d(0.0, 1.0, 0.0) if presentation is not None and presentation["view"] == "top"
+                else Gf.Vec3d(0.0, 0.0, 1.0),
             )
             .GetInverse()
         )
 
         dome = UsdLux.DomeLight.Define(self._stage, DOME_LIGHT_PATH)
-        dome.CreateIntensityAttr(650.0)
-        dome.CreateColorAttr(Gf.Vec3f(0.78, 0.84, 1.0))
+        lighting = presentation["lighting"] if presentation is not None else "balanced"
+        dome_intensity, sun_intensity = {"balanced": (400.0, 650.0), "soft": (550.0, 250.0),
+                                         "bright": (650.0, 900.0)}[lighting]
+        dome.CreateIntensityAttr(dome_intensity if site_scene is not None else 650.0)
+        dome.CreateColorAttr(Gf.Vec3f(0.90, 0.91, 0.96) if site_scene is not None
+                             else Gf.Vec3f(0.78, 0.84, 1.0))
 
         sun = UsdLux.DistantLight.Define(self._stage, SUN_LIGHT_PATH)
-        sun.CreateIntensityAttr(2500.0)
+        sun.CreateIntensityAttr(sun_intensity if site_scene is not None else 2500.0)
         sun.CreateAngleAttr(1.0)
         sun_xform = UsdGeom.Xformable(sun)
         sun_xform.ClearXformOpOrder()
         sun_xform.AddRotateXYZOp().Set(Gf.Vec3f(45.0, -30.0, 25.0))
 
+        if bundle is None:
+            return
         UsdGeom.Xform.Define(self._stage, TASK_PATH)
         goal = UsdGeom.Cylinder.Define(self._stage, GOAL_PATH)
         goal.CreateAxisAttr("Z")
@@ -539,7 +899,7 @@ class SceneCompiler:
             )
         )
 
-    def _create_scene_object(self, item: "SceneObject") -> None:
+    def _create_scene_object(self, item: "SceneObject", *, asset=None) -> None:
         assert self._stage is not None
         object_path = ENVIRONMENT_PATH.AppendChild(item.id)
         root = UsdGeom.Xform.Define(self._stage, object_path)
@@ -584,7 +944,18 @@ class SceneCompiler:
             geometry.CreateHeightAttr(height)
         else:
             raise ValueError(f"Unsupported validated shape: {item.shape.type}")
-        geometry.CreateDisplayColorAttr([_COLORS[item.kind]])
+        geometry.CreateDisplayColorAttr([_display_color(item)])
+        if item.asset_id is not None:
+            if asset is None or asset.asset_ref!=item.asset_id:raise ValueError('LIBRARY_ENGINE_SNAPSHOT_REQUIRED')
+            root.GetPrim().SetCustomDataByKey('twinpulseAssetVersion',asset.version)
+            geometry.CreateVisibilityAttr('invisible')
+            visual=UsdGeom.Mesh.Define(self._stage,object_path.AppendChild('visual_mesh'))
+            visual.CreatePointsAttr([Gf.Vec3f(*p) for p in asset.points])
+            visual.CreateFaceVertexCountsAttr([3]*len(asset.triangles))
+            visual.CreateFaceVertexIndicesAttr([i for t in asset.triangles for i in t])
+            visual.CreateSubdivisionSchemeAttr('none')
+            visual.CreateDoubleSidedAttr(True)
+            visual.CreateDisplayColorAttr([_display_color(item)])
         if item.collision:
             UsdPhysics.CollisionAPI.Apply(geometry.GetPrim())
         if item.dynamic:

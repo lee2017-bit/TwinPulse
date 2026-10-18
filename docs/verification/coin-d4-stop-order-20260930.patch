@@ -1,0 +1,24 @@
+diff --git a/src/single_coin_d4_node.cpp b/src/single_coin_d4_node.cpp
+--- a/src/single_coin_d4_node.cpp
++++ b/src/single_coin_d4_node.cpp
+@@ -31,6 +31,6 @@ SingleCoinD4Node::SingleCoinD4Node(const rclcpp::NodeOptions & options)
+ SingleCoinD4Node::~SingleCoinD4Node()
+ {
+-  handler_->deactivate_publish_thread();
+   handler_->deactivate_grab_thread();
++  handler_->deactivate_publish_thread();
+   handler_.reset();
+ }
+ }  // namespace coin_d4
+diff --git a/src/multi_coin_d4_node.cpp b/src/multi_coin_d4_node.cpp
+--- a/src/multi_coin_d4_node.cpp
++++ b/src/multi_coin_d4_node.cpp
+@@ -41,7 +41,7 @@ MultiCoinD4Node::MultiCoinD4Node(const rclcpp::NodeOptions & options)
+ MultiCoinD4Node::~MultiCoinD4Node()
+ {
+   for (auto & handler : handlers_) {
+-    handler.second->deactivate_publish_thread();
+     handler.second->deactivate_grab_thread();
++    handler.second->deactivate_publish_thread();
+   }
+   for (auto & handler : handlers_) {

@@ -1,0 +1,27 @@
+{
+  "schema_version": "scan-recording-1.0",
+  "site_id": "test_room",
+  "scene_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "robot_profile_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "session_id": "synthetic_session",
+  "clock_id": "synthetic_clock",
+  "provenance": "synthetic",
+  "capture_mode": "stationary_snapshot",
+  "convention": "right_handed_x_forward_y_left_z_up_metres_radians",
+  "frames": [{
+    "stamp_ns": 1000000000,
+    "frame_id": "laser",
+    "clock_id": "synthetic_clock",
+    "angle_min_rad": 0,
+    "angle_increment_rad": 1.5707963267948966,
+    "range_min_m": 0.1,
+    "range_max_m": 10,
+    "time_increment_ns": 0,
+    "ranges_m": [1, 2, null, 3],
+    "world_from_sensor": {
+      "source_frame": "laser", "target_frame": "world",
+      "stamp_ns": 1000000000, "clock_id": "synthetic_clock",
+      "x_m": 2, "y_m": 3, "yaw_rad": 1.5707963267948966
+    }
+  }]
+}

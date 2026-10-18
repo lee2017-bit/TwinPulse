@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Versioned, application-owned robot profiles.
 
 The multimodal planner may select a profile identifier.  It never authors wheel,

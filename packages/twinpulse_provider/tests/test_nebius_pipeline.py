@@ -1,7 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -13,7 +17,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PACKAGE_ROOT / "twinpulse_core" / "src"))
 sys.path.insert(0, str(PACKAGE_ROOT / "twinpulse_provider" / "src"))
 
-from twinpulse_core import demo_warehouse_tool_plan  # noqa: E402
+from twinpulse_core import current_controller_route_prompt, demo_warehouse_tool_plan  # noqa: E402
 from twinpulse_provider import (  # noqa: E402
     CancellationToken,
     ChatCompletion,
@@ -21,6 +25,7 @@ from twinpulse_provider import (  # noqa: E402
     GenerationRequest,
     GenerationService,
     ImageInput,
+    MeasurementConstraint,
     InvalidProviderResponseError,
     NebiusChatCompletionsPipelineProvider,
     ObservationArtifact,
@@ -133,6 +138,148 @@ def slotted_plan() -> dict[str, object]:
 
 
 class NebiusPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_v2_unsupported_measurement_fails_without_paid_transport(self) -> None:
+        transport = ScriptedTransport()
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        constrained = replace(request(), measurement_constraints=(
+            MeasurementConstraint("floor_width", "create_floor", "size_m.0", 4.0, 0.1),
+        ))
+        with self.assertRaisesRegex(ValueError, "does not yet support"):
+            await GenerationService(provider, config(), plan_version="2.0").generate(constrained)
+        self.assertEqual(transport.bodies, [])
+
+    async def test_explicit_v2_profile_requests_scene_only_without_fake_robot(self) -> None:
+        plan = demo_warehouse_tool_plan().to_dict()
+        plan["plan_version"] = "2.0"
+        plan["calls"] = [item for item in plan["calls"] if item["tool"] == "create_floor"]
+        plan["call_evidence"] = [{"call_id": "floor", "observation_ids": [],
+                                  "basis": "inferred", "note": "Approximate ground"}]
+        transport = ScriptedTransport(
+            completion("obs-site", OBSERVER_MODEL, observation()),
+            completion("plan-site", PLANNER_MODEL, plan),
+        )
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        result = await GenerationService(provider, config(), plan_version="2.0").generate(request())
+        self.assertEqual(result.plan.plan_version, "2.0")
+        self.assertEqual(len(result.plan.calls), 1)
+        self.assertNotIn("bundle", result.__dataclass_fields__)
+        observer, planner = transport.bodies
+        self.assertIn("site image", observer["messages"][0]["content"])
+        self.assertIn("optional", planner["messages"][0]["content"])
+        self.assertEqual(planner["response_format"]["json_schema"]["schema"]["properties"]["plan_version"]["const"], "2.0")
+
+    async def test_v2_rejects_fabricated_visual_reference_before_accepting_plan(self) -> None:
+        plan = demo_warehouse_tool_plan().to_dict()
+        plan["plan_version"] = "2.0"
+        plan["calls"] = [item for item in plan["calls"] if item["tool"] == "create_floor"]
+        plan["call_evidence"] = [{"call_id": "floor", "observation_ids": ["invented"],
+                                  "basis": "visual", "note": "Claimed ground"}]
+        transport = ScriptedTransport(completion("obs-site", OBSERVER_MODEL, observation()),
+                                      completion("plan-site", PLANNER_MODEL, plan))
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        with self.assertRaisesRegex(InvalidProviderResponseError, "unobserved visual entity"):
+            await GenerationService(provider, config(), plan_version="2.0").generate(request())
+
+    async def test_v2_nonwarehouse_site_plan_uses_generic_obstacle_and_evidence(self) -> None:
+        observed = {
+            "schema_version": "1.0", "summary": "A floor and freestanding barrier on a test track.",
+            "entities": [
+                {"id": "ground", "kind": "floor", "description": "visible ground", "confidence": 0.8},
+                {"id": "barrier_seen", "kind": "static_obstacle", "description": "box barrier", "confidence": 0.9},
+                {"id": "robot_seen", "kind": "robot_candidate", "description": "small wheeled robot", "confidence": 0.6},
+                {"id": "hidden_corner", "kind": "unknown", "description": "occluded corner", "confidence": 0.9},
+            ], "relations": [], "dimensions": [], "ambiguities": ["Robot identity is unconfirmed."],
+        }
+        plan = {
+            "plan_version": "2.0", "scene_id": "test_track", "summary": "Approximate test track",
+            "image_observations": "Freestanding barrier; hidden corner remains unknown.",
+            "calls": [
+                {"call_id": "ground_call", "tool": "create_floor",
+                 "arguments": {"id": "ground_mesh", "center_m": [0, 0], "size_m": [6, 4]}},
+                {"call_id": "barrier_call", "tool": "create_box_obstacle",
+                 "arguments": {"id": "barrier", "center_m": [1, 0],
+                               "dimensions_m": [0.8, 0.4, 1.0], "yaw_deg": 0}},
+            ],
+            "call_evidence": [
+                {"call_id": "ground_call", "observation_ids": ["ground"],
+                 "basis": "visual", "note": "Visible ground; size approximate"},
+                {"call_id": "barrier_call", "observation_ids": ["barrier_seen"],
+                 "basis": "visual", "note": "Visible barrier; size approximate"},
+            ],
+        }
+        transport = ScriptedTransport(completion("obs-track", OBSERVER_MODEL, observed),
+                                      completion("plan-track", PLANNER_MODEL, plan))
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        result = await GenerationService(provider, config(), plan_version="2.0").generate(request())
+        self.assertEqual(result.plan.scene_id, "test_track")
+        self.assertEqual(result.plan.calls[1].tool, "create_box_obstacle")
+        self.assertFalse(any(call.tool == "place_predefined_agv" for call in result.plan.calls))
+        self.assertEqual(result.plan.call_evidence[1].observation_ids, ("barrier_seen",))
+
+    async def test_v2_unknown_region_cannot_be_visual_ground_evidence(self) -> None:
+        observed = observation()
+        observed["entities"].append({"id": "occluded_floor", "kind": "unknown",
+                                     "description": "floor behind shelf not seen", "confidence": 0.9})
+        plan = demo_warehouse_tool_plan().to_dict()
+        plan["plan_version"] = "2.0"
+        plan["calls"] = [item for item in plan["calls"] if item["tool"] == "create_floor"]
+        plan["call_evidence"] = [{"call_id": plan["calls"][0]["call_id"],
+                                  "observation_ids": ["occluded_floor"], "basis": "visual",
+                                  "note": "Claims unseen floor is visible"}]
+        transport = ScriptedTransport(completion("obs-unknown", OBSERVER_MODEL, observed),
+                                      completion("plan-unknown", PLANNER_MODEL, plan))
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        with self.assertRaisesRegex(InvalidProviderResponseError, "unknown region"):
+            await GenerationService(provider, config(), plan_version="2.0").generate(request())
+
+    async def test_v2_visual_basis_without_observation_id_fails(self) -> None:
+        plan = demo_warehouse_tool_plan().to_dict()
+        plan["plan_version"] = "2.0"
+        plan["calls"] = [item for item in plan["calls"] if item["tool"] == "create_floor"]
+        plan["call_evidence"] = [{"call_id": plan["calls"][0]["call_id"],
+                                  "observation_ids": [], "basis": "visual",
+                                  "note": "Claimed image observation without ID"}]
+        transport = ScriptedTransport(completion("obs-no-id", OBSERVER_MODEL, observation()),
+                                      completion("plan-no-id", PLANNER_MODEL, plan))
+        provider = NebiusChatCompletionsPipelineProvider(
+            transport, observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        with self.assertRaisesRegex(InvalidProviderResponseError, "requires an observed entity"):
+            await GenerationService(provider, config(), plan_version="2.0").generate(request())
+
+    def test_v2_catalog_and_observer_are_site_generic(self) -> None:
+        provider = NebiusChatCompletionsPipelineProvider(
+            ScriptedTransport(), observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL,
+            site_plan_version="2.0",
+        )
+        observer = provider.build_observer_body(request())
+        planner = provider.build_planner_body(request(), ObservationArtifact.from_mapping(observation()))
+        kinds = observer["response_format"]["json_schema"]["schema"]["properties"]["entities"]["items"]["properties"]["kind"]["enum"]
+        tools = [item["properties"]["tool"]["const"] for item in
+                 planner["response_format"]["json_schema"]["schema"]["properties"]["calls"]["items"]["anyOf"]]
+        self.assertIn("robot_candidate", kinds)
+        self.assertIn("free_space", kinds)
+        self.assertIn("unknown", kinds)
+        self.assertIn("create_box_obstacle", tools)
+        self.assertIn("call_evidence", planner["response_format"]["json_schema"]["schema"]["required"])
+        self.assertIn("not proof of the predefined drive profile", planner["messages"][0]["content"])
+
     async def test_two_stage_pipeline_is_image_first_and_returns_validated_plan(self) -> None:
         transport = ScriptedTransport(
             completion("obs-1", OBSERVER_MODEL, observation()),
@@ -280,15 +427,17 @@ class NebiusPipelineTests(unittest.IsolatedAsyncioTestCase):
         observer_body = provider.build_observer_body(request())
         schema = observer_body["response_format"]["json_schema"]["schema"]
         properties = schema["properties"]
-        self.assertEqual(properties["entities"]["maxItems"], 24)
-        self.assertEqual(properties["relations"]["maxItems"], 32)
-        self.assertEqual(properties["dimensions"]["maxItems"], 24)
-        self.assertEqual(properties["ambiguities"]["maxItems"], 12)
+        for name in ('entities','relations','dimensions','ambiguities'):
+            self.assertNotIn('maxItems',properties[name])
+        from twinpulse_provider.nebius_pipeline import MAX_RESPONSE_BYTES
+        self.assertEqual(MAX_RESPONSE_BYTES,2*1024*1024)
         self.assertIn("group repeated rack bays", observer_body["messages"][0]["content"])
         planner_body = provider.build_planner_body(
             request(), ObservationArtifact.from_mapping(observation()),
         )
         self.assertIn("at most 14 ordered tool calls", planner_body["messages"][0]["content"])
+        self.assertIn(current_controller_route_prompt(), planner_body["messages"][0]["content"])
+        self.assertIn("more than 0.2 and no more than 10", current_controller_route_prompt())
         self.assertIn("call_id values must also be unique", planner_body["messages"][0]["content"])
         self.assertIn("Fill every required call slot exactly once", planner_body["messages"][0]["content"])
         self.assertIn("deterministically move it", planner_body["messages"][0]["content"])

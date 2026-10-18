@@ -1,0 +1,63 @@
+diff --git a/turtlebot3_node/include/turtlebot3_node/turtlebot3.hpp b/turtlebot3_node/include/turtlebot3_node/turtlebot3.hpp
+--- a/turtlebot3_node/include/turtlebot3_node/turtlebot3.hpp
++++ b/turtlebot3_node/include/turtlebot3_node/turtlebot3.hpp
+@@ -46,5 +46,6 @@
+ #include "turtlebot3_node/sensors/sensors.hpp"
+ #include "turtlebot3_node/twist_subscriber.hpp"
++#include "twinpulse_robot_safety/ros_guard.hpp"
+ 
+ namespace robotis
+ {
+@@ -70,7 +71,8 @@ public:
+   } Motors;
+ 
+   explicit TurtleBot3(const std::string & usb_port);
+-  virtual ~TurtleBot3() {}
++  virtual ~TurtleBot3() { stop_motion(); }
++  void stop_motion() { if (motion_guard_) motion_guard_->stop(); }
+ 
+   Wheels * get_wheels();
+   Motors * get_motors();
+@@ -96,6 +98,7 @@ private:
+   Motors motors_;
+ 
+   std::shared_ptr<DynamixelSDKWrapper> dxl_sdk_wrapper_;
++  std::unique_ptr<twinpulse_robot_safety::RosGuard> motion_guard_;
+ 
+   std::list<sensors::Sensors *> sensors_;
+   std::map<std::string, devices::Devices *> devices_;
+diff --git a/turtlebot3_node/src/turtlebot3.cpp b/turtlebot3_node/src/turtlebot3.cpp
+--- a/turtlebot3_node/src/turtlebot3.cpp
++++ b/turtlebot3_node/src/turtlebot3.cpp
+@@ -29,6 +29,8 @@ TurtleBot3::TurtleBot3(const std::string & usb_port)
+   node_handle_ = std::shared_ptr<::rclcpp::Node>(this, [](::rclcpp::Node *) {});
+ 
+   init_dynamixel_sdk_wrapper(usb_port);
++  motion_guard_ = std::make_unique<twinpulse_robot_safety::RosGuard>(
++    node_handle_, dxl_sdk_wrapper_);
+   check_device_status();
+ 
+   add_motors();
+@@ -223,9 +225,9 @@ void TurtleBot3::run()
+   RCLCPP_INFO(this->get_logger(), "Run!");
+ 
+   publish_timer(std::chrono::milliseconds(50));
+-  heartbeat_timer(std::chrono::milliseconds(100));
++  // RosGuard owns output AND heartbeat; never start the independent upstream timer.
+ 
+   parameter_event_callback();
+-  cmd_vel_callback();
++  // Only stamped guarded_cmd_vel is subscribed; upstream raw input stays disconnected.
+ }
+ 
+diff --git a/turtlebot3_node/src/node_main.cpp b/turtlebot3_node/src/node_main.cpp
+--- a/turtlebot3_node/src/node_main.cpp
++++ b/turtlebot3_node/src/node_main.cpp
+@@ -64,6 +64,7 @@ int main(int argc, char * argv[])
+   executor.add_node(turtlebot3);
+   executor.add_node(diff_drive_controller);
+   executor.spin();
++  turtlebot3->stop_motion();
+ 
+   rclcpp::shutdown();
+ 

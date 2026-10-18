@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
+cmake_minimum_required(VERSION 3.16)
+project(twinpulse_bounded_stop_probe LANGUAGES CXX)
+enable_testing()
+add_executable(battery_policy_test battery_policy_test.cpp)
+target_compile_features(battery_policy_test PRIVATE cxx_std_17)
+target_compile_options(battery_policy_test PRIVATE -Wall -Wextra -Werror -pedantic)
+add_test(NAME battery_policy COMMAND battery_policy_test)
+option(BUILD_ROS_PROBE "Build ROS test controller (does not run it)" OFF)
+if(NOT BUILD_ROS_PROBE)
+  return()
+endif()
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(turtlebot3_msgs REQUIRED)
+add_executable(stop_probe probe.cpp)
+add_executable(stop_probe_fake probe.cpp)
+target_compile_definitions(stop_probe_fake PRIVATE TP_FAKE=1)
+target_include_directories(stop_probe_fake BEFORE PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fake_include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+foreach(t stop_probe stop_probe_fake)
+  target_compile_features(${t} PRIVATE cxx_std_17)
+  target_compile_options(${t} PRIVATE -Wall -Wextra -Werror -pedantic)
+  ament_target_dependencies(${t} rclcpp geometry_msgs std_msgs std_srvs turtlebot3_msgs)
+endforeach()

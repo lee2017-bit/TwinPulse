@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Compare a generated scene-tool plan with the M2-D floor-plan ground truth."""
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ PROVIDER_SRC = REPO_ROOT / "packages" / "twinpulse_provider" / "src"
 for source in (CORE_SRC, PROVIDER_SRC):
     sys.path.insert(0, str(source))
 
-from twinpulse_core import SceneToolPlan  # noqa: E402
+from twinpulse_core import SceneToolPlan, evaluate_m2d_score  # noqa: E402
 from twinpulse_provider import (  # noqa: E402
     MeasurementConstraint,
     MeasurementConstraintError,
@@ -42,6 +45,8 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--provider-report", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--a4-output", type=Path,
+                        help="Optional separate A4 axis report; no change to legacy score")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -183,6 +188,10 @@ def main() -> int:
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.a4_output is not None:
+        a4_report = evaluate_m2d_score(result, manifest)
+        args.a4_output.parent.mkdir(parents=True, exist_ok=True)
+        args.a4_output.write_text(json.dumps(a4_report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report={args.output}")
     print(f"status={result['status']} checks={passed_count}/{len(checks)}")
     return 0 if result["status"] == "PASS" else 1

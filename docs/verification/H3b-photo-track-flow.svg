@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="350" viewBox="0 0 1120 350">
+  <rect width="1120" height="350" fill="#101722"/>
+  <text x="42" y="53" fill="#f0f5fb" font-family="Arial,sans-serif" font-size="27" font-weight="700">H3b · Same physical test site</text>
+  <text x="42" y="82" fill="#a7b6c9" font-family="Arial,sans-serif" font-size="16">User decision confirmed · actual photo and measurements still pending</text>
+  <g font-family="Arial,sans-serif" font-size="17">
+    <rect x="42" y="119" width="235" height="134" rx="13" fill="#1d2d42" stroke="#5b85b6"/>
+    <text x="61" y="153" fill="#dcefff" font-weight="700">Actual site photo</text>
+    <text x="61" y="182" fill="#f3c16e">PENDING</text>
+    <text x="61" y="208" fill="#a7b6c9" font-size="14">Input digest + image hash</text>
+    <text x="61" y="232" fill="#a7b6c9" font-size="14">Same-site confirmation</text>
+    <path d="M289 186h41" stroke="#739bc7" stroke-width="3"/><path d="m330 186-10-7v14z" fill="#739bc7"/>
+    <rect x="344" y="119" width="291" height="134" rx="13" fill="#1d2d42" stroke="#5b85b6"/>
+    <text x="363" y="153" fill="#dcefff" font-weight="700">On-site measurement</text>
+    <text x="363" y="182" fill="#f3c16e">PENDING</text>
+    <text x="363" y="208" fill="#a7b6c9" font-size="14">X/Y spans · metres · uncertainty</text>
+    <text x="363" y="232" fill="#a7b6c9" font-size="14">Origin and +X floor markers</text>
+    <path d="M647 186h41" stroke="#739bc7" stroke-width="3"/><path d="m688 186-10-7v14z" fill="#739bc7"/>
+    <rect x="702" y="119" width="376" height="134" rx="13" fill="#163b39" stroke="#55b7a6"/>
+    <text x="721" y="153" fill="#ddfff5" font-weight="700">Versioned manifest</text>
+    <text x="721" y="182" fill="#75dec4">CONTRACT + SYNTHETIC TESTS PASS</text>
+    <text x="721" y="208" fill="#bbd8d0" font-size="14">Missing evidence stays visible</text>
+    <text x="721" y="232" fill="#bbd8d0" font-size="14">No Build / scan / Run permission</text>
+  </g>
+  <rect x="42" y="284" width="1036" height="40" rx="9" fill="#2c2635"/>
+  <text x="60" y="310" fill="#e9d9fb" font-family="Arial,sans-serif" font-size="16">Next gate: capture real photo + measure site → review binding → later H4 scan alignment</text>
+</svg>

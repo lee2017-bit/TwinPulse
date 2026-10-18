@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 from __future__ import annotations
 
 import json
@@ -82,6 +85,18 @@ class S2cProviderSettingsTests(unittest.TestCase):
         self, store: JsonProviderSettingsStore, credential: _Credential,
         workflow: _WorkflowStatus | None = None,
     ) -> LocalApiServer:
+        if workflow is not None:
+            # The current chat API needs the project identity/path even for this
+            # settings-only status double; no generation/robot method is invoked.
+            workflow._broker = CommandBroker()
+            workflow._application = types.SimpleNamespace(diagnostics=None)
+            workflow.conversation_path = store.path.parent/'settings-test.conversation.json'
+            workflow.inspection_room = lambda *a: None
+            workflow.inspection_source_token = lambda *a: None
+            workflow.inspection_scene = lambda *a: None
+            # Status-only double: allow the constructor to install admission;
+            # this test never calls admission, dispatches or confirms a scene.
+            workflow.scene_edit_transaction = types.SimpleNamespace(admission=None)
         return LocalApiServer(
             CommandBroker(),
             product_bootstrap_secret="p" * 40,

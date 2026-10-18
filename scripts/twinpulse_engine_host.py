@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Owned Isaac Sim host for the R6 local product launcher."""
 
 from __future__ import annotations
@@ -30,17 +33,66 @@ def _arguments() -> argparse.Namespace:
 
 
 ARGS = _arguments()
+APP = None
 
-from isaacsim import SimulationApp  # noqa: E402
+
+def _mission_visual_marker(stage):
+    # No scene may have been built when generation/registration fails. Do not
+    # replace that primary cause with an unrelated shutdown-report exception.
+    if stage is None:
+        return None
+    prim=stage.GetPrimAtPath('/World/TwinPulse/Presentation/AutomaticMission')
+    return prim.GetCustomData() if prim else None
 
 
-APP = SimulationApp({
-    "headless": ARGS.headless,
-    "renderer": "RaytracedLighting",
-    "disable_viewport_updates": False,
-    "width": 960,
-    "height": 640,
-})
+def _room_display_marker(stage):
+    """Bounded actual USD evidence; catalog visuals do not establish photo fidelity."""
+    if stage is None:
+        return None
+    prim=stage.GetPrimAtPath('/World/TwinPulse/Presentation/RoomModels')
+    if not prim:
+        return None
+    from pxr import Usd, UsdGeom, UsdPhysics
+    members=list(Usd.PrimRange(prim))
+    groups=[p for p in prim.GetChildren() if p.GetName().startswith('Item_')]
+    return dict(catalog_version=prim.GetCustomDataByKey('catalogVersion'),
+        scene_revision=prim.GetCustomDataByKey('sceneRevision'),
+        appearance_status=prim.GetCustomDataByKey('appearanceStatus'),
+        motion_authorized=prim.GetCustomDataByKey('motionAuthorized'),
+        groups=len(groups),kinds=sorted({p.GetCustomDataByKey('catalogKind') for p in groups}),
+        mesh_count=sum(p.IsA(UsdGeom.Mesh) for p in members),
+        physics_schema_count=sum(p.HasAPI(api) for p in members
+            for api in (UsdPhysics.CollisionAPI,UsdPhysics.RigidBodyAPI,UsdPhysics.ArticulationRootAPI)))
+
+
+def _startup_profile() -> dict[str, object]:
+    """Bounded native-package provenance without importing another dependency.
+
+    A failing Isaac import may leave NumPy/SciPy only partially initialized;
+    the observed module, not a separately imported candidate, is what matters.
+    Paths are classified and fingerprinted, never copied into the report.
+    """
+    packages: dict[str, object] = {}
+    for name in ("numpy", "scipy"):
+        module = sys.modules.get(name)
+        origin = getattr(module, "__file__", None) if module is not None else None
+        version = getattr(module, "__version__", None) if module is not None else None
+        if not isinstance(origin, str) or not origin:
+            packages[name] = {"loaded": module is not None, "origin_class": "unknown",
+                              "origin_sha256": None, "version": None}
+            continue
+        normalized = origin.replace("\\", "/").lower()
+        origin_class = ("extension_prebundle" if "pip_prebundle" in normalized
+                        else "isaac_kit_python" if "/kit/python/" in normalized
+                        else "other_local_path")
+        packages[name] = {
+            "loaded": True, "origin_class": origin_class,
+            "origin_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            "version": version[:48] if isinstance(version, str) else None,
+        }
+    return {"schema_version": "engine-startup-profile-1.0",
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "packages": packages}
 
 
 def _write_json_atomic(path: Path, value: object) -> None:
@@ -50,18 +102,62 @@ def _write_json_atomic(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
-async def _capture(path: Path) -> bool:
+def _start_simulation_app() -> bool:
+    """Record failures that occur before main() can write its result file."""
+    global APP
+    phase = "isaac_import"
+    try:
+        from isaacsim import SimulationApp
+
+        phase = "simulation_app_init"
+        APP = SimulationApp({
+            "headless": ARGS.headless,
+            "renderer": "RaytracedLighting",
+            "disable_viewport_updates": False,
+            "width": 960,
+            "height": 640,
+        })
+        return True
+    except Exception as error:
+        result = {
+            "schema_version": "1.0", "status": "FAIL",
+            "startup_phase": phase, "error_type": type(error).__name__,
+            "startup_profile": _startup_profile(),
+            "error": f"{type(error).__name__}: {error}",
+            "traceback": traceback.format_exc(),
+            "capture": {"status": "NOT_RUN"}, "trajectory": [],
+            "observed_states": [], "max_movement_m": 0.0,
+        }
+        try:
+            _write_json_atomic(ARGS.result_file, result)
+        except OSError:
+            pass
+        print(f"TWINPULSE_ENGINE_STARTUP_FAILED phase={phase} type={type(error).__name__}", flush=True)
+        return False
+
+
+async def _capture(path: Path, *, ready_timeout_s: float = 15.0) -> bool:
     import omni.kit.app
     from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
 
     viewport = get_active_viewport()
-    if viewport is None:
-        return False
+    deadline=time.monotonic()+ready_timeout_s
+    while viewport is None:
+        if time.monotonic()>=deadline:return False
+        # The first scene ACK can precede the active viewport. Yield Kit
+        # updates within the existing attempt deadline, not two instant retries.
+        # CaptureAttempt still checks stage/revision and cancels timed-out work.
+        await omni.kit.app.get_app().next_update_async()
+        viewport=get_active_viewport()
     viewport.resolution = (960, 640)
     await omni.kit.app.get_app().next_update_async()
     capture = capture_viewport_to_file(viewport, file_path=str(path), is_hdr=False)
     await capture.wait_for_result(completion_frames=5)
-    return path.is_file() and path.stat().st_size > 0
+    # GPU completion is not async file-writer completion. CaptureAttempt
+    # separately waits for nonempty, stable, decoded bytes within 15 seconds
+    # and rejects identity changes. Returning False here prematurely labels
+    # a late writer as viewport_missing and consumes both retries instantly.
+    return True
 
 
 def _active_camera_name() -> str:
@@ -124,7 +220,12 @@ def main() -> int:
     start_position: tuple[float, float, float] | None = None
     observed_states: set[str] = set()
     trajectory: list[dict[str, object]] = []
+    preview_observations = []
+    last_preview_identity = None
+    mission_visual_observations = []
+    last_mission_visual_identity = None
     maximum_movement = 0.0
+    live_viewport = None
 
     def capture_report(current: dict[str, object], *, final_path: Path | None = None) -> dict[str, object]:
         report = dict(current)
@@ -229,9 +330,23 @@ def main() -> int:
         deadline = time.monotonic() + 90.0
         while not bridge.connected and time.monotonic() < deadline:
             APP.update()
+            if bridge.last_error == 'BridgeProtocolError: Backend rejected request: bootstrap_rejected':
+                break  # This worker already terminated; do not idle for another90s.
             time.sleep(0.02)
         if not bridge.connected:
+            # Never persist bootstrap/authentication material or raw error text.
+            import re
+            last_error=bridge.last_error or ''
+            error_type=last_error.split(':',1)[0]
+            status=re.search(r'HTTP Error (\d{3})\b',last_error)
+            result['bridge_diagnostic']={'connected':False,
+                'error_type':error_type if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,60}',error_type) else 'UNCLASSIFIED',
+                'http_status':int(status.group(1)) if status else None,
+                'error_code':'bootstrap_rejected' if last_error == 'BridgeProtocolError: Backend rejected request: bootstrap_rejected' else None}
             raise TimeoutError("Managed bridge did not authenticate before timeout")
+        from twinpulse_live_viewport import LiveViewportPublisher
+        live_viewport = LiveViewportPublisher(bridge)
+        live_viewport.start()
 
         started = time.monotonic()
         while True:
@@ -254,10 +369,52 @@ def main() -> int:
                 raise TimeoutError("Owned Isaac host exceeded its finite maximum runtime")
             APP.update()
             frame += 1
+            try:
+                live_viewport.update(bridge.adapter.snapshot())
+            except Exception as error:
+                live_viewport.last_error = "viewport_update_" + type(error).__name__[:60]
             state = extension.runtime.state
             observed_states.add(state)
+            # Inspect only owned visual content. It is not robot telemetry and
+            # must never make the timeline play or create a driven articulation.
+            from pxr import Usd, UsdGeom, UsdPhysics
+            preview_stage = extension.runtime.compiler.stage
+            active = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/AutomaticMission') if preview_stage else None
+            if active:
+                active_identity = (active.GetCustomDataByKey('displayStatus'),
+                                   str(UsdGeom.Imageable(active).ComputeVisibility()))
+                if active_identity != last_mission_visual_identity and len(mission_visual_observations) < 64:
+                    last_mission_visual_identity = active_identity
+                    mission_visual_observations.append({'status':active_identity[0], 'visibility':active_identity[1],
+                        'cursor':getattr(bridge.adapter,'_mission_visual_cursor',None)})
+            preview = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/BurgerPhotoPreview') if preview_stage else None
+            if preview and preview.GetCustomDataByKey('simulationPlanId'):
+                visible = str(UsdGeom.Imageable(preview).ComputeVisibility())
+                identity = (preview.GetCustomDataByKey('simulationPlanId'), visible,
+                            bool(extension.runtime.site_plan), state)
+                if identity != last_preview_identity and len(preview_observations) < 32:
+                    last_preview_identity = identity
+                    prims = list(Usd.PrimRange(preview, Usd.TraverseInstanceProxies()))
+                    preview_observations.append({
+                        'plan_id':identity[0], 'visibility':visible, 'runtime_state':state,
+                        'timeline_playing':extension.runtime._timeline.is_playing(),
+                        'site_plan_present':identity[2],
+                        'sim_burger_present':bool(preview_stage.GetPrimAtPath('/World/TwinPulse/SimBurger')),
+                        'position_m':list(preview.GetAttribute('xformOp:translate').Get()),
+                        'scene_revision':preview.GetCustomDataByKey('sceneRevision'),
+                        'motion_authorized':preview.GetCustomDataByKey('motionAuthorized'),
+                        'mesh_count':sum(p.IsA(UsdGeom.Mesh) for p in prims),
+                        'physics_schema_count':sum(p.HasAPI(UsdPhysics.CollisionAPI) or p.HasAPI(UsdPhysics.RigidBodyAPI)
+                            or p.HasAPI(UsdPhysics.ArticulationRootAPI) for p in prims),
+                    })
             try:
-                position: tuple[float, float, float] | None = extension.runtime.robot_position()
+                # v2 room builds intentionally have no driven Robot prim. The
+                # visual Burger is not physical position telemetry. Still fail
+                # loudly for a missing robot in a compiled v1 driven scene.
+                position: tuple[float, float, float] | None = (
+                    extension.runtime.robot_position()
+                    if extension.runtime.compiler.bundle is not None or extension.runtime.site_plan is not None else None
+                )
             except RuntimeError as error:
                 if str(error) != "Scene has not been compiled":
                     raise
@@ -310,11 +467,24 @@ def main() -> int:
             "max_movement_m": maximum_movement,
             "observed_states": sorted(observed_states),
             "trajectory": trajectory,
+            "simulation_preview_observations": preview_observations,
+            "mission_visual_observations": mission_visual_observations,
+            "mission_visual_status": bridge.mission_visual_status,
+            "mission_visual_error": bridge.mission_visual_error,
+            "mission_visual_cursor": getattr(bridge.adapter,'_mission_visual_cursor',None),
+            "mission_visual_marker": _mission_visual_marker(extension.runtime.compiler.stage),
+            "room_display_marker": _room_display_marker(extension.runtime.compiler.stage),
         })
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         result["traceback"] = traceback.format_exc()
     finally:
+        if live_viewport is not None:
+            live_viewport.stop()
+            result['live_viewport'] = {'sent':live_viewport.sent,'dropped':live_viewport.dropped,
+                                       'capture_timeouts':live_viewport.capture_timeouts,
+                                       'capture_recoveries':live_viewport.capture_recoveries,
+                                       'error':live_viewport.last_error or live_viewport.transport_error}
         try:
             if manager is not None:
                 extension = None
@@ -330,4 +500,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main() if _start_simulation_app() else 1)

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Timeout, cancellation, stale-response rejection, and core validation."""
 
 from __future__ import annotations
@@ -9,11 +12,13 @@ from typing import Any, Mapping, Protocol
 
 from twinpulse_core import (
     SceneToolPlan,
+    SiteToolPlan,
     SceneToolRegistry,
     SpecBundle,
     LOCAL_ROUTE_RESOLVER_REVISION,
     resolve_current_controller_route,
     scene_tool_plan_from_json,
+    site_tool_plan_from_json,
 )
 
 from .contracts import CancellationToken, GenerationRequest, ProviderConfig, ProviderResponse
@@ -40,34 +45,77 @@ class GenerationResult:
     provider_provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class SiteGenerationResult:
+    """Typed v2 result for the single App owner."""
+
+    request_id: str
+    provider_name: str
+    model_id: str
+    image_count: int
+    plan: SiteToolPlan
+    provider_provenance: Mapping[str, Any] = field(default_factory=dict)
+
+
 class GenerationService:
-    def __init__(self, provider: Provider, config: ProviderConfig) -> None:
+    def __init__(self, provider: Provider, config: ProviderConfig, *, plan_version: str = "1.0") -> None:
+        if plan_version not in {"1.0", "2.0", "2.1", "2.2"}:
+            raise ValueError("generation plan version is unsupported")
         self._provider = provider
         self._config = config
+        self._plan_version = plan_version
         self._active_id: str | None = None
         self._active_token: CancellationToken | None = None
+        self._last_diagnostic: dict[str, Any] = {}
 
     def cancel_active(self) -> None:
         if self._active_token is not None:
             self._active_token.cancel()
         self._active_id = None
 
-    async def generate(self, request: GenerationRequest) -> GenerationResult:
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        if self._active_id is None:
+            return dict(self._last_diagnostic)
+        return getattr(self._provider, 'diagnostic_for', lambda _: {})(self._active_id)
+
+    async def generate(self, request: GenerationRequest) -> GenerationResult | SiteGenerationResult:
         self.cancel_active()
+        if self._plan_version in {"2.0", "2.1", "2.2"} and request.measurement_constraints:
+            # This contract is not wired for v2 yet; reject before any paid provider call.
+            raise ValueError("site plan 2.0 does not yet support trusted measurement constraints")
         token = CancellationToken()
+        token.diagnostics = request.diagnostics
         self._active_id = request.request_id
         self._active_token = token
+        self._last_diagnostic = {}
+        terminal_diagnostic = None
         try:
             try:
                 response = await asyncio.wait_for(
-                    self._provider.generate(request, token, self._config), timeout=self._config.timeout_s
+                    self._provider.generate(request, token, self._config),
+                    timeout=getattr(self._provider, 'total_timeout_s', self._config.timeout_s)
                 )
             except TimeoutError as error:
                 token.cancel()
-                raise ProviderTimeoutError(f"provider exceeded {self._config.timeout_s:g}s timeout") from error
+                diagnostic = getattr(self._provider, "diagnostic_for", lambda _: {})(request.request_id)
+                stage = diagnostic.get("stage")
+                detail = f" during {stage} stage (model={diagnostic.get('model_id')})" if stage else ""
+                timeout = getattr(self._provider, 'total_timeout_s', self._config.timeout_s)
+                failure = ProviderTimeoutError(f"provider exceeded {timeout:g}s timeout{detail}")
+                failure.diagnostics = {**diagnostic, "status": "outcome_unknown", "timeout_s": timeout,
+                                       "remote_outcome": "unknown", "automatic_retry": False}
+                terminal_diagnostic = failure.diagnostics
+                raise failure from error
             if token.is_cancelled or self._active_id != request.request_id or response.request_id != request.request_id:
                 raise GenerationCancelledError("late or cancelled response was ignored")
             try:
+                if self._plan_version in {"2.0", "2.1", "2.2"}:
+                    site_plan = site_tool_plan_from_json(json.dumps(response.payload))
+                    return SiteGenerationResult(
+                        request_id=request.request_id, provider_name=response.provider_name,
+                        model_id=response.model_id, image_count=len(request.images), plan=site_plan,
+                        provider_provenance=dict(response.provenance),
+                    )
                 plan = scene_tool_plan_from_json(json.dumps(response.payload))
                 plan, route_resolved = resolve_current_controller_route(plan)
                 measurement_result = validate_measurement_constraints(plan, request.measurement_constraints)
@@ -96,5 +144,6 @@ class GenerationService:
                 raise InvalidProviderResponseError(f"Scene plan rejected: {detail}") from error
         finally:
             if self._active_id == request.request_id:
+                self._last_diagnostic = terminal_diagnostic or getattr(self._provider, 'diagnostic_for', lambda _: {})(request.request_id)
                 self._active_id = None
                 self._active_token = None

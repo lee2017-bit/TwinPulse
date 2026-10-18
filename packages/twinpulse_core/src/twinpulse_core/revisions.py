@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Credential-free, versioned input and validation identities for R1.
 
 Hashes identify bytes/contracts, not authorship. Every load/build must revalidate.
@@ -22,7 +25,12 @@ VALIDATOR_VERSION = "r1.1"
 _NON_SECRET_SETTING_KEYS = frozenset({
     "base_url", "model_id", "reasoning_effort", "image_detail", "request_schema",
     "tool_catalog_revision", "adapter_kind", "provider_profile", "endpoint_path",
-    "observer_model_id", "fallback_observer_model_id",
+    "observer_model_id", "observer_base_url", "fallback_observer_model_id", "site_plan_version",
+    "planner_reasoning_effort",
+    "observer_max_output_tokens", "planner_max_output_tokens",
+    "generation_timeout_s",
+    "observer_thinking_mode", "planner_thinking_mode", "generation_policy_sha256", "model_catalog_sha256",
+    "harness_composer_revision", "observer_harness_sha256", "planner_harness_sha256",
 })
 
 
@@ -30,6 +38,18 @@ def canonical_sha256(value: Any) -> str:
     """Digest strict JSON, sorted object keys and ordered arrays, without rounding."""
 
     def normalize(item: Any) -> Any:
+        # Exact JSON builtins dominate sensor grids. Avoid thousands of ABC
+        # checks, retaining the same bytes and the Mapping-first fallback for
+        # custom/subclass objects. No rounding or cached digest is introduced.
+        kind=type(item)
+        if kind in (str,int,bool) or item is None:return item
+        if kind is float:
+            if not math.isfinite(item):raise ValueError("canonical numbers must be finite")
+            return 0.0 if item == 0 else item
+        if kind in (list,tuple):return [normalize(part) for part in item]
+        if kind is dict:
+            if not all(isinstance(key,str) for key in item):raise ValueError("canonical object keys must be strings")
+            return {key:normalize(item[key]) for key in sorted(item)}
         if isinstance(item, Mapping):
             if not all(isinstance(key, str) for key in item):
                 raise ValueError("canonical object keys must be strings")
@@ -116,10 +136,12 @@ class InputRevision:
         if not settings or any(key not in _NON_SECRET_SETTING_KEYS or not isinstance(value, str)
                                for key, value in settings.items()):
             raise ValueError("generation settings must be non-secret strings")
-        if "base_url" in settings:
-            url = urlsplit(settings["base_url"])
-            if url.username or url.password or url.query or url.fragment:
-                raise ValueError("generation Base URL must not contain credentials or query data")
+        if 'model_catalog_sha256' in settings:_hex_digest(settings['model_catalog_sha256'],'model catalog')
+        for address in ('base_url','observer_base_url'):
+            if address in settings:
+                url = urlsplit(settings[address])
+                if url.username or url.password or url.query or url.fragment:
+                    raise ValueError("generation Base URL must not contain credentials or query data")
         identity = {
             "schema_version": INPUT_REVISION_VERSION,
             "prompt": prompt,
@@ -157,6 +179,7 @@ class InputRevision:
         if any(key not in _NON_SECRET_SETTING_KEYS or not isinstance(item, str)
                for key, item in settings.items()):
             raise ValueError("input revision settings contain unsupported or secret data")
+        if 'model_catalog_sha256' in settings:_hex_digest(settings['model_catalog_sha256'],'model catalog')
         for image in images:
             if not isinstance(image, Mapping) or set(image) not in (
                 {"name", "sha256"}, {"name", "sha256", "mime_type"},
@@ -208,19 +231,58 @@ class InputArtifactStore:
         ):
             raise ValueError("input artifact bytes do not match revision")
         folder = self.root / revision.digest
+        if self.root.is_symlink() or folder.is_symlink():
+            raise ValueError("input artifact link is forbidden")
         folder.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink() or folder.is_symlink():
+            raise ValueError("input artifact link is forbidden")
         manifest = folder / "revision.json"
+        if manifest.is_symlink():
+            raise ValueError("input artifact link is forbidden")
         data = json.dumps(revision.to_dict(), ensure_ascii=False, sort_keys=True, indent=2)
         if manifest.exists():
             if InputRevision.from_dict(json.loads(manifest.read_text(encoding="utf-8"))) != revision:
                 raise ValueError("immutable input artifact revision changed")
-        else:
-            manifest.write_text(data, encoding="utf-8")
+        for ref in revision.images:
+            image = folder / f"{ref['sha256']}.bin"
+            if image.is_symlink() or (image.exists() and hashlib.sha256(image.read_bytes()).hexdigest() != ref["sha256"]):
+                raise ValueError("immutable input artifact image changed")
         for ref, (_, content) in zip(revision.images, images, strict=True):
             image = folder / f"{ref['sha256']}.bin"
             if image.exists():
-                if hashlib.sha256(image.read_bytes()).hexdigest() != ref["sha256"]:
-                    raise ValueError("immutable input artifact image changed")
+                continue
             else:
                 image.write_bytes(content)
+        if not manifest.exists():
+            manifest.write_text(data, encoding="utf-8")
         return folder
+
+    def load(self, expected: InputRevision) -> tuple[InputRevision, tuple[tuple[str, str, bytes], ...]]:
+        """Read only the immutable archive named by a validated saved revision.
+
+        No caller-supplied path is accepted. A missing or altered archive cannot
+        silently become a newly selected input or inherit review approval.
+        """
+        checked = InputRevision.from_dict(expected.to_dict())
+        folder = self.root / checked.digest
+        manifest = folder / "revision.json"
+        if self.root.is_symlink() or folder.is_symlink() or manifest.is_symlink():
+            raise ValueError("input artifact link is forbidden")
+        if manifest.stat().st_size > 256 * 1024:
+            raise ValueError("input artifact manifest is too large")
+        stored = InputRevision.from_dict(json.loads(manifest.read_text(encoding="utf-8")))
+        if stored != checked:
+            raise ValueError("input artifact revision changed")
+        images: list[tuple[str, str, bytes]] = []
+        for ref in stored.images:
+            image = folder / f"{ref['sha256']}.bin"
+            if image.is_symlink() or image.stat().st_size > 10 * 1024 * 1024:
+                raise ValueError("input artifact image is linked or too large")
+            content = image.read_bytes()
+            if not content or len(content) > 10 * 1024 * 1024 or hashlib.sha256(content).hexdigest() != ref["sha256"]:
+                raise ValueError("input artifact image changed")
+            mime = ref.get("mime_type")
+            if mime is None:
+                raise ValueError("input artifact image MIME is unavailable")
+            images.append((ref["name"], mime, content))
+        return stored, tuple(images)

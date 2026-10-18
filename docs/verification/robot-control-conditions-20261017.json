@@ -1,0 +1,24 @@
+{
+  "schema_version": "robot-control-condition-audit-1.0",
+  "scope": "Selected major conditions, not an exhaustive count of all safeguards",
+  "physical_runtime": "NOT_DEPLOYED_OR_TESTED_THIS_TURN",
+  "conditions": [
+    {"id":"operator_input", "limit_ms":250, "trigger":"absolute source input expires", "result":"persistent manual zero/PAUSED; retain worker; bounded legacy remains terminal"},
+    {"id":"pc_input_shape", "limit_ms":300, "trigger":"future deadline admission", "result":"reject; no time restamping"},
+    {"id":"pc_watch", "limit_ms":500, "trigger":"manual input/watch absence", "result":"nonterminal Stop; no direction from watch"},
+    {"id":"robot_local_guard", "limit_ms":400, "trigger":"final output stops refreshing", "result":"local guard inhibits output; not extended by UI heartbeat"},
+    {"id":"nonce", "pc_max_age_ms":150, "trigger":"stale/revoked challenge", "result":"no output; nonce/sequence generations preserved"},
+    {"id":"arm", "trigger":"enable finishes", "result":"discard pre-arm direction and require current input; no old deadline terminal close"},
+    {"id":"max_speed", "manual_linear_m_s":0.05, "manual_angular_rad_s":0.30, "trigger":"out-of-profile request", "result":"reject"},
+    {"id":"board_observation", "max_age_ms":200, "minimum_voltage_v":11.1, "trigger":"board/guard sample stale, low voltage, ownership conflict", "result":"fault/stop; retained existing policy"},
+    {"id":"rpc", "limit_ms":500, "trigger":"arm/stop service timeout", "result":"fault, not silently successful"},
+    {"id":"release", "idle_ms":200, "trigger":"ordinary manual release", "result":"zero/OFF readback, connection retained; unnecessary rearm remains hardware-unverified"},
+    {"id":"robot_journal", "soft_pending_ms":200, "capacity":256, "max_bytes":67108864, "trigger":"persistent manual disk delay", "result":"BUFFERING; actual queue/write/byte failure still terminal in existing robot worker"},
+    {"id":"protocol_outbox", "pending_ms":200, "capacity":128, "max_bytes":1048576, "trigger":"persistent manual protocol delay", "result":"BUFFERING without nonce restamping; actual queue/byte/write failure remains terminal; separate physical telemetry transport not implemented"},
+    {"id":"fleet_recorder", "capacity":1024, "max_bytes":33554432, "event_limit":20000, "trigger":"SIM recording capacity/error", "result":"motion pause and INCOMPLETE; connection retained"},
+    {"id":"sim_telemetry", "max_age_ms":1000, "engine_transport_gap_ms":500, "trigger":"stale engine report/exchange", "result":"DEGRADED, old direction not replayed"},
+    {"id":"sim_clearance", "body_radius_m":0.105, "clearance_m":0.10, "step_margin_m":0.0025, "trigger":"approaching actual USD AABB obstacle", "result":"OBSTACLE_STOP; new escape input allowed; not physical stopping qualification"},
+    {"id":"physical_protected_control", "trigger":"native scan/TF/footprint/progress path not qualified/integrated", "result":"capability=false with precise blockers; never SIM substitute or fake live battery"}
+  ],
+  "not_adopted": ["500ms operator lease proposal", "automatic restart on recovered network", "historical battery as live", "unknown beams as free space"]
+}

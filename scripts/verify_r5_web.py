@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Finite R5 browser -> authenticated backend -> actual Isaac acceptance."""
 
 from __future__ import annotations

@@ -1,0 +1,58 @@
+{
+  "date": "2026-09-26",
+  "scope": "Authorized sensor-only start/read/stop; no OpenCR or wheel commands",
+  "identification": "COIN-D4 (LDS-03 family)",
+  "first": {
+    "baud": 230400,
+    "limit_seconds": 10,
+    "bytes_received": 130371,
+    "start_sent": true,
+    "elapsed_seconds": 10,
+    "stop_sent": true,
+    "post_stop_bytes_0_5s": 6266,
+    "control_lines_restored": true,
+    "termios_restored": true,
+    "sample_prefix_hex": "a55a500702000000000000aafafaa55a1400e40201434f494e2d443400000000000000000000000002a55a0000800181aa55"
+  },
+  "packet_validation": {
+    "good": 103,
+    "bad": 0,
+    "frames": [
+      {
+        "samples": 25,
+        "startAngle": 352.046875,
+        "endAngle": 16.34375
+      },
+      {
+        "samples": 25,
+        "startAngle": 17.34375,
+        "endAngle": 42.296875
+      },
+      {
+        "samples": 25,
+        "startAngle": 43.3125,
+        "endAngle": 67.84375
+      }
+    ],
+    "sampleBytes": 8192,
+    "ascii": ".ZP............Z.....COIN-D4..............Z......U"
+  },
+  "stop_only": {
+    "baud": 230400,
+    "limit_seconds": 10,
+    "bytes_received": 0,
+    "start_sent": false,
+    "elapsed_seconds": 0,
+    "stop_sent": true,
+    "post_stop_bytes_0_5s": 0,
+    "control_lines_restored": true,
+    "termios_restored": true,
+    "sample_hex": ""
+  },
+  "limits": [
+    "No ROS LaserScan or odometry test",
+    "No calibration or full field-of-view acceptance",
+    "Installed Pi driver unchanged; later PC-only parser patch/synthetic tests passed (see coin-d4-offline-parser-review-20260926.md); no on-device acceptance",
+    "Operator first reported continued rotation after software stop, then later reported stopped. OS shutdown/adapter removal and current power state are not established. Software physical-stop acceptance remains unresolved."
+  ]
+}

@@ -1,15 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "twinpulse-app"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "UI-independent TwinPulse application service and local persistence"
+authors = [{name = "Jaewon Lee / 이재원"}]
+license = {file = "LICENSE"}
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 requires-python = ">=3.12"
 dependencies = ["twinpulse-core==0.1.0", "twinpulse-provider==0.1.0", "Pillow>=12.2,<13"]
 
+[project.urls]
+Repository = "https://github.com/lee2017-bit/TwinPulse"
+
 [tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]

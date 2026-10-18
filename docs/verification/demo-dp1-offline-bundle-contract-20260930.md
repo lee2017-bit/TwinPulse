@@ -1,0 +1,9 @@
+# DP1 saved evidence bundle contract — 2026-09-30
+
+Scope: robot OFF; no SSH, serial, sensor, motor, deployment, or physical test. This is a local integrity gate, not proof that the robot captured the required messages.
+
+The offline inspector previously trusted the export receipt's `files` list as the entire required set. A forged `COMPLETE` control or stationary receipt containing only a valid `report.json` could therefore be returned as `COMPLETE`. The inspector now selects the fixed required set from the receipt schema and mode, rejects omitted/extra entries and duplicate JSON keys, bounds files before hashing, rechecks the saved report ID/mode and raw/footer bindings, and returns `contract_errors` with `INCOMPLETE`. Malformed receipts produce structured CLI error output. The CLI ROS decode branch no longer overwrites an incomplete contract verdict with `COMPLETE`.
+
+Local regression using the existing `.venv`: `tests.integration.test_robot_evidence_export` 10/10 PASS; `test_robot_preparation`, `test_robot_evidence_recovery`, and `test_raw_ros_record` 21/21 PASS. The new tests cover a missing required raw bundle, missing stationary raw bundle, a rehashed report whose session ID no longer matches the receipt, and ambiguous duplicate receipt keys; they also assert that inspector allowlists match both exporters. The first system-Python run lacked Pillow; the first sandboxed `.venv` run could not create nested temporary fixture files, so the regressions were rerun with explicitly approved filesystem access. Neither failure was treated as a product PASS.
+
+Limits: this does not authenticate a malicious party able to rewrite *all* files and receipts, prove what the robot actually emitted, decode real CDR on this PC, validate odom/scan/TF meaning, establish room coordinates, or make DP1/DP2–DP5 complete. Existing physical mission lock, historical stop failures, and `pc_demo_ready=false` remain unchanged.

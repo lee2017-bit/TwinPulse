@@ -1,0 +1,6 @@
+diff --git a/src/coin_d4_base_handler.cpp b/src/coin_d4_base_handler.cpp
+--- a/src/coin_d4_base_handler.cpp
++++ b/src/coin_d4_base_handler.cpp
+@@ -344 +344 @@
+-          scan_msg->header.stamp = rclcpp::Time(contract.stamp_ns).to_msg();
++          scan_msg->header.stamp = rclcpp::Time(contract.stamp_ns);

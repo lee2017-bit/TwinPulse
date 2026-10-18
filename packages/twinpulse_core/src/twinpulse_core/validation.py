@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Validation boundary between untrusted inputs and Isaac scene mutation."""
 
 from __future__ import annotations
@@ -16,6 +19,20 @@ _DRIVE_TYPES = {"differential"}
 _SUPPORTED_VERSION = "1.0"
 _SUPPORTED_ROBOT_VERSION = "2.0"
 _SUPPORT_WHEEL_KINDS = {"ball_caster"}
+CURRENT_ROUTE_MIN_X_EXCLUSIVE_M = 0.2
+CURRENT_ROUTE_MAX_X_M = 10.0
+CURRENT_ROUTE_MAX_Y_DELTA_M = 1e-3
+CURRENT_ROUTE_MAX_Z_DELTA_M = 1e-6
+
+
+def current_controller_route_prompt() -> str:
+    """Planner wording derived from the same narrow route gate used at build."""
+    return (
+        "Keep the AGV start and goal on z=0 with equal y coordinates, put the goal "
+        f"more than {CURRENT_ROUTE_MIN_X_EXCLUSIVE_M:g} and no more than "
+        f"{CURRENT_ROUTE_MAX_X_M:g} meters farther along positive X, keep that route "
+        "inside an axis-aligned floor, and leave the full AGV-width corridor free of colliders. "
+    )
 
 
 class SpecValidationError(ValueError):
@@ -24,12 +41,13 @@ class SpecValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ValidationLimits:
-    max_objects: int = 64
+    max_objects: int | None = 64
     max_dimension_m: float = 50.0
     max_abs_position_m: float = 100.0
     max_mass_kg: float = 10_000.0
     allowed_asset_ids: frozenset[str] = frozenset()
     allowed_operations: frozenset[str] = frozenset({"navigate"})
+    max_scene_bytes: int = 2 * 1024 * 1024
 
 
 def _fail(message: str) -> None:
@@ -136,6 +154,33 @@ def _task(task: TaskSpec, robot: RobotProfile, limits: ValidationLimits) -> None
         _fail("position_tolerance_m must be finite and positive")
 
 
+def validate_scene_geometry(scene_id: str, objects: tuple[SceneObject, ...],
+                            limits: ValidationLimits | None = None) -> None:
+    """Validate geometry without requiring a robot or mission (H2 scene-only gate)."""
+
+    limits = limits or ValidationLimits()
+    _id(scene_id, "scene id")
+    if limits.max_objects is not None and len(objects) > limits.max_objects:
+        _fail(f"scene object count exceeds configured limit of {limits.max_objects}")
+    object_ids = [item.id for item in objects]
+    if len(object_ids) != len(set(object_ids)):
+        _fail("scene object ids must be unique")
+    from dataclasses import asdict
+    import json
+    size = 0
+    for item in objects:
+        _scene_object(item, limits)
+        size += len(json.dumps(asdict(item), ensure_ascii=False, allow_nan=False).encode('utf-8'))+2
+        if size > limits.max_scene_bytes:
+            _fail('scene geometry exceeds serialized memory budget')
+
+
+def validate_robot_profile(robot: RobotProfile, limits: ValidationLimits | None = None) -> None:
+    """Validate a vetted profile independently of a scene or task."""
+
+    _robot(robot, limits or ValidationLimits())
+
+
 def validate_bundle(bundle: SpecBundle, limits: ValidationLimits | None = None) -> SpecBundle:
     """Validate the complete cross-referenced bundle and return it unchanged."""
 
@@ -143,19 +188,12 @@ def validate_bundle(bundle: SpecBundle, limits: ValidationLimits | None = None) 
     if bundle.bundle_version != _SUPPORTED_VERSION:
         _fail(f"unsupported bundle_version: {bundle.bundle_version}")
     scene = bundle.scene
-    _id(scene.id, "scene id")
     if scene.schema_version != _SUPPORTED_VERSION:
         _fail(f"unsupported scene schema_version: {scene.schema_version}")
     if scene.units != "m" or scene.up_axis != "Z":
         _fail("only SI meters with Z-up are supported")
-    if len(scene.objects) > limits.max_objects:
-        _fail(f"scene object count exceeds configured limit of {limits.max_objects}")
-    object_ids = [item.id for item in scene.objects]
-    if len(object_ids) != len(set(object_ids)):
-        _fail("scene object ids must be unique")
-    for item in scene.objects:
-        _scene_object(item, limits)
-    _robot(bundle.robot, limits)
+    validate_scene_geometry(scene.id, scene.objects, limits)
+    validate_robot_profile(bundle.robot, limits)
     if scene.robot_profile_id != bundle.robot.id:
         _fail("scene references an unknown robot profile")
     if set(bundle.allowed_operations) - limits.allowed_operations:
@@ -175,9 +213,10 @@ def validate_current_controller_route(bundle: SpecBundle) -> SpecBundle:
     gx, gy, gz = goal.position_m
     if any(abs(value) > 1e-6 for value in start.rotation_rpy_deg):
         _fail("current controller requires an unrotated robot start pose")
-    if abs(sz) > 1e-6 or abs(gz) > 1e-6 or abs(gy - sy) > 1e-3 or gx <= sx + 0.2:
+    if (abs(sz) > CURRENT_ROUTE_MAX_Z_DELTA_M or abs(gz) > CURRENT_ROUTE_MAX_Z_DELTA_M
+            or abs(gy - sy) > CURRENT_ROUTE_MAX_Y_DELTA_M or gx <= sx + CURRENT_ROUTE_MIN_X_EXCLUSIVE_M):
         _fail("current controller requires a positive-X straight route on the floor")
-    if gx - sx > 10.0:
+    if gx - sx > CURRENT_ROUTE_MAX_X_M:
         _fail("current controller route exceeds the 10 m prototype limit")
 
     floors = [item for item in bundle.scene.objects if item.kind == "floor" and item.shape.type == "box"]

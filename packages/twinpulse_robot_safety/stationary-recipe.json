@@ -1,0 +1,18 @@
+{
+  "schema_version": "robot-launch-recipe-1.0",
+  "status": "IMPLEMENTED_OFFLINE_LIVE_VALIDATION_PENDING",
+  "executable_artifact": "bin/turtlebot3_ros",
+  "params_artifact": "burger.yaml",
+  "ros_setup": "/opt/ros/humble/setup.bash",
+  "ros_domain_id": 86,
+  "ros_localhost_only": true,
+  "namespace": "/tp_guard_stationary",
+  "maximum_stationary_seconds": 45,
+  "startup_guard": "disarmed",
+  "required_lease": "state/opencr.lock held for entire process lifetime and final idle READ",
+  "required_preconditions": ["release verified", "new boot/run identity", "serial idle", "fresh torque off and zero commands/velocity"],
+  "motor_enable_allowed": false,
+  "motion_authorized": false,
+  "entrypoint": "runtime.py stationary (explicit; never invoked by prepare)",
+  "remaining": "Deploy and qualify leased stationary lifecycle on ARM64; no motion runner is enabled."
+}

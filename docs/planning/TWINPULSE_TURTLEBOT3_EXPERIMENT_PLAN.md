@@ -1,10 +1,11 @@
 # TurtleBot3 Burger RPi4 4 GB — 단계별 실험·TwinPulse 연결 계획
 
-- 작성일: 2026-09-22 / 상태: **계획만 작성, 실물 미점검·미구동**.
+- 최초 작성일: 2026-09-22 / 아래 초기 미점검 문구는 당시 이력. **2026-09-27 현재** 연결·공식펌웨어·무구동ROS·제한전진/정지 관찰 완료, command_timeout실측/안정조건FAIL, LiDAR/TF/일반주행/최종통합은 미완료. [현재상태](TWINPULSE_ROBOT_CURRENT_STATE.md)와 [종합재검토 D0~D6](TWINPULSE_ROBOT_REVIEW_2026-09-27.md)를 우선한다. 다음은 D1 영구패키지·소유권·통합준비이며 B단계를 처음부터 재실행하지 않는다.
 - 확정 사실: 사용자가 TurtleBot3 Burger, Raspberry Pi 4 4 GB 구성을 구매해 받았다.
 - 미확인: 조립 상태, LDS 모델, OpenCR/펌웨어, microSD OS/ROS, 배터리, 실제 치수/센서 frame, 네트워크.
 - 연결: [종합 검토](TWINPULSE_ASTRA_REVIEW_2026-09-22.md), [Sol 공통 규칙·체크포인트](TWINPULSE_SOL_EXECUTION_PLAN_2026-09-22.md).
 - 승인 경계: 이 문서를 읽었다고 SD 초기화·OS/ROS/펌웨어 설치·방화벽 변경·모터 명령을 실행하지 않는다. 사용자가 선택한 B 단계 및 해당 실물 시험만 수행한다.
+- 2026-09-25 보완: TurtleBot3 Burger는 사진 속 AGV의 scan·주행 역할을 대신하는 **데모 로봇**이다. 산업 AGV와 동일한 동역학 모델이라는 뜻은 아니다. [통합 데모계획 H3~H7](TWINPULSE_HACKATHON_DEMO_MASTER_PLAN_2026-09-25.md)의 사진-실험장 관계·영어 UX·동일 지도 경로 비교를 함께 따른다. 물리적으로 정확한 축소 복제 여부는 별도 결정이다.
 
 ## 1. 실험 목적과 범위
 
@@ -235,6 +236,8 @@ approved_operator / approval_time / expiry / rollback_artifact_id
 **PASS:** approved artifact와 실제 run이 연결되고, 성공/안전 정지/실패를 모두 정확히 기록. 실험 구간 바깥 배포 가능성을 주장하지 않음.
 
 ## B9 — 통제 비교와 해커톤 증거
+
+**2026-09-25 비교 설계 정정:** 아래 A/B는 지도 보정 효과(E1)의 기준이다. 경로 개선(E2)은 **동일 보정 map/scene, 같은 TurtleBot profile/start/goal/tolerance/안전 상한**에서 합리적인 기존 route/config와 후보를 비교한다. 실물 재현(E3)은 같은 실제 트랙에서 승인된 두 설정으로 따로 측정한다. `time saved`는 비교 가능한 반복 결과의 중앙값과 성공률/실패수를 함께 제시하고, simulation 수치와 real 수치를 분리한다. 튜닝에 쓴 데이터와 최종 평가 run은 분리하며 개선이 없으면 그대로 기록한다. 상세 필드·측정법은 통합계획 H7을 따른다.
 
 **1차 비교:** A=사진/도면 기반 개략 scene, B=동일 scene의 scan 보정본. robot/Nav2 parameter/mission/바닥/시작 위치는 고정한다. A를 일부러 잘못된 controller로 설정하지 않는다.
 

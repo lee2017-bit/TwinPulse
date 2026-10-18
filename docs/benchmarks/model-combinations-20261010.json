@@ -1,0 +1,2008 @@
+{
+  "schema_version": "public-combination-benchmark-1.3",
+  "dataset": "private-bedroom-01",
+  "distinct_source_photos": 1,
+  "independent_generalization_test": false,
+  "status": "COMPLETED_BOUNDED_PILOT_WITH_FAILURES",
+  "cohorts": [
+    {
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "a5ea92ba5557f18c49b175ed6affc4b26592148aac093e4287391eab4e999999",
+      "samples": 1,
+      "full_journey_pass": 0,
+      "full_journey_fail": 1,
+      "full_journey_success_rate": 0.0,
+      "wilson_95_interval": [
+        0,
+        0.793451
+      ],
+      "generation_ready": 0,
+      "requests": 7,
+      "actual_sim_pass": 0,
+      "repair_requests": 2,
+      "repair_kinds": {
+        "geometry": 2
+      },
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 0,
+      "request_latency_median_s": 3.672,
+      "request_latency": {
+        "samples": 7,
+        "p50_s": 3.672,
+        "p95_s": 9.9874
+      },
+      "end_to_end_wall": {
+        "samples": 0,
+        "p50_s": null,
+        "p95_s": null
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 43.109,
+        "p95_s": 43.109
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 42.014,
+        "p95_s": 42.014
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 10.531,
+            "p95_s": 10.531
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 3.187,
+            "p95_s": 3.187
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 3,
+          "response_complete": 3,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 3,
+            "p50_s": 3.671,
+            "p95_s": 3.6719
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 8.6485,
+            "p95_s": 8.71195
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1
+      },
+      "saved_item_counts": [
+        0
+      ],
+      "observed_entity_counts": [
+        22
+      ],
+      "declared_inventory_item_counts": [
+        18
+      ],
+      "arrival_error_m": [],
+      "root_failure_codes": [
+        [
+          "PHOTO_LAYOUT_REGION_FULL"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.01320738",
+        "openai": "0"
+      }
+    },
+    {
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "code_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "samples": 1,
+      "full_journey_pass": 1,
+      "full_journey_fail": 0,
+      "full_journey_success_rate": 1.0,
+      "wilson_95_interval": [
+        0.206549,
+        1
+      ],
+      "generation_ready": 1,
+      "requests": 5,
+      "actual_sim_pass": 1,
+      "repair_requests": 0,
+      "repair_kinds": {},
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 1,
+      "request_latency_median_s": 4.109,
+      "request_latency": {
+        "samples": 5,
+        "p50_s": 4.109,
+        "p95_s": 9.947
+      },
+      "end_to_end_wall": {
+        "samples": 1,
+        "p50_s": 92.469,
+        "p95_s": 92.469
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 31.781,
+        "p95_s": 31.781
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 29.859,
+        "p95_s": 29.859
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 10.422,
+            "p95_s": 10.422
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 3.984,
+            "p95_s": 3.984
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 3.703,
+            "p95_s": 4.0684
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 8.047,
+            "p95_s": 8.047
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "uncertain": 1
+      },
+      "saved_item_counts": [
+        10
+      ],
+      "observed_entity_counts": [
+        14
+      ],
+      "declared_inventory_item_counts": [
+        10
+      ],
+      "arrival_error_m": [
+        0.03944436137301294
+      ],
+      "root_failure_codes": [],
+      "failure_origins": [],
+      "failure_codes": [],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0",
+        "openai": "0.0051363"
+      }
+    },
+    {
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "samples": 1,
+      "full_journey_pass": 0,
+      "full_journey_fail": 1,
+      "full_journey_success_rate": 0.0,
+      "wilson_95_interval": [
+        0,
+        0.793451
+      ],
+      "generation_ready": 0,
+      "requests": 8,
+      "actual_sim_pass": 0,
+      "repair_requests": 2,
+      "repair_kinds": {
+        "geometry": 1
+      },
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 0,
+      "request_latency_median_s": 4.031000000000001,
+      "request_latency": {
+        "samples": 8,
+        "p50_s": 4.031,
+        "p95_s": 12.3177
+      },
+      "end_to_end_wall": {
+        "samples": 1,
+        "p50_s": 91.313,
+        "p95_s": 91.313
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 55.391,
+        "p95_s": 55.391
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 53.218,
+        "p95_s": 53.218
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 9.735,
+            "p95_s": 9.735
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 3.703,
+            "p95_s": 3.703
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 4,
+          "response_complete": 4,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 4,
+            "p50_s": 3.8435,
+            "p95_s": 4.1514
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 12.039,
+            "p95_s": 12.8751
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1
+      },
+      "saved_item_counts": [
+        0
+      ],
+      "observed_entity_counts": [
+        24
+      ],
+      "declared_inventory_item_counts": [
+        21
+      ],
+      "arrival_error_m": [],
+      "root_failure_codes": [
+        [
+          "PHOTO_LAYOUT_REGION_FULL"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.01457598",
+        "openai": "0"
+      }
+    },
+    {
+      "observer_model": "Qwen/Qwen3.8-27B",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "samples": 1,
+      "full_journey_pass": 1,
+      "full_journey_fail": 0,
+      "full_journey_success_rate": 1.0,
+      "wilson_95_interval": [
+        0.206549,
+        1
+      ],
+      "generation_ready": 1,
+      "requests": 6,
+      "actual_sim_pass": 1,
+      "repair_requests": 0,
+      "repair_kinds": {},
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 1,
+      "request_latency_median_s": 6.094,
+      "request_latency": {
+        "samples": 6,
+        "p50_s": 6.094,
+        "p95_s": 13.08175
+      },
+      "end_to_end_wall": {
+        "samples": 1,
+        "p50_s": 103.047,
+        "p95_s": 103.047
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 44.875,
+        "p95_s": 44.875
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 43.11,
+        "p95_s": 43.11
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 8.875,
+            "p95_s": 8.875
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 4.735,
+            "p95_s": 4.735
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 3,
+          "response_complete": 3,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 3,
+            "p50_s": 3.844,
+            "p95_s": 7.0921
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 14.484,
+            "p95_s": 14.484
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "uncertain": 1
+      },
+      "saved_item_counts": [
+        17
+      ],
+      "observed_entity_counts": [
+        20
+      ],
+      "declared_inventory_item_counts": [
+        17
+      ],
+      "arrival_error_m": [
+        0.039454981680020325
+      ],
+      "root_failure_codes": [],
+      "failure_origins": [],
+      "failure_codes": [],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.03498558",
+        "openai": "0"
+      }
+    },
+    {
+      "observer_model": "gpt-6-luna",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "samples": 1,
+      "full_journey_pass": 1,
+      "full_journey_fail": 0,
+      "full_journey_success_rate": 1.0,
+      "wilson_95_interval": [
+        0.206549,
+        1
+      ],
+      "generation_ready": 1,
+      "requests": 5,
+      "actual_sim_pass": 1,
+      "repair_requests": 0,
+      "repair_kinds": {},
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 1,
+      "request_latency_median_s": 3.187,
+      "request_latency": {
+        "samples": 5,
+        "p50_s": 3.187,
+        "p95_s": 7.6618
+      },
+      "end_to_end_wall": {
+        "samples": 1,
+        "p50_s": 82.187,
+        "p95_s": 82.187
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 24.344,
+        "p95_s": 24.344
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 23.264,
+        "p95_s": 23.264
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 7.671,
+            "p95_s": 7.671
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 2.375,
+            "p95_s": 2.375
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 2.7965,
+            "p95_s": 3.14795
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 7.625,
+            "p95_s": 7.625
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "uncertain": 1
+      },
+      "saved_item_counts": [
+        9
+      ],
+      "observed_entity_counts": [
+        13
+      ],
+      "declared_inventory_item_counts": [
+        9
+      ],
+      "arrival_error_m": [
+        0.039691125636618745
+      ],
+      "root_failure_codes": [],
+      "failure_origins": [],
+      "failure_codes": [],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.00153696",
+        "openai": "0.0019746"
+      }
+    },
+    {
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "gpt-6-luna",
+      "code_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "samples": 1,
+      "full_journey_pass": 0,
+      "full_journey_fail": 1,
+      "full_journey_success_rate": 0.0,
+      "wilson_95_interval": [
+        0,
+        0.793451
+      ],
+      "generation_ready": 0,
+      "requests": 7,
+      "actual_sim_pass": 0,
+      "repair_requests": 1,
+      "repair_kinds": {},
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 0,
+      "request_latency_median_s": 4.203,
+      "request_latency": {
+        "samples": 7,
+        "p50_s": 4.203,
+        "p95_s": 9.2878
+      },
+      "end_to_end_wall": {
+        "samples": 0,
+        "p50_s": null,
+        "p95_s": null
+      },
+      "generation_active": {
+        "samples": 1,
+        "p50_s": 33.406,
+        "p95_s": 33.406
+      },
+      "model_http_wall": {
+        "samples": 1,
+        "p50_s": 32.765,
+        "p95_s": 32.765
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 11.032,
+            "p95_s": 11.032
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 5.218,
+            "p95_s": 5.218
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 4,
+          "response_complete": 4,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 4,
+            "p50_s": 4.1405,
+            "p95_s": 4.72065
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 1,
+          "response_complete": 0,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 0.703,
+            "p95_s": 0.703
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1
+      },
+      "saved_item_counts": [
+        0
+      ],
+      "observed_entity_counts": [
+        23
+      ],
+      "declared_inventory_item_counts": [
+        20
+      ],
+      "arrival_error_m": [],
+      "root_failure_codes": [
+        [
+          "PHOTO_SUPPORT_PLACEMENT_UNAVAILABLE"
+        ]
+      ],
+      "failure_origins": [
+        "app_provider_contract_or_transport"
+      ],
+      "failure_codes": [
+        "ProviderRequestError"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0.115"
+      },
+      "estimated_usd": {
+        "nebius": "0.0047202",
+        "openai": "0.0065383"
+      }
+    },
+    {
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "gpt-6-luna",
+      "code_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "samples": 2,
+      "full_journey_pass": 1,
+      "full_journey_fail": 1,
+      "full_journey_success_rate": 0.5,
+      "wilson_95_interval": [
+        0.094531,
+        0.905469
+      ],
+      "generation_ready": 1,
+      "requests": 19,
+      "actual_sim_pass": 1,
+      "repair_requests": 6,
+      "repair_kinds": {
+        "geometry": 5,
+        "quality": 1
+      },
+      "natural_repair_recovery_samples": 1,
+      "render_reviews": 2,
+      "request_latency_median_s": 4.609,
+      "request_latency": {
+        "samples": 19,
+        "p50_s": 4.609,
+        "p95_s": 13.9392
+      },
+      "end_to_end_wall": {
+        "samples": 2,
+        "p50_s": 117.188,
+        "p95_s": 145.0034
+      },
+      "generation_active": {
+        "samples": 2,
+        "p50_s": 66.328,
+        "p95_s": 83.5126
+      },
+      "model_http_wall": {
+        "samples": 2,
+        "p50_s": 64.1255,
+        "p95_s": 80.31245
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 11.875,
+            "p95_s": 13.1548
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 4.953,
+            "p95_s": 5.3328
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 7,
+          "response_complete": 7,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 7,
+            "p50_s": 4.063,
+            "p95_s": 5.7796
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 6,
+          "response_complete": 6,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 6,
+            "p50_s": 4.203,
+            "p95_s": 10.7615
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 16.18,
+            "p95_s": 19.3651
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1,
+        "uncertain": 1
+      },
+      "saved_item_counts": [
+        20,
+        0
+      ],
+      "observed_entity_counts": [
+        23,
+        21
+      ],
+      "declared_inventory_item_counts": [
+        20,
+        18
+      ],
+      "arrival_error_m": [
+        0.03972316249815444
+      ],
+      "root_failure_codes": [
+        [
+          "PHOTO_LAYOUT_REGION_FULL"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.0345588",
+        "openai": "0.0367850"
+      }
+    },
+    {
+      "observer_model": "Qwen/Qwen3.8-27B",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "samples": 2,
+      "full_journey_pass": 0,
+      "full_journey_fail": 2,
+      "full_journey_success_rate": 0.0,
+      "wilson_95_interval": [
+        0,
+        0.65762
+      ],
+      "generation_ready": 0,
+      "requests": 14,
+      "actual_sim_pass": 0,
+      "repair_requests": 3,
+      "repair_kinds": {
+        "geometry": 1,
+        "quality": 1
+      },
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 1,
+      "request_latency_median_s": 3.6020000000000003,
+      "request_latency": {
+        "samples": 14,
+        "p50_s": 3.602,
+        "p95_s": 11.10875
+      },
+      "end_to_end_wall": {
+        "samples": 2,
+        "p50_s": 73.164,
+        "p95_s": 78.9087
+      },
+      "generation_active": {
+        "samples": 2,
+        "p50_s": 36.859,
+        "p95_s": 42.4417
+      },
+      "model_http_wall": {
+        "samples": 2,
+        "p50_s": 35.485,
+        "p95_s": 40.5475
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 9.18,
+            "p95_s": 9.2574
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 3.117,
+            "p95_s": 3.1521
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 6,
+          "response_complete": 6,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 6,
+            "p50_s": 3.508,
+            "p95_s": 4.87875
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 3,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 3,
+            "p50_s": 3.75,
+            "p95_s": 3.7923
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 14.531,
+            "p95_s": 14.531
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1,
+        "needs_revision": 1
+      },
+      "saved_item_counts": [
+        0,
+        0
+      ],
+      "observed_entity_counts": [
+        20,
+        20
+      ],
+      "declared_inventory_item_counts": [
+        17,
+        17
+      ],
+      "arrival_error_m": [],
+      "root_failure_codes": [
+        [
+          "PHOTO_OBSERVED_REGION_CONTRADICTION"
+        ],
+        [
+          "RENDER_APPEARANCE_MISMATCH",
+          "RENDER_LAYOUT_MISMATCH",
+          "RENDER_SUPPORT_MISMATCH"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry",
+        "provider_billing"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED",
+        "ProviderRequestError"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0.06771456",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.05308857",
+        "openai": "0"
+      }
+    },
+    {
+      "observer_model": "gpt-6-luna",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "samples": 2,
+      "full_journey_pass": 2,
+      "full_journey_fail": 0,
+      "full_journey_success_rate": 1.0,
+      "wilson_95_interval": [
+        0.34238,
+        1
+      ],
+      "generation_ready": 2,
+      "requests": 11,
+      "actual_sim_pass": 2,
+      "repair_requests": 1,
+      "repair_kinds": {
+        "geometry": 1
+      },
+      "natural_repair_recovery_samples": 1,
+      "render_reviews": 2,
+      "request_latency_median_s": 3.219,
+      "request_latency": {
+        "samples": 11,
+        "p50_s": 3.219,
+        "p95_s": 10.0075
+      },
+      "end_to_end_wall": {
+        "samples": 2,
+        "p50_s": 86.664,
+        "p95_s": 88.5837
+      },
+      "generation_active": {
+        "samples": 2,
+        "p50_s": 29.5395,
+        "p95_s": 32.02125
+      },
+      "model_http_wall": {
+        "samples": 2,
+        "p50_s": 28.0395,
+        "p95_s": 30.22695
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 10.0075,
+            "p95_s": 10.59115
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 2.4765,
+            "p95_s": 2.49765
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 4,
+          "response_complete": 4,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 4,
+            "p50_s": 2.938,
+            "p95_s": 3.75025
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 8.164,
+            "p95_s": 8.6914
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 1,
+          "response_complete": 1,
+          "samples_reached": 1,
+          "request_latency": {
+            "samples": 1,
+            "p50_s": 2.735,
+            "p95_s": 2.735
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "uncertain": 2
+      },
+      "saved_item_counts": [
+        9,
+        10
+      ],
+      "observed_entity_counts": [
+        15,
+        14
+      ],
+      "declared_inventory_item_counts": [
+        9,
+        10
+      ],
+      "arrival_error_m": [
+        0.03982019606731933,
+        0.03962666904356832
+      ],
+      "root_failure_codes": [],
+      "failure_origins": [],
+      "failure_codes": [],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.00440166",
+        "openai": "0.0044132"
+      }
+    },
+    {
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "code_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "samples": 5,
+      "full_journey_pass": 2,
+      "full_journey_fail": 3,
+      "full_journey_success_rate": 0.4,
+      "wilson_95_interval": [
+        0.117621,
+        0.769276
+      ],
+      "generation_ready": 3,
+      "requests": 30,
+      "actual_sim_pass": 2,
+      "repair_requests": 4,
+      "repair_kinds": {
+        "geometry": 1,
+        "quality": 2
+      },
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 6,
+      "request_latency_median_s": 3.8985,
+      "request_latency": {
+        "samples": 30,
+        "p50_s": 3.8985,
+        "p95_s": 11.35455
+      },
+      "end_to_end_wall": {
+        "samples": 5,
+        "p50_s": 90.093,
+        "p95_s": 103.2468
+      },
+      "generation_active": {
+        "samples": 5,
+        "p50_s": 31.187,
+        "p95_s": 57.916
+      },
+      "model_http_wall": {
+        "samples": 5,
+        "p50_s": 29.781,
+        "p95_s": 53.0216
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 5,
+          "response_complete": 5,
+          "samples_reached": 5,
+          "request_latency": {
+            "samples": 5,
+            "p50_s": 10.047,
+            "p95_s": 11.7686
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 5,
+          "response_complete": 5,
+          "samples_reached": 5,
+          "request_latency": {
+            "samples": 5,
+            "p50_s": 3.266,
+            "p95_s": 3.6
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 10,
+          "response_complete": 10,
+          "samples_reached": 5,
+          "request_latency": {
+            "samples": 10,
+            "p50_s": 3.8125,
+            "p95_s": 5.0576
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 4,
+          "response_complete": 4,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 4,
+            "p50_s": 2.523,
+            "p95_s": 3.62535
+          }
+        },
+        "twinpulse_render_review": {
+          "requests": 6,
+          "response_complete": 6,
+          "samples_reached": 4,
+          "request_latency": {
+            "samples": 6,
+            "p50_s": 9.984,
+            "p95_s": 11.96875
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 1,
+        "needs_revision": 1,
+        "uncertain": 3
+      },
+      "saved_item_counts": [
+        0,
+        9,
+        10,
+        12,
+        0
+      ],
+      "observed_entity_counts": [
+        12,
+        14,
+        15,
+        12,
+        12
+      ],
+      "declared_inventory_item_counts": [
+        10,
+        9,
+        10,
+        12,
+        9
+      ],
+      "arrival_error_m": [
+        0.039691274294246646,
+        0.03980600865484121
+      ],
+      "root_failure_codes": [
+        [
+          "ROOM_ITEM_OUTSIDE_FLOOR"
+        ],
+        [
+          "SIM_TARGET_NO_REACHABLE_APPROACH"
+        ],
+        [
+          "RENDER_APPEARANCE_MISMATCH"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry",
+        "simulation_navigation",
+        "semantic_candidate_or_local_geometry"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED",
+        "SIM_TARGET_NO_REACHABLE_APPROACH",
+        "REPAIR_STALLED"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0",
+        "openai": "0.0361874"
+      }
+    },
+    {
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "code_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "samples": 2,
+      "full_journey_pass": 0,
+      "full_journey_fail": 2,
+      "full_journey_success_rate": 0.0,
+      "wilson_95_interval": [
+        0,
+        0.65762
+      ],
+      "generation_ready": 0,
+      "requests": 17,
+      "actual_sim_pass": 0,
+      "repair_requests": 5,
+      "repair_kinds": {
+        "geometry": 3
+      },
+      "natural_repair_recovery_samples": 0,
+      "render_reviews": 0,
+      "request_latency_median_s": 3.688,
+      "request_latency": {
+        "samples": 17,
+        "p50_s": 3.688,
+        "p95_s": 9.3278
+      },
+      "end_to_end_wall": {
+        "samples": 2,
+        "p50_s": 82.0385,
+        "p95_s": 88.38755
+      },
+      "generation_active": {
+        "samples": 2,
+        "p50_s": 45.758,
+        "p95_s": 51.7556
+      },
+      "model_http_wall": {
+        "samples": 2,
+        "p50_s": 43.891,
+        "p95_s": 49.0525
+      },
+      "stages": {
+        "twinpulse_image_observation": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 8.6255,
+            "p95_s": 8.75195
+          }
+        },
+        "twinpulse_semantic_structure": {
+          "requests": 2,
+          "response_complete": 2,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 2,
+            "p50_s": 3.406,
+            "p95_s": 3.5752
+          }
+        },
+        "twinpulse_semantic_batch": {
+          "requests": 8,
+          "response_complete": 8,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 8,
+            "p50_s": 3.617,
+            "p95_s": 3.779
+          }
+        },
+        "twinpulse_semantic_patch": {
+          "requests": 5,
+          "response_complete": 5,
+          "samples_reached": 2,
+          "request_latency": {
+            "samples": 5,
+            "p50_s": 7.25,
+            "p95_s": 9.9842
+          }
+        }
+      },
+      "current_render_verdicts": {
+        "NOT_REACHED": 2
+      },
+      "saved_item_counts": [
+        0,
+        0
+      ],
+      "observed_entity_counts": [
+        23,
+        24
+      ],
+      "declared_inventory_item_counts": [
+        19,
+        21
+      ],
+      "arrival_error_m": [],
+      "root_failure_codes": [
+        [
+          "PHOTO_LAYOUT_REGION_FULL"
+        ],
+        [
+          "PHOTO_LAYOUT_REGION_FULL"
+        ]
+      ],
+      "failure_origins": [
+        "semantic_candidate_or_local_geometry",
+        "semantic_candidate_or_local_geometry"
+      ],
+      "failure_codes": [
+        "REPAIR_STALLED",
+        "REPAIR_STALLED"
+      ],
+      "held_without_usage_usd": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "estimated_usd": {
+        "nebius": "0.02864838",
+        "openai": "0"
+      }
+    }
+  ],
+  "invoice_verified": false,
+  "physical_robot_pass": false,
+  "completed_at": "2026-10-10T11:06:31.298405+00:00",
+  "trials": [
+    {
+      "id": "flash-lightning-1",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "a5ea92ba5557f18c49b175ed6affc4b26592148aac093e4287391eab4e999999",
+      "actual_requests": 7,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_LAYOUT_REGION_FULL"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 43.109,
+      "model_http_wall_s": 42.014,
+      "end_to_end_wall_s": null,
+      "cost_by_provider": {
+        "nebius": "0.01320738",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-2",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 10,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 31.781,
+      "model_http_wall_s": 29.859,
+      "end_to_end_wall_s": 92.469,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0051363"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-lightning-2",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "actual_requests": 8,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_LAYOUT_REGION_FULL"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 55.391,
+      "model_http_wall_s": 53.218,
+      "end_to_end_wall_s": 91.313,
+      "cost_by_provider": {
+        "nebius": "0.01457598",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "qwen-lightning-1",
+      "status": "PASS",
+      "observer_model": "Qwen/Qwen3.8-27B",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "actual_requests": 6,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 17,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 44.875,
+      "model_http_wall_s": 43.11,
+      "end_to_end_wall_s": 103.047,
+      "cost_by_provider": {
+        "nebius": "0.03498558",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-lightning-1",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 9,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 24.344,
+      "model_http_wall_s": 23.264,
+      "end_to_end_wall_s": 82.187,
+      "cost_by_provider": {
+        "nebius": "0.00153696",
+        "openai": "0.0019746"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-luna-1",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "ca8fb4c380d352d7826f2972e3f72edbf9782ae91de665ee9bac3606536e06e0",
+      "actual_requests": 7,
+      "repair_requests": 1,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "ProviderRequestError",
+      "root_failure_codes": [
+        "PHOTO_SUPPORT_PLACEMENT_UNAVAILABLE"
+      ],
+      "failure_origin": "app_provider_contract_or_transport",
+      "rejected_http_statuses": [
+        400
+      ],
+      "actual_sim_full": false,
+      "generation_active_s": 33.406,
+      "model_http_wall_s": 32.765,
+      "end_to_end_wall_s": null,
+      "cost_by_provider": {
+        "nebius": "0.0047202",
+        "openai": "0.0065383"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0.115"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-luna-2",
+      "status": "PASS",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 11,
+      "repair_requests": 3,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 2,
+      "saved_items": 20,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 85.422,
+      "model_http_wall_s": 82.111,
+      "end_to_end_wall_s": 148.094,
+      "cost_by_provider": {
+        "nebius": "0.0291606",
+        "openai": "0.0204317"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "qwen-lightning-2",
+      "status": "FAIL",
+      "observer_model": "Qwen/Qwen3.8-27B",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 7,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_OBSERVED_REGION_CONTRADICTION"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 30.656,
+      "model_http_wall_s": 29.86,
+      "end_to_end_wall_s": 66.781,
+      "cost_by_provider": {
+        "nebius": "0.01750617",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-lightning-2",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 9,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 26.782,
+      "model_http_wall_s": 25.609,
+      "end_to_end_wall_s": 84.531,
+      "cost_by_provider": {
+        "nebius": "0.00160746",
+        "openai": "0.0020673"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-3",
+      "status": "FAIL",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 6,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "ROOM_ITEM_OUTSIDE_FLOOR"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 26.578,
+      "model_http_wall_s": 26.0,
+      "end_to_end_wall_s": 65.281,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0085862"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-lightning-3",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 8,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_LAYOUT_REGION_FULL"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 39.094,
+      "model_http_wall_s": 38.156,
+      "end_to_end_wall_s": 74.984,
+      "cost_by_provider": {
+        "nebius": "0.01293792",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "qwen-lightning-3",
+      "status": "FAIL",
+      "observer_model": "Qwen/Qwen3.8-27B",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 7,
+      "repair_requests": 1,
+      "generation_ready": false,
+      "final_render_status": "needs_revision",
+      "render_reviews": 1,
+      "saved_items": 0,
+      "failure_code": "ProviderRequestError",
+      "root_failure_codes": [
+        "RENDER_APPEARANCE_MISMATCH",
+        "RENDER_LAYOUT_MISMATCH",
+        "RENDER_SUPPORT_MISMATCH"
+      ],
+      "failure_origin": "provider_billing",
+      "rejected_http_statuses": [
+        402
+      ],
+      "actual_sim_full": false,
+      "generation_active_s": 43.062,
+      "model_http_wall_s": 41.11,
+      "end_to_end_wall_s": 79.547,
+      "cost_by_provider": {
+        "nebius": "0.03558240",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0.06771456",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-4",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 9,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 31.187,
+      "model_http_wall_s": 29.781,
+      "end_to_end_wall_s": 88.515,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0048493"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-5",
+      "status": "FAIL",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 10,
+      "failure_code": "SIM_TARGET_NO_REACHABLE_APPROACH",
+      "root_failure_codes": [
+        "SIM_TARGET_NO_REACHABLE_APPROACH"
+      ],
+      "failure_origin": "simulation_navigation",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 34.328,
+      "model_http_wall_s": 32.36,
+      "end_to_end_wall_s": 103.5,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0053997"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-6",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 5,
+      "repair_requests": 0,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 12,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 29.0,
+      "model_http_wall_s": 27.453,
+      "end_to_end_wall_s": 90.093,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0055627"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-luna-7",
+      "status": "FAIL",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 9,
+      "repair_requests": 2,
+      "generation_ready": false,
+      "final_render_status": "needs_revision",
+      "render_reviews": 3,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "RENDER_APPEARANCE_MISMATCH"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 63.813,
+      "model_http_wall_s": 58.187,
+      "end_to_end_wall_s": 102.234,
+      "cost_by_provider": {
+        "nebius": "0",
+        "openai": "0.0117895"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-luna-3",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "gpt-6-luna",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 8,
+      "repair_requests": 3,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_LAYOUT_REGION_FULL"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 47.234,
+      "model_http_wall_s": 46.14,
+      "end_to_end_wall_s": 86.282,
+      "cost_by_provider": {
+        "nebius": "0.0053982",
+        "openai": "0.0163533"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "luna-lightning-3",
+      "status": "PASS",
+      "observer_model": "gpt-6-luna",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 6,
+      "repair_requests": 1,
+      "generation_ready": true,
+      "final_render_status": "uncertain",
+      "render_reviews": 1,
+      "saved_items": 10,
+      "failure_code": null,
+      "root_failure_codes": [],
+      "failure_origin": null,
+      "rejected_http_statuses": [],
+      "actual_sim_full": true,
+      "generation_active_s": 32.297,
+      "model_http_wall_s": 30.47,
+      "end_to_end_wall_s": 88.797,
+      "cost_by_provider": {
+        "nebius": "0.00279420",
+        "openai": "0.0023459"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    },
+    {
+      "id": "flash-lightning-4",
+      "status": "FAIL",
+      "observer_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "planner_model": "nvidia/Nemotron-3_5-Lightning",
+      "inference_source_sha256": "64289a04a6160139c4dc481f53edc04ef3cf2248a82d84e3120d78cdcf545c24",
+      "actual_requests": 9,
+      "repair_requests": 3,
+      "generation_ready": false,
+      "final_render_status": "NOT_REACHED",
+      "render_reviews": 0,
+      "saved_items": 0,
+      "failure_code": "REPAIR_STALLED",
+      "root_failure_codes": [
+        "PHOTO_LAYOUT_REGION_FULL"
+      ],
+      "failure_origin": "semantic_candidate_or_local_geometry",
+      "rejected_http_statuses": [],
+      "actual_sim_full": false,
+      "generation_active_s": 52.422,
+      "model_http_wall_s": 49.626,
+      "end_to_end_wall_s": 89.093,
+      "cost_by_provider": {
+        "nebius": "0.01571046",
+        "openai": "0"
+      },
+      "held_by_provider": {
+        "nebius": "0",
+        "openai": "0"
+      },
+      "unknown_requests": 0,
+      "pending_locks": 0
+    }
+  ],
+  "cpu_profile_anomalous_trials": 2,
+  "preflight_failures": 1,
+  "blocked_providers": [],
+  "deferred_cases": [],
+  "source_images_included": false,
+  "room_geometry_included": false,
+  "raw_responses_included": false,
+  "historical_payment_blocked_providers": [
+    "nebius"
+  ],
+  "reactivation": {
+    "provider": "nebius",
+    "explicit_user_resume": true,
+    "fresh_trials": 3,
+    "historical_rejections_preserved": true,
+    "original_deadline_preserved": true,
+    "invoice_verified": false
+  },
+  "combined_exposure_usd_including_separate_probe": {
+    "nebius": "0.25743975",
+    "openai": "0.2060348"
+  },
+  "separate_probe_estimated_usd": "0.00000168"
+}

@@ -1,0 +1,82 @@
+diff --git a/include/coin_d4_driver/lidar_sdk/lidar_data_processor.hpp b/include/coin_d4_driver/lidar_sdk/lidar_data_processor.hpp
+index f129209..d4eadb8 100644
+--- a/include/coin_d4_driver/lidar_sdk/lidar_data_processor.hpp
++++ b/include/coin_d4_driver/lidar_sdk/lidar_data_processor.hpp
+@@ -56,7 +56,7 @@ private:
+ 
+   uint8_t * global_recv_buffer_;
+ 
+-  SerialPort * serial_port_;
++  SerialPort * serial_port_ = nullptr;
+   LidarTimeStatus * lidar_time_;
+   LidarHardwareStatus * lidar_status_;
+   LidarGeneralInfo lidar_general_info_;
+diff --git a/src/lidar_sdk/lidar_data_processor.cpp b/src/lidar_sdk/lidar_data_processor.cpp
+index 5ec50ef..255e4a5 100644
+--- a/src/lidar_sdk/lidar_data_processor.cpp
++++ b/src/lidar_sdk/lidar_data_processor.cpp
+@@ -242,15 +242,20 @@ result_t LidarDataProcessor::wait_speed_right(uint8_t /*cmd*/, uint64_t timeout)
+ 
+ result_t LidarDataProcessor::wait_package(node_info * node, uint32_t timeout)
+ {
+-  if (!serial_port_) {
++  const int expected_sample_bytes = lidar_general_info_.intensity_data_flag ? 3 : 2;
++  if (!serial_port_ || !node || package_sample_bytes_ != expected_sample_bytes) {
+     return RESULT_FAIL;
+   }
+   int recv_pos = 0;
+   uint32_t start_ts = get_milliseconds();
+   uint32_t wait_time = 0;
++  // Address the complete object representation, not its two-byte header member.
+   uint8_t * package_buffer = lidar_general_info_.intensity_data_flag ?
+-    reinterpret_cast<uint8_t *>(&scan_packages_.package.package_Head) :
+-    reinterpret_cast<uint8_t *>(&scan_packages_.packages.package_Head);
++    reinterpret_cast<uint8_t *>(&scan_packages_.package) :
++    reinterpret_cast<uint8_t *>(&scan_packages_.packages);
++  const size_t sample_capacity = lidar_general_info_.intensity_data_flag ?
++    sizeof(scan_packages_.package.packageSampleDistance) :
++    sizeof(scan_packages_.packages.packageSampleDistance);
+   uint8_t package_sample_num = 0;
+   int32_t angle_correct_for_distance = 0;
+   int package_recv_pos = 0;
+@@ -272,7 +277,11 @@ result_t LidarDataProcessor::wait_package(node_info * node, uint32_t timeout)
+         recv_size = remain_size;
+       }
+ 
+-      serial_port_->read_data(global_recv_buffer_, recv_size);
++      const result_t bytes_read = serial_port_->read_data(global_recv_buffer_, recv_size);
++      if (bytes_read <= 0 || static_cast<size_t>(bytes_read) > recv_size) {
++        return RESULT_FAIL;
++      }
++      recv_size = static_cast<size_t>(bytes_read);
+ 
+       for (size_t pos = 0; pos < recv_size; ++pos) {
+         uint8_t current_byte = global_recv_buffer_[pos];
+@@ -312,6 +321,14 @@ result_t LidarDataProcessor::wait_package(node_info * node, uint32_t timeout)
+           case 3:
+             sample_numl_and_ct_cal_ += (current_byte * 0x100);
+             package_sample_num = current_byte;
++            // Reject before angle calculations, payload reads, or indexed writes.
++            if (package_sample_num == 0 ||
++              package_sample_num > sample_capacity / expected_sample_bytes)
++            {
++              has_package_error_ = true;
++              check_sum_result_ = false;
++              return RESULT_FAIL;
++            }
+             break;
+           case 4:
+             if (current_byte & LIDAR_RESP_MEASUREMENT_CHECKBIT) {
+@@ -394,7 +411,11 @@ result_t LidarDataProcessor::wait_package(node_info * node, uint32_t timeout)
+           recv_size = remain_size;
+         }
+ 
+-        serial_port_->read_data(global_recv_buffer_, recv_size);
++        const result_t bytes_read = serial_port_->read_data(global_recv_buffer_, recv_size);
++        if (bytes_read <= 0 || static_cast<size_t>(bytes_read) > recv_size) {
++          return RESULT_FAIL;
++        }
++        recv_size = static_cast<size_t>(bytes_read);
+ 
+         for (size_t pos = 0; pos < recv_size; ++pos) {
+           if (lidar_general_info_.intensity_data_flag) {

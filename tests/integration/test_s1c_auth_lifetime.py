@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """S1c authentication lifetime and safe browser reopen acceptance tests."""
 
 from __future__ import annotations
@@ -173,6 +176,42 @@ class S1cAuthLifetimeTests(unittest.TestCase):
             "/v1/bootstrap", {"role": "product", "secret": ticket},
         )
         self.assertEqual(status, 200)
+
+    def test_reopening_same_app_preserves_other_tabs_csrf_and_absolute_expiry(self) -> None:
+        cookie, csrf, _ = self.bootstrap_product()
+        self.clock.advance(4)
+        status, issued, _ = self.request('/v1/bootstrap/product/issue', {'owner_secret': 'p'*43})
+        self.assertEqual(status, 200)
+        ticket = issued['bootstrap_secret']
+        status, result, headers = self.request('/v1/bootstrap', {'role': 'product', 'secret': ticket}, headers={'Cookie': cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get('Set-Cookie').split(';',1)[0], cookie)
+        self.assertEqual(result['csrf_token'], csrf)
+        self.assertIn('Max-Age=21', headers.get('Set-Cookie'))
+        status, _, _ = self.request('/v1/product/lease', {}, headers={'Cookie':cookie,'X-TwinPulse-CSRF':csrf})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request('/v1/bootstrap', {'role':'product','secret':ticket}, headers={'Cookie':cookie})
+        self.assertEqual(status, 401)
+
+    def test_expired_cookie_is_not_reused_when_reopening(self) -> None:
+        cookie, csrf, _ = self.bootstrap_product(); self.clock.advance(11)
+        _, issued, _ = self.request('/v1/bootstrap/product/issue', {'owner_secret':'p'*43})
+        status, result, headers = self.request('/v1/bootstrap', {'role':'product','secret':issued['bootstrap_secret']}, headers={'Cookie':cookie})
+        self.assertEqual(status, 200)
+        self.assertNotEqual(headers.get('Set-Cookie').split(';',1)[0], cookie)
+        self.assertNotEqual(result['csrf_token'], csrf)
+
+    def test_two_pending_window_tickets_are_independent_and_each_one_use(self) -> None:
+        _, first, _ = self.request('/v1/bootstrap/product/issue', {'owner_secret':'p'*43})
+        _, second, _ = self.request('/v1/bootstrap/product/issue', {'owner_secret':'p'*43})
+        status, result, headers = self.request('/v1/bootstrap', {'role':'product','secret':first['bootstrap_secret']})
+        self.assertEqual(status, 200)
+        cookie=headers.get('Set-Cookie').split(';',1)[0]
+        status, reopened, _ = self.request('/v1/bootstrap', {'role':'product','secret':second['bootstrap_secret']}, headers={'Cookie':cookie})
+        self.assertEqual(status, 200); self.assertEqual(reopened['csrf_token'], result['csrf_token'])
+        for ticket in (first['bootstrap_secret'],second['bootstrap_secret']):
+            status, _, _ = self.request('/v1/bootstrap', {'role':'product','secret':ticket}, headers={'Cookie':cookie})
+            self.assertEqual(status, 401)
 
 
 if __name__ == "__main__":

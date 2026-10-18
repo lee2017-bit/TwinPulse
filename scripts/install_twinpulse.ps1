@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 param(
     [string]$IsaacRoot = "",
     [switch]$Launch,
@@ -103,8 +106,21 @@ try {
         & npm exec --yes --package=pnpm@11.19.0 -- pnpm --dir $webRoot build
         Assert-LastExitCode "React production build"
     }
+    Write-Host "Installing lockfile-pinned project-only desktop dependencies..."
+    Push-Location (Join-Path $repoRoot 'apps\twinpulse-desktop')
+    try {
+        & npm.cmd ci --no-audit --no-fund
+        Assert-LastExitCode "Electron desktop dependencies"
+        # Some developer machines disable npm lifecycle scripts globally.
+        # Install only the pinned official Electron runtime in this project.
+        & node node_modules/electron/install.js
+        Assert-LastExitCode "Pinned Electron runtime"
+    } finally { Pop-Location }
     Write-Host "TWINPULSE_INSTALL_RESULT=PASS"
     Write-Host "API key is not part of this installer. Configure it in the local App."
+    $localRuntime = Join-Path $repoRoot ".runtime"
+    New-Item -ItemType Directory -Path $localRuntime -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $localRuntime "isaac-root.txt") -Value $resolvedIsaacRoot -Encoding UTF8
 
     if ($Launch) {
         & $venvPython scripts\twinpulse_launcher.py --isaac-root $resolvedIsaacRoot

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 from __future__ import annotations
 
 import json
@@ -18,6 +21,7 @@ for source in (
 
 from twinpulse_app import ApplicationService, CommandBroker, ProductWorkflow, ProjectStore
 from twinpulse_app.replay import ReplayOnlyGateway, load_replay_fixture
+from twinpulse_app.command_broker import BrokerError
 from twinpulse_core import InputArtifactStore, SceneToolRegistry, demo_warehouse_tool_plan
 
 
@@ -26,6 +30,26 @@ TEST_TMP.mkdir(parents=True, exist_ok=True)
 
 
 class S2dManagedReplayTests(unittest.TestCase):
+    def test_simulation_offline_rejects_generation_before_gateway(self) -> None:
+        with TemporaryDirectory(prefix="offline-", dir=TEST_TMP) as directory:
+            root = Path(directory)
+            gateway = ReplayOnlyGateway()
+            service = ApplicationService(
+                gateway,
+                project_store=ProjectStore(root / "project.json"),
+                artifact_store=InputArtifactStore(root / "inputs"),
+            )
+            workflow = ProductWorkflow(
+                service, CommandBroker(), mode="simulation_offline",
+                generation_settings_getter=lambda: {"request_schema": "offline-1.0"},
+                provider_state_getter=lambda: {"configured": False, "label": "Offline simulation"},
+            )
+            self.assertEqual(workflow.snapshot()["mode"], "simulation_offline")
+            with self.assertRaises(BrokerError) as captured:
+                workflow.start_generation()
+            self.assertEqual(captured.exception.code, "generation_unavailable_offline")
+            self.assertEqual(gateway.generate_calls, 0)
+
     @staticmethod
     def report() -> dict[str, object]:
         plan = demo_warehouse_tool_plan()

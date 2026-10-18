@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="370" viewBox="0 0 1120 370" role="img" aria-labelledby="title desc">
+  <title id="title">H2b-1 site tool-plan boundary</title>
+  <desc id="desc">Version 1 remains live and unchanged. Version 2 validates scene-only, robot-only, and mission proposals without moving the goal. App, storage, and Isaac connection remain unfinished.</desc>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#9ec5ff"/></marker></defs>
+  <rect width="1120" height="370" rx="20" fill="#101827"/>
+  <text x="35" y="45" fill="#fff" font-family="Arial,sans-serif" font-size="26" font-weight="700">H2b-1 · New plan format, old live path preserved</text>
+  <text x="35" y="75" fill="#b7c6d8" font-family="Arial,sans-serif" font-size="15">This is code-contract work; the product screen is unchanged.</text>
+  <g font-family="Arial,sans-serif" text-anchor="middle">
+    <rect x="36" y="110" width="308" height="93" rx="13" fill="#22364d" stroke="#5d99ec"/>
+    <text x="190" y="145" fill="#fff" font-size="19" font-weight="700">Existing v1 · live</text>
+    <text x="190" y="173" fill="#c7dcfa" font-size="15">scene + robot + task required</text>
+    <rect x="409" y="110" width="308" height="93" rx="13" fill="#234c42" stroke="#64d2ab"/>
+    <text x="563" y="145" fill="#fff" font-size="19" font-weight="700">New v2 · validated</text>
+    <text x="563" y="173" fill="#c4f7e3" font-size="15">scene only / robot / mission</text>
+    <rect x="780" y="110" width="304" height="93" rx="13" fill="#493b25" stroke="#e3ad58"/>
+    <text x="932" y="145" fill="#fff" font-size="19" font-weight="700">Not yet connected</text>
+    <text x="932" y="173" fill="#ffe6b9" font-size="15">app · store · API · Isaac</text>
+    <rect x="147" y="240" width="275" height="74" rx="12" fill="#2c3343" stroke="#8aa0bd"/>
+    <text x="284" y="269" fill="#fff" font-size="16" font-weight="700">Scene only accepted</text>
+    <text x="284" y="292" fill="#ced7e5" font-size="14">no dummy robot or mission</text>
+    <rect x="492" y="240" width="340" height="74" rx="12" fill="#2c3343" stroke="#8aa0bd"/>
+    <text x="662" y="269" fill="#fff" font-size="16" font-weight="700">Requested goal stays unchanged</text>
+    <text x="662" y="292" fill="#ced7e5" font-size="14">unsupported route cannot Run</text>
+  </g>
+  <path d="M344 156H402" stroke="#9ec5ff" stroke-width="3" marker-end="url(#a)"/>
+  <path d="M717 156H773" stroke="#9ec5ff" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#a)"/>
+  <text x="35" y="347" fill="#b7c6d8" font-family="Arial,sans-serif" font-size="14">42 core + 28 provider tests pass · no new live provider call or Isaac test</text>
+</svg>

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Pure, finite capture-attempt state machine shared by R6 tests and Isaac host."""
 
 from __future__ import annotations

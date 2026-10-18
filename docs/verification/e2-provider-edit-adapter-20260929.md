@@ -1,0 +1,15 @@
+# E2k-3 — structured provider edit adapter (offline verification)
+
+**Result: adapter-to-existing-preview contract PASS with a fake provider; live model and the whole E2 milestone remain PARTIAL.**
+
+The current saved-scene context is serialized as bounded JSON, checked against its canonical digest and allowed nested fields, and sent as data to a distinct structured-edit request. Unexpected fields (including a test credential-like nested field) are rejected before a provider call. The OpenAI Responses request builder now selects a strict `scene-edit-proposal-1.0` output schema for this request instead of the full warehouse-scene schema. Its English instructions limit the response to one furniture Add/Change or clarification and explicitly disallow scene replacement, measurements invented from a photo, and claims of applying the edit. This changes neither legacy scene-generation request bodies nor saved v1/v2 plan serialization.
+
+`SceneEditProposalService` permits one bounded provider call, checks request identity, exact outer response shape and context digest, and does not retry, save, preview, Build, or run a robot. The existing App `checked_furniture_proposal` and `/v1/product/scene-edit/proposal-preview` remain the authorities for selected target, catalog identity, geometry and no-op rejection. In an isolated local API test, a fake response from the new adapter reached that preview gate; the saved project was unchanged until a separate explicit Apply, which then invalidated prior acknowledgement. Malicious full-scene fields, wrong targets, wrong kind, stale context and unchanged proposals were rejected by the existing App gate.
+
+Verification:
+
+- `pytest packages/twinpulse_provider/tests -q -p no:cacheprovider`: **45 passed, 8 subtests passed**. New adapter tests include valid English request/schema, no image or credentials, input digest/field rejection before provider invocation, response shape/digest rejection, timeout without retry, and wrong request ID.
+- `pytest tests/integration/test_scene_edit_proposals.py tests/integration/test_scene_changes.py -q -p no:cacheprovider`: **11 passed** with local fake provider and App/API preview/apply. The first sandboxed integration attempt could not write the Windows temporary directory; the approved local rerun passed. No acceptance criterion was weakened.
+- Provider API calls: **0**; robot/serial/SSH/Isaac: **NOT_RUN**. No installer, deployment, commit or push.
+
+Remaining before live-provider use: explicitly compose and expose this separate edit service in the product only under a user-approved cost/credential policy; then verify a real structured response's language and quality, failure/retry UI, and the same saved-scene revision checks after latency. The current UI intentionally retains its labeled offline simulated proposal path. There is no model-triggering button or automatic generation in this increment. Full E2 photo interpretation, company PC, physics, and physical robot tests remain unverified; the previous physical stop FAIL and mission lock are unchanged.
