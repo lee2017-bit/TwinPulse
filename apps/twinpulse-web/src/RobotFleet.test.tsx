@@ -5,9 +5,9 @@ import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {TwinPulseApi} from './api';
 import {RobotFleet} from './RobotFleet';
-import {TwinViewport,layoutRobotBadges,type RobotBadgePlacement} from './TwinViewport';
+import {TwinViewport,layoutRobotBadges,pickRobotAnchor,type RobotBadgePlacement} from './TwinViewport';
 import type {ViewportState} from './viewport-types';
-import {fleetBatteryLabel,fleetRobotFresh,type RobotTwinContext,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
+import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRobotFresh,type RobotTwinContext,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
 
 const robot=(id='a'):RobotFleetRobot=>({robot_id:id,label:`Robot ${id}`,kind:'sim',connection_state:'CONNECTED',connection_epoch:`connection-${id}`,motion_epoch:`motion-${id}`,
   control_state:'READY',lidar_state:'STREAMING',recording_state:'RECORDING',operation_id:`operation-${id}`,reason:null,
@@ -24,6 +24,114 @@ function setup(state=fleet(),custom?:(body:RobotFleetAction)=>Promise<RobotFleet
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
 describe('robot fleet controls (supplementary UI tests)',()=>{
+  it('keeps the compact primary pad and Stop before collapsed setup and opens logs explicitly',async()=>{
+    const {action,container}=setup();
+    const dock=screen.getByLabelText('Control Robot a'),details=container.querySelector('.robot-fleet-diagnostics')!;
+    expect(details.hasAttribute('open')).toBe(false);
+    expect(dock.querySelectorAll('.robot-fleet-pad')).toHaveLength(1);
+    expect(dock.querySelector('.robot-fleet-control-primary')!.compareDocumentPosition(details)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(dock).getByRole('button',{name:'Stop'})).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    await screen.findByRole('button',{name:'Download operation JSON'});
+    expect(details.hasAttribute('open')).toBe(true);
+    expect(action).not.toHaveBeenCalled();
+  });
+  it('releases one hold on a dock layout change without remounting or replaying it',async()=>{
+    vi.useFakeTimers();const {action,props,rerender,container}=setup();
+    const pad=screen.getByRole('group',{name:'Hold to drive'});
+    fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'turn left 90 degrees'}});
+    fireEvent.keyDown(pad,{key:'ArrowUp'});
+    expect(action.mock.calls.filter(([body])=>body.action==='drive')).toHaveLength(1);
+    rerender(<RobotFleet {...props} layoutVersion="control-view:33"/>);
+    expect(action.mock.calls.filter(([body])=>body.action==='stop')).toHaveLength(1);
+    expect(screen.getByRole('group',{name:'Hold to drive'})).toBe(pad);
+    expect(container.querySelectorAll('.robot-fleet-pad')).toHaveLength(1);
+    expect((screen.getByLabelText('Robot command') as HTMLInputElement).value).toBe('turn left 90 degrees');
+    await act(async()=>{await vi.advanceTimersByTimeAsync(600);});
+    expect(action.mock.calls.filter(([body])=>body.action==='drive')).toHaveLength(1);
+    expect(action.mock.calls.some(([body])=>body.action==='disconnect')).toBe(false);
+    fireEvent.keyDown(pad,{key:'ArrowRight'});
+    expect(action.mock.calls.filter(([body])=>body.action==='drive')).toHaveLength(2);
+  });
+  it('stops on a window resize and waits for a new user gesture after resizing',async()=>{
+    vi.useFakeTimers();const {action}=setup();
+    fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowLeft'});
+    fireEvent.resize(window);
+    expect(action.mock.calls.at(-1)?.[0].action).toBe('stop');
+    await act(async()=>{await vi.advanceTimersByTimeAsync(500);});
+    expect(action.mock.calls.filter(([body])=>body.action==='drive')).toHaveLength(1);
+    expect(action.mock.calls.some(([body])=>body.action==='connect'||body.action==='disconnect')).toBe(false);
+  });
+  it('keeps Stop independent while logs are pending and diagnostics are expanded',async()=>{
+    const {action,operation}=setup();operation.mockImplementationOnce(()=>new Promise(()=>{}));
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    fireEvent.click(screen.getByRole('button',{name:'Stop'}));
+    expect(action.mock.calls.at(-1)?.[0]).toMatchObject({action:'stop',robot_id:'a'});
+    expect((screen.getByRole('button',{name:'Stop'}) as HTMLButtonElement).disabled).toBe(false);
+  });
+  it('does not imply that a physical paused controller awaits or has an Isaac stop receipt',()=>{
+    const physical:RobotFleetRobot={...robot(),kind:'physical',live_heartbeat:true,
+      control_state:'PAUSED',applied_motion_epoch:'motion-a'};
+    setup(fleet([physical]));
+    expect(screen.getByText('Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.')).toBeTruthy();
+    expect(screen.queryByText('Engine stop confirmed')).toBeNull();
+    expect(screen.queryByText('Stop requested · waiting for engine confirmation')).toBeNull();
+  });
+  it('shows source-header age separately from a fresh sensor callback',()=>{
+    const physical:RobotFleetRobot={...robot(),kind:'physical',live_heartbeat:true,
+      telemetry_diagnostic:{reason:'SENSOR_SOURCE_AGE',source_age_s:.223906317,
+        sensor_receipt_age_s:.000876351,guard_receipt_age_s:.020916754}};
+    setup(fleet([physical]));
+    const row=screen.getByText('ROS receipt diagnosis').parentElement;
+    expect(row?.textContent).toContain('SENSOR_SOURCE_AGE');
+    expect(row?.textContent).toContain('source 224 ms');
+    expect(row?.textContent).toContain('sensor 1 ms');
+    expect(row?.textContent).toContain('guard 21 ms');
+  });
+  it('cannot download the old snapshot while the same operation refresh is pending',async()=>{
+    const {operation}=setup();
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    const button=await screen.findByRole('button',{name:'Download operation JSON'});
+    await waitFor(()=>expect((button as HTMLButtonElement).disabled).toBe(false));
+    let finish!:(value:RobotFleetOperation)=>void;
+    operation.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Refreshing operation log; download waits for the response.')).toBeTruthy();
+    await act(async()=>finish({schema_version:'robot-operation-1.0',operation_id:'operation-a',robot_id:'a',project_id:'project',
+      events:[{kind:'stop_all_request',request_id:'actual-new-stop'}],manifest:{complete:false}}));
+    await waitFor(()=>expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByLabelText('Recent operation events').textContent).toContain('stop_all_request');
+  });
+  it('keeps cold trial failure IDs visible without restoring current qualification',async()=>{
+    const {operation}=setup();operation.mockResolvedValue({schema_version:'robot-operation-1.0',operation_id:'operation-a',robot_id:'a',project_id:'project',
+      events:[{kind:'heartbeat',data:{field:{trials:[{trial_id:'a'.repeat(32),case:'stationary',status:'INCONCLUSIVE',reason:'FIELD_NATIVE_RECEIPT_STALE_OR_BACKLOG',frames:0,context:{operation_id:'operation-a'}},
+        {trial_id:'b'.repeat(32),case:'forward',status:'PASS',context:{operation_id:'other'}}]}}}],manifest:{historical:true,worker_sources:null}});
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    const summary=await screen.findByLabelText('Operation summary');
+    await waitFor(()=>expect(summary.textContent).toContain('Historical trial '+'a'.repeat(32)));
+    expect(summary.textContent).toContain('INCONCLUSIVE · FIELD_NATIVE_RECEIPT_STALE_OR_BACKLOG · frames 0 · not current qualification');
+    expect(summary.textContent).not.toContain('Historical trial '+'b'.repeat(32));
+    expect(summary.textContent).toContain('Unknown · not recorded');
+  });
+  it('uses the selected custom mapping or explicit voltage-only without changing protection',()=>{
+    const r={...robot(),battery:{...robot().battery,voltage_v:11.34,percent:null,estimated_percent:67,
+      estimate_method:'custom_voltage_table_v1',display_mode:'custom' as const,display_label:'My table',voltage_protection:'CLEAR' as const}};
+    expect(fleetBatteryLabel(r)).toContain('약 67%');expect(fleetBatteryPolicyMessage(r)).toContain('사용자 기준표 · My table');
+    const voltage={...r,battery:{...r.battery,display_mode:'voltage_only' as const,percent:80}};
+    expect(fleetBatteryLabel(voltage)).toBe('11.34 V · simulated');
+    expect(fleetBatteryPolicyMessage({...voltage,battery:{...voltage.battery,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('저전압 보호');
+  });
+  it('separates voltage-derived47percent from20percent reserve and low-voltage protection',()=>{
+    const r:RobotFleetRobot={...robot(),kind:'physical',live_heartbeat:true,battery:{voltage_v:11.34,percent:null,source:'measured',age_ms:50,
+      estimated_percent:46.7,estimate_method:'robotis_opencr_voltage_10_5_to_12_3_v1',capacity_measured:false,
+      reserve_state:'ABOVE_RESERVE',voltage_protection:'CLEAR'}};
+    expect(fleetBatteryLabel(r)).toBe('약 47% (전압 추정) · 11.34 V · measured');
+    setup(fleet([r]));expect(screen.getByLabelText('Battery estimate and protection').textContent).toContain('실측 용량이 아닙니다');
+    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_v:11.1,estimated_percent:33.3,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('저전압 보호');
+    expect(fleetBatteryLabel({...r,battery:{...r.battery,age_ms:40000}})).toContain('stale');
+    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_protection:'UNKNOWN',reserve_state:'AT_OR_BELOW_RESERVE'}})).toContain('20% 이하');
+  });
   it('renders actual physical voltage-only battery replies without inventing a percentage or crashing',()=>{
     const physical={...robot(),kind:'physical' as const,live_heartbeat:true,
       battery:{voltage_v:12.35,source:'measured',age_ms:50} as RobotFleetRobot['battery']};
@@ -41,7 +149,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     const linkage=screen.getByLabelText('Robot Twin record linkage');
     expect(within(linkage).getByText('original-twin')).toBeTruthy();expect(within(linkage).getByText('new-twin')).toBeTruthy();
     expect(within(linkage).getByText('conversation-identity')).toBeTruthy();expect(within(linkage).getByText('UNALIGNED')).toBeTruthy();
-    expect(within(linkage).getByText(/취득 시각의 장면 동기화나 세계 좌표 정합 완료를 뜻하지 않습니다/)).toBeTruthy();
+    expect(within(linkage).getByText(/does not certify acquisition-time scene synchronization or world alignment/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Stop'}));
     expect(action).toHaveBeenCalledWith(expect.objectContaining({action:'stop'}));
   });
@@ -63,7 +171,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(fleetRobotFresh(old)).toBe(false);expect(fleetBatteryLabel(old)).toContain('simulated · stale');
     old.kind='physical';old.connection_state='DISCONNECTED';old.battery.source='measured';
     setup(fleet([old]));expect((screen.getByRole('button',{name:'Hold forward'}) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByText(/measured · stale/).length).toBe(2);
+    expect(screen.getAllByText(/measured · stale/).length).toBe(3);
   });
   it('distinguishes a requested pause from the engine-applied stop without sending new movement',()=>{
     const paused={...robot(),control_state:'PAUSED' as const,applied_motion_epoch:'previous-motion'};
@@ -288,7 +396,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(fleetRobotFresh(physical)).toBe(false);
     expect(screen.queryByLabelText('Fresh connected heartbeat')).toBeNull();
     expect(screen.getByText(/Fresh heartbeat and measured voltage do not grant driving permission/)).toBeTruthy();
-    for(const name of ['Prepare','LiDAR Off','Hold forward'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
+    for(const name of ['Prepare','LiDAR On','Hold forward'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'forward 10 cm'}});
     expect((screen.getByRole('button',{name:'Send command'}) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(screen.getByLabelText('Robot command').closest('form')!);expect(action).not.toHaveBeenCalled();
@@ -307,9 +415,10 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
   function physicalState(row=livePhysical()):RobotFleetState{return {...fleet([row]),capabilities:{sim:true,physical:true}};}
   it('provides the physical measurement checklist and exports only current identities plus null measurement fields',async()=>{
     const {action}=setup(physicalState());
-    const guide=screen.getByLabelText('측정 프로필 작성 안내');expect(guide.hasAttribute('open')).toBe(false);
-    for(const topic of ['Geometry','Sampling','Timing','Stop model','Progress','timing sidecar','wheel odometry','strict schema'])expect(guide.textContent).toContain(topic);
-    expect(guide.textContent).toContain('자동 측정기나 측정 완료 인증이 아닙니다');
+    const guide=screen.getByLabelText('Measured profile guide');expect(guide.hasAttribute('open')).toBe(false);
+    for(const topic of ['Geometry','Sampling','Timing','Stop model','Progress','timing sidecar','wheel odometry'])expect(guide.textContent).toContain(topic);
+    expect(guide.textContent).toMatch(/strict (?:server )?schema/i);
+    expect(guide.textContent).toContain('not an automatic instrument or certification');
     let blob:Blob|null=null,filename='';vi.spyOn(URL,'createObjectURL').mockImplementation(value=>{blob=value as Blob;return 'blob:blank-profile';});
     vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(function(this:HTMLAnchorElement){filename=this.download;});
     fireEvent.click(screen.getByRole('button',{name:'Download blank measured-profile JSON'}));
@@ -631,11 +740,18 @@ function rectanglesOverlap(a:Pick<RobotBadgePlacement,'left'|'top'|'width'|'heig
 }
 describe('robot badge collision placement (supplementary geometry)',()=>{
   const anchor=(id:string,u:number,v:number)=>({robot_id:id,screen_anchor_uv:[u,v] as [number,number],screen_bounds_uv:[u,v,u,v] as [number,number,number,number],visible:true});
+  it('does not cover either projected body envelope with either robot name plate',()=>{
+    const anchors=[{...anchor('alpha',.55,.4),screen_bounds_uv:[.525,.36,.575,.44] as [number,number,number,number]},
+      {...anchor('beta',.65,.43),screen_bounds_uv:[.625,.39,.675,.47] as [number,number,number,number]}];
+    const placed=layoutRobotBadges(anchors,800,500);expect(placed).toHaveLength(2);
+    for(const plate of placed)for(const a of anchors){const b=a.screen_bounds_uv;
+      expect(rectanglesOverlap(plate,{left:b[0]*800,top:b[1]*500,width:(b[2]-b[0])*800,height:(b[3]-b[1])*500})).toBe(false);}
+  });
   it('separates badges for two original anchors only 50px apart without moving those anchors',()=>{
     const anchors=[anchor('alpha',.6,.6),anchor('beta',.725,.6)],original=JSON.stringify(anchors);
     const placed=layoutRobotBadges(anchors,400,300);
     expect(placed).toHaveLength(2);expect(rectanglesOverlap(placed[0],placed[1])).toBe(false);
-    expect(placed[0]).toMatchObject({anchorX:240,anchorY:180,width:108,height:32});
+    expect(placed[0]).toMatchObject({anchorX:240,anchorY:180,width:72,height:16});
     expect(placed[1]).toMatchObject({anchorX:290,anchorY:180});expect(JSON.stringify(anchors)).toBe(original);
     expect(placed.every(row=>row.lineX>=row.left&&row.lineX<=row.left+row.width&&row.lineY>=row.top&&row.lineY<=row.top+row.height)).toBe(true);
   });
@@ -665,9 +781,10 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
       display_pose:{position_m:[.5,.7,0],source:'operator_estimate_not_localized',scene_revision:'revision',frame_id:'isaac_world',aligned:false}};
     render(<TwinViewport api={h.api} robotFleet={fleet([physical])} onRobotSelect={select}/>);
     const badge=await screen.findByRole('button',{name:'Select Robot a in Twin'});
-    expect(badge.title).toContain('Physical · estimated marker');
+    expect(badge.title).toBe('Robot a');
     expect(badge.getAttribute('aria-description')).toContain('visualization only, not sensor/world alignment');
-    expect(badge.textContent).toContain('Physical · estimated');
+    expect(badge.textContent).toBe('Robot a');
+    expect(badge.querySelector('small')).toBeNull();
     expect(badge.querySelector('.robot-anchor-status.fresh')).toBeNull();
     fireEvent.click(badge);expect(select).toHaveBeenCalledWith('a');
     expect(physical.pose).toBeNull();expect(fleetRobotFresh(physical)).toBe(false);
@@ -679,7 +796,7 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     expect(screen.queryByRole('button',{name:'Select Robot b in Twin'})).toBeNull();
     const layer=screen.getByLabelText('Robots in current Isaac frame');
     expect(layer.style.left).toBe('100px');expect(layer.style.width).toBe('400px');expect(layer.style.height).toBe('400px');
-    expect(badge.style.left).toBe('46px');expect(badge.style.top).toBe('208px');
+    expect(badge.style.left).toBe('64px');expect(badge.style.top).toBe('208px');
     expect(badge.getAttribute('data-anchor-x')).toBe('100');expect(badge.getAttribute('data-anchor-y')).toBe('200');expect(badge.style.transform).toBe('none');
     fireEvent.click(badge);expect(select).toHaveBeenCalledWith('a');
   });
@@ -692,7 +809,7 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     view.rerender(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={select} appConnected={false}/>);
     expect(screen.queryByLabelText('Robots in current Isaac frame')).toBeNull();expect(select).not.toHaveBeenCalled();
   });
-  it('renders separately clickable badges, source-anchor leaders and fitted positions after resize',async()=>{
+  it('renders names without cards or source-anchor decorations and keeps fitted positions after resize',async()=>{
     const h=viewportHarness(),select=vi.fn(),state=h.getState();
     h.setState({...state,frame:{...state.frame!,robot_anchors:[
       {robot_id:'a',screen_anchor_uv:[.6,.6],screen_bounds_uv:[.59,.59,.61,.61],visible:true},
@@ -701,13 +818,30 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     const alpha=await screen.findByRole('button',{name:'Select Robot a in Twin'}),beta=screen.getByRole('button',{name:'Select Robot b in Twin'});
     const bounds=(button:HTMLElement)=>({left:parseFloat(button.style.left),top:parseFloat(button.style.top),width:parseFloat(button.style.width),height:parseFloat(button.style.height)});
     expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(false);
-    expect(screen.getByLabelText('Robots in current Isaac frame').querySelectorAll('svg line')).toHaveLength(2);
+    expect(screen.getByLabelText('Robots in current Isaac frame').querySelectorAll('svg')).toHaveLength(0);
+    expect(alpha.querySelector('small,em')).toBeNull();expect(alpha.textContent).toBe('Robot a');
     fireEvent.click(alpha);fireEvent.click(beta);expect(select.mock.calls).toEqual([['a'],['b']]);
     h.setSlot(320,220);fireEvent.resize(window);
     const layer=screen.getByLabelText('Robots in current Isaac frame');expect(parseFloat(layer.style.width)).toBeCloseTo(220);expect(parseFloat(layer.style.left)).toBeCloseTo(50);
     expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(false);
     for(const button of [alpha,beta]){const badge=bounds(button);expect(badge.left).toBeGreaterThanOrEqual(0);expect(badge.top).toBeGreaterThanOrEqual(0);
       expect(badge.left+badge.width).toBeLessThanOrEqual(220);expect(badge.top+badge.height).toBeLessThanOrEqual(220);}
+  });
+  it('selects the actual current projected body through the letterboxed canvas, not empty space or an expired receipt',async()=>{
+    const h=viewportHarness(),select=vi.fn();render(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={select}/>);
+    const canvas=await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    await screen.findByRole('button',{name:'Select Robot a in Twin'});
+    fireEvent.click(canvas,{clientX:200,clientY:190});expect(select.mock.calls).toEqual([['a']]);
+    select.mockClear();fireEvent.click(canvas,{clientX:20,clientY:190});expect(select).not.toHaveBeenCalled();
+    vi.spyOn(Date,'now').mockReturnValue(h.getState().frame!.captured_at_ms+1100);
+    fireEvent.click(canvas,{clientX:200,clientY:190});expect(select).not.toHaveBeenCalled();
+  });
+  it('resolves overlapping body projection hints to the closest visible anchor and rejects invalid coordinates',()=>{
+    const anchors=[{robot_id:'a',screen_anchor_uv:[.4,.5] as [number,number],screen_bounds_uv:[.3,.4,.6,.6] as [number,number,number,number],visible:true},
+      {robot_id:'b',screen_anchor_uv:[.55,.5] as [number,number],screen_bounds_uv:[.35,.4,.65,.6] as [number,number,number,number],visible:true}];
+    expect(pickRobotAnchor(anchors,.56,.5)).toBe('b');expect(pickRobotAnchor(anchors,.39,.5)).toBe('a');
+    expect(pickRobotAnchor(anchors,NaN,.5)).toBeNull();expect(pickRobotAnchor(anchors,-.1,.5)).toBeNull();
+    expect(pickRobotAnchor(anchors.map(a=>({...a,visible:false})),.4,.5)).toBeNull();
   });
   it('never places old-engine anchors on a new-engine receipt while its decode is pending',async()=>{
     const h=viewportHarness();render(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={vi.fn()}/>);

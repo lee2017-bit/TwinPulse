@@ -1,0 +1,22 @@
+/* SPDX-License-Identifier: Apache-2.0; Copyright 2026 Jaewon Lee */
+.robot-diagnostics { min-width:0; margin:8px 0; padding:8px; border:1px solid #b8cbd5; border-radius:8px; background:#f4f8fa; color:#203e4a; font-size:12px; }
+.robot-diagnostics h5,.robot-diagnostics h6 { margin:3px 0; font-size:12px; }
+.robot-diagnostics p,.robot-diagnostics small { margin:5px 0; line-height:1.4; overflow-wrap:anywhere; }
+.robot-diagnostics details { margin:5px 0; border-top:1px solid #cedce3; padding-top:4px; }
+.robot-diagnostics details>summary { font-weight:600; cursor:pointer; }
+.robot-diagnostics dl { display:block!important; margin:5px 0; font-size:11px; }
+.robot-diagnostics dl>div { display:grid; grid-template-columns:minmax(90px,.5fr) minmax(0,1fr); gap:6px; padding:2px 0; }
+.robot-diagnostics dt { font-weight:600; }.robot-diagnostics dd { margin:0; overflow-wrap:anywhere; }
+.robot-diagnostics code { font-size:10px; overflow-wrap:anywhere; }
+.robot-diagnostics .robot-diagnostics-file { display:block; margin:7px 0; }
+.robot-diagnostics input[type=file] { width:100%; max-width:100%; }
+.robot-diagnostics input[type=range] { width:100%; padding:0; height:28px; accent-color:#117b6f; }
+.robot-diagnostics .robot-diagnostics-filters { display:flex; flex-wrap:wrap; gap:6px; margin:5px 0; }
+.robot-diagnostics .robot-diagnostics-filters label { flex:1 1 150px; display:grid; min-width:0; }
+.robot-diagnostics select { width:100%; min-width:0; padding:4px; background:white; color:#203e4a; border:1px solid #b8cbd5; border-radius:4px; font-size:11px; }
+.robot-diagnostics-step { display:flex; flex-wrap:wrap; gap:4px; }
+.robot-diagnostics-table { max-width:100%; max-height:280px; overflow:auto; margin:7px 0; }
+.robot-diagnostics table { width:100%; border-collapse:collapse; color:#203e4a; font-size:10px; }
+.robot-diagnostics th,.robot-diagnostics td { vertical-align:top; text-align:left; padding:4px; border:1px solid #cad8df; min-width:70px; overflow-wrap:anywhere; }
+.robot-diagnostics th { background:#e7eff3; }.robot-diagnostics tr[aria-current=true] td { background:#d9efe7; }
+.robot-diagnostics button { margin:0; }.robot-diagnostics-scope { border-left:3px solid #8b6418; padding-left:6px; }

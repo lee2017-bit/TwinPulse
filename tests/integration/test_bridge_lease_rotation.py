@@ -8,6 +8,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
+from tests.integration import test_r4_bridge_api as _source_paths
 
 
 def bridge_class():
@@ -33,7 +34,8 @@ class BridgeLeaseRotationTests(unittest.TestCase):
                                    bootstrap_secret='x' * 32, clock=lambda: 10.)
         self.client._lease_id = 'old'
         self.client._lease_valid = True
-        self.command = SimpleNamespace(control_lease_id='new',command_id='fixture-command')
+        self.command = SimpleNamespace(control_lease_id='new',command_id='fixture-command',
+            command_type='get_state',project_id='fixture-project',engine_session_id='engine',stage_epoch='stage')
 
     def test_rotated_command_refreshes_authenticated_grant_before_queue(self):
         def post(path, body):
@@ -85,7 +87,7 @@ class BridgeLeaseRotationTests(unittest.TestCase):
         self.adapter.refresh_stage_epoch = lambda: False
         self.adapter.update_control_lease = lambda lease, valid: events.append(('lease', lease, valid))
         self.adapter.runtime = SimpleNamespace(state='paused')
-        self.adapter.execute = lambda command: events.append(('execute', command.control_lease_id))
+        self.adapter.execute = lambda command: (events.append(('execute', command.control_lease_id)) or SimpleNamespace(status='applied',error_code=None,applied_revision=None,command_id=command.command_id))
         self.adapter.snapshot = lambda: None
         self.client.update()
         self.assertEqual(events, [('lease', 'new', True), ('execute', 'new')])
@@ -99,7 +101,7 @@ class BridgeLeaseRotationTests(unittest.TestCase):
         self.adapter.update_control_lease = lambda lease, valid: events.append(('lease', lease, valid))
         self.adapter.runtime = SimpleNamespace(state='paused')
         self.adapter.fail_safe_pause = lambda reason: events.append(('pause', reason))
-        self.adapter.execute = lambda command: events.append(('execute', command.control_lease_id))
+        self.adapter.execute = lambda command: (events.append(('execute', command.control_lease_id)) or SimpleNamespace(status='rejected',error_code='control_lease_required',applied_revision=None,command_id=command.command_id))
         self.adapter.snapshot = lambda: None
         self.client.update()
         self.assertEqual(events[0], ('lease', 'new', False))

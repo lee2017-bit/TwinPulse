@@ -4,7 +4,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-from scripts.twinpulse_fleet_runtime import integrate_motion, FleetRuntime, bind_intent
+from scripts.twinpulse_fleet_runtime import integrate_motion, FleetRuntime, bind_intent,observe_startup
 
 
 class ElapsedMotionTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class ElapsedMotionTests(unittest.TestCase):
 
 class RuntimeAdmissionTests(unittest.TestCase):
     """Actual update with USD stubs, not a real Isaac/hardware acceptance."""
-    def tick(self,*,old=None,start=None,direction='forward',received=10.39,dt=.4,prior_task=None):
+    def tick(self,*,old=None,start=None,direction='forward',received=10.39,dt=.4,prior_task=None,work_s=0.):
         class Op:
             def __init__(self,value):self.value=value
             def Set(self,value):self.value=value
@@ -52,11 +52,14 @@ class RuntimeAdmissionTests(unittest.TestCase):
         omni=SimpleNamespace(usd=SimpleNamespace(get_context=lambda:SimpleNamespace(get_stage=lambda:stage)))
         pxr=SimpleNamespace(Gf=SimpleNamespace(Vec3d=lambda *v:list(v)),UsdGeom=SimpleNamespace(Xform=lambda _:placement))
         runtime=FleetRuntime();runtime.identity=('engine','stage','revision');runtime.updated_at=10.4-dt;runtime.scan_at=10.4
+        runtime.bounds_dirty=False
         row=dict(epoch='connection',motion_epoch='motion',pose=[0.,0.,0.],reason=None,task=prior_task,travel=0.,scan=None,scan_at=10.4,
-            intent_sequence=old['sequence'] if old else None,last_intent=old,intent_active_since=start,stale_intent_sequence=None)
+            intent_sequence=old['sequence'] if old else None,last_intent=old,intent_active_since=start,stale_intent_sequence=None,
+            startup_samples=2,startup_ready=True,render_observed=True)
         runtime.robots={'robot':row}
         incoming=dict(sequence=(old['sequence']+1 if old else 1),direction=direction,expires_at_ms=1000650)
-        with patch.dict(sys.modules,{'omni':omni,'omni.usd':omni.usd,'pxr':pxr}),patch('scripts.twinpulse_fleet_runtime.time.monotonic',return_value=10.4),patch('scripts.twinpulse_fleet_runtime.time.time',return_value=1000.4):
+        clock=[10.4]
+        with patch.dict(sys.modules,{'omni':omni,'omni.usd':omni.usd,'pxr':pxr}),patch('scripts.twinpulse_fleet_runtime.time.monotonic',side_effect=lambda:clock[0]),patch('scripts.twinpulse_fleet_runtime.time.time',return_value=1000.4),patch.object(runtime,'_refresh_bounds',side_effect=lambda *_:clock.__setitem__(0,10.4+work_s)):
             runtime.receive(dict(applied_revision='revision',robots=[dict(robot_id='robot',connection_epoch='connection',motion_epoch='motion',
                 intent=incoming,lidar=False)]),received_at=received)
             runtime.update(SimpleNamespace(engine_session_id='engine',stage_epoch='stage',applied_revision='revision'))
@@ -79,7 +82,13 @@ class RuntimeAdmissionTests(unittest.TestCase):
 
     def test_fresh_input_never_conceals_full_main_thread_stall(self):
         report,_=self.tick(dt=.5)
-        self.assertEqual(report['position_m'],[0.,0.,0.]);self.assertEqual(report['reason'],'INPUT_STALE')
+        self.assertEqual(report['position_m'],[0.,0.,0.]);self.assertEqual(report['reason'],'ISAAC_UPDATE_STALLED')
+
+    def test_work_in_current_tick_and_transport_are_rechecked_before_integrating(self):
+        report,_=self.tick(dt=.016,work_s=.6)
+        self.assertEqual(report['position_m'],[0.,0.,0.]);self.assertEqual(report['reason'],'ISAAC_UPDATE_STALLED')
+        report,_=self.tick(dt=.016,work_s=.1,received=9.95)
+        self.assertEqual(report['position_m'],[0.,0.,0.]);self.assertEqual(report['reason'],'ISAAC_TRANSPORT_STALE')
 
     def test_same_or_lower_sequence_cannot_change_admission_or_expiry(self):
         old=dict(sequence=2,direction='forward',expires_at_ms=1000500)
@@ -100,10 +109,56 @@ class RuntimeAdmissionTests(unittest.TestCase):
         for middle in (None,dict(sequence=2,direction='backward',expires_at_ms=1000500)):
             runtime=FleetRuntime();runtime.identity=('e','s','r')
             row=dict(epoch='c',motion_epoch='m',intent_sequence=1,last_intent=dict(sequence=1,direction='forward',expires_at_ms=1000500),
-                intent_active_since=9.,reason=None)
+                intent_active_since=9.,reason=None,startup_ready=True)
             runtime.robots={'robot':row}
             def state(intent):return dict(applied_revision='r',robots=[dict(robot_id='robot',connection_epoch='c',motion_epoch='m',intent=intent)])
             with patch('scripts.twinpulse_fleet_runtime.time.monotonic',return_value=10.4),patch('scripts.twinpulse_fleet_runtime.time.time',return_value=1000.4):
                 runtime.receive(state(middle),received_at=10.08)
                 runtime.receive(state(dict(sequence=3,direction='forward',expires_at_ms=1000650)),received_at=10.39)
             self.assertAlmostEqual(row['intent_active_since'],10.39)
+
+
+class StartupAndBoundsTests(unittest.TestCase):
+    def test_warm_receive_cannot_replay_on_the_tick_that_becomes_ready(self):
+        runtime=FleetRuntime();runtime.identity=('e','s','r')
+        row=dict(epoch='c',motion_epoch='m',reason=None,intent_sequence=None,last_intent=None,
+            startup_samples=1,startup_ready=False,render_observed=True)
+        runtime.robots={'robot':row}
+        state=dict(applied_revision='r',robots=[dict(robot_id='robot',connection_epoch='c',motion_epoch='m',
+            intent=dict(sequence=1,direction='forward',expires_at_ms=9999999),task=dict(task_id='premature'))])
+        runtime.receive(state)
+        observe_startup(row,False,.016,False)
+        self.assertTrue(row['startup_ready']);self.assertIsNone(row['last_intent'])
+        self.assertEqual(row['warm_rejected_task'],'premature')
+        self.assertIsNone(bind_intent(row,state['robots'][0]['intent'],1000))
+
+    def test_original_first_report_and_891ms_gap_are_not_readiness(self):
+        row=dict(startup_samples=0,startup_ready=False,render_observed=False)
+        observe_startup(row,True,.031,False);self.assertFalse(row['startup_ready'])
+        row['render_observed']=True
+        observe_startup(row,False,.891,False);self.assertEqual(row['startup_samples'],0)
+        observe_startup(row,False,.016,True);self.assertFalse(row['startup_ready'])
+        observe_startup(row,False,.016,False);self.assertFalse(row['startup_ready'])
+        observe_startup(row,False,.016,False);self.assertTrue(row['startup_ready'])
+
+    def test_late_render_completion_never_qualifies_other_model_generation(self):
+        runtime=FleetRuntime();runtime.identity=('e','s','r')
+        runtime.robots={'robot':dict(epoch='c',model_generation=2,render_observed=False)}
+        runtime.rendered(('e','old','r'),{'robot':('c',2)})
+        runtime.rendered(('e','s','r'),{'robot':('c',1)})
+        self.assertFalse(runtime.robots['robot']['render_observed'])
+        runtime.rendered(('e','s','r'),{'robot':('c',2)})
+        self.assertTrue(runtime.robots['robot']['render_observed'])
+
+    def test_bounds_cache_is_invalidated_by_environment_not_robot_or_camera_changes(self):
+        runtime=FleetRuntime();runtime.bounds_watch=True
+        with patch.object(runtime,'_bounds',return_value=[(1,2,3,4)]) as build:
+            for now in (1.,1.3,2.):runtime._refresh_bounds(None,now)
+            self.assertEqual(build.call_count,1)
+            def change(text):return SimpleNamespace(GetResyncedPaths=lambda:[SimpleNamespace(GetPrimPath=lambda:text)],GetChangedInfoOnlyPaths=lambda:[])
+            runtime._environment_changed(change('/World/TwinPulse/Fleet/Robot_a'),None)
+            runtime._refresh_bounds(None,3.);self.assertEqual(build.call_count,1)
+            runtime._environment_changed(change('/World/TwinPulse/Environment/Chair'),None)
+            runtime._refresh_bounds(None,3.1);self.assertEqual(build.call_count,2)
+            runtime.bounds_watch=False
+            runtime._refresh_bounds(None,3.4);self.assertEqual(build.call_count,3)

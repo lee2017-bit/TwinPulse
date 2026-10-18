@@ -19,8 +19,9 @@ import threading
 import time
 
 from teleop_contract import InputGate, MANUAL_DIRECTIONS, MotionPaused
+from control_timing import TIMING_POLICY
 from physical_profile import checked_profile, profile_objects, profile_sha256
-from field_tests import checked_config, digest, CASES, CAP_V, CAP_W, TTL, FieldGuard, NativeTracker, FieldEvidenceWriter, frame_points
+from field_tests import checked_config, digest, CASES, CAP_V, CAP_W, TTL, FieldGuard, NativeTracker, FieldEvidenceWriter, frame_points, control_observation
 try:
     from twinpulse_core.manual_motion_guard import (NativeBeam, NativeFrame, MotionIntent,
         evaluate_manual_motion, ProgressObservation, WheelBodyProgressMonitor)
@@ -33,6 +34,68 @@ def reason_code(exc):
     import re
     code = str(exc)
     return code if re.fullmatch('[A-Z0-9_]{1,120}', code) else type(exc).__name__
+
+
+class RosRecordDelivery:
+    """Bounded original-message FIFO; no CDR/base64/journal in ROS callbacks."""
+    def __init__(self,emit,serializer,topics):
+        from uuid import uuid4
+        self.emit,self.serializer,self.topics=emit,serializer,topics
+        self.stream_id='ros-'+uuid4().hex
+        self.queue=queue.Queue(maxsize=256);self.cancel=threading.Event();self.lock=threading.Lock()
+        self.error=None;self.accepted=self.saved=self.offset=0;self.pending={};self.closed=False
+        self.max_delivery_s=0.;self.thread=threading.Thread(target=self._run,daemon=True,name='FleetRosRecording')
+        self.thread.start()
+
+    def __call__(self,topic,message,metadata):
+        self.check()
+        if topic not in self.topics:raise ValueError('RAW_TOPIC_NOT_ALLOWLISTED')
+        # rclpy callback objects are not modified after enqueue. The metadata
+        # and order are frozen at callback entry, never at eventual delivery.
+        with self.lock:
+            if self.closed:raise ValueError('RAW_ROS_DELIVERY_CLOSED')
+            index=self.accepted
+            try:self.queue.put_nowait((index,topic,message,dict(metadata)))
+            except queue.Full:
+                self.error='RAW_ROS_DELIVERY_CAPACITY';raise ValueError(self.error)
+            self.accepted+=1;self.pending[index]=time.monotonic()
+
+    def check(self):
+        if self.error:raise ValueError(self.error)
+
+    def status(self):
+        with self.lock:
+            return dict(accepted=self.accepted,saved=self.saved,pending=len(self.pending),error=self.error,
+                oldest_pending_s=max(0.,time.monotonic()-min(self.pending.values())) if self.pending else 0.,
+                maximum_delivery_s=self.max_delivery_s,worker_reaped=not self.thread.is_alive())
+
+    def _run(self):
+        while not self.cancel.is_set() or not self.queue.empty():
+            try:index,topic,message,metadata=self.queue.get(timeout=.02)
+            except queue.Empty:continue
+            try:
+                raw=bytes(self.serializer(message))
+                if len(raw)>65536:raise ValueError('RAW_ROS_MESSAGE_BOUND')
+                self.emit('raw',dict(source='serialized_ros_message',topic=topic,message_type=self.topics[topic],
+                    stream_id=self.stream_id,offset=self.offset,chunk_index=index,length=len(raw),
+                    sha256=hashlib.sha256(raw).hexdigest(),base64=base64.b64encode(raw).decode(),
+                    receipt_start_s=metadata['receipt_monotonic_ns']/1e9,receipt_end_s=metadata['receipt_monotonic_ns']/1e9,
+                    callback_timing={k:metadata[k] for k in ('receipt_ros_now_ns','source_stamp_ns','source_age_at_receipt_s') if k in metadata},
+                    observation_sequence=metadata['sequence'],publish_attempt=topic=='guarded_cmd_vel'))
+                with self.lock:
+                    self.offset+=len(raw);self.saved+=1
+                    self.max_delivery_s=max(self.max_delivery_s,time.monotonic()-self.pending.pop(index))
+            except Exception as exc:
+                self.error=reason_code(exc);return
+            finally:self.queue.task_done()
+
+    def close(self):
+        with self.lock:self.closed=True
+        self.cancel.set();self.thread.join(timeout=1.)
+        status=self.status()
+        if not status['worker_reaped'] or status['pending'] or status['saved']!=status['accepted']:
+            self.error=self.error or 'RAW_ROS_DELIVERY_INCOMPLETE'
+        return self.status()
 
 
 class NativeOutputGuard:
@@ -105,8 +168,9 @@ class RobotControl:
         self.cleanup_confirmed = True
         self.field_config=None; self.field_until=0.; self.field_receipt=None; self.field_trials=[]
         self.field_trial=None; self.tracker=None; self.field_mode=False
-        self.field_writer=None
-        self.state = {'control_state':'UNPREPARED','reason':None,'challenge':None,'motion_generation':0,
+        self.field_writer=None;self.field_evidence_fault=None;self.field_pending={};self.pause_sequence=0
+        self.ros_delivery=None
+        self.state = {'control_state':'UNPREPARED','reason':None,'challenge':None,'motion_generation':0,'timing_policy':TIMING_POLICY,
             'qualification':{'status':'UNKNOWN'},'battery':{'voltage_v':None,'source':'unknown','age_ms':None},
             'pose':None,'blockers':['PREPARE_REQUIRED'],'profile':None,'drive_ready':False,'applied_motion_epoch':None}
         self.thread = threading.Thread(target=self._run,daemon=True,name='TwinPulseFleetControl')
@@ -114,7 +178,18 @@ class RobotControl:
     def start(self):self.thread.start()
 
     def snapshot(self):
-        with self.lock:return deepcopy(self.state)
+        with self.lock:value=deepcopy(self.state)
+        diagnostic=value.get('telemetry_diagnostic')
+        if diagnostic and diagnostic.get('checked_monotonic_s') is not None:
+            elapsed=self.clock()-diagnostic['checked_monotonic_s']
+            diagnostic['check_age_s']=elapsed
+            if not 0<=elapsed<.2:
+                diagnostic['last_check_reason']=diagnostic.get('reason')
+                diagnostic['last_check_values']={k:diagnostic.get(k) for k in
+                    ('source_age_s','sensor_receipt_age_s','guard_receipt_age_s')}
+                diagnostic.update(reason='DIAGNOSTIC_CHECK_STALE',source_age_s=None,
+                    sensor_receipt_age_s=None,guard_receipt_age_s=None)
+        return value
 
     def submit(self, command):
         if self.thread.ident is not None and not self.thread.is_alive() and command['action'] not in {'stop','close'}:
@@ -140,6 +215,9 @@ class RobotControl:
 
     def _safety(self):
         if self.cancel.is_set() or self.stop_requested.is_set():raise ValueError('OPERATOR_STOP')
+        if self.field_evidence_fault:raise ValueError(self.field_evidence_fault)
+        if self.field_writer:self.field_writer.check()
+        if getattr(self,'ros_delivery',None):self.ros_delivery.check()
         if self.release is not None:
             from runtime import HOME
             if (HOME/'current').resolve(strict=True)!=self.release:raise ValueError('RELEASE_CHANGED')
@@ -205,20 +283,8 @@ class RobotControl:
         self.link = RosLink(self.base)
         from rclpy.serialization import serialize_message
         from raw_ros_record import TOPICS
-        from uuid import uuid4
-        stream_id='ros-'+uuid4().hex;raw_offset=0;raw_index=0
-        def record(topic,message,metadata):
-            nonlocal raw_offset,raw_index
-            if topic not in TOPICS:raise ValueError('RAW_TOPIC_NOT_ALLOWLISTED')
-            raw=bytes(serialize_message(message))
-            if len(raw)>65536:raise ValueError('RAW_ROS_MESSAGE_BOUND')
-            self.emit('raw',{'source':'serialized_ros_message','topic':topic,'message_type':TOPICS[topic],
-                'stream_id':stream_id,'offset':raw_offset,'chunk_index':raw_index,'length':len(raw),
-                'sha256':hashlib.sha256(raw).hexdigest(),'base64':base64.b64encode(raw).decode(),
-                'receipt_start_s':metadata['receipt_monotonic_ns']/1e9,'receipt_end_s':metadata['receipt_monotonic_ns']/1e9,
-                'observation_sequence':metadata['sequence'],'publish_attempt':topic=='guarded_cmd_vel'})
-            raw_offset+=len(raw);raw_index+=1
-        self.link.record_sink=record
+        self.ros_delivery=RosRecordDelivery(self.emit,serialize_message,TOPICS)
+        self.link.record_sink=self.ros_delivery
         self.link.preflight_safety=self._safety
         self.link.persistent_manual = self.link.manual_speed_profile = True
         self.link.bind_observations({'project_id':self.context['project_id'],
@@ -260,6 +326,10 @@ class RobotControl:
             try:self.link.close()
             except Exception as exc:errors.append(reason_code(exc))
             self.link=None
+        if self.ros_delivery is not None:
+            delivery=self.ros_delivery.close();self._update(ros_record_delivery=delivery)
+            if delivery['error']:errors.append(delivery['error'])
+            if delivery['worker_reaped']:self.ros_delivery=None
         if self.base is not None:
             try:result['base_exit']=stop_child(self.base);result['base_reaped']=True
             except Exception as exc:errors.append(reason_code(exc))
@@ -280,8 +350,10 @@ class RobotControl:
         self.emit('cleanup',result)
         return result
 
-    def _pause(self, reason):
-        self.direction=None;self.task=None;self.drive_command=None;self.gate.pause(reason)
+    def _pause(self, reason, *, repeated_observation=False):
+        prior=(self.state.get('control_state'),self.state.get('reason'),self.gate.generation)
+        self.direction=None;self.task=None;self.drive_command=None
+        self.gate.pause(reason,repeated_observation=repeated_observation)
         if self.guard:self.guard.reset()
         release_confirmed=False
         try:
@@ -298,6 +370,11 @@ class RobotControl:
                     progress=self.guard.progress if self.guard else None)
         self._update(control_state='PAUSED' if self.link else 'UNPREPARED',reason=reason,
                      motion_generation=self.gate.generation,task=None)
+        if prior!=(self.state['control_state'],reason,self.gate.generation):
+            self.pause_sequence+=1
+            self.emit('control_pause',dict(pause_id=f"{self.context.get('connection_epoch','local')}:{self.pause_sequence}",
+                reason=reason,observed_monotonic_s=self.clock(),motion_generation=self.gate.generation,
+                zero_off_readback_confirmed=release_confirmed))
 
     def _accept(self, command, action):
         p=command['payload']
@@ -462,12 +539,24 @@ class RobotControl:
 
     def _tick(self):
         if self.link is None:return
-        self.link.spin(.005);self.link.fresh()
-        self._safety();self.gate.check()
+        began=self.clock();self.link.spin(.005)
+        # Record observations independently of drive admission. A stale source
+        # must still display its real voltage/age; fresh() below still blocks it.
         sensor=self.link.sensor
         pose=self._pose()
-        self._update(battery={'voltage_v':float(sensor.battery),'source':'measured','origin':'live_sensor_state',
-            'age_ms':(self.clock()-self.link.sensor_t)*1000,'sample_monotonic_s':self.link.sensor_t},pose=pose)
+        if sensor is not None:
+            voltage=float(sensor.battery)
+            self._update(battery={'voltage_v':voltage if math.isfinite(voltage) else None,
+                'source':'measured' if math.isfinite(voltage) else 'unknown','origin':'live_sensor_state',
+                'read_status':{'state':'OBSERVED','origin':'ROS_SENSOR_STATE'},
+                'age_ms':(self.clock()-self.link.sensor_t)*1000,'sample_monotonic_s':self.link.sensor_t},pose=pose,
+                ros_spin_s=max(0.,self.clock()-began),ros_source_age_s=(getattr(self.link,'rows',[])[-1].get('source_age_s') if getattr(self.link,'rows',[]) else None))
+        try:self.link.fresh()
+        finally:
+            diagnostic=deepcopy(getattr(self.link,'fresh_diagnostic',None))
+            if diagnostic is not None:diagnostic['checked_monotonic_s']=self.clock()
+            self._update(telemetry_diagnostic=diagnostic)
+        self._safety();self.gate.check()
         if self.direction is None:
             if self.link.enabled and self.clock()>=self.armed_until:raise MotionPaused('POST_ARM_INPUT_EXPIRED')
             return
@@ -534,12 +623,7 @@ class RobotControl:
                             self._finish_field('INCONCLUSIVE',code,cleanup=cleanup)
                         self.emit('command',{'request_id':command['request_id'],'action':command['action'],'status':'REJECTED','reason':code})
                         if command['action']=='prepare':self._cleanup()
-                try:
-                    self._field_tick()
-                    self._tick()
-                except Exception as exc:
-                    if reason_code(exc).startswith('FIELD_EVIDENCE'):self.field_until=0.
-                    self._pause(reason_code(exc))
+                self._cycle()
                 if self.clock()-last_challenge>=.05:
                     last_challenge=self.clock()
                     blockers=[]
@@ -554,7 +638,8 @@ class RobotControl:
                     elif not 0<=self.clock()-frame['timing']['acquisition_earliest_s']<.2:blockers.append('NATIVE_FRAME_STALE')
                     if self.link and self.clock()-self.link.sensor_t>=.2:blockers.append('TELEMETRY_STALE')
                     if self.field_mode:blockers=self._field_blockers()
-                    self._update(challenge=self.gate.challenge(),watch_challenge=self.gate.challenge(),motion_generation=self.gate.generation,blockers=blockers,
+                    self._update(ros_record_delivery=self.ros_delivery.status() if self.ros_delivery else None,
+                        challenge=self.gate.challenge(),watch_challenge=self.gate.challenge(),motion_generation=self.gate.generation,blockers=blockers,
                         drive_ready=not blockers,
                         guard=self.guard.last_result if self.guard else None,progress=self.guard.progress if self.guard else None,
                         field=self._field_snapshot())
@@ -566,44 +651,143 @@ class RobotControl:
             try:
                 if self.lease is not None:self._cleanup()
             finally:
-                if self.tracker:self.tracker.close()
+                tracking_cleanup=self.tracker.close() if self.tracker else dict(worker_reaped=True,thread_reaped=True)
+                if not all(tracking_cleanup.values()):self.cleanup_confirmed=False
+                self._update(tracking_cleanup=tracking_cleanup)
                 try:
                     if self.field_trial and self.field_trial['status']=='RUNNING':self._finish_field('CANCELLED','SESSION_CLOSED')
                 except Exception:self._update(field_evidence_error='FIELD_FINAL_RECORD_INCOMPLETE')
                 evidence=self.field_writer.close() if self.field_writer else dict(complete=True,writer_reaped=True)
+                if not evidence['complete'] and self.field_pending:
+                    evidence['writer_close_result']=deepcopy(evidence)
+                    self.field_evidence_fault=self.field_evidence_fault or 'FIELD_EVIDENCE_CLOSE_UNCONFIRMED'
+                    self._fail_pending_fields(self.field_evidence_fault)
+                self._poll_field_writes(resume=False)
+                if self.field_evidence_fault:
+                    evidence.update(complete=False,error=self.field_evidence_fault)
                 self.cleanup_confirmed=self.cleanup_confirmed and evidence['complete']
                 self._update(control_state='CLOSED',field_evidence=evidence,field=self._field_snapshot(),challenge=None,watch_challenge=None,drive_ready=False,blockers=['CONTROL_WORKER_CLOSED'])
 
+    def _cycle(self):
+        # A latched archive failure must revoke motion, not starve ROS callbacks
+        # forever. Keep observing original sensor/guard clocks while stopped.
+        try:self._field_tick()
+        except Exception as exc:
+            code=reason_code(exc)
+            if code.startswith('FIELD_EVIDENCE'):
+                self.field_evidence_fault=self.field_evidence_fault or code
+                self.field_until=0.
+                self._update(field_evidence_error=self.field_evidence_fault)
+                self._pause(code,repeated_observation=True)
+                self._finish_field('INCONCLUSIVE',code)
+                self._fail_pending_fields(code)
+            else:self._pause(code,repeated_observation=True)
+        try:self._tick()
+        except Exception as exc:
+            code=reason_code(exc)
+            if self.field_evidence_fault:
+                self._update(secondary_control_fault=code)
+                self._pause(self.field_evidence_fault,repeated_observation=True)
+            else:self._pause(code,repeated_observation=True)
+
     def _field_write(self,name,value):
         if self.field_writer is None:self.field_writer=FieldEvidenceWriter(self.directory,clock=self.clock)
-        self.field_writer.append(name,value)
+        return self.field_writer.append(name,value)
 
     def _field_snapshot(self):
+        frame=self.native.latest_frame()
+        native_observation=None if not frame else dict(frame_sequence=frame['frame_sequence'],
+            stream_id=frame.get('stream_id'),raw_sha256=frame['raw_sha256'],
+            raw_ring_complete=bool(frame['complete']),
+            unknown_bytes=(frame.get('quality') or {}).get('unframed_bytes',0),
+            receipt_age_s=self.clock()-frame['timing']['receipt_end_s'],
+            policy='SUPERVISED_LAST_COMPLETE_ORIGINAL_AGE_AND_NEWER_STOP_VETO_V1',directional_clearance='CHECKED_PER_OUTPUT_NOT_BY_THIS_STATUS')
         return dict(mode='SUPERVISED_FIELD_TEST',config=deepcopy(self.field_config),
             config_sha256=digest(self.field_config) if self.field_config else None,
             armed=self.field_until>self.clock(),remaining_s=max(0.,self.field_until-self.clock()),
             blockers=self._field_blockers(),stop_receipt=deepcopy(self.field_receipt),
             tracking=self.tracker.snapshot() if self.tracker else None,
-            evidence_error=self.field_writer.error if self.field_writer else None,
+            evidence_error=self.field_evidence_fault or (self.field_writer.error if self.field_writer else None),
+            evidence_status=self.field_writer.status() if self.field_writer and hasattr(self.field_writer,'status') else None,
+            native_observation=native_observation,
             active_trial=deepcopy(self.field_trial),trials=deepcopy(self.field_trials[-32:]))
 
     def _field_blockers(self, *, receipt=True):
         result=[]
+        evidence_error=self.field_evidence_fault or (self.field_writer.error if self.field_writer else None)
+        if evidence_error:result.append(evidence_error)
         if self.field_config is None:result.append('FIELD_CONFIG_REVIEW_REQUIRED')
         if self.link is None:result.append('PREPARE_REQUIRED')
         if self.field_until<=self.clock():result.append('FIELD_SUPERVISION_CONFIRMATION_REQUIRED')
         if receipt and self.field_receipt is None:result.append('FIELD_BOOTSTRAP_STOP_REQUIRED')
-        try:frame_points(self.native.latest_frame(),self.field_config or {},self.clock())
+        try:control_observation(self.native,self.field_config or {},self.clock())
         except (ValueError,TypeError,KeyError) as exc:result.append(reason_code(exc))
         if self.link and not 0<=self.clock()-self.link.sensor_t<=.2:result.append('FIELD_WHEEL_TELEMETRY_STALE')
         return result
 
-    def _finish_field(self,status,reason,**result):
+    def _finish_field(self,status,reason,*,stop_write=None,**result):
         if not self.field_trial or self.field_trial['status']!='RUNNING':return
-        self.field_trial.update(status=status,reason=reason,ended_s=self.clock(),result=result)
+        self.field_trial.update(status='PENDING_PERSISTENCE',reason=reason,ended_s=self.clock(),result=result,
+            decision=dict(status=status,reason=reason),persistence=dict(state='AWAITING_WRITE_ACK'))
         self.field_trials.append(deepcopy(self.field_trial));self.field_trials=self.field_trials[-32:]
-        self._field_write('field-trials.json',dict(schema='field-trials-1.0',context=self.context,trials=self.field_trials))
-        self.emit('command',dict(action='field_test',status=status,trial=deepcopy(self.field_trial)))
+        try:
+            token=self._field_write('field-trials.json',dict(schema='field-trials-1.0',context=self.context,trials=self.field_trials))
+            if not token:raise ValueError('FIELD_EVIDENCE_ACK_MISSING')
+            self.field_pending[self.field_trial['trial_id']]=dict(trial=self.field_trial,
+                tokens=([stop_write] if stop_write else [])+[token],context=deepcopy(self.context))
+        except Exception as exc:
+            # Preserve the attempted decision, but never claim a durable PASS.
+            # Stop/cleanup must not die by writing to an already failed writer.
+            code=reason_code(exc)
+            if not code.startswith('FIELD_EVIDENCE'):code='FIELD_EVIDENCE_WRITE_FAILED'
+            self.field_evidence_fault=self.field_evidence_fault or code;self.field_until=0.;self.field_receipt=None
+            self.field_trial.update(status='INCONCLUSIVE',reason=self.field_evidence_fault,
+                result={**result,'evidence_error':self.field_evidence_fault,
+                        'attempted_decision':dict(status=status,reason=reason)},persistence=dict(state='FAILED'))
+            self.field_trials[-1]=deepcopy(self.field_trial)
+            self._update(field_evidence_error=self.field_evidence_fault)
+        self.emit('command',dict(action='field_test',status=self.field_trial['status'],trial=deepcopy(self.field_trial)))
+
+    def _fail_pending_fields(self, code):
+        self.field_until=0.;self.field_receipt=None
+        pending_items=list(self.field_pending.values());self.field_pending.clear();notifications=[]
+        for pending in pending_items:
+            trial=pending['trial'];trial.update(status='INCONCLUSIVE',reason=code,
+                persistence=dict(state='FAILED',writes=pending['tokens']))
+            trial['result']=dict(trial.get('result',{}),evidence_error=code,attempted_decision=trial['decision'])
+            self._replace_field_trial(trial)
+            notifications.append(dict(action='field_test',status='INCONCLUSIVE',trial=deepcopy(trial)))
+        for notification in notifications:
+            try:self.emit('command',notification)
+            except Exception as exc:
+                self.cleanup_confirmed=False;self._update(evidence_notification_error=reason_code(exc))
+
+    def _replace_field_trial(self, trial):
+        for i,item in enumerate(self.field_trials):
+            if item.get('trial_id')==trial['trial_id']:self.field_trials[i]=deepcopy(trial);break
+        if self.field_trial and self.field_trial.get('trial_id')==trial['trial_id']:self.field_trial=trial
+
+    def _poll_field_writes(self, *, resume=True):
+        for key,pending in list(self.field_pending.items()):
+            try:
+                acknowledgements=[self.field_writer.receipt(token) for token in pending['tokens']]
+                if not all(acknowledgements):continue
+                if pending['context']!=self.context:raise ValueError('FIELD_EVIDENCE_CONTEXT_CHANGED')
+            except Exception as exc:
+                self.field_evidence_fault=self.field_evidence_fault or reason_code(exc)
+                self._fail_pending_fields(self.field_evidence_fault);return
+            trial=pending['trial'];trial.update(**trial['decision'],persistence=dict(state='COMMITTED',writes=acknowledgements))
+            self._replace_field_trial(trial);del self.field_pending[key]
+            # Persisted observations are historical facts; receipt authority and
+            # continuation additionally require the same still-live generation.
+            current=(resume and not self.cancel.is_set() and not self.stop_requested.is_set()
+                and not self.field_evidence_fault and self.field_until>self.clock()
+                and pending.get('resume_generation')==self.gate.generation)
+            if trial['case']=='bootstrap_stop' and trial['status']=='PASS' and current:
+                self.field_receipt=deepcopy(trial['result']['receipt'])
+                self.field_receipt['persistence']=deepcopy(trial['persistence'])
+                self._prepare()
+            self.emit('command',dict(action='field_test',status=trial['status'],trial=deepcopy(trial)))
 
     def _field_command(self, command):
         action,p=command['action'],command['payload']
@@ -615,17 +799,24 @@ class RobotControl:
             self._pause('FIELD_CONFIG_CHANGED');self.field_until=0.;self.field_receipt=None
             self.field_config=config;self.field_mode=True
             self.native.timing_profile=None
-            if self.tracker:self.tracker.close()
+            if self.tracker:
+                tracking_cleanup=self.tracker.close()
+                self._update(tracking_cleanup=tracking_cleanup)
+                if not tracking_cleanup or not all(tracking_cleanup.values()):
+                    raise ValueError('TRACKING_OLD_OWNER_NOT_REAPED')
             self.tracker=NativeTracker(self.native,config,clock=self.clock)
             self._install_guard();self._field_write('field-config.json',dict(context=self.context,config=config,sha256=digest(config),motion_authority=False))
         elif action=='field_arm':
             if user!={'confirmed':True}:raise ValueError('FIELD_SUPERVISION_CONFIRMATION_REQUIRED')
+            if self.field_evidence_fault:raise ValueError(self.field_evidence_fault)
+            if self.field_writer:self.field_writer.check()
             if not self.field_config:raise ValueError('FIELD_CONFIG_REVIEW_REQUIRED')
             if self.link is None:raise ValueError('PREPARE_REQUIRED')
             if self.direction is not None or self.task is not None or self.link.enabled:
                 raise ValueError('FIELD_ARM_REQUIRES_STOPPED_IDLE')
-            if self.field_trial and self.field_trial['status']=='RUNNING':raise ValueError('FIELD_TRIAL_ALREADY_RUNNING')
-            frame_points(self.native.latest_frame(),self.field_config,self.clock())
+            if self.field_trial and self.field_trial['status'] in {'RUNNING','PENDING_PERSISTENCE'}:raise ValueError('FIELD_TRIAL_ALREADY_RUNNING')
+            self.link.fresh() # Current ROS/header ownership, not just a native ring.
+            control_observation(self.native,self.field_config,self.clock())
             self._accept(command,'watch');self.gate.pause('FIELD_ARMED_NEW_INPUT_REQUIRED')
             self.field_mode=True;self.field_until=self.clock()+TTL;self._install_guard()
             self._update(reason='SUPERVISED_FIELD_TEST_NOT_PROTECTED_QUALIFICATION')
@@ -634,6 +825,7 @@ class RobotControl:
                 raise ValueError('FIELD_REVIEW_SHAPE')
             trial=next((t for t in self.field_trials if t['trial_id']==user.get('trial_id')),None)
             if trial is None:raise ValueError('FIELD_TRIAL_NOT_FOUND')
+            if trial['status']=='PENDING_PERSISTENCE':raise ValueError('FIELD_RESULT_PERSISTENCE_PENDING')
             gap=user.get('clearance_m')
             if gap is not None and (type(gap) not in (int,float) or not math.isfinite(gap) or not 0<=gap<=10):
                 raise ValueError('FIELD_CLEARANCE_INPUT_INVALID')
@@ -649,14 +841,20 @@ class RobotControl:
         elif action=='field_test':
             if set(user)!={'case','confirmed'} or user['case'] not in CASES or user['confirmed'] is not True:
                 raise ValueError('FIELD_TEST_CONFIRMATION_REQUIRED')
-            if self.field_trial and self.field_trial['status']=='RUNNING':raise ValueError('FIELD_TRIAL_ALREADY_RUNNING')
+            if self.field_trial and self.field_trial['status'] in {'RUNNING','PENDING_PERSISTENCE'}:raise ValueError('FIELD_TRIAL_ALREADY_RUNNING')
             case=user['case']
             if case not in {'stationary','soak'}:
                 missing=self._field_blockers(receipt=case!='bootstrap_stop')
                 if missing:raise ValueError(missing[0])
                 if not self.field_mode:raise ValueError('FIELD_MODE_REQUIRED')
             elif not self.field_config:raise ValueError('FIELD_CONFIG_REVIEW_REQUIRED')
-            else:frame_points(self.native.latest_frame(),self.field_config,self.clock())
+            else:
+                # Diagnostic zero-command acquisition may start on an invalid
+                # ring. The interval still records invalids and cannot PASS or
+                # grant movement by ignoring them. A live source is required.
+                source=self.native.snapshot()
+                if source.get('lidar_state')!='STREAMING':raise ValueError('NATIVE_LIDAR_ON_REQUIRED')
+                if source.get('error'):raise ValueError('NATIVE_RECORDING_UNAVAILABLE')
             if self.direction is not None or self.task is not None or self.link and self.link.enabled:
                 raise ValueError('FIELD_TRIAL_REQUIRES_STOPPED_IDLE')
             self.field_trial=dict(trial_id=__import__('uuid').uuid4().hex,case=case,status='RUNNING',
@@ -706,15 +904,16 @@ class RobotControl:
             trial_id=self.field_trial['trial_id'],status='OBSERVED' if passed else 'INCONCLUSIVE',
             linear_command_cap_m_s=CAP_V,angular_stopping='NOT_MEASURED',body_stopping='NOT_MEASURED',
             scope='FORWARD_WHEEL_WATCHDOG_OBSERVATION_ONLY',observed=observed,cleanup=cleanup)
-        self._field_write('field-stop.json',receipt)
-        if passed:self.field_receipt=receipt
-        else:self.field_until=0.
-        self._finish_field('PASS' if passed else 'INCONCLUSIVE','FORWARD_WHEEL_STOP_OBSERVATION',receipt=receipt)
+        stop_write=self._field_write('field-stop.json',receipt)
+        if not passed:self.field_until=0.
+        self._finish_field('PASS' if passed else 'INCONCLUSIVE','FORWARD_WHEEL_STOP_OBSERVATION',receipt=receipt,stop_write=stop_write)
         self.gate.pause('FIELD_BOOTSTRAP_COMPLETE')
-        if passed and not self.stop_requested.is_set():self._prepare()
+        pending=self.field_pending.get(self.field_trial['trial_id'])
+        if pending:pending['resume_generation']=self.gate.generation
 
     def _field_tick(self):
         if self.field_writer:self.field_writer.check()
+        self._poll_field_writes()
         trial=self.field_trial
         if self.field_until and self.clock()>=self.field_until:
             self.field_until=0.;self._pause('FIELD_SUPERVISION_EXPIRED')
@@ -722,18 +921,41 @@ class RobotControl:
         if trial['case']=='bootstrap_stop':return
         frame=self.native.latest_frame()
         try:
-            frame_points(frame,self.field_config,self.clock())
+            if trial['case'] in {'stationary','soak'}:frame_points(frame,self.field_config,self.clock())
+            else:
+                selected,_,partial,_=control_observation(self.native,self.field_config,self.clock())
+                if partial and partial['frame_sequence']!=trial.get('last_warning_frame'):
+                    trial['last_warning_frame']=partial['frame_sequence']
+                    trial['unknown_ring_observations']=trial.get('unknown_ring_observations',0)+1
+                    trial['last_incomplete_raw_sha256']=partial['raw_sha256']
+                frame=selected
             if frame['frame_sequence']!=trial['last_frame']:
                 trial['last_frame']=frame['frame_sequence'];trial['frames']+=1
                 trial['last_raw_sha256']=frame['raw_sha256']
         except (ValueError,TypeError,KeyError) as exc:
-            self._finish_field('INCONCLUSIVE',reason_code(exc));self._pause('FIELD_COLLECTION_INVALID');return
+            if trial['case'] not in {'stationary','soak'}:
+                self._finish_field('INCONCLUSIVE',reason_code(exc));self._pause('FIELD_COLLECTION_INVALID');return
+            # Diagnostic zero-command collection preserves the whole requested
+            # interval, including failures. Invalid rings never become PASS or
+            # authorize motion; a later valid ring cannot erase the failure.
+            key=(frame or {}).get('frame_sequence')
+            if key!=trial.get('last_invalid_frame') or not trial.get('invalid_reasons'):
+                trial['last_invalid_frame']=key
+                trial['invalid_frames']=trial.get('invalid_frames',0)+1
+                reasons=trial.setdefault('invalid_reasons',{})
+                code=reason_code(exc);reasons[code]=reasons.get(code,0)+1
         if self.tracker and self.clock()-getattr(self,'field_tracking_written',-math.inf)>=1.:
             tracking=self.tracker.snapshot()
             self._field_write('field-tracking.json',dict(context=self.context,tracking=tracking))
             self.field_tracking_written=self.clock()
         elapsed=self.clock()-trial['started_s']
         if trial['case'] in {'stationary','soak'} and elapsed>=(300. if trial['case']=='soak' else 8.):
-            self._finish_field('PASS' if trial['frames']>=10 else 'INCONCLUSIVE','ZERO_MOTION_NATIVE_COLLECTION',
-                frames=trial['frames'],duration_s=elapsed,body_accuracy='NOT_MEASURED',
+            invalid=trial.get('invalid_frames',0)
+            self._finish_field('PASS' if trial['frames']>=10 and not invalid else 'INCONCLUSIVE',
+                'NATIVE_COLLECTION_CONTAINS_INVALID_FRAMES' if invalid else 'ZERO_MOTION_NATIVE_COLLECTION',
+                frames=trial['frames'],invalid_frames=invalid,invalid_reasons=trial.get('invalid_reasons',{}),
+                collection_complete=True,strict_ring_quality='INCOMPLETE_RINGS' if invalid else 'COMPLETE_RINGS',
+                raw_archive_integrity='PENDING_NATIVE_FINAL_MANIFEST',
+                motion_authority='NOT_GRANTED_BY_COLLECTION',
+                duration_s=elapsed,body_accuracy='NOT_MEASURED',
                 scope='NATIVE_COLLECTION_WITH_NO_APP_MOTION_COMMANDS_NOT_PHYSICAL_IMMOBILITY_PROOF')

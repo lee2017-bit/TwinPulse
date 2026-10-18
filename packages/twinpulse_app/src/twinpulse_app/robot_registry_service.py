@@ -8,6 +8,7 @@ import re
 import time
 from threading import Thread
 from uuid import uuid4
+from twinpulse_core.robot_battery import battery_display_config
 
 from .command_broker import BrokerError
 from .robot_adapters import ADAPTERS, CREDENTIAL_REF, instance_binding, require_adapter
@@ -81,6 +82,7 @@ class RobotRegistryService:
 
     def snapshot(self,owner):
         value=self.registry.snapshot()
+        value['battery_display_presets']={mode:battery_display_config(mode) for mode in ('voltage_only','robotis_opencr')}
         value['adapters']=deepcopy(list(ADAPTERS))
         value['discovery']=self._discovery_snapshot(value['robots'])
         value['guide']={'discovery_is_connectivity':False,'registration_is_connectivity':False,
@@ -138,6 +140,8 @@ class RobotRegistryService:
         return value
 
     def _admission(self):
+        if getattr(self.devices,'engine_process_probe_blocked',False):
+            raise BrokerError('engine_observation_stale','Wait for current engine observation before connecting.',status=409)
         self.devices.assert_document_available()
         for context in self.devices.contexts:
             workflow=getattr(context,'product_workflow',None)
@@ -154,6 +158,7 @@ class RobotRegistryService:
             if not isinstance(body,dict):raise BrokerError('robot_registry_request_invalid','A robot action is required.',status=400)
             operation=body.get('action')
             allowed={'register':{'action','expected_revision','label','adapter_id','endpoint'},
+                     'set_battery_display':{'action','expected_revision','id','config','expected_display_sha256'},
                      'select':{'action','expected_revision','id'},'discover':{'action','expected_revision'},
                      'connect':{'action','expected_revision'},'prepare':{'action','expected_revision'}}
             if not isinstance(operation,str) or operation not in allowed or set(body)!=allowed[operation]:
@@ -170,6 +175,11 @@ class RobotRegistryService:
                     self.registry.register(label=body['label'],adapter_id=adapter['id'],adapter_version=adapter['version'],
                         robot_profile_id=adapter['robot_profile_id'],endpoint=RobotEndpoint(**endpoint),
                         credential_ref=CREDENTIAL_REF,expected_revision=expected)
+                elif operation=='set_battery_display':
+                    # Local display metadata only: no device binding, admission,
+                    # connection, deployment or motion authority is changed.
+                    self.registry.set_battery_display(body['id'],body['config'],expected_revision=expected,
+                        expected_display_sha256=body['expected_display_sha256'])
                 elif operation=='select':
                     self._admission()
                     if self.thread and self.thread.is_alive():raise BrokerError('robot_discovery_busy','Wait for discovery to finish.',status=409)
@@ -214,6 +224,8 @@ class RobotRegistryService:
                     diagnostics.start(owner,token,True)
             except (ValueError,TypeError,KeyError) as error:
                 code=str(error)
+                if code=='ROBOT_REGISTRY_CHANGED':
+                    raise BrokerError('robot_registry_changed','Saved robot settings changed. Refresh before saving again.',status=409) from error
                 raise BrokerError('robot_registry_invalid',code if code.startswith('ROBOT_') else 'Invalid robot registry data.',status=400) from error
             return self.snapshot(owner)
 

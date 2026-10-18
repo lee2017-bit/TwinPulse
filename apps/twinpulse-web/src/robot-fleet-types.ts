@@ -17,7 +17,7 @@ export type FieldSetupConfig = {
   provenance:'reference'|'operator_reviewed'|'operator_measured';axes_reviewed:true;
 };
 export type FieldTrial = {
-  trial_id:string;case:FieldTestCase;status:'RUNNING'|'PASS'|'FAIL'|'INCONCLUSIVE'|'CANCELLED';
+  trial_id:string;case:FieldTestCase;status:'RUNNING'|'PENDING_PERSISTENCE'|'PASS'|'FAIL'|'INCONCLUSIVE'|'CANCELLED';
   reason:string|null;started_s:number;ended_s?:number;result?:Record<string,unknown>|null;
 };
 export type RobotFieldState = {
@@ -25,6 +25,8 @@ export type RobotFieldState = {
   blockers:string[];stop_receipt:Record<string,unknown>|null;
   tracking:{status:string;epoch:string|null;pose:unknown;reason:string|null;raw_sha256:string|null;independent:true;accuracy:'UNQUALIFIED'}|null;
   active_trial:FieldTrial|null;trials:FieldTrial[];
+  native_observation?:{frame_sequence:number;stream_id:string|null;raw_sha256:string;raw_ring_complete:boolean;
+    unknown_bytes:number;receipt_age_s:number;policy:string;directional_clearance:string}|null;
 };
 export type RobotFleetRobot = {
   robot_id:string; label:string; kind:'sim'|'physical';
@@ -37,7 +39,11 @@ export type RobotFleetRobot = {
   last_operation_id?:string|null;
   source_twin_context?:RobotTwinContext|null;current_twin_context?:RobotTwinContext;
   twin_context_relation?:string;
-  battery:{voltage_v:number|null;percent:number|null;source:'simulated'|'measured'|'unknown';age_ms:number|null};
+  battery:{voltage_v:number|null;percent:number|null;source:'simulated'|'measured'|'unknown';age_ms:number|null;
+    estimated_percent?:number|null;estimate_method?:string;capacity_measured?:false;
+    display_mode?:'voltage_only'|'robotis_opencr'|'custom';display_label?:string;display_source?:string;display_config_sha256?:string;
+    reserve_threshold_percent?:number;reserve_state?:'UNKNOWN'|'ABOVE_RESERVE'|'AT_OR_BELOW_RESERVE';
+    voltage_protection?:'UNKNOWN'|'CLEAR'|'LOW_VOLTAGE_GUARD';low_voltage_guard_v?:number;read_status?:Record<string,unknown>};
   pose:{position_m:[number,number,number];frame_id:string;source:string;aligned:boolean}|null;
   display_pose?:{position_m:[number,number,number];source:'operator_estimate_not_localized';scene_revision:string;frame_id:'isaac_world';aligned:false}|null;
   telemetry_age_ms:number|null; telemetry_sequence:number;
@@ -45,6 +51,10 @@ export type RobotFleetRobot = {
   controller_state?:string|null;
   cleanup_confirmed?:boolean|null;
   sensor_frame?:Record<string,unknown>|null;
+  telemetry_diagnostic?:Record<string,unknown>|null;
+  timing_policy?:Record<string,unknown>|null;
+  field_evidence?:Record<string,unknown>|null;
+  native_diagnostic?:Record<string,unknown>|null;
   setup?:{runtime_state:string;blockers:string[];profile:Record<string,unknown>|null;qualification:Record<string,unknown>|null;binding_sha256?:string};
   field?:RobotFieldState;
   capabilities:{drive:boolean;lidar:boolean;read_only_connection?:boolean;prepare?:boolean;qualify?:boolean;profile?:boolean};
@@ -83,8 +93,21 @@ export function fleetBatteryLabel(robot:RobotFleetRobot){
   const battery=robot.battery;
   const stale=typeof battery.age_ms!=='number'||!Number.isFinite(battery.age_ms)||battery.age_ms<0||battery.age_ms>=1000||!fleetRobotFresh(robot);
   const value=battery.source==='unknown'?'unavailable':[
-    typeof battery.percent==='number'&&Number.isFinite(battery.percent)?`${battery.percent.toFixed(0)}%`:null,
+    battery.display_mode!=='voltage_only'&&typeof battery.percent==='number'&&Number.isFinite(battery.percent)?`${battery.percent.toFixed(0)}%`:
+      battery.display_mode!=='voltage_only'&&['robotis_opencr_voltage_10_5_to_12_3_v1','custom_voltage_table_v1'].includes(battery.estimate_method??'')&&typeof battery.estimated_percent==='number'&&Number.isFinite(battery.estimated_percent)&&battery.estimated_percent>=0&&battery.estimated_percent<=100
+        ?`약 ${battery.estimated_percent.toFixed(0)}% (전압 추정)`:null,
     typeof battery.voltage_v==='number'&&Number.isFinite(battery.voltage_v)?`${battery.voltage_v.toFixed(2)} V`:null,
   ].filter(Boolean).join(' · ')||'unavailable';
   return `${value} · ${battery.source}${stale?' · stale':''}`;
 }
+export function fleetBatteryPolicyMessage(robot:RobotFleetRobot){
+  const b=robot.battery;
+  if(b.voltage_protection==='LOW_VOLTAGE_GUARD')return '저전압 보호로 새 이동 차단 · 기존 11.1V 이하 보호가 20% 잔량 정책보다 우선합니다.';
+  if(b.display_mode==='voltage_only')return '잔량 환산 기준 없음 · 전압만 표시합니다. 주행 보호 기준은 별도로 유지됩니다.';
+  if(b.display_mode==='custom')return `사용자 기준표${b.display_label?` · ${b.display_label}`:''} · 전압 추정이며 실측 용량이 아닙니다. 표시 설정으로 주행 보호를 바꾸지 않습니다.`;
+  if(b.estimate_method!=='robotis_opencr_voltage_10_5_to_12_3_v1')return null;
+  if(b.reserve_state==='AT_OR_BELOW_RESERVE')return '추정 잔량 20% 이하 · 충전이 필요하며 새 이동을 시작하지 않습니다.';
+  return 'ROBOTIS 전압 환산: 10.5V=0%, 12.3V=100% · 실측 용량이 아닙니다. 추정 20% 충전 정책과 별도 저전압 보호를 구분합니다. 잔량만으로 주행을 허가하지 않습니다.';
+}
+export const fleetStopCommand=(value:string)=>/(?:멈춰|정지|스톱|\bstop|\bpause)(?:해줘|해|줘)?[.!?]*$/i.test(value.trim())||/^(?:stop|pause)\s*(?:robot|로봇)[.!?]*$/i.test(value.trim());
+export const fleetReadCommand=(value:string)=>/상태|배터리|battery|status|로그|기록.*(?:보여|분석)|\b(?:logs?|recording)\b/i.test(value);

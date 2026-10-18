@@ -9,51 +9,69 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+import multiprocessing
 import queue
 import re
 import threading
 import time
 from pathlib import Path
 from uuid import uuid4
+from control_timing import NATIVE_RECEIPT_S,ICP_COMPUTE_S,TRACKING_RESULT_S
+from field_config import SCHEMA,checked_config,digest
 
-SCHEMA = 'supervised-field-test-1.0'
 CASES = ('stationary', 'bootstrap_stop', 'forward', 'backward', 'left', 'right',
          'full_turn', 'proximity', 'stall', 'presence_gap', 'soak')
 CAP_V, CAP_W, TTL = .03, .20, 900.
-
-
-def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
-
-
-def checked_config(value, *, robot_id=None, binding_sha256=None):
-    bounds = dict(footprint_radius_m=(.08, .6), sensor_x_m=(-.6, .6), sensor_y_m=(-.6, .6),
-                  sensor_yaw_rad=(-math.pi, math.pi), wheel_metres_per_tick=(.000001, .01),
-                  wheel_separation_m=(.08, .8))
-    keys = {'schema', 'robot_id', 'binding_sha256', 'provenance', 'axes_reviewed', 'angle_sign', *bounds}
-    if not isinstance(value, dict) or set(value) != keys or value['schema'] != SCHEMA:
-        raise ValueError('FIELD_CONFIG_SHAPE')
-    if (not isinstance(value['robot_id'], str) or not re.fullmatch('[a-f0-9]{32}', value['robot_id'])
-            or not isinstance(value['binding_sha256'], str) or not re.fullmatch('[a-f0-9]{64}', value['binding_sha256'])
-            or robot_id is not None and value['robot_id'] != robot_id
-            or binding_sha256 is not None and value['binding_sha256'] != binding_sha256):
-        raise ValueError('FIELD_CONFIG_ROBOT_BINDING')
-    if (value['provenance'] not in {'reference', 'operator_reviewed', 'operator_measured'}
-            or value['axes_reviewed'] is not True or type(value['angle_sign']) is not int
-            or value['angle_sign'] not in {-1, 1}):
-        raise ValueError('FIELD_AXES_AND_PROVENANCE_REVIEW_REQUIRED')
-    for key, (low, high) in bounds.items():
-        if type(value[key]) not in (int, float) or not math.isfinite(value[key]) or not low <= value[key] <= high:
-            raise ValueError('FIELD_VALUE_OUTSIDE_RANGE_' + key.upper())
-    return deepcopy(value)
 
 
 def frame_points(frame, config, now):
     """Validate full original ring; unknown returns are not free-space proof."""
     if not frame or not frame.get('complete') or frame.get('interval_fallback'):
         raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+    return _validated_points(frame, config, now)
+
+
+def control_observation(native, config, now):
+    """Same-stream last COMPLETE ring within its original 350ms receipt limit.
+
+    A newer unknown-byte ring is retained as incomplete and used ONLY to veto
+    motion, never to prove clearance or to qualify ICP/strict motion. This is
+    an explicit supervised policy, not a claim to have decoded unknown bytes.
+    """
+    frame,previous=native.control_frames() if hasattr(native,'control_frames') else (native.latest_frame(),None)
+    if not frame or frame.get('interval_fallback'):
+        raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+    if frame.get('complete'):return frame,frame_points(frame,config,now),None,None
+    else:
+        q=frame.get('quality') or {};span=frame.get('source_byte_span') or {}
+        gaps=q.get('unframed_spans') or []
+        if (q.get('complete_start') is not True
+                or q.get('checksum_invalid_packets')!=0 or q.get('interval_fallback_packets')!=0
+                or q.get('unknown_boundary_policy')!='GAP_BEFORE_VALID_RING_START_BELONGS_TO_CLOSING_RING'
+                or not gaps):raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+        cursor=span.get('start');count=0
+        for gap in gaps:
+            start,end,length=gap.get('start'),gap.get('end'),gap.get('length')
+            if (type(start) is not int or type(end) is not int or type(length) is not int
+                    or start<cursor or end<=start or length!=end-start or gap.get('classification')!='UNKNOWN'
+                    or gap.get('framing_errors')!=0
+                    or not re.fullmatch('[a-f0-9]{64}',str(gap.get('raw_sha256','')))):
+                raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+            cursor=end;count+=length
+        if count!=q.get('unframed_bytes'):raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+        # Current partial returns cannot extend previous-ring freshness. Any
+        # newer observed hazard/invalid return in the swept cone still vetoes.
+        partial_points=_validated_points(frame,config,now)
+        if (not previous or not frame.get('stream_id') or previous.get('stream_id')!=frame['stream_id']
+                or previous['frame_sequence']>=frame['frame_sequence']
+                or previous['timing']['receipt_end_s']>frame['timing']['receipt_end_s']):
+            raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
+        return previous,frame_points(previous,config,now),frame,partial_points
+
+
+def _validated_points(frame, config, now):
     t = frame['timing']
-    if not 0 <= now-t['receipt_end_s'] <= .35 or not 0 <= t['receipt_end_s']-t['receipt_start_s'] <= .35:
+    if not 0 <= now-t['receipt_end_s'] <= NATIVE_RECEIPT_S or not 0 <= t['receipt_end_s']-t['receipt_start_s'] <= NATIVE_RECEIPT_S:
         raise ValueError('FIELD_NATIVE_RECEIPT_STALE_OR_BACKLOG')
     span = frame['source_byte_span']
     if not 0 <= span['start'] < span['end'] or not re.fullmatch('[a-f0-9]{64}', frame['raw_sha256']):
@@ -65,8 +83,12 @@ def frame_points(frame, config, now):
         raise ValueError('FIELD_NATIVE_BYTE_ORDER')
     points = []
     for b in beams:
-        d = b['distance_m']; a = math.radians(b['angle_deg'])*config['angle_sign']+config['sensor_yaw_rad']
+        d = b['distance_m'];angle=b['angle_deg'];quality=b['quality']
         if type(d) not in (int, float) or not math.isfinite(d) or d < 0:raise ValueError('FIELD_NATIVE_DISTANCE_INVALID')
+        if (type(angle) not in (int,float) or not math.isfinite(angle) or not 0<=angle<=360
+                or type(quality) not in (int,float) or not math.isfinite(quality) or quality<0):
+            raise ValueError('FIELD_NATIVE_NODES_INVALID')
+        a = math.radians(angle)*config['angle_sign']+config['sensor_yaw_rad']
         if d > 0 and b['quality'] > 0:
             points.append((config['sensor_x_m']+d*math.cos(a), config['sensor_y_m']+d*math.sin(a)))
     return points
@@ -85,6 +107,10 @@ def register_pair(before, after, *, deadline, clock=time.monotonic):
     xx = sum((v[0]-mx)**2 for v in p)/len(p); yy = sum((v[1]-my)**2 for v in p)/len(p)
     xy = sum((v[0]-mx)*(v[1]-my) for v in p)/len(p)
     if xx*yy-xy*xy < .002:raise ValueError('TRACKING_DEGENERATE_GEOMETRY')
+    # Exact same .15m correspondence cutoff, indexed spatially instead of
+    # scanning every reference point for every point/iteration/seed under GIL.
+    cells={}
+    for index,b in enumerate(p):cells.setdefault((math.floor(b[0]/.15),math.floor(b[1]/.15)),[]).append((index,b))
     candidates = []
     for seed in (0., -.12, .12):
         x = y = 0.; yaw = seed; pairs = []
@@ -94,7 +120,10 @@ def register_pair(before, after, *, deadline, clock=time.monotonic):
             transformed = [(c*a-s*b+x, s*a+c*b+y) for a, b in q]
             pairs = []
             for a in transformed:
-                b = min(p, key=lambda b: (a[0]-b[0])**2+(a[1]-b[1])**2)
+                ix,iy=math.floor(a[0]/.15),math.floor(a[1]/.15)
+                candidates_near=[(index,b) for x in (ix-1,ix,ix+1) for y in (iy-1,iy,iy+1) for index,b in cells.get((x,y),())]
+                if not candidates_near:continue
+                _,b=min(candidates_near,key=lambda row:((a[0]-row[1][0])**2+(a[1]-row[1][1])**2,row[0]))
                 error = (a[0]-b[0])**2+(a[1]-b[1])**2
                 if error < .15**2:pairs.append((a, b, error))
             pairs.sort(key=lambda row: row[2]); pairs = pairs[:max(30, int(len(pairs)*.8))]
@@ -116,25 +145,97 @@ def register_pair(before, after, *, deadline, clock=time.monotonic):
     for other in candidates[1:]:
         if other[0] <= best[0]+.004 and (math.hypot(other[1]-best[1], other[2]-best[2]) > .025 or abs(other[3]-best[3]) > .04):
             raise ValueError('TRACKING_AMBIGUOUS')
+    if clock() > deadline:raise ValueError('TRACKING_COMPUTE_DEADLINE')
     return dict(delta=list(best[1:]), residual_m=best[0], accuracy='UNQUALIFIED', independent=True)
 
 
+def _registration_worker(connection):
+    """Fixed local computation only; no ROS, devices or incoming executable code."""
+    try:
+        connection.send(dict(ready=True))
+        while True:
+            job=connection.recv()
+            if job is None:return
+            job_id,before,after=job
+            started=time.monotonic()
+            try:
+                if len(before)>4096 or len(after)>4096:raise ValueError('TRACKING_POINT_BOUND')
+                value=register_pair(before,after,deadline=started+ICP_COMPUTE_S)
+                result=dict(ok=True,fit=value)
+            except (ValueError,KeyError,TypeError,OverflowError) as exc:
+                result=dict(ok=False,reason=str(exc))
+            connection.send(dict(job_id=job_id,compute_started_s=started,
+                compute_ended_s=time.monotonic(),**result))
+    except (EOFError,BrokenPipeError,OSError):pass
+    finally:connection.close()
+
+
 class NativeTracker:
-    """One immutable latest result, bounded worker; publish never runs ICP."""
+    """Latest-only tracking; ICP has a separate process/GIL and one in-flight job."""
     def __init__(self, native, config, clock=time.monotonic):
         self.native, self.config, self.clock = native, config, clock
         self.cancel = threading.Event(); self.lock = threading.Lock(); self.epoch = uuid4().hex
         self.result = dict(status='WAITING', epoch=self.epoch, pose=None, independent=True, accuracy='UNQUALIFIED')
+        ctx=multiprocessing.get_context('spawn')
+        self.connection,child=ctx.Pipe()
+        self.process=ctx.Process(target=_registration_worker,args=(child,),daemon=True,name='TwinPulseICP')
+        self.process.start();child.close()
+        self.job_sequence=0;self.compute_timing={};self.worker_failed=None;self.worker_ready=False
         self.thread = threading.Thread(target=self._run, daemon=True, name='NativeRelativeTracking')
         self.thread.start()
 
     def snapshot(self):
         with self.lock:r = deepcopy(self.result)
-        if r.get('sample_s') is not None and self.clock()-r['sample_s'] > .6:
+        current=self.native.latest_frame()
+        if r.get('status')=='ESTIMATED' and (not current or
+            current.get('stream_id',getattr(self.native,'stream_id',None))!=r.get('stream_id') or
+            current['frame_sequence']<r.get('frame_sequence',0)):
+            r.update(status='STALE',reason='TRACKING_NATIVE_IDENTITY_CHANGED',pose=None)
+        if r.get('sample_s') is not None and self.clock()-r['sample_s'] > TRACKING_RESULT_S:
             r.update(status='STALE', reason='TRACKING_SAMPLE_STALE')
         return r
 
-    def close(self):self.cancel.set(); self.thread.join(timeout=1.)
+    def close(self):
+        self.cancel.set();self.thread.join(timeout=1.)
+        if not self.thread.is_alive():
+            try:self.connection.send(None)
+            except (BrokenPipeError,OSError):pass
+        self.process.join(timeout=1.)
+        if self.process.is_alive():self.process.terminate();self.process.join(timeout=1.)
+        self.connection.close()
+        return dict(worker_reaped=not self.process.is_alive(),thread_reaped=not self.thread.is_alive())
+
+    def _fit(self,before,after):
+        if self.worker_failed:raise ValueError(self.worker_failed)
+        if not self.process.is_alive():raise ValueError('TRACKING_PROCESS_EXITED')
+        startup=time.monotonic()
+        while not self.worker_ready:
+            if self.cancel.is_set():raise ValueError('TRACKING_CANCELLED')
+            if self.connection.poll(.01):
+                self.worker_ready=self.connection.recv()==dict(ready=True)
+                if not self.worker_ready:raise ValueError('TRACKING_PROCESS_HANDSHAKE')
+            elif time.monotonic()-startup>10. or not self.process.is_alive():
+                self.worker_failed='TRACKING_PROCESS_START_TIMEOUT';raise ValueError(self.worker_failed)
+        self.job_sequence+=1;job=self.job_sequence
+        self.compute_timing=dict(job_id=job,stage='DISPATCHED')
+        self.connection.send((job,before,after));sent=time.monotonic()
+        while not self.cancel.is_set():
+            if self.connection.poll(.01):
+                value=self.connection.recv()
+                if value.get('job_id')!=job:raise ValueError('TRACKING_RESULT_JOB_MISMATCH')
+                self.compute_timing={k:value[k] for k in ('job_id','compute_started_s','compute_ended_s')}
+                self.compute_timing['stage']='COMPLETED' if value['ok'] else 'COMPUTE_FAILED'
+                self.compute_timing['compute_elapsed_s']=value['compute_ended_s']-value['compute_started_s']
+                self.compute_timing['delivery_elapsed_s']=time.monotonic()-sent
+                if not value['ok']:raise ValueError(value['reason'])
+                return value['fit']
+            # This bounds process delivery; it does not extend the .08s compute
+            # budget or the original frame/pose freshness checks.
+            if time.monotonic()-sent>.5 or not self.process.is_alive():
+                self.compute_timing.update(stage='DELIVERY_FAILED',delivery_elapsed_s=time.monotonic()-sent)
+                self.worker_failed='TRACKING_PROCESS_UNRESPONSIVE'
+                raise ValueError(self.worker_failed)
+        raise ValueError('TRACKING_CANCELLED')
 
     def _run(self):
         previous = None; sequence = None; stream_id=None; pose = [0., 0., 0.]
@@ -144,8 +245,12 @@ class NativeTracker:
             stream=frame.get('stream_id',getattr(self.native,'stream_id',None))
             if stream!=stream_id or sequence is not None and frame['frame_sequence']<sequence:
                 previous=None;sequence=None;stream_id=stream;self.epoch=uuid4().hex;pose=[0.,0.,0.]
+                with self.lock:
+                    self.result=dict(status='WAITING',reason='TRACKING_NEW_NATIVE_IDENTITY',epoch=self.epoch,
+                        stream_id=stream,frame_sequence=frame['frame_sequence'],pose=None,independent=True,accuracy='UNQUALIFIED')
             if frame['frame_sequence'] == sequence:continue
             sequence = frame['frame_sequence']
+            self.compute_timing=dict(stage='FRAME_VALIDATION')
             try:
                 pts = frame_points(frame, self.config, self.clock())
                 if previous is None:
@@ -154,20 +259,30 @@ class NativeTracker:
                 prior, p = previous
                 dt = frame['timing']['receipt_end_s']-prior['timing']['receipt_end_s']
                 if not 0 < dt <= .6:raise ValueError('TRACKING_FRAME_GAP')
-                fit = register_pair(p, pts, deadline=self.clock()+.08, clock=self.clock)
+                fit = self._fit(p, pts)
+                current=self.native.latest_frame()
+                if self.cancel.is_set():return
+                if not current or current.get('stream_id',getattr(self.native,'stream_id',None))!=stream:
+                    raise ValueError('TRACKING_STREAM_CHANGED')
+                if current['frame_sequence']<sequence:raise ValueError('TRACKING_FRAME_SEQUENCE_ROLLED_BACK')
+                if self.clock()-frame['timing']['receipt_end_s']>.6:raise ValueError('TRACKING_SAMPLE_STALE')
                 dx, dy, da = fit['delta']
                 if math.hypot(dx,dy) > .12*dt+.02 or abs(da) > .6*dt+.02:
                     raise ValueError('TRACKING_IMPLAUSIBLE_JUMP')
                 c, s = math.cos(pose[2]), math.sin(pose[2])
                 pose = [pose[0]+c*dx-s*dy, pose[1]+s*dx+c*dy, pose[2]+da]
                 value = dict(status='ESTIMATED', epoch=self.epoch, pose=pose, sample_s=frame['timing']['receipt_end_s'],
-                    raw_sha256=frame['raw_sha256'], previous_raw_sha256=prior['raw_sha256'], **fit)
+                    raw_sha256=frame['raw_sha256'], previous_raw_sha256=prior['raw_sha256'],
+                    frame_sequence=sequence,stream_id=stream,compute_timing=dict(self.compute_timing),**fit)
                 previous = (frame, pts)
-            except (ValueError, KeyError, TypeError) as exc:
+            except (ValueError, KeyError, TypeError, EOFError, OSError) as exc:
                 # Never accumulate across a failed match or silently wheel-fallback.
                 previous = None; self.epoch = uuid4().hex; pose = [0.,0.,0.]
                 value = dict(status='INCONCLUSIVE', reason=str(exc), epoch=self.epoch, pose=None,
-                             independent=True, accuracy='UNQUALIFIED', sample_s=self.clock())
+                             independent=True, accuracy='UNQUALIFIED',sample_s=frame['timing']['receipt_end_s'],
+                             raw_sha256=frame['raw_sha256'],frame_sequence=sequence,stream_id=stream,
+                             compute_timing=dict(self.compute_timing))
+            if self.cancel.is_set():return
             with self.lock:self.result = value
 
 
@@ -177,7 +292,8 @@ class FieldEvidenceWriter:
     def __init__(self,directory,clock=time.monotonic):
         self.directory=Path(directory);self.clock=clock;self.queue=queue.Queue(maxsize=32)
         self.lock=threading.Lock();self.pending={};self.error=None;self.closed=False
-        self.sequence=0;self.reserved=0
+        self.sequence=0;self.reserved=0;self.committed={};self.writer_id=uuid4().hex
+        self.phase='IDLE';self.phase_started=clock();self.phase_max={};self.ledger_created=False
         self.thread=threading.Thread(target=self._run,daemon=True,name='FieldEvidenceWriter');self.thread.start()
 
     def check(self):
@@ -198,6 +314,29 @@ class FieldEvidenceWriter:
             except queue.Full:
                 del self.pending[index];self.error='FIELD_EVIDENCE_QUEUE_FULL';raise ValueError(self.error)
             self.reserved+=len(raw)
+        return dict(writer_id=self.writer_id,write_id=index,name=name,sha256=hashlib.sha256(raw).hexdigest())
+
+    def receipt(self, token):
+        with self.lock:
+            if self.error:raise ValueError(self.error)
+            value=self.committed.get(token['write_id'])
+            if value is not None:
+                if any(value.get(k)!=token[k] for k in ('writer_id','write_id','name','sha256')):
+                    raise ValueError('FIELD_EVIDENCE_ACK_IDENTITY')
+                return dict(value)
+            if token['write_id'] not in self.pending:raise ValueError('FIELD_EVIDENCE_ACK_MISSING')
+        return None
+
+    def status(self):
+        with self.lock:
+            return dict(writer_id=self.writer_id,last_write_id=self.sequence,error=self.error,pending=len(self.pending),phase=self.phase,
+                phase_elapsed_s=max(0.,self.clock()-self.phase_started),phase_max_s=dict(self.phase_max),
+                oldest_pending_s=max(0.,self.clock()-min(self.pending.values())) if self.pending else 0.)
+
+    def _phase(self,name):
+        with self.lock:
+            now=self.clock();self.phase_max[self.phase]=max(self.phase_max.get(self.phase,0.),now-self.phase_started)
+            self.phase=name;self.phase_started=now
 
     def _run(self):
         import os
@@ -207,18 +346,44 @@ class FieldEvidenceWriter:
                 except queue.Empty:continue
                 target=self.directory/name;temporary=self.directory/(name+'.pending')
                 if target.is_symlink() or temporary.is_symlink():raise ValueError('FIELD_EVIDENCE_SYMLINK')
+                self._phase('OPEN')
                 with temporary.open('wb') as stream:
+                    self._phase('WRITE')
                     if stream.write(raw)!=len(raw):raise OSError('SHORT_WRITE')
-                    stream.flush();os.fsync(stream.fileno())
+                    self._phase('FLUSH');stream.flush()
+                    self._phase('FSYNC');os.fsync(stream.fileno())
+                self._phase('REPLACE')
                 os.replace(temporary,target)
-                with self.lock:del self.pending[index]
+                acknowledgement=dict(writer_id=self.writer_id,write_id=index,name=name,
+                    sha256=hashlib.sha256(raw).hexdigest(),state='COMMITTED',data_replaced_s=self.clock())
+                # Separate append-only ACKs avoid recursively rewriting the
+                # trial's own persistence marker. Resolve only with a complete
+                # writer receipt, never by existence of a partial ledger alone.
+                ledger=self.directory/'field-commits.jsonl'
+                if ledger.is_symlink():raise ValueError('FIELD_EVIDENCE_SYMLINK')
+                self._phase('ACK_APPEND')
+                with ledger.open('ab' if self.ledger_created else 'xb') as stream:
+                    self.ledger_created=True
+                    encoded=(json.dumps(acknowledgement,sort_keys=True)+'\n').encode()
+                    if stream.write(encoded)!=len(encoded):raise OSError('SHORT_ACK_WRITE')
+                    self._phase('ACK_FLUSH');stream.flush()
+                    self._phase('ACK_FSYNC');os.fsync(stream.fileno())
+                self._phase('IDLE')
+                with self.lock:
+                    if self.clock()-self.pending[index]>.5:self.error=self.error or 'FIELD_EVIDENCE_STALLED'
+                    acknowledgement['ack_observed_s']=self.clock()
+                    self.committed[index]=acknowledgement
+                    del self.pending[index]
+                    # Owner polls each cycle; old unreferenced tracking ACKs need
+                    # not grow forever. An expired ACK is never assumed success.
+                    while len(self.committed)>256:self.committed.pop(next(iter(self.committed)))
         except Exception:
             with self.lock:self.error=self.error or 'FIELD_EVIDENCE_WRITE_FAILED'
 
     def close(self):
         self.closed=True;self.thread.join(timeout=2.)
-        return dict(complete=not self.thread.is_alive() and not self.error and not self.pending,
-                    writer_reaped=not self.thread.is_alive(),error=self.error,pending=len(self.pending))
+        return dict(self.status(),complete=not self.thread.is_alive() and not self.error and not self.pending,
+                    writer_reaped=not self.thread.is_alive())
 
 
 class FieldGuard:
@@ -236,34 +401,63 @@ class FieldGuard:
         if not self.admitted():raise ValueError('FIELD_SESSION_NOT_ARMED_OR_EXPIRED')
         if abs(v) > CAP_V+1e-9 or abs(w) > CAP_W+1e-9:raise ValueError('FIELD_POLICY_SPEED_CAP')
         if source_created is None or not 0 <= now-source_created <= .25:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
-        frame = self.native.latest_frame(); pts = frame_points(frame, self.config, now)
+        frame,partial=self._range_check(v,w,now)
+        end=frame['timing']['receipt_end_s']
+        self._progress_check(v,w,now)
+        if hasattr(self.native,'control_frames'):
+            current,_=self.native.control_frames()
+            if not current or current.get('stream_id')!=frame.get('stream_id'):
+                raise ValueError('FIELD_NATIVE_STREAM_CHANGED')
+            if current is not (partial or frame):
+                # Do not read a newer hazard and then discard it. One bounded
+                # full recheck uses original clocks and all direction tests.
+                frame,_=self._range_check(v,w,self.clock())
+                end=frame['timing']['receipt_end_s']
+        if not 0<=self.clock()-source_created<=.25:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
+        if not 0<=self.clock()-end<=NATIVE_RECEIPT_S:raise ValueError('FIELD_GUARD_COMPUTE_EXPIRED')
+
+    def _range_check(self,v,w,now):
+        frame,pts,partial,partial_points = control_observation(self.native, self.config, now)
         seq = frame['frame_sequence']; end = frame['timing']['receipt_end_s']
         if self.last_frame is not None and (seq < self.last_frame or seq != self.last_frame and end <= self.last_end):
             raise ValueError('FIELD_NATIVE_REPLAY_OR_CLOCK')
         self.last_frame, self.last_end = seq, end
         relevant = []
-        for x, y in pts:
+        for x, y in pts+(partial_points or []):
             if w or v > 0 and x >= 0 and abs(y) <= self.config['footprint_radius_m']+.1 or v < 0 and x <= 0 and abs(y) <= self.config['footprint_radius_m']+.1:
                 relevant.append((x,y))
-        # Require returns throughout the swept direction, not just one clear ray.
-        sectors = {int((math.atan2(y,x) % math.tau)/(math.tau/24)) for x,y in pts}
+        # Only positive, valid returns cover an angle. A no-return is never
+        # free space, but does not erase surrounding valid samples. Enforce the
+        # existing 5-degree maximum using VALID returns, not raw beam slots.
         needed = set(range(24)) if w else ({22,23,0,1} if v > 0 else {10,11,12,13})
-        for beam in frame['beams']:
-            a=math.radians(beam['angle_deg'])*self.config['angle_sign']+self.config['sensor_yaw_rad']
-            sector=int((a % math.tau)/(math.tau/24))
-            if sector in needed and (beam['distance_m']<=0 or beam['quality']<=0):
-                raise ValueError('FIELD_DIRECTION_COVERAGE_UNKNOWN')
-        if not needed.issubset(sectors):raise ValueError('FIELD_DIRECTION_COVERAGE_UNKNOWN')
-        angles=sorted((math.radians(b['angle_deg'])*self.config['angle_sign']+self.config['sensor_yaw_rad'])%math.tau for b in frame['beams'])
-        for a,b in zip(angles,angles[1:]+[angles[0]+math.tau]):
-            if int(((a+b)/2 % math.tau)/(math.tau/24)) in needed and b-a>math.radians(5):
-                raise ValueError('FIELD_DIRECTION_COVERAGE_GAP')
+        for returns in [pts]+([partial_points] if partial is not None else []):
+            angles=sorted(math.atan2(y,x)%math.tau for x,y in returns)
+            sectors={int(a/(math.tau/24)) for a in angles}
+            if not needed.issubset(sectors):raise ValueError('FIELD_DIRECTION_COVERAGE_UNKNOWN')
+            for a,b in zip(angles,angles[1:]+[angles[0]+math.tau]):
+                if b-a<=math.radians(5):continue
+                # Include gaps intersecting a cone even if midpoint is outside.
+                intersects=any(max(a,sector*math.tau/24+turn)<min(b,(sector+1)*math.tau/24+turn)-1e-12
+                               for sector in needed for turn in (0.,math.tau))
+                if intersects:raise ValueError('FIELD_DIRECTION_COVERAGE_GAP')
         gap = min((math.hypot(x,y)-self.config['footprint_radius_m'] for x,y in relevant), default=0.)
         self.last_result = dict(scope='RECEIPT_BASED_SUPERVISED_PROXIMITY_NOT_STOP_DISTANCE',
             estimated_radial_clearance_m=gap, threshold_m=.1, raw_sha256=frame['raw_sha256'],
             nodes_sha256=frame['nodes_sha256'], frame_sequence=seq, receipt_age_s=now-end,
+            raw_ring_complete=bool(frame['complete']),
+            latest_raw_ring_complete=bool((partial or frame)['complete']),
+            latest_raw_frame_sequence=(partial or frame)['frame_sequence'],
+            latest_raw_sha256=(partial or frame)['raw_sha256'],
+            latest_unknown_bytes=((partial or frame).get('quality') or {}).get('unframed_bytes',0),
+            latest_receipt_age_s=now-(partial or frame)['timing']['receipt_end_s'],
+            valid_return_count=len(pts),latest_valid_return_count=len(partial_points) if partial is not None else len(pts),
+            coverage_policy='POSITIVE_VALID_RETURNS_MAXIMUM_GAP_5_DEG_NOT_ZERO_AS_FREE_SPACE',
+            observation_policy='SUPERVISED_LAST_COMPLETE_ORIGINAL_AGE_AND_NEWER_STOP_VETO_V1',
             acquisition_timing='UNQUALIFIED', config_sha256=digest(self.config))
         if gap <= .1:raise ValueError('FIELD_PROXIMITY_10CM')
+        return frame,partial
+
+    def _progress_check(self,v,w,now):
         if self.started is None:self.started=now
         if self.bootstrap and (v != CAP_V or w != 0. or now-self.started > .65):
             raise ValueError('FIELD_BOOTSTRAP_OUTPUT_BOUND')
@@ -303,4 +497,3 @@ class FieldGuard:
         else:
             self.body_samples=[];self.progress.update(body_progress='INCONCLUSIVE',tracking_reason=(tracking or {}).get('reason'))
             if getattr(self,'require_body',False):raise ValueError('FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP')
-        if not 0 <= self.clock()-end <= .35:raise ValueError('FIELD_GUARD_COMPUTE_EXPIRED')

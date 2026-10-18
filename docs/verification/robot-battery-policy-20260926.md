@@ -1,5 +1,66 @@
 # Battery charging threshold and operator readiness — 2026-09-26
 
+## 2026-10-18 configurable display settings (v540)
+
+Robots now exposes per-robot voltage-only / public ROBOTIS reference / custom
+voltage-percent table settings, saved independently from the old registry shape
+and hardware binding. Display settings cannot change existing motion protection.
+Final installed same-BrowserWindow clicks and complete restart restore passed;
+the charging robot was not contacted. Initial startup409, table clipping and
+rollback-reader incompatibility were corrected and their evidence retained.
+[Single actual report, recordings, exact IDs/SHA and limits](../../outputs/robot-battery-settings-20261018/report.html).
+The public voltage-derived display is not a measured capacity calibration.
+
+## 2026-10-18 correction and implementation
+
+The later field suite/rules accidentally reintroduced11.4V as an extra motion
+margin despite the decision below. It is not a ROBOTIS cutoff and11.34V is
+approximately46.7%, not20% or a confirmed depleted battery. The actual powered
+trial's earlier no-motion decision is preserved but its battery rationale is
+corrected; native receipt/backlog remains an independent unresolved failure.
+
+Official battery specification: LiPo11.1V nominal/1800mAh/19.98Wh/5C, LB-012
+compatible with TurtleBot3. Nominal voltage is not the100% endpoint.
+Sources checked2026-10-18:
+
+- https://emanual.robotis.com/docs/en/platform/turtlebot3/features/
+- https://en.robotis.com/shop_en/item.php?it_id=903-0210-000
+- The OpenCR source/diagnosis links below (current public sources, not proof of
+  the installed MCU binary):10.5→0/12.3→100; low LED<11.1, averaged protection
+  state machine around11.0.20%=10.86 is below that protection region.
+
+Local changes: explicit estimated_percent/estimate_method/capacity_measured=false
+alongside nullable measured percent and original voltage/sample age; robot badge
+and controller say `약47% (전압 추정) ·11.34V`, and separate20% reserve from existing
+11.1V low-voltage/source guard. Saved connection observations show their recorded
+estimate labelled historical, never current charge. No generic unknown robot
+inherits this TB3 mapping. Extra11.4V field/observer comparisons were removed;
+existing >11.1V production guard, freshness, charging, stop and geometry rules
+are unchanged. No MCU firmware/deployed robot release modification or charging
+robot access is performed by this update.20% does not promise operation down to
+20%; lower-level protection may stop earlier and is reported as its own cause.
+
+Supplementary Python39 and targeted fleet72/registry23 tests passed; an accidental
+whole-web-suite invocation produced uninvestigated SceneFeedbackChat and
+GenerationApproval failures plus jsdom canvas warnings and was interrupted, not
+reported as an overall PASS. TypeScript/Vite build passed with its bundle-size
+warning. Independent rerun of those two suites:15tests/13PASS/2FAIL; not proven
+pre-existing and not hidden by the battery-specific results.
+
+Actual installed10 `20261018T075120Z-52636c49c313`/source
+`52636c49c3136097f6c63987136ffe6ba5eabe76d89de4d3b0385e74858af3b6`,1610file SHA
+verified; ZIP `d0408045ec29ab770c1938b347509745803cf61fd190116782ad2a8ffb54d95a`.
+Root Start-TwinPulse-Test.cmd via execution tool→same installed Electron's actual
+Robots→Saved connection observations→original saved observation
+`7da6f899dfd9eae8d46c7daa` displayed `약47% (전압추정) ·11.34V ·과거기록`.
+Launch `dbcb224c1c3a48349f741be48d9e4af6`; explicit Exit. No new CheckConnection,
+robot SSH, sensor or motion; the robot is charging. Native/Explorer/OSclipboard
+NOT_RUN. [Actual screenshot](../../outputs/robot-battery-ui-20261018/recorded-47-percent.png)
+and renderer recording/session are in `outputs/robot-battery-ui-20261018/`.
+Fresh on-robot estimate/threshold behaviour remains NOT_RUN, existing native/ROS
+lag and cold operation-summary defects unresolved. Model0HTTP/USD0, no dependencies,
+firmware update, public release or Git writes. Old raw/observations preserved.
+
 ## User decision
 
 User selected charging at approximately20% remaining. Interpret this as a

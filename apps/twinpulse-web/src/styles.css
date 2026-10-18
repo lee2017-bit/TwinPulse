@@ -372,15 +372,73 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-fleet label { display:grid; gap:4px; font-size:.77rem; min-width:0; }
 .robot-fleet input { min-width:0; width:100%; box-sizing:border-box; padding:7px; border:1px solid var(--line,#d7e1e5); border-radius:6px; }
 .robot-fleet-position { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
-.robot-fleet-drawer { position:fixed; right:16px; bottom:16px; width:min(360px,calc(100vw - 32px)); max-height:min(65dvh,650px); box-sizing:border-box; overflow:auto; z-index:9; border:1px solid var(--line,#d7e1e5); border-radius:12px; background:#fff; padding:12px; box-shadow:0 8px 32px #15253540; }
-.robot-fleet-drawer>header { position:sticky; top:-12px; z-index:1; background:#fff; margin:-12px -12px 8px; padding:12px; border-bottom:1px solid var(--line,#d7e1e5); }
-.robot-fleet-actions { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+.robot-fleet-drawer { position:static; width:100%; min-width:0; box-sizing:border-box; border-top:1px solid var(--line,#d7e1e5); background:#fff; padding:6px 0 0; margin-top:5px; }
+.robot-fleet-drawer>header { background:#fff; min-height:32px; padding:0 0 4px; border-bottom:1px solid var(--line,#d7e1e5); }
+.robot-fleet-drawer>header h4 { flex:1; min-width:0; }
+.robot-fleet-current-status { display:flex; align-items:center; gap:4px; font-size:.72rem; line-height:1.35; }
+.robot-fleet-current-status .robot-connection-dot { margin:0; }
+.robot-fleet-control-primary { display:grid; grid-template-columns:minmax(170px,220px) minmax(130px,1fr); gap:8px; align-items:start; }
+.robot-fleet-control-primary>.robot-fleet-pad { width:100%; margin:0; }
+.robot-fleet .robot-fleet-control-primary>.robot-fleet-command { margin:0; gap:4px; grid-template-columns:minmax(0,1fr) auto; }
+.robot-fleet-command label,.robot-fleet-command small { grid-column:1/-1; }
+.robot-fleet-command>button { grid-column:2; }
+.robot-fleet .robot-fleet-control-primary>.robot-fleet-command input { padding:5px 7px; }
+.robot-fleet-detail-tools { display:flex; align-items:flex-start; gap:6px; margin-top:4px; min-width:0; }
+.robot-fleet-diagnostics { flex:1; min-width:0; max-height:180px; overflow:auto; overscroll-behavior:contain; }
+.robot-fleet-diagnostics>summary { font-size:.72rem; }
+.robot-fleet-detail-tools>button { flex:0 0 auto; }
+.robot-fleet-drawer .robot-fleet-command-result { margin:3px 0; font-size:.73rem; }
+.robot-fleet-notices:empty { display:none; }
+.robot-fleet-notices>p { margin:3px 0; }
+.robot-fleet-actions { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0; }
 .robot-fleet .robot-fleet-stop { background:#a92e3d; color:white; border-color:#a92e3d; min-width:76px; }
 .robot-fleet-reason { padding:8px; border-radius:6px; background:#fff1d9; color:#6f4b12; }
 .robot-fleet-pad { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; max-width:270px; margin:12px auto; touch-action:none; }
 .robot-fleet-pad:focus-visible { outline:3px solid #168c83; outline-offset:3px; }
 .chat-workspace .robot-fleet-pad button, .robot-fleet-pad button { touch-action:none; user-select:none; min-height:48px; font-size:1.15rem; }
 .robot-fleet-pad button span { display:block; font-size:.7rem; }
+.is-control-view .robot-fleet { margin:0; padding:4px 6px; font-size:.75rem; max-height:50dvh; overflow:auto; scrollbar-width:thin; }
+.is-control-view .robot-fleet>header { min-height:25px; }
+.is-control-view .robot-fleet h3,.is-control-view .robot-fleet h4 { font-size:.75rem; }
+.is-control-view .robot-fleet.is-condensed .robot-fleet-list { max-height:34px; margin-top:3px; }
+.is-control-view .robot-fleet.is-condensed .robot-fleet-row { min-height:28px; padding:1px 5px; flex-basis:150px; width:150px; }
+.is-control-view .robot-fleet .robot-fleet-row small { font-size:.59rem; }
+.is-control-view .robot-fleet .robot-fleet-drawer>header { min-height:28px; }
+.is-control-view .robot-fleet-drawer { padding-top:3px; margin-top:3px; }
+.is-control-view .robot-fleet button { min-height:28px; padding:3px 6px; font-size:.7rem; border-radius:6px; }
+.is-control-view .robot-fleet .robot-fleet-stop { min-height:32px; min-width:72px; font-weight:600; }
+.is-control-view .robot-fleet-current-status { margin:2px 0; font-size:.65rem; }
+.is-control-view .robot-fleet-pad button { min-height:36px; padding:2px 4px; font-size:1rem; }
+.is-control-view .robot-fleet-pad button span { font-size:.6rem; }
+.is-control-view .robot-fleet-command label { font-size:.65rem; gap:2px; }
+.is-control-view .robot-fleet-command input { height:28px; font-size:.7rem; }
+.is-control-view .robot-fleet-command small { font-size:.62rem; line-height:1.3; }
+.is-control-view .robot-fleet .robot-fleet-diagnostics { max-height:100px; }
+.is-control-view .robot-fleet-diagnostics>summary { font-size:.65rem; padding:3px 0; }
+.is-control-view .robot-fleet-reason { padding:3px 5px; margin:2px 0; font-size:.65rem; max-height:3em; overflow:auto; }
+.is-control-view .robot-fleet-drawer>p[role=status],.is-control-view .robot-fleet-drawer>p[role=alert] { margin:2px 0; max-height:3em; overflow:auto; font-size:.65rem; }
+@media(max-width:1150px) { .robot-fleet-control-primary { grid-template-columns:minmax(150px,190px) minmax(110px,1fr); gap:6px; } }
+@media(max-height:720px) { .is-control-view .robot-fleet { max-height:58dvh; }.is-control-view .robot-fleet-diagnostics[open] { max-height:64px; }.is-control-view .robot-fleet .robot-fleet-control-primary>.robot-fleet-command small { display:none; }.is-control-view .robot-fleet-pad button { min-height:32px; }.is-control-view .robot-fleet-pad { gap:3px; }.is-control-view .robot-fleet-pad button span { display:none; } }
+@media(max-height:720px) and (min-width:760px) {
+  .is-control-view .robot-fleet.has-controls { display:grid; grid-template-columns:180px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); gap:3px 8px; height:172px; max-height:172px; overflow:hidden; }
+  .is-control-view .robot-fleet.has-controls>header { grid-area:1 / 1; align-items:flex-start; flex-wrap:wrap; gap:2px; }
+  .is-control-view .robot-fleet.has-controls>header h3 { flex-basis:100%; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-list { grid-area:2 / 1; display:grid; align-content:start; max-height:144px; overflow:auto; margin:0; }
+  .is-control-view .robot-fleet.has-controls .robot-fleet-row { width:100%; min-height:30px; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-register { grid-column:1; max-height:144px; overflow:auto; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-drawer { grid-area:1 / 2 / span 2; min-height:0; display:grid; grid-template-columns:165px minmax(0,1fr); grid-template-rows:32px 16px 70px 14px minmax(24px,1fr); grid-template-areas:'heading heading' 'status status' 'actions primary' 'notice notice' 'details details'; column-gap:8px; row-gap:2px; margin:0; padding:0 0 0 8px; border-top:0; border-left:1px solid #d7e1e5; }
+  .is-control-view .robot-fleet-drawer>header { grid-area:heading; min-height:32px; padding:0; border-bottom:0; }
+  .is-control-view .robot-fleet-current-status { grid-area:status; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .is-control-view .robot-fleet-notices { grid-area:notice; max-height:14px; overflow:auto; font-size:10px; line-height:1.25; }
+  .is-control-view .robot-fleet-notices p { margin:0; padding:1px 3px; font-size:10px; }
+  .is-control-view .robot-fleet-actions { grid-area:actions; margin:0; align-content:start; }
+  .is-control-view .robot-fleet-control-primary { grid-area:primary; grid-template-columns:minmax(120px,170px) minmax(0,1fr); align-items:start; gap:6px; }
+  .is-control-view .robot-fleet-command label { grid-column:1; grid-row:1; }
+  .is-control-view .robot-fleet-command>button { grid-column:2; grid-row:1; align-self:end; }
+  .is-control-view .robot-fleet-detail-tools { grid-area:details; margin:0; min-height:0; overflow:hidden; }
+  .is-control-view .robot-fleet-diagnostics,.is-control-view .robot-fleet-diagnostics[open] { height:100%; max-height:100%; min-height:0; overflow:auto; }
+}
+@media(max-width:400px) { .robot-fleet-control-primary { grid-template-columns:minmax(110px,1fr) minmax(100px,1fr); }.robot-fleet-pad button span { display:none; }.robot-fleet-detail-tools { flex-wrap:wrap; }.robot-fleet-diagnostics { flex-basis:100%; } }
 .chat-workspace .robot-fleet-pad button[aria-pressed=true], .robot-fleet-pad button[aria-pressed=true] { background:#116f67; color:white; }
 .fleet-drive-forward { grid-area:1 / 2; }.fleet-drive-left { grid-area:2 / 1; }.fleet-drive-backward { grid-area:2 / 2; }.fleet-drive-right { grid-area:2 / 3; }
 .robot-fleet-policy, .robot-operation-id { font-size:.72rem; overflow-wrap:anywhere; }
@@ -408,7 +466,9 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-anchor-layer { position:absolute; pointer-events:none; overflow:hidden; }
 .robot-anchor-leaders { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
 .robot-anchor-leaders line { stroke:#214c56; stroke-width:1; stroke-dasharray:2 2; }.robot-anchor-leaders circle { fill:#fff; stroke:#214c56; stroke-width:1; }
-.chat-workspace .robot-anchor-layer .robot-anchor-badge, .robot-anchor-badge { position:absolute; pointer-events:auto; min-width:0; min-height:0; max-width:none; padding:3px 5px; box-sizing:border-box; overflow:hidden; border:1px solid #66818b; border-radius:6px; background:#f5fbf5f2; color:#183d42; text-align:left; line-height:1.15; font-size:10px; box-shadow:0 1px 5px #0003; transition:none; }
+.chat-workspace .robot-anchor-layer .robot-anchor-badge, .robot-anchor-badge { position:absolute; pointer-events:auto; min-width:0; min-height:0; max-width:none; padding:1px 2px; box-sizing:border-box; overflow:hidden; border:0; border-radius:0; background:transparent; color:#173940; text-align:left; line-height:1.15; font-size:10px; box-shadow:none; text-shadow:0 0 2px #fff,0 1px 1px #fff; transition:none; }
+.chat-workspace .robot-anchor-layer .robot-anchor-badge:hover, .robot-anchor-badge:hover { background:transparent; }
+.robot-anchor-badge:focus-visible { outline:1px solid #086f67; outline-offset:1px; }
 .robot-anchor-heading { display:flex; align-items:center; gap:4px; min-width:0; }
 .robot-anchor-heading strong { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
 .robot-anchor-heading em { flex:0 0 auto; font-size:8px; font-style:normal; }

@@ -18,6 +18,7 @@ class WorkspaceDevices:
         self.lock = RLock()
         self.contexts = []
         self.closed = False
+        self.engine_process_probe_blocked=False
         self.owner_lease = owner_lease
         self.unavailable_reason = unavailable_reason
         self.registry_service=None
@@ -108,6 +109,8 @@ class WorkspaceDevices:
 
     def bind_operation(self, context):
         """Called under the shared start lock before a fresh physical operation."""
+        if self.engine_process_probe_blocked:
+            raise BrokerError('engine_observation_stale','Wait for current engine observation before a new physical operation.',status=409)
         for other in self.contexts:
             if other.product_workflow is not None and other.product_workflow.scene_edit_transaction.locked():
                 raise BrokerError('scene_edit_busy', 'Finish the scene transaction before starting a robot operation.', status=409)
@@ -116,6 +119,71 @@ class WorkspaceDevices:
             self.controller.diagnostics = execution
         if self.readiness is not None:
             self.readiness.execution_diagnostics = execution
+
+    def operation_active(self):
+        """Admission guard only; historical data is not needed on every drive."""
+        return bool(self.readiness and self.readiness.local_operation_active()
+                    or self.controller and self.controller.operation_active()
+                    or self.diagnostics and self.diagnostics._running())
+
+    def physical_runtime_active(self):
+        """Conservative LOCAL proof for an idle/SIM-only process-loss probe.
+
+        No transport, historical journal copy, or blocking lock acquisition.
+        Uncertain/owned physical sessions never qualify for delayed cleanup.
+        """
+        from contextlib import ExitStack
+        pool=self.physical_fleet
+        services=[(self,'lock'),(pool,'lock'),(self.controller,'lock'),
+                  (self.readiness,'_lock'),(self.diagnostics,'_lock')]
+        with ExitStack() as held:
+            for service,name in services:
+                if service is None:continue
+                lock=getattr(service,name,None)
+                if lock is None or not lock.acquire(blocking=False):return True
+                held.callback(lock.release)
+            if self.closed:return True
+            for service,names in ((self.controller,('thread',)),(self.readiness,('_thread','_resume_thread')),
+                                  (self.diagnostics,('_thread',))):
+                if service is not None and any(getattr(service,name,None) is not None and getattr(service,name).is_alive() for name in names):return True
+            if self.readiness is not None and (not isinstance(getattr(self.readiness,'_state',None),dict)
+                    or self.readiness._state.get('status')=='RUNNING'):return True
+            if self.controller is not None and (not isinstance(getattr(self.controller,'state',None),dict)
+                    or self.controller.state.get('state')=='STOPPING'):return True
+            # Current-process handles distinguish uncertain remote ownership
+            # from a historical failed record restored on startup.
+            if self.controller is not None and (getattr(self.controller,'owner',None) is not None
+                    or getattr(self.controller,'job',None) is not None):
+                if self.controller.state.get('cleanup_confirmed') is not True:return True
+            if self.readiness is not None and any(getattr(self.readiness,name,None) is not None
+                    for name in ('_thread','_resume_thread')):
+                if self.readiness._state.get('status') in {'REMOTE_STATE_UNKNOWN','LOCAL_RECORD_UNREADABLE'}:return True
+            recovery=getattr(self.controller,'evidence_recovery',None)
+            if getattr(recovery,'thread',None) is not None and recovery.thread.is_alive():return True
+            for context in self.contexts:
+                preparation=getattr(context,'chat_robot_preparation',None)
+                workers=[getattr(preparation,'thread',None),getattr(getattr(context,'automatic_mission',None),'worker',None),
+                         getattr(getattr(context,'automatic_demo',None),'worker',None),
+                         getattr(getattr(getattr(context,'conversation',None),'navigation',None),'task_loop',None)]
+                for worker in workers:
+                    if worker is not None and (getattr(worker,'worker',None) is not None and worker.worker.is_alive()
+                            or callable(getattr(worker,'is_alive',None)) and worker.is_alive()):return True
+            if pool is not None:
+                sessions=getattr(pool,'sessions',None)
+                if not isinstance(sessions,dict):return True
+                if any(getattr(entry,'owner',None) is not None and (not getattr(entry,'disconnected',False)
+                        or getattr(entry,'cleanup_uncertain',True)) for entry in sessions.values()):return True
+            return False
+
+    def set_engine_process_probe_blocked(self, blocked):
+        # The same start lock fences requests which passed the outer API gate
+        # before a stale observation was published. The backend is the only
+        # writer. Re-publishing an unchanged flag must not wait on Connect's
+        # local file/hash/AST work and manufacture frozen healthy samples.
+        blocked=bool(blocked)
+        if self.engine_process_probe_blocked==blocked:return
+        with self.lock:
+            self.engine_process_probe_blocked=blocked
 
     def snapshot(self):
         readiness = self.readiness.snapshot(None) if self.readiness else None

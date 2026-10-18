@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from threading import RLock
 import sys
+import json
+import subprocess
 import tempfile
 import unittest
 from uuid import uuid4
@@ -43,6 +45,30 @@ class FieldAdmissionTests(unittest.TestCase):
         with self.assertRaises(BrokerError):self.pool.save_field_config(self.row['id'],self.owner,bad)
         self.assertEqual(self.pool.field_config_for_view(self.row['id']),self.config)
 
+    def test_pc_field_save_in_isolated_python_without_robot_worker_search_path(self):
+        # Reproduce the installed PC loader, not the development suite's global
+        # sys.path insertion of robot worker modules. No transport is constructed.
+        code='''import sys,json,tempfile
+from pathlib import Path
+root=Path(sys.argv[1]);config=json.loads(sys.argv[2])
+for name in ('twinpulse_app','twinpulse_core','twinpulse_provider'):sys.path.insert(0,str(root/'packages'/name/'src'))
+from twinpulse_app.physical_fleet_adapter import PhysicalFleetAdapter
+with tempfile.TemporaryDirectory() as folder:
+    adapter=PhysicalFleetAdapter.__new__(PhysicalFleetAdapter)
+    adapter.source_root=root;adapter.state_root=Path(folder)
+    adapter._row=lambda robot_id:(None,dict(instance_id=robot_id,sha256=config['binding_sha256']))
+    adapter._cached=lambda robot_id:None
+    result=adapter.save_field_config(config['robot_id'],'isolated-owner',config)
+    assert result['saved'] and result['motion_authority_restored'] is False
+    assert json.loads((Path(folder)/'physical-field-configs'/(config['robot_id']+'.json')).read_text())==config
+    assert 'control_timing' not in sys.modules and 'field_tests' not in sys.modules
+print('ISOLATED_PC_FIELD_SAVE_PASS')
+'''
+        with tempfile.TemporaryDirectory() as cwd:
+            run=subprocess.run([sys.executable,'-I','-c',code,str(f.ROOT),json.dumps(self.config)],cwd=cwd,text=True,capture_output=True,timeout=20)
+        self.assertEqual(run.returncode,0,run.stdout+run.stderr)
+        self.assertIn('ISOLATED_PC_FIELD_SAVE_PASS',run.stdout)
+
     def test_old_arm_or_trial_epoch_cannot_be_resealed_after_stop(self):
         self.pool.check_connection(self.row['id'],self.owner,request_id=uuid4().hex,operation_id=uuid4().hex,project_id='p')
         entry=self.pool._cached(self.row['id']);sent=[]
@@ -58,6 +84,8 @@ class FieldAdmissionTests(unittest.TestCase):
     def test_reviewed_source_bundle_includes_new_worker_not_just_pc_ui(self):
         _,_,members=reviewed_bundle(f.ROOT)
         self.assertIn('field_tests.py',members)
+        self.assertIn('field_config.py',members)
+        self.assertIn('control_timing.py',members)
 
     def test_actual_pc_presence_fault_binds_first_published_trial_and_not_repeated(self):
         clock=[10.]

@@ -73,7 +73,7 @@ def reviewed_bundle(root):
     names = ('fleet_worker.py', 'fleet_control.py', 'native_stream.py', 'physical_profile.py', 'field_tests.py',
              'teleop_ros.py', 'teleop_contract.py', 'teleop_worker.py', 'stop_policy.py',
              'lidar_capture.py', 'robot_journal.py', 'raw_ros_record.py', 'robot_session.py',
-             'runtime.py', 'stationary.py', 'owned_exec.py','cleanup_notes.py')
+             'runtime.py', 'stationary.py', 'owned_exec.py','cleanup_notes.py','control_timing.py','field_config.py')
     files = {}
     for name,target in (('LICENSE','LICENSE.txt'),('NOTICE','NOTICE.txt'),('THIRD_PARTY_NOTICES.md','THIRD_PARTY_NOTICES.txt')):
         path=root/name
@@ -92,7 +92,7 @@ def reviewed_bundle(root):
     health = root / 'scripts/robot_health.py'
     if health.is_file(): files['robot_health.py'] = health.read_bytes()
     core = root / 'packages/twinpulse_core/src/twinpulse_core'
-    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage']
+    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage','field_persistence']
     import ast
     files['twinpulse_core/__init__.py'] = b'"""Pure shipped contracts; no device initialization."""\n'
     seen = set()
@@ -226,6 +226,7 @@ class PhysicalLiveSession:
         self.device_identity=None
         self.sequence = self.command_sequence = 0
         self.events = []; self.error = None; self.closed = False; self.closing = False; self.cleanup_confirmed = False
+        self.terminal_cleanup = None;self.remote_exit_code = None
         self.close_request_id=None
         self.stop_event = threading.Event()
 
@@ -254,7 +255,7 @@ class PhysicalLiveSession:
             self.evidence = StreamEvidence(self.archive_root / self.context['operation_id'])
             # Persist the reference before transport. Raw event ID joins do not
             # depend on interpreting a later UI snapshot or exported source time.
-            if not self.evidence.append((json.dumps(dict(self.context,schema='physical-live-pc-start-2.0'
+            if not self.evidence.append((json.dumps(dict(self.context,worker_sources=digests,schema='physical-live-pc-start-2.0'
                     if self.context['schema'].endswith('2.0') else 'physical-live-pc-start-1.0'),
                     separators=(',',':'),allow_nan=False)+'\n').encode()):
                 raise BrokerError('physical_start_recording_failed','Could not record the operation reference.',status=409)
@@ -359,8 +360,7 @@ class PhysicalLiveSession:
                 code = self.process.wait(timeout=8)
                 stderr_reader.join(timeout=2)
                 if stderr_reader.is_alive():self.evidence.error=self.evidence.error or 'SSH_STDERR_FLUSH_PENDING'
-                with self.lock:
-                    if code or not self.cleanup_confirmed: self.error = self.error or 'REMOTE_EXIT_WITHOUT_CLEANUP'
+                self._classify_remote_exit(code)
         except Exception as error:
             with self.lock: self.error = self.error or type(error).__name__ + ':' + str(error)[:100]
         finally:
@@ -377,13 +377,20 @@ class PhysicalLiveSession:
             self.evidence.close(cleanup_confirmed=self.cleanup_confirmed)
             with self.lock: self.closed = True
 
+    def _classify_remote_exit(self, code):
+        with self.lock:
+            self.remote_exit_code=code
+            if code or not self.cleanup_confirmed:
+                self.error=self.error or ('REMOTE_CLEANUP_REPORTED_INCOMPLETE' if self.terminal_cleanup is not None
+                                         else 'REMOTE_EXIT_WITHOUT_CLEANUP')
+
     def receive(self, event):
         """Identity/freshness boundary; callable by supplementary offline tests."""
         keys = {'schema','operation_id','robot_id','project_id','connection_epoch','sequence','kind','robot_monotonic_s','data'}
         version2=self.context is not None and self.context.get('schema')=='physical-live-start-2.0'
         if version2:keys.add('source_twin_context_id')
         if (not isinstance(event, dict) or set(event) != keys or event['schema'] != ('physical-live-event-2.0' if version2 else SCHEMA)
-                or event['kind'] not in {'heartbeat','scan','raw','raw_source','command','cleanup','fault'}
+                or event['kind'] not in {'heartbeat','scan','raw','raw_source','command','cleanup','fault','control_pause'}
                 or type(event['sequence']) is not int or not isinstance(event['data'], dict)
                 or type(event['robot_monotonic_s']) not in (int, float) or not math.isfinite(event['robot_monotonic_s'])
                 or event['robot_monotonic_s'] < 0): raise ValueError('SESSION_EVENT_SHAPE')
@@ -440,7 +447,9 @@ class PhysicalLiveSession:
                     self.scan=dict(scan,source_twin_context_id=self.context['source_twin_context']['context_id'],
                         twin_reference_basis='OPERATION_START_REFERENCE_NOT_ACQUISITION_SYNC')
             elif event['kind'] == 'cleanup':
-                if data.get('subsystem')=='session':self.cleanup_confirmed=data.get('confirmed') is True
+                if data.get('subsystem')=='session':
+                    self.terminal_cleanup=deepcopy(data)
+                    self.cleanup_confirmed=data.get('confirmed') is True
                 if data.get('subsystem')=='session' and data.get('recording_complete') is False and self.evidence is not None:
                     self.evidence.error=self.evidence.error or 'ROBOT_RECORDING_INCOMPLETE'
             elif event['kind']=='command' and data.get('action')=='watch':
@@ -516,10 +525,19 @@ class PhysicalLiveSession:
         with self.lock:
             age = None if self.at is None else max(0,(self.clock()-self.at)*1000)
             value = deepcopy(self.last)
+            if self.closed:
+                value['last_reported_lidar_state']=value.get('lidar_state')
+                value['lidar_state']='OFF' if self.cleanup_confirmed else 'FAULT'
+                value['scan']=None
+                diagnostic=value.get('telemetry_diagnostic')
+                if isinstance(diagnostic,dict):
+                    diagnostic['last_check_values']=deepcopy(diagnostic)
+                    diagnostic.update(reason='SESSION_CLOSED_HISTORICAL',source_age_s=None,
+                        sensor_receipt_age_s=None,guard_receipt_age_s=None)
             value['robot_recording']=deepcopy(value.get('recording'))
             value['source_export']=deepcopy(getattr(self,'source_export',None))
             verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<2.5
-            if self.scan is not None:
+            if self.scan is not None and not self.closed:
                 value['scan']=deepcopy(self.scan)
                 # Robot acquisition/serial-age metadata is not a PC receipt.
                 # Keep unknown timing, completeness and source SHA unchanged.
@@ -532,6 +550,8 @@ class PhysicalLiveSession:
                          live_heartbeat=verified and age is not None and age<2500 and not self.closed and not self.error,
                          telemetry_age_ms=age, telemetry_sequence=self.sequence,
                          cleanup_confirmed=self.cleanup_confirmed, transport_error=self.error,
+                         terminal_cleanup_received=self.terminal_cleanup is not None,
+                         terminal_cleanup=deepcopy(self.terminal_cleanup),remote_exit_code=self.remote_exit_code,
                          recording=self.evidence.snapshot() if self.evidence else None,
                          expected_worker_sha256=self.context.get('worker_sha256') if self.context else None)
             return value

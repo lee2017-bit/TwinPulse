@@ -108,7 +108,8 @@ class RobotFleet:
             reason=None,battery=dict(voltage_v=None,percent=None,source='simulated' if kind=='sim' else 'unknown',age_ms=None),
             pose=dict(position_m=list(pose),frame_id='isaac_world',source='user_spawn',aligned=kind=='sim') if kind=='sim' else None,
             telemetry_age_ms=None,telemetry_sequence=0,capabilities=dict(drive=kind=='sim',lidar=kind=='sim'),scan=None,
-            live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,project_id=None,display_pose=None,
+            live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,
+            telemetry_diagnostic=None,native_diagnostic=None,project_id=None,display_pose=None,
             source_twin_context=None,
             _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf)
 
@@ -256,6 +257,9 @@ class RobotFleet:
 
     def _snapshot_locked(self):
         values=[]
+        # One current engine observation for this entire public snapshot.
+        # Reacquiring the broker lock per robot also gave rows mixed identities.
+        engine=self.broker.supervisor_state()
         for row in self.robots.values():
             if (self.snapshot_writer.error and row['kind']=='sim' and row['_connected']
                     and row['reason']!='SNAPSHOT_WRITE_FAILED'):
@@ -265,7 +269,7 @@ class RobotFleet:
                 if row['connection_state']!='DEGRADED':self.revision+=1
                 row['connection_state']='DEGRADED'
             public={k:deepcopy(v) for k,v in row.items() if not k.startswith('_')}
-            current=self._twin_context(row)
+            current=self._twin_context(row,engine)
             public['current_twin_context']=current
             public['twin_context_relation']=context_relation(public.get('source_twin_context'),current)
             if row['kind']=='sim':
@@ -300,7 +304,9 @@ class RobotFleet:
             if sim_only and body['action'] in {'connect','prepare','drive','command'} and callable(getattr(self.devices,'snapshot',None)):
                 parsed=parse_robot_command(body['payload'].get('text','')) if body['action']=='command' else None
                 if not parsed or parsed['action'] not in {'stop','stop_all','status','logs'}:
-                    if self.devices.snapshot().get('active'):
+                    active_query=getattr(self.devices,'operation_active',None)
+                    active=active_query() if callable(active_query) else self.devices.snapshot().get('active')
+                    if active:
                         raise BrokerError('fleet_physical_active','Stop the active physical operation before a SIM control action.',status=409)
             physical=([],[]) if sim_only else self._physical_values()
             self._action(body,owner,encoded,physical,effects)
@@ -321,7 +327,7 @@ class RobotFleet:
             request=body['request_id'];known=self.requests.get(request)
             if known:
                 if known!=encoded:raise BrokerError('fleet_request_conflict','Request ID already has different content.',status=409)
-                return self._snapshot_locked()
+                return
             if len(self.requests)>8192:self.requests.pop(next(iter(self.requests)))
             action=body['action'];payload=body['payload'];identity=body['robot_id']
             if action=='command':
@@ -429,7 +435,7 @@ class RobotFleet:
                     if not row['_connected'] and not row['_connecting']:
                         row.update(_connecting=True,connection_state='CONNECTING',connection_epoch=uuid4().hex,motion_epoch=uuid4().hex,
                             control_state='UNPREPARED',reason=None,_at=None,telemetry_sequence=0,
-                            applied_motion_epoch=None,recording_state='RECORDING',scan=None,_recorded_at=-math.inf)
+                            applied_motion_epoch=None,recording_state='RECORDING',scan=None,_recorded_at=-math.inf,_engine_ready=False)
                         source_context=self._twin_context(row,state);connection=row['connection_epoch']
                         effects.append(lambda connection=connection,source_context=source_context:self._begin(row,connection,source_context,request))
                 elif action=='disconnect':
@@ -476,7 +482,8 @@ class RobotFleet:
             row=self.robots.get(identity) or {}
             self.last_command=dict(request_id=request,operation_id=row.get('operation_id'),robot_id=identity,status='accepted',
                 message='Physical request queued; follow robot-local ACK, live telemetry and cleanup evidence. Acceptance is not proof of completed motion.' if row.get('kind')=='physical' else 'Robot request accepted; actual motion is confirmed by engine telemetry.')
-            return self._snapshot_locked()
+            # action() publishes one final snapshot after effects complete.
+            # Do not copy every scan twice while holding the engine/Stop lock.
 
     def _physical_stop_all(self,owner,*,request_id=None,request_twin_context=None):
         errors=[]
@@ -496,6 +503,8 @@ class RobotFleet:
 
     def _ready(self,row,body,*,epoch):
         if not row['_connected'] or not self._fresh(row):raise BrokerError('fleet_connection_required','Wait for fresh robot telemetry.',status=409)
+        if row['kind']=='sim' and row.get('_engine_ready') is not True:
+            raise BrokerError('fleet_model_warming','Wait for measured post-model Isaac updates before preparing or moving.',status=409)
         if epoch and body.get('connection_epoch')!=row['connection_epoch']:
             raise BrokerError('fleet_connection_changed','Robot connection changed. Refresh the selected robot.',status=409)
         if body['action']=='drive' and body.get('motion_epoch')!=row['motion_epoch']:
@@ -519,6 +528,7 @@ class RobotFleet:
                     if row['_connected']:
                         self._pause(row,'ISAAC_SCENE_CHANGED');row['_at']=None
                         row['telemetry_sequence']=0;row['applied_motion_epoch']=None
+                        row['_engine_ready']=False
                         row['connection_epoch']=uuid4().hex;row['connection_state']='CONNECTING';row['scan']=None
                         if row['lidar_state']=='STREAMING':row['lidar_state']='STARTING'
             self._engine=binding;self._engine_at=self.clock()
@@ -531,6 +541,16 @@ class RobotFleet:
                     or any(type(v) not in (float,int) or not math.isfinite(v) or abs(v)>1000 for v in pose)):continue
                 row['_at']=self.clock();row['telemetry_sequence']=sequence;row['connection_state']='CONNECTED'
                 row['applied_motion_epoch']=value.get('motion_epoch')
+                startup=value.get('runtime_startup')
+                ready=(isinstance(startup,dict) and startup.get('model_authored') is True and startup.get('render_observed') is True
+                    and startup.get('snapshot_capture_pending') is False and startup.get('ready') is True
+                    and type(startup.get('post_author_updates')) is int and startup['post_author_updates']>=2)
+                if row.get('_engine_ready') and not ready and row['control_state'] in {'READY','DRIVING','PAUSED'}:
+                    self._pause(row,'ISAAC_MODEL_WARMING_UP')
+                row['_engine_ready']=ready
+                row['sim_readiness']=deepcopy(startup) if isinstance(startup,dict) else dict(ready=False,reason='NOT_RECORDED')
+                if not ready and row['control_state']=='UNPREPARED':row['reason']='ISAAC_MODEL_WARMING_UP'
+                elif ready and row['reason']=='ISAAC_MODEL_WARMING_UP':row['reason']=None
                 row['pose']=dict(position_m=pose,frame_id='isaac_world',source='isaac_usd_kinematic',aligned=True)
                 row['_spawn']=list(pose) # Preserve last measured model pose across scene rebuild/reopen.
                 row['battery']=dict(voltage_v=None,percent=None,source='simulated',age_ms=0)
@@ -545,20 +565,23 @@ class RobotFleet:
                 timing=deepcopy(timing) if (isinstance(timing,dict) and set(timing)=={'elapsed_s','integrated_s','substeps'}
                     and all(type(timing[k]) in (int,float) and math.isfinite(timing[k]) and 0<=timing[k]<=86400 for k in ('elapsed_s','integrated_s'))
                     and type(timing['substeps']) is int and 0<=timing['substeps']<=10) else None
+                work=value.get('runtime_work')
+                work=deepcopy(work) if isinstance(work,dict) and set(work)=={'bounds_s','model_authoring_s','bounds_rebuilds'} and all(
+                    type(work[k]) in (int,float) and math.isfinite(work[k]) and 0<=work[k]<=86400 for k in ('bounds_s','model_authoring_s')) and type(work['bounds_rebuilds']) is int and work['bounds_rebuilds']>=0 else None
                 intent=row['_intent'];reported_input=value.get('intent_sequence')
-                superseded=(reason=='INPUT_STALE' and value.get('motion_epoch')==row['motion_epoch']
+                superseded=(reason=='INPUT_STALE' and timing is not None and timing['elapsed_s']<.5 and value.get('motion_epoch')==row['motion_epoch']
                     and intent is not None and type(reported_input) is int and reported_input>0
                     and reported_input<intent['sequence'] and self.wall()*1000<intent['expires_at_ms'])
                 if superseded:
                     self._event(row,'superseded_input_report',reason=reason,reported_input_sequence=reported_input,
                         current_input_sequence=intent['sequence'],observed_twin_context=observed_context)
-                if not superseded and reason in {'OBSTACLE_STOP','INPUT_STALE','TASK_COMPLETED','TASK_TIMEOUT','MOVEMENT_STALLED'} and value.get('motion_epoch')==row['motion_epoch']:
+                if not superseded and reason in {'OBSTACLE_STOP','INPUT_STALE','ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE','TASK_COMPLETED','TASK_TIMEOUT','MOVEMENT_STALLED'} and value.get('motion_epoch')==row['motion_epoch']:
                     self._event(row,'motion_result',reason=reason,position_m=pose,command_id=value.get('task_id'),
                         runtime_timing=timing,observed_twin_context=observed_context,request_twin_context=deepcopy(self.command_contexts.get(value.get('task_id'))))
                     self._pause(row,reason);self._save_operation(row)
                 if self.clock()-row['_recorded_at']>=.5:
                     self._event(row,'engine_observation',position_m=pose,source='isaac_usd_kinematic',reason=reason,
-                        scan=deepcopy(row['scan']),runtime_timing=timing,telemetry_sequence=sequence,applied_motion_epoch=value.get('motion_epoch'),observed_twin_context=observed_context)
+                        scan=deepcopy(row['scan']),runtime_timing=timing,runtime_startup=deepcopy(row['sim_readiness']),runtime_work=work,telemetry_sequence=sequence,applied_motion_epoch=value.get('motion_epoch'),observed_twin_context=observed_context)
                     row['_recorded_at']=self.clock()
                 self.operations[row['operation_id']]['manifest']['last_engine_binding']=dict(engine_session_id=engine_id,
                     stage_epoch=stage_epoch,scene_revision=binding[2],telemetry_sequence=sequence)

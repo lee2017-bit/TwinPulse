@@ -32,6 +32,45 @@ function harness() {
 describe('Chat-first product workspace',()=> {
   beforeEach(()=>vi.stubGlobal('Image',class {src='';naturalWidth=960;naturalHeight=640;async decode(){}}));
   afterEach(()=>vi.unstubAllGlobals());
+  it('recovers the first conversation read failure without requiring a restored draft or replaying an action',async()=>{
+    const api=harness();api.conversation.mockRejectedValueOnce(new ApiError('state_read_timeout','First local state read exceeded 3 seconds.'));
+    const view=render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);
+    await screen.findAllByText('First local state read exceeded 3 seconds.');
+    fireEvent.change(screen.getByRole('textbox',{name:'Message TwinPulse'}),{target:{value:'typed while the first read is unavailable'}});
+    await waitFor(()=>expect(screen.getByText('chat-test · Choose a mode')).toBeTruthy(),{timeout:2500});
+    expect(screen.getByRole('textbox',{name:'Message TwinPulse'})).toHaveProperty('value','typed while the first read is unavailable');
+    expect(api.bootstrap).toHaveBeenCalledOnce();expect(api.conversation.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.conversationAction).not.toHaveBeenCalled();view.unmount();
+  });
+  it('recovers a first-read timeout after a successful project switch without restoring the old context',async()=>{
+    const api=harness();let switched=false,failNext=false;
+    api.runtimeState.mockResolvedValue({status:'ready'} as never);
+    api.conversation.mockImplementation(async()=>{
+      if(failNext){failNext=false;throw new ApiError('state_read_timeout','Selected first read exceeded 3 seconds.');}
+      return {...initial(),project_id:switched?'next':'old',context_id:switched?'ctx-next':'ctx-old',revision:switched?1:900,
+        messages:[{message_id:switched?'next-message':'old-message',role:'user' as const,content:switched?'Selected context restored':'Old context content',status:'completed',attachments:[],created_at:'now',operation_id:null}]};
+    });
+    const extended={...api,context:'ctx-old',projects:vi.fn(async()=>({projects:[{project_id:'old',active:true,status:'review_required'},{project_id:'next',active:false,status:'empty'}]})),
+      switchProject:vi.fn(async()=>{switched=true;failNext=true;extended.context='ctx-next';return {status:'switched',project_id:'next',context_id:'ctx-next',new_session_required:false};})};
+    const view=render(<ChatWorkspace api={extended as unknown as TwinPulseApi} advanced={()=>{}}/>);
+    await screen.findByText('Old context content');fireEvent.click(await screen.findByRole('button',{name:'Open next'}));
+    await screen.findAllByText('Selected first read exceeded 3 seconds.');
+    await waitFor(()=>expect(screen.getAllByText('Selected context restored').length).toBeGreaterThan(0),{timeout:2500});
+    expect(screen.queryByText('Old context content')).toBeNull();expect(extended.switchProject).toHaveBeenCalledOnce();
+    expect(api.bootstrap).toHaveBeenCalledOnce();expect(api.conversationAction).not.toHaveBeenCalled();view.unmount();
+  });
+  it('does not promote a fulfilled old-context body into current connection or writer readiness',async()=>{
+    const api=Object.assign(harness(),{context:'ctx-current'});
+    api.conversation.mockResolvedValue({...initial(),context_id:'ctx-old',mode:'SIM',messages:[{
+      message_id:'old',role:'user',content:'Rejected old body',status:'completed',attachments:[],created_at:'now',operation_id:null}]});
+    api.workflow.mockResolvedValue({phase:'draft_ready',provider:{configured:true,label:'Saved'},site_draft:{revision:'a'.repeat(64),scene_state_sha256:'b'.repeat(64),input_revision:'input',artifact_id:'artifact'}} as never);
+    const view=render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);
+    await screen.findAllByText('Waiting for the selected conversation state. No action was replayed.');
+    expect(screen.queryByText('Rejected old body')).toBeNull();expect(screen.getByRole('button',{name:'Send'})).toHaveProperty('disabled',true);
+    api.conversation.mockResolvedValue({...initial(),context_id:'ctx-current'});
+    await waitFor(()=>expect(screen.getByText('chat-test · Choose a mode')).toBeTruthy(),{timeout:2500});
+    expect(api.conversationAction).not.toHaveBeenCalled();view.unmount();
+  });
   it.each(['workflow','conversation','product'])('retains the sensor panel but locks scene writers across a temporary %s read failure',async failed=>{
     const revision='a'.repeat(64),sha='b'.repeat(64);
     const api=Object.assign(harness(),{context:'ctx-a',sceneSensorContext:vi.fn(),automaticMaps:vi.fn().mockResolvedValue({maps:[]}),

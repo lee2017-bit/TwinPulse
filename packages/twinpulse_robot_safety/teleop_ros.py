@@ -4,6 +4,7 @@
 """Real ROS Humble transport. Only imported by explicitly launched robot worker."""
 import time
 import math
+from control_timing import ROS_RECEIPT_S,ROS_SOURCE_S,ROS_SERVICE_S
 try:
     from observation_stream import ObservationWindow, from_ros_message
 except ModuleNotFoundError as exc:
@@ -122,8 +123,17 @@ class RosLink:
         self.navigation.receive(kind,msg,self.node.get_clock().now().nanoseconds,
                                 time.monotonic(),self.node.count_publishers(topic))
 
-    def _record(self, topic, msg):
-        receipt = time.monotonic_ns()
+    def _record(self, topic, msg, *, receipt_monotonic_ns=None):
+        receipt = time.monotonic_ns() if receipt_monotonic_ns is None else receipt_monotonic_ns
+        # Capture the two clocks BEFORE serialization/journal work. This is a
+        # diagnostic, not a fresh timestamp substituted for the source header.
+        header=getattr(msg,'header',None)
+        timing={}
+        if header is not None:
+            ros_now=self.node.get_clock().now().nanoseconds
+            stamp=header.stamp.sec*10**9+header.stamp.nanosec
+            timing=dict(receipt_ros_now_ns=ros_now,source_stamp_ns=stamp,
+                        source_age_at_receipt_s=(ros_now-stamp)/1e9)
         raw = getattr(self, 'raw', None)
         if raw is not None and not raw.record(topic, msg, receipt_monotonic_ns=receipt):
             raise ValueError('RAW_RECORDING_INCOMPLETE')
@@ -132,9 +142,10 @@ class RosLink:
             counts[topic] += 1
         self.observation_sequence = getattr(self,'observation_sequence',0)+1
         metadata = {'sequence':raw.next_sequence-1 if raw is not None else self.observation_sequence,
-                    'receipt_monotonic_ns':receipt}
+                    'receipt_monotonic_ns':receipt,**timing}
         sink=getattr(self,'record_sink',None)
         if sink is not None:sink(topic,msg,metadata)
+        metadata['recording_elapsed_s']=max(0.,(time.monotonic_ns()-receipt)/1e9)
         return metadata
 
     def _odom(self,msg):
@@ -274,12 +285,20 @@ class RosLink:
                 'clear_radius_m':scan.clear_radius_m,'alignment_verified':False}
 
     def _sensor(self, msg):
-        self._record('sensor_state',msg)
-        now = time.monotonic()
+        receipt=time.monotonic_ns()
+        # Publish the original latest sample before the archive path. ROS owns
+        # the callback serially; recording failure still aborts its next output.
+        self.sensor,self.sensor_t=msg,receipt/1e9
+        metadata=self._record('sensor_state',msg,receipt_monotonic_ns=receipt)
+        # Receipt is callback entry, not the end of potentially slow recording.
+        # Diagnostics and display must not renew a stale sample's timestamp.
+        now = metadata['receipt_monotonic_ns']/1e9
         pair = [msg.left_encoder, msg.right_encoder]
         if self.anchor is None or any(abs(a-b) > 2 for a, b in zip(pair, self.anchor)):
             self.anchor, self.changed = pair, now
         self.sensor, self.sensor_t = msg, now
+        self.sensor_receipt_timing={key:metadata[key] for key in
+            ('receipt_ros_now_ns','source_stamp_ns','source_age_at_receipt_s','recording_elapsed_s') if key in metadata}
         age = (self.node.get_clock().now().nanoseconds - msg.header.stamp.sec*10**9 - msg.header.stamp.nanosec)/1e9
         self.rows.append({'t': now, 'encoders': pair, 'torque': bool(msg.torque),
                           'voltage_v': float(msg.battery) if math.isfinite(msg.battery) else None,
@@ -293,8 +312,10 @@ class RosLink:
             else:raise ValueError('SENSOR_BUDGET')
 
     def _guard(self, msg):
-        self._record('motion_guard/status',msg)
-        self.reason, self.guard_t = msg.data, time.monotonic()
+        receipt=time.monotonic_ns()
+        self.reason,self.guard_t=msg.data,receipt/1e9
+        metadata=self._record('motion_guard/status',msg,receipt_monotonic_ns=receipt)
+        self.reason, self.guard_t = msg.data, metadata['receipt_monotonic_ns']/1e9
 
     def spin(self, seconds=.01):
         end = time.monotonic() + seconds
@@ -304,22 +325,33 @@ class RosLink:
 
     def fresh(self):
         now = time.monotonic()
-        if not self.sensor or now-self.sensor_t >= .2 or now-self.guard_t >= .2:
-            raise ValueError('TELEMETRY_STALE')
+        self.fresh_diagnostic=dict(sensor_receipt_age_s=now-self.sensor_t,
+            guard_receipt_age_s=now-self.guard_t,reason='CHECKING',source_age_s=None,
+            callback_timing=dict(getattr(self,'sensor_receipt_timing',{})))
+        def fail(code,detail):
+            self.fresh_diagnostic.update(reason=detail,error=code)
+            raise ValueError(code)
+        if not self.sensor or now-self.sensor_t >= ROS_RECEIPT_S or now-self.guard_t >= ROS_RECEIPT_S:
+            fail('TELEMETRY_STALE','SENSOR_NOT_RECEIVED' if not self.sensor else
+                 'SENSOR_RECEIPT_STALE' if now-self.sensor_t>=ROS_RECEIPT_S else 'GUARD_RECEIPT_STALE')
         s = self.sensor
         age = (self.node.get_clock().now().nanoseconds - s.header.stamp.sec*10**9-s.header.stamp.nanosec)/1e9
-        if (not 0 <= age < .2 or not math.isfinite(s.battery) or s.battery <= 11.1 or s.button):
-            raise ValueError('BATTERY_BUTTON_OR_SOURCE_AGE')
+        self.fresh_diagnostic.update(source_age_s=age,voltage_v=float(s.battery) if math.isfinite(s.battery) else None,
+            button=s.button)
+        if (not 0 <= age < ROS_SOURCE_S or not math.isfinite(s.battery) or s.battery <= 11.1 or s.button):
+            fail('BATTERY_BUTTON_OR_SOURCE_AGE','SENSOR_SOURCE_AGE' if not 0<=age<ROS_SOURCE_S else
+                 'BATTERY_UNKNOWN' if not math.isfinite(s.battery) else 'BATTERY_LOW' if s.battery<=11.1 else 'BUTTON_ACTIVE')
         if (self.node.count_publishers('guarded_cmd_vel') != 1 or self.pub.get_subscription_count() != 1
                 or self.node.count_publishers('cmd_vel') != 0
                 or self.node.count_publishers('sensor_state') != 1
                 or self.node.count_publishers('motion_guard/status') != 1):
-            raise ValueError('ENDPOINT_OWNERSHIP')
+            fail('ENDPOINT_OWNERSHIP','ENDPOINT_OWNERSHIP')
+        self.fresh_diagnostic.update(reason='CURRENT',error=None)
 
     def call(self, client, request):
         if not client.service_is_ready(): raise ValueError('SERVICE_UNAVAILABLE')
         future = client.call_async(request)
-        end = time.monotonic() + .5
+        end = time.monotonic() + ROS_SERVICE_S
         while not future.done() and time.monotonic() < end: self.spin(.005)
         if not future.done() or future.exception() or not future.result().success:
             raise ValueError('SERVICE_FAILED')
@@ -398,6 +430,12 @@ class RosLink:
         native_guard = getattr(self, 'native_output_guard', None)
         if native_guard is not None:
             native_guard(v, w, source_created)
+        # An asynchronous archive can fail during native geometry work. Recheck
+        # its latched health and operator Stop at the final output boundary.
+        sink=getattr(self,'record_sink',None)
+        if sink is not None and hasattr(sink,'check'):sink.check()
+        if before_publish is not None:before_publish()
+        self.fresh()
         if source_created is not None and time.monotonic()-source_created>=.25:
             raise ValueError('INPUT_DEADLINE_EXPIRED')
         if (v or w) and hasattr(self, 'moving_command_ns'):

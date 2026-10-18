@@ -265,6 +265,10 @@ class PhysicalController:
             # Keep original job/uncertain state for Stop, history and transfer.
             # It cannot establish readiness for the newly selected instance.
 
+    def operation_active(self):
+        """Same busy condition as snapshot, without copying historical journals."""
+        with self.lock:return bool(self.thread and self.thread.is_alive())
+
     def snapshot(self,owner):
         with self.lock:
             log=self.journal_sink.status() if self.journal_sink else None

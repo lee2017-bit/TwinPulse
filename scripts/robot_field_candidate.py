@@ -130,9 +130,19 @@ def sensor_target(root, output=None):
     if (review.get('patch_application') != 'ISOLATED_NON_REPOSITORY_CHANGED_FILES_AND_REVERSE_CHECK'
             or included != {name:sha(data) for name,data in members.items() if name != 'twinpulse-candidate.json'}):
         raise ValueError('SENSOR_TARGET_SOURCE_RECEIPT_CHANGED')
-    if members['offline_tests/scan_clock_test.cpp'] != safe_path(
-            root/'packages/twinpulse_robot_safety/tests/scan_clock_test.cpp').read_bytes():
-        raise ValueError('SENSOR_TARGET_HARNESS_CHANGED')
+    original_harness=members['offline_tests/scan_clock_test.cpp']
+    current_harness=safe_path(root/'packages/twinpulse_robot_safety/tests/scan_clock_test.cpp').read_bytes()
+    harness_provenance=None
+    if original_harness != current_harness:
+        prefix=(b'// SPDX-FileCopyrightText: 2026 Jaewon Lee\n'
+                b'// SPDX-License-Identifier: Apache-2.0\n'
+                b'// Source: https://github.com/lee2017-bit/TwinPulse\n')
+        old_sha='012e83cee1d6549b4092f0c9ffe2b8b1c7b8b76c033beaf1ca4c43696209ce2b'
+        new_sha='d0d2ee81a8f5b22565e9030cb798b08d8e2142d06672a8d893454aceefda0724'
+        if sha(original_harness)!=old_sha or sha(current_harness)!=new_sha or prefix+original_harness!=current_harness:
+            raise ValueError('SENSOR_TARGET_HARNESS_CHANGED')
+        harness_provenance=dict(kind='EXACT_LICENSE_SOURCE_PREFIX_ONLY',original_sha256=old_sha,
+            current_sha256=new_sha,prefix_bytes=len(prefix),compiled_source_identity_unchanged=True)
     if output is not None:
         with (output/'sensor-target.tar').open('xb') as stream, tarfile.open(fileobj=stream, mode='w') as tar:
             for name, data in sorted(members.items()):
@@ -161,6 +171,7 @@ def sensor_target(root, output=None):
                        else 'CORRECTED_DRIVER_SOURCE_FROZEN_NOT_BUILT'),
             'target_build': 'PASS_NOT_ACTIVATED' if compiled else 'NOT_RUN',
             'compiled_source': compiled,
+            'harness_provenance_compatibility':harness_provenance,
             'source_sha256': identity(members), 'members': len(members), 'patches': patches,
             'timing_basis': 'HOST_SYNC_APPROXIMATE_NOT_HARDWARE_FIRST_RAY',
             'existing_owned_driver': 'OLDER_DIGEST_PINNED_BINARY_UNCHANGED',

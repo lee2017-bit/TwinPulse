@@ -4,6 +4,7 @@
 import {useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {ApiError,type TwinPulseApi} from './api';
 import './api-key-settings.css';
+import {RobotBatterySettings,type BatteryDisplayConfig,type BatteryPresets} from './RobotBatterySettings';
 
 export type RobotEndpoint={host:string;user:string;port:number;ros_domain_id:number};
 type DiscoveryCandidate={candidate_id:string;transport:'network'|'serial'|'bluetooth';address:string;label:string;identity_verified:false;
@@ -12,7 +13,8 @@ type DiscoveryCandidate={candidate_id:string;transport:'network'|'serial'|'bluet
 export type RobotRegistryState={schema_version:'robot-registry-1.0';revision:number;active_id:string|null;
   robots:{id:string;label:string;adapter_id:string;adapter_version?:string;endpoint:RobotEndpoint;
     discovery_presence?:{state:'recent_address_response'|'not_seen'|'unknown';observed_at_utc?:string;remaining_seconds:number;identity_verified:false};
-    connection_state:'unverified'|'verified_observation';motion_authorized:false}[];
+    connection_state:'unverified'|'verified_observation';motion_authorized:false;battery_display?:BatteryDisplayConfig;battery_display_sha256?:string}[];
+  battery_display_presets?:BatteryPresets;
   adapters:{id:string;label:string;supported:boolean}[];
   discovery:{state:'idle'|'running'|'completed'|'failed';run_id?:string;candidates:DiscoveryCandidate[];known_devices?:DiscoveryCandidate[];
     freshness?:'none'|'recent'|'expired';remaining_seconds?:number;finished_at_utc?:string;sources?:Record<string,unknown>};
@@ -24,6 +26,15 @@ export type RobotRegistryState={schema_version:'robot-registry-1.0';revision:num
     checked_at_utc?:string;instance_id?:string;binding_sha256?:string;registry_revision?:number;connection_verified:false;motion_authorized:false;
     checks:{id:string;state:'ready'|'needs_attention';detail:string;next_step:string}[]}};
 const emptyEndpoint:RobotEndpoint={host:'',user:'twinpulse',port:22,ros_domain_id:86};
+
+export function observedBatterySummary(log:Record<string,unknown>){
+  const record=log.record&&typeof log.record==='object'?log.record as Record<string,unknown>:{};
+  const battery=record.battery&&typeof record.battery==='object'?record.battery as Record<string,unknown>:{};
+  const v=battery.voltage_v,p=battery.estimated_percent;
+  if(typeof v!=='number'||!Number.isFinite(v))return null;
+  const percent=typeof p==='number'&&Number.isFinite(p)&&p>=0&&p<=100?`approximately ${p.toFixed(0)}% (voltage estimate) · `:'';
+  return `Battery at observation: ${percent}${v.toFixed(2)} V · historical record, not current charge`;
+}
 
 export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:()=>void;runtimeReady:boolean}){
   const [state,setState]=useState<RobotRegistryState|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
@@ -50,13 +61,14 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
     void poll();return()=>{closed=true;active.current=false;++sequence.current;clearTimeout(timer);clearInterval(tick);previous?.focus();};
   },[api]);
   const action=async(body:object,message:string)=>{
-    if(pending.current||!state||!runtimeReady)return;
+    if(pending.current||!state||!runtimeReady&&(!('action' in body)||body.action!=='set_battery_display'))return false;
     pending.current=true;++sequence.current;setBusy(true);setError(null);setNotice('');
     const requestedAt=performance.now();
     try{const next=await api.updateRobotRegistry({...body,expected_revision:state.revision});
-      if(active.current){receivedAt.current=requestedAt;setNow(performance.now());setState(next);setPollError(null);setNotice(message);}}
+      if(active.current){receivedAt.current=requestedAt;setNow(performance.now());setState(next);setPollError(null);setNotice(message);return true;}}
     catch(caught){if(active.current)setError(`Robot request was not confirmed${caught instanceof ApiError&&/^[a-z0-9_]+$/.test(caught.code)?` (${caught.code})`:''}. Refresh the saved status before retrying.`);}
     finally{pending.current=false;if(active.current)setBusy(false);}
+    return false;
   };
   const selected=state?.robots.find(row=>row.id===state.active_id);
   const jobId=state?.connection?.job_id;
@@ -71,7 +83,9 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
   useLayoutEffect(()=>{logOwner.current=renderedOwner;},[renderedOwner]);
   const logEpoch=renderedOwner.epoch;
   const selectionInvalid=!!logSelection&&!logAvailable(logSelection,available);
-  useEffect(()=>{++logRequest.current;logPending.current=false;setObservationLog(null);setLogSelection(null);setLogBinding(null);setLogError(null);setLogBusy(false);},[logEpoch,selectionInvalid]);
+  // Retire the previous owner before the newly rendered log buttons become
+  // interactive, not in a later passive effect that could erase a fresh click.
+  useLayoutEffect(()=>{++logRequest.current;logPending.current=false;setObservationLog(null);setLogSelection(null);setLogBinding(null);setLogError(null);setLogBusy(false);},[logEpoch,selectionInvalid]);
   const readLog=async(requestedJob=jobId,source:'current'|'saved'='current')=>{
     if(logPending.current||logBusy||!requestedJob||typeof api.robotObservation!=='function')return;
     const selection={jobId:requestedJob,source};if(!logAvailable(selection))return;
@@ -166,6 +180,8 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
         {selected&&<article><strong>{selected.label}</strong><p>{selected.endpoint.user}@{selected.endpoint.host}:{selected.endpoint.port} · ROS domain {selected.endpoint.ros_domain_id}</p>
           <p aria-label="Selected robot discovery status">{presenceText(selected)}</p>
           <p>Adapter: {selected.adapter_id}</p><p>{selected.connection_state==='verified_observation'?'Read-only observation recorded · not a live connection guarantee':'Connection unverified'} · Motion not authorized</p>
+          <RobotBatterySettings key={selected.id} config={selected.battery_display} presets={state.battery_display_presets} busy={busy}
+            onSave={config=>action({action:'set_battery_display',id:selected.id,config,expected_display_sha256:selected.battery_display_sha256},'Battery display saved. Connection and driving protection are unchanged.')}/>
           <button disabled={busy||!runtimeReady||state.capabilities?.selected_preparation_available===false||state.discovery.state==='running'||state.connection?.state==='running'} onClick={()=>void action({action:'prepare'},'PC preparation checked. Review each result below; no robot connection was opened.')}>Check PC preparation</button>
           <button disabled={busy||!runtimeReady||!supported||state.capabilities?.selected_preparation_available===false||!connectionAvailable||state.connection?.state==='running'} onClick={()=>void action({action:'connect'},'Read-only connection check requested. Wait for the observation result.')}>Check connection (read-only)</button>
         </article>}
@@ -203,6 +219,7 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
         {logError&&<p role="alert">{logError}</p>}
         {observationLog&&logSelection&&!selectionInvalid&&logBinding===logEpoch&&<details open><summary>Connection observation log · historical, not motion authority</summary>
             <p>{logSelection.source==='saved'?'Saved':'Selected'} observation: {logSelection.jobId} · Not a current connection guarantee.</p>
+            {observedBatterySummary(observationLog)&&<p aria-label="Recorded battery estimate">{observedBatterySummary(observationLog)}</p>}
             <p>Review before sharing. Downloaded obstacle_observation can be imported separately in the Twin's obstacle feedback panel with an explicitly estimated sensor pose.</p>
             <pre>{JSON.stringify(observationLog,null,2).slice(0,20000)}</pre>
             {JSON.stringify(observationLog).length>20000&&<p>Displayed JSON is limited; the download contains the returned observation record.</p>}

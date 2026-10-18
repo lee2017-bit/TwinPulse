@@ -37,7 +37,7 @@ ACTIONS={'lidar','prepare','qualify','drive','task','watch','stop','close','prof
          'field_setup','field_arm','field_test','field_review'}
 SOURCE_MEMBERS=('heartbeat-board.log','prepare-off.log','prepare-before.log',
     'base.log','final-off.log','final-read.log','qualification.json','field-config.json',
-    'field-trials.json','field-stop.json','field-tracking.json')
+    'field-trials.json','field-stop.json','field-tracking.json','field-commits.jsonl')
 
 
 def export_sources(directory, emit, *, owners_reaped=True, member_limit=256*1024, total_limit=1024*1024):
@@ -172,6 +172,7 @@ class FleetWorker:
         self.native=native_factory(self.directory/'native',self.emit)
         self.control=control_factory(self.context,self.directory,self.emit,self.native,clock=clock)
         self.board={'voltage_v':None,'source':'unknown','age_ms':None};self.board_at=None
+        self.board_lock=threading.Lock();self.board_read_status={'state':'NOT_READ'}
         self.board_thread=None
         self.preparation_challenges={}
 
@@ -222,9 +223,13 @@ class FleetWorker:
         from robot_health import parse_board_snapshot
         while not self.cancel.is_set():
             if self.control.snapshot()['control_state']=='UNPREPARED':
+                began=self.clock()
+                with self.board_lock:self.board_read_status={'state':'READING','started_s':began}
                 try:
                     release=(HOME/'current').resolve(strict=True)
                     if verify_release(release)['source_id']!=self.context['release_id']:raise ValueError('RELEASE_CHANGED')
+                    verified=self.clock()
+                    with self.board_lock:self.board_read_status={'state':'READING','phase':'BOARD_READ','started_s':began,'release_verify_s':verified-began}
                     with ownership() as lease:
                         path=self.directory/'heartbeat-board.log'
                         offset=path.stat().st_size if path.exists() else 0
@@ -233,11 +238,16 @@ class FleetWorker:
                             stream.seek(offset);raw=stream.read(65537)
                         if len(raw)>65536:raise ValueError('BOARD_READ_OUTPUT_BOUND')
                         board=parse_board_snapshot(raw.decode('utf-8'))
-                    with self.lock:
+                    with self.board_lock:
                         self.board={'voltage_v':board['voltage_v'],'source':'measured','origin':'opencr_idle_read','age_ms':0.}
                         self.board_at=self.clock()
+                        self.board_read_status={'state':'OBSERVED','duration_s':self.clock()-began,
+                            'release_verify_s':verified-began,'board_read_s':self.clock()-verified}
                 except Exception as exc:
-                    with self.lock:self.board={'voltage_v':None,'source':'unknown','age_ms':None,'reason':reason_code(exc)}
+                    with self.board_lock:
+                        # Preserve the last observation and its original age,
+                        # showing read failure explicitly instead of losing it.
+                        self.board_read_status={'state':'FAILED','reason':reason_code(exc),'duration_s':self.clock()-began}
             self.cancel.wait(5.)
 
     def heartbeat(self):
@@ -251,9 +261,10 @@ class FleetWorker:
         if battery.get('sample_monotonic_s') is not None:
             battery['age_ms']=(self.clock()-battery['sample_monotonic_s'])*1000
         if battery['voltage_v'] is None:
-            with self.lock:
+            with self.board_lock:
                 battery=deepcopy(self.board)
                 if battery['voltage_v'] is not None:battery['age_ms']=(self.clock()-self.board_at)*1000
+                battery['read_status']=dict(self.board_read_status)
         frame=self.native.latest_frame()
         sensor_frame=None if frame is None else {'source':'physical_native_sensor_unaligned',
             'age_ms':(self.clock()-frame['timing']['receipt_end_s'])*1000,'age_basis':'serial_receipt',

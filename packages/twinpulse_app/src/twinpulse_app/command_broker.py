@@ -426,6 +426,7 @@ class CommandBroker:
         with self._lock:
             self._assert_engine(engine_session_id, stage_epoch)
             self._engine_heartbeat_at = self._clock()
+            self._expire_unclaimed_operations()
             if not self._lease_valid() or self._inflight is not None:
                 return None
             while self._queue:
@@ -754,6 +755,7 @@ class CommandBroker:
     def has_pending_operations(self) -> bool:
         """A project transition may not interrupt an accepted or running scene command."""
         with self._lock:
+            self._expire_if_disconnected()
             return any(item.receipt is None for item in self._operations.values())
 
     def supervisor_state(self) -> dict[str, object]:
@@ -803,11 +805,35 @@ class CommandBroker:
         if self._engine_session_id and not self._engine_connected():
             self._expire_engine_operations("engine_disconnected")
         else:
+            self._expire_unclaimed_operations()
             for operation in self._operations.values():
                 if operation.view_status == 'waiting' and self._clock()-operation.frame_started_at >= self.first_frame_timeout_s:
                     self._finish_frame_wait(operation, 'failed', 'first_current_frame_timeout')
 
+    def _expire_unclaimed_operations(self):
+        # An expired lease cannot be resurrected by a later acquisition.
+        # Only never-claimed commands receive this terminal receipt. Running
+        # commands retain their real receipt/unknown policy, never replayed.
+        keep=deque()
+        for command_id in self._queue:
+            operation=self._operations[command_id]
+            if operation.receipt is not None:continue
+            command=operation.command
+            code=('command_expired' if command.expired() else
+                  'control_lease_expired' if not self._lease_valid() or command.control_lease_id!=self._lease_id else None)
+            if code is None:
+                keep.append(command_id);continue
+            operation.status='expired'
+            operation.receipt=CommandReceipt(command_id=command.command_id,command_type=command.command_type,
+                project_id=command.project_id,engine_session_id=command.engine_session_id,stage_epoch=command.stage_epoch,
+                status='expired',error_code=code,
+                message='Not executed: command or control lease expired before engine claim. Acquire scene control and review a new request explicitly.')
+            self._finish_diagnostics(operation,'failed',code)
+        self._queue=keep
+
     def _expire_engine_operations(self, code: str) -> None:
+        # A recovered heartbeat cannot revive the old control generation.
+        self._lease_id=None;self._lease_owner=None;self._lease_expires_at=0.
         for operation in self._operations.values():
             if operation.view_status == 'waiting':
                 self._finish_frame_wait(operation, 'unknown', code)

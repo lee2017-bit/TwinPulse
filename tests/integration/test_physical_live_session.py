@@ -57,6 +57,33 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         self.assertEqual(self.session.snapshot()['connection_state'],'DEGRADED')
         self.assertNotIn('challenge',self.session.events[0]['data'])
 
+    def test_closed_session_never_reports_streaming_scan_or_current_diagnostic(self):
+        self.heartbeat();self.session.last.update(lidar_state='STREAMING',
+            telemetry_diagnostic=dict(reason='CURRENT',source_age_s=.01))
+        self.session.scan=dict(points=[[1,2]],source='original');self.session.scan_at=self.now
+        self.session.closed=True;self.session.cleanup_confirmed=False
+        value=self.session.snapshot()
+        self.assertEqual(value['lidar_state'],'FAULT');self.assertIsNone(value['scan'])
+        self.assertEqual(value['last_reported_lidar_state'],'STREAMING')
+        self.assertEqual(value['telemetry_diagnostic']['reason'],'SESSION_CLOSED_HISTORICAL')
+        self.assertIsNone(value['telemetry_diagnostic']['source_age_s']);self.assertFalse(value['live_heartbeat'])
+        self.session.cleanup_confirmed=True;self.assertEqual(self.session.snapshot()['lidar_state'],'OFF')
+
+    def test_reported_incomplete_cleanup_is_not_a_missing_ack_or_complete_record(self):
+        self.session.receive(self.event('cleanup',subsystem='session',confirmed=False,recording_complete=True,
+            control=dict(cleanup=dict(cleanup_confirmed=True),field_evidence=dict(complete=False,error='FIELD_EVIDENCE_STALLED'))))
+        self.session._classify_remote_exit(2)
+        snapshot=self.session.snapshot()
+        self.assertTrue(snapshot['terminal_cleanup_received']);self.assertFalse(snapshot['cleanup_confirmed'])
+        self.assertEqual(snapshot['transport_error'],'REMOTE_CLEANUP_REPORTED_INCOMPLETE')
+        self.assertEqual(snapshot['remote_exit_code'],2)
+        self.assertEqual(snapshot['terminal_cleanup']['control']['field_evidence']['error'],'FIELD_EVIDENCE_STALLED')
+
+    def test_missing_terminal_ack_still_reports_missing_cleanup(self):
+        self.session._classify_remote_exit(2)
+        self.assertEqual(self.session.error,'REMOTE_EXIT_WITHOUT_CLEANUP')
+        self.assertFalse(self.session.snapshot()['terminal_cleanup_received'])
+
     def test_other_project_robot_connection_sequence_and_nonfinite_rejected(self):
         for field in ('project_id','robot_id','connection_epoch','operation_id'):
             event=self.event();event[field]='other'
@@ -308,6 +335,24 @@ class FleetPhysicalEnvelopeTests(unittest.TestCase):
         self.assertEqual(value['battery']['voltage_v'],11.8)
         self.assertEqual(value['battery']['source'],'measured')
         self.assertEqual(value['battery']['age_ms'],62)
+        self.assertEqual(value['battery']['estimated_percent'],72.2)
+        self.assertEqual(value['battery']['estimate_method'],'robotis_opencr_voltage_10_5_to_12_3_v1')
+        self.assertFalse(value['battery']['capacity_measured'])
+
+    def test_saved_display_changes_apply_to_existing_session_without_transport_or_age_reset(self):
+        from twinpulse_core.robot_battery import battery_display_config
+        self.action('focus');row=self.action('connect')['robots'][0];trace=len(self.trace)
+        # Pool fixture uses an in-memory registry snapshot; actual atomic
+        # registry persistence/CAS is covered in test_robot_registry_binding.
+        self.row['battery_display']=battery_display_config()
+        battery=self.fleet.snapshot()['robots'][0]['battery']
+        self.assertIsNone(battery['estimated_percent']);self.assertEqual(battery['age_ms'],row['battery']['age_ms'])
+        self.assertEqual(battery['voltage_v'],11.8);self.assertEqual(len(self.trace),trace)
+        custom=battery_display_config('custom');custom['points']=[dict(voltage_v=10,percent=0),dict(voltage_v=12,percent=100)]
+        self.row['battery_display']=custom
+        battery=self.fleet.snapshot()['robots'][0]['battery']
+        self.assertEqual(battery['estimated_percent'],90);self.assertEqual(battery['estimate_method'],'custom_voltage_table_v1')
+        self.assertEqual(battery['low_voltage_guard_v'],11.1);self.assertEqual(len(self.trace),trace)
 
     def test_physical_payload_complete_and_age_not_replaced_with_sim_private_timestamp(self):
         self.action('focus');self.action('connect')

@@ -28,6 +28,19 @@ const confirm=()=>fireEvent.click(checkbox(/I reviewed the selected trial scope/
 const supervise=()=>fireEvent.click(checkbox(/I am supervising, charging is unplugged/));
 
 describe('supervised field tests (supplementary UI contract only)',()=>{
+  it('separates collection window, strict ring quality, archive integrity and power-on test entry',()=>{
+    const row=robot();row.field!.native_observation={frame_sequence:11,stream_id:'stream',raw_sha256:'a'.repeat(64),raw_ring_complete:false,
+      unknown_bytes:11,receipt_age_s:.11,policy:'SUPERVISED_LAST_COMPLETE_ORIGINAL_AGE_AND_NEWER_STOP_VETO_V1',directional_clearance:'CHECKED_PER_OUTPUT_NOT_BY_THIS_STATUS'};
+    row.field!.trials=[{trial_id:'observed-window',case:'stationary',status:'INCONCLUSIVE',reason:'NATIVE_COLLECTION_CONTAINS_INVALID_FRAMES',started_s:1,
+      result:{collection_complete:true,strict_ring_quality:'INCOMPLETE_RINGS',raw_archive_integrity:'PENDING_NATIVE_FINAL_MANIFEST',motion_authority:'NOT_GRANTED_BY_COLLECTION'}}];
+    const {onAction}=setup(row);
+    expect(screen.getByRole('region',{name:'Power-on test sequence'})).toBeTruthy();
+    expect(screen.getByText(/Bootstrap stop does not require a prior stop receipt/)).toBeTruthy();
+    expect(screen.getByText(/불완전 — 원문 경고 보존.*미해석 11 bytes/)).toBeTruthy();
+    expect(screen.getByText(/수집 구간 완료 · 엄격 회전 품질 INCOMPLETE_RINGS/)).toBeTruthy();
+    expect(screen.getByText(/원문 저장 무결성은 센서 종료 manifest에서 별도 확인/)).toBeTruthy();
+    expect(onAction).not.toHaveBeenCalled();
+  });
   it('saves editable reference setup offline only after explicit axes/model review, with fixed identities and no arm/connect',()=>{
     const off={...robot(),connection_state:'DISCONNECTED' as const,connection_epoch:null,live_heartbeat:false,field:undefined};
     const {onAction}=setup(off);

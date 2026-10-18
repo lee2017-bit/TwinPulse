@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, local
 import time
 from typing import Any, Mapping
 from uuid import uuid4
@@ -53,6 +53,7 @@ class BridgeClient:
         self._stop = Event()
         self._thread: Thread | None = None
         self._lock = Lock()
+        self._robot_http=local()
         self._incoming: deque[CommandEnvelope] = deque()
         self._activity_records = deque(maxlen=120)
         self._outgoing: deque[CommandReceipt] = deque()
@@ -437,6 +438,8 @@ class BridgeClient:
                 raise BridgeProtocolError("Engine session is unavailable")
             headers["Authorization"] = f"Bearer {token}"
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if path=='/v1/engine/robots':
+            return self._post_robot_report(payload,headers)
         request = Request(self.base_url + path, data=payload, headers=headers, method="POST")
         try:
             with urlopen(request, timeout=2.0) as response:
@@ -451,3 +454,35 @@ class BridgeClient:
         if not isinstance(value, Mapping):
             raise BridgeProtocolError("Backend response is not an object")
         return value
+
+    def close_robot_channel(self):
+        """Called by its owning FleetIO thread; never shared with BridgeIO."""
+        connection=getattr(self._robot_http,'connection',None)
+        self._robot_http.connection=None
+        if connection is not None:connection.close()
+
+    def _post_robot_report(self,payload,headers):
+        from http.client import HTTPConnection
+        from urllib.parse import urlsplit
+        connection=getattr(self._robot_http,'connection',None)
+        if connection is None:
+            address=urlsplit(self.base_url)
+            if address.hostname!='127.0.0.1' or address.path or address.query or address.fragment:
+                raise BridgeProtocolError('Robot channel requires exact loopback origin')
+            connection=HTTPConnection(address.hostname,address.port,timeout=2.0)
+            self._robot_http.connection=connection
+        try:
+            # One owner, one in-flight current report. No retry of this POST,
+            # including on stale reused sockets: discard and fail this cycle.
+            connection.request('POST','/v1/engine/robots',body=payload,headers=headers)
+            response=connection.getresponse();raw=response.read()
+            if response.will_close:self.close_robot_channel()
+            value=json.loads(raw.decode('utf-8'))
+            if response.status!=200:
+                raise BridgeProtocolError('Backend rejected robot report')
+            if not isinstance(value,Mapping) or not isinstance(value.get('fleet'),Mapping):
+                raise BridgeProtocolError('Backend robot response is not a fleet object')
+            return value
+        except Exception:
+            self.close_robot_channel()
+            raise

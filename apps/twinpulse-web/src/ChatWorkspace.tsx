@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Jaewon Lee
 // SPDX-License-Identifier: Apache-2.0
 // Source: https://github.com/lee2017-bit/TwinPulse
-import { Activity, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Activity, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ApiError, fileToBase64, TwinPulseApi } from './api';
 import { isConversationStatusRequest, isConversationChoiceRequest, isConversationStopRequest } from './conversation-intent';
 import {clipboardImage} from './clipboard-image';
@@ -202,6 +202,13 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   };
   const [launcherRequest, setLauncherRequest] = useState<string | null>(null);
   const [showTwin, setShowTwin] = useState(window.innerWidth >= 1000);
+  const [controlView,setControlView]=useState(false);
+  const [chatShare,setChatShare]=useState(55);
+  const [layoutVersion,setLayoutVersion]=useState(0);
+  const columns=useRef<HTMLElement|null>(null);
+  const splitPointer=useRef<number|null>(null);
+  const updateSplit=(share:number)=>setChatShare(Math.min(70,Math.max(25,Math.round(share))));
+  const openControlView=()=>{setControlView(true);setShowTwin(true);setShowProjects(false);setChatShare(33);setLayoutVersion(value=>value+1);};
   const [showChecks, setShowChecks] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showKeys,setShowKeys] = useState(false);
@@ -257,6 +264,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     // Only one focus mutation may be outstanding. A later click cannot race
     // an older HTTP request into changing the control owner after its receipt.
     if(fleetFocusPending.current)return;
+    if(!controlView)openControlView();
     setFleetSelectedId(id);setFleetDrawerOpen(true);
     const target=fleet?.robots.find(row=>row.robot_id===id);
     if(!target)return;
@@ -295,8 +303,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const restoredFailures=useRef(new Set<string>());
 
   const apply = (next: ConversationState) => {
-    if(selectedProject.current&&next.project_id!==selectedProject.current)return;
-    if(next.context_id&&api.context&&next.context_id!==api.context)return;
+    if(selectedProject.current&&next.project_id!==selectedProject.current)return false;
+    if(next.context_id&&api.context&&next.context_id!==api.context)return false;
     selectedProject.current=next.project_id;
     if(!navigationInitialized.current){
       navigationInitialized.current=true;
@@ -325,6 +333,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       if(chosen.mode==='REAL'&&next.room_build?.operation_id===chosen.operation)setRealBuild(next.room_build);
       chosenGeneration.current=null;
     }
+    return true;
   };
 
   const projectChanged=useCallback((selection:{project_id:string;context_id?:string})=>{
@@ -350,7 +359,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
 
   useEffect(() => {
     if(projectActivity.busy)return;
-    let active = true, polling = false;
+    let active = true, polling = false, authenticated = false;
     const epoch=contextEpoch.current;
     const refresh = async () => {
       if (polling) return;
@@ -363,20 +372,26 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         if (!active || epoch!==contextEpoch.current || sequence < lastApplied.current || api.context!==requestedContext) return;
         lastApplied.current = sequence;
         const [chat, startup, engine, generation] = results;
-        if (chat.status === 'fulfilled') { apply(chat.value); setConnected(true); setConnectionError(null); }
-        else { setConnected(false); setConnectionError(errorText(chat.reason)); }
+        const currentChat = chat.status === 'fulfilled' && apply(chat.value);
+        if (currentChat) { setConnected(true); setConnectionError(null); }
+        else { setConnected(false); setConnectionError(chat.status === 'rejected' ? errorText(chat.reason) : 'Waiting for the selected conversation state. No action was replayed.'); }
         if (startup.status === 'fulfilled') setRuntime(startup.value);
         else setRuntime(null);
         if (engine.status === 'fulfilled') setProduct(engine.value);
         else setProduct(null);
         if (generation.status === 'fulfilled') {
-          setWorkflow(generation.value);setWorkflowObservation({api,context:requestedContext,fresh:chat.status==='fulfilled'});
+          setWorkflow(generation.value);setWorkflowObservation({api,context:requestedContext,fresh:currentChat});
         }else setWorkflowObservation(previous=>previous?.api===api&&previous.context===requestedContext?{...previous,fresh:false}:null);
       } finally { polling = false; }
     };
     void (contextVersion||authenticatedApi.current===api?Promise.resolve():api.bootstrap().then(()=>{authenticatedApi.current=api;}))
-      .then(() => { if (active) void refresh(); }).catch(e => { if (active) setConnectionError(errorText(e)); });
-    const timer = window.setInterval(() => { if (active && draftRestored.current) void refresh(); }, 750);
+      .then(() => { if (active) { authenticated = true; void refresh(); } }).catch(e => { if (active) setConnectionError(errorText(e)); });
+    // Draft restoration depends on the first successful conversation read. It
+    // must not gate observation retries: a first-read timeout after startup or
+    // project switch otherwise leaves this context permanently disconnected.
+    // Only authenticated, single-flight GET observations repeat; no action,
+    // draft restoration, movement authority or old-context response is replayed.
+    const timer = window.setInterval(() => { if (active && authenticated) void refresh(); }, 750);
     return () => { active = false; window.clearInterval(timer); };
   }, [api,contextVersion,projectActivity.busy]);
 
@@ -683,7 +698,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     } catch (caught) { setError(errorText(caught)); setLauncherRequest(null); }
   };
 
-  return <div className="chat-workspace">
+  return <div className={`chat-workspace ${controlView?'is-control-view':''}`}>
     <header className="chat-appbar"><button className="chat-sidebar-toggle" onClick={()=>setShowProjects(!showProjects)} aria-expanded={showProjects} aria-label="Toggle conversations and projects">☰</button>
       <strong>TwinPulse</strong><span className="chat-project-caption">{home?'Choose a conversation or start a new chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}</span>
       <IsaacConnectionStatus runtime={runtime} connected={engineReady} apiConnected={connected} inspect={()=>setShowChecks(!showChecks)}/>
@@ -694,6 +709,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <button onClick={() => setShowChecks(!showChecks)} aria-expanded={showChecks}>Readiness · {engineReady ? 'Engine connected' : 'Needs attention'}</button>
       <button onClick={() => {setDiagnosticExecution(null);setShowDiagnostics(!showDiagnostics);}} aria-expanded={showDiagnostics}>Diagnostics</button>
       <button onClick={() => {if(home){setHome(false);setShowTwin(true);}else setShowTwin(!showTwin);}} aria-expanded={showTwin&&!home}>{showTwin&&!home ? 'Hide Twin' : 'Show Twin'}</button>
+      <button type="button" aria-pressed={controlView} onClick={()=>{
+        if(controlView){setControlView(false);setChatShare(55);setLayoutVersion(value=>value+1);}
+        else{setHome(false);openControlView();}
+      }}>Control view</button>
       {state?.mode==='REAL'&&<ChatRobotStops state={robotControlState} api={api} report={setError} forceOnly/>}
     </header>
     <Activity mode={projectActivity.busy?'hidden':'visible'}>
@@ -752,7 +771,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     </div>}
     {workflow&&!workflowFresh&&<p role="status" aria-label="Workflow observation">Workflow observation delayed · last saved scene details retained for display only. Scene actions are locked until a successful workflow refresh; no work is restarted.</p>}
     {workflowFresh&&!product&&<p role="status" aria-label="Scene state observation">Product state observation delayed · saved details are display only. Scene actions await fresh product state; no work is restarted.</p>}
-    <main className={`chat-columns ${showTwin&&!home ? '' : 'twin-folded'}`}>
+    <main ref={columns} className={`chat-columns ${showTwin&&!home ? '' : 'twin-folded'}`}
+      style={{'--chat-share':`${chatShare}%`} as CSSProperties}>
       {home?<section className="chat-home" aria-label="Conversation home">
         <h1>What would you like to build?</h1><p>Describe a space or use a photo to create your Digital Twin.</p>
         <button className="chat-home-new" aria-busy={projectActivity.busy} disabled={!sceneObservationFresh||projectActivity.busy||runtime?.status!=='ready'||!connected||busy||activeJob||feedbackBusy||editLocked||sceneOperationBusy||goalBusy||!!inspection?.busy||!!taskLoop?.worker_active}
@@ -761,7 +781,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         <p className="chat-home-note">Open saved conversations and Twins from the sidebar. A new chat creates a separate project and never overwrites an original.</p>
         <button onClick={()=>setHome(false)}>Open saved chat · {state?.project_id}</button>
       </section>:<>
-      <section className="chat-conversation" aria-label="Conversation">
+      <section id="chat-conversation-pane" className="chat-conversation" aria-label="Conversation">
         <section className="chat-current-step" aria-label="Current step"><strong>Current step</strong><p role="status">{currentStep}</p>
           {simulationCard&&<button type="button" aria-controls="current-twin-sim-controls" onClick={()=>{
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
@@ -997,15 +1017,28 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             .finally(()=>{if(pendingDeliveryCheck.current===check)pendingDeliveryCheck.current=null;});}}>Check saved result · no re-execution</button>}
         </form>
       </section>
-      {showTwin && <aside className="chat-twin-panel" aria-label="Digital Twin"><h2>Digital Twin</h2><p>{engineReady ? 'Isaac connected' : 'Waiting for Isaac'}</p>
-        <RobotFleet api={api} state={fleet} selectedId={fleetSelectedId??fleet?.focused_robot_id??null} onSelect={selectFleetRobot}
-          onChange={applyFleet} available={fleetAvailable} error={fleetError} drawerOpen={fleetDrawerOpen} onClose={()=>setFleetDrawerOpen(false)} selectionPending={fleetSelecting}/>
+      {showTwin&&<div className="chat-twin-splitter" role="separator" tabIndex={0} aria-label="Resize chat and Twin" aria-orientation="vertical"
+        aria-controls="chat-conversation-pane digital-twin-pane" aria-valuemin={25} aria-valuemax={70} aria-valuenow={chatShare}
+        aria-valuetext={`Chat ${chatShare} percent, Twin ${100-chatShare} percent`}
+        onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();splitPointer.current=event.pointerId;
+          event.currentTarget.setPointerCapture?.(event.pointerId);setLayoutVersion(value=>value+1);}}
+        onPointerMove={event=>{if(splitPointer.current!==event.pointerId)return;const bounds=columns.current?.getBoundingClientRect();
+          if(bounds&&bounds.width>0)updateSplit((event.clientX-bounds.left)/bounds.width*100);}}
+        onPointerUp={()=>{splitPointer.current=null;}} onPointerCancel={()=>{splitPointer.current=null;}} onLostPointerCapture={()=>{splitPointer.current=null;}}
+        onKeyDown={event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();setLayoutVersion(value=>value+1);
+          updateSplit(event.key==='Home'?25:event.key==='End'?70:chatShare+(event.key==='ArrowRight'?1:-1)*(event.shiftKey?10:2));}}}/>}
+      {showTwin && <aside id="digital-twin-pane" className="chat-twin-panel" aria-label="Digital Twin">
+        <header className="chat-twin-heading"><h2>Digital Twin</h2><small>{engineReady ? 'Isaac connected' : 'Waiting for Isaac'}</small></header>
         {state?.project_id ? <TwinViewport api={api} projectId={state.project_id} generation={job} appConnected={connected}
+          controlView={controlView}
           robotFleet={fleetAvailable?fleet??undefined:undefined} onRobotSelect={selectFleetRobot}
           savedScene={acceptedSavedScene}
           sourcePhoto={sourceAttachment?.preview_url?{url:sourceAttachment.preview_url,name:sourceAttachment.name}:null}
           report={setViewerFault} diagnose={id=>{setDiagnosticExecution(id);setShowDiagnostics(true);}}/> : <p role="status">Connecting to the App before starting viewer reception…</p>}
-        <dl><dt>Scene</dt><dd>{workflow?.phase ?? 'Not observed'}</dd><dt>Robot</dt><dd>{simSnapshot ? 'Burger · simulated' : state?.robot_id ?? (state?.mode === 'SIM' ?
+        <RobotFleet api={api} state={fleet} selectedId={fleetSelectedId??fleet?.focused_robot_id??null} onSelect={selectFleetRobot}
+          onChange={applyFleet} available={fleetAvailable} error={fleetError} drawerOpen={fleetDrawerOpen} onClose={()=>setFleetDrawerOpen(false)} selectionPending={fleetSelecting}
+          layoutVersion={`${layoutVersion}:${chatShare}:${controlView}:${showProjects}:${showTwin}`}/>
+        <details className="chat-twin-mission-details"><summary>Scene and mission details</summary><dl><dt>Scene</dt><dd>{workflow?.phase ?? 'Not observed'}</dd><dt>Robot</dt><dd>{simSnapshot ? 'Burger · simulated' : state?.robot_id ?? (state?.mode === 'SIM' ?
           state.cards.some(card=>card.kind==='robot_selection'&&card.state==='waiting')?'Simulation asset selection pending':'Environment only · no robot selected' : 'Not selected')}</dd>
           <dt>Battery</dt><dd aria-label="Mission battery status">{simSnapshot || state?.mode==='SIM' ? 'Not applicable · SIM' : goalJob?
             missionTelemetry?.battery?`${missionTelemetry.battery.estimated_percent.toFixed(1)}% estimated · ${missionTelemetry.battery.voltage_v.toFixed(2)} V · recent worker receipt`:'Current receipt unavailable':state?.robot_preparation?.record?.battery ?
@@ -1013,7 +1046,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           <dt>Next waypoint</dt><dd aria-label="Mission next waypoint">{missionTelemetry?.next_waypoint?
             `${missionTelemetry.next_waypoint.index+1}/${missionTelemetry.next_waypoint.count} · (${missionTelemetry.next_waypoint.xy_room.map(x=>x.toFixed(2)).join(', ')}) m`:'Current receipt unavailable'}</dd>
           <dt>Robot connection</dt><dd>{state?.mode==='REAL'?missionTelemetry?'Worker telemetry received · transport delay unmeasured':goalJob?.worker_active?'Worker active · fresh telemetry unavailable':state.robot_preparation?.state.replaceAll('_',' ')??'Unavailable':'Not required'}</dd>
-          <dt>Task</dt><dd>{state?.mode==='REAL'?taskLoop?`Repeat A ↔ B · ${taskLoop.state} · leg ${taskLoop.leg} to ${taskLoop.destination}`:goalJob?`Goal · ${goalJob.state}`:inspection?.owned?`Inspection · ${inspection.state.replaceAll('_',' ')}`:state.robot_preparation?.stage.replaceAll('_',' ')??'No physical task':taskStatus}</dd></dl>
+          <dt>Task</dt><dd>{state?.mode==='REAL'?taskLoop?`Repeat A ↔ B · ${taskLoop.state} · leg ${taskLoop.leg} to ${taskLoop.destination}`:goalJob?`Goal · ${goalJob.state}`:inspection?.owned?`Inspection · ${inspection.state.replaceAll('_',' ')}`:state.robot_preparation?.stage.replaceAll('_',' ')??'No physical task':taskStatus}</dd></dl></details>
       </aside>}
       </>}
     </main>

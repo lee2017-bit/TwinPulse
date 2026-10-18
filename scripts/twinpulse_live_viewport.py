@@ -12,6 +12,8 @@ import ctypes
 from collections import deque
 from io import BytesIO
 import math
+import json
+from queue import Queue,Full,Empty
 from threading import Event, Lock, Thread
 import time
 
@@ -21,12 +23,14 @@ class LiveViewportPublisher:
     # Never label the immediately previous render buffer as the new revision.
     # Count subsequent Kit updates, not a wall-clock sleep or photo heuristic.
     RENDER_WARMUP_UPDATES = 5
+    FLEET_POLL_PERIOD_S = .05
 
     def __init__(self, bridge):
         self.bridge = bridge
         try:from twinpulse_fleet_runtime import FleetRuntime
         except ModuleNotFoundError:from scripts.twinpulse_fleet_runtime import FleetRuntime
         self.fleet_runtime=FleetRuntime();self.fleet_pending=deque(maxlen=16);self.fleet_report=None
+        self.fleet_render_completed=deque(maxlen=2)
         self.lock = Lock(); self.stop_event = Event(); self.thread = None;self.fleet_thread=None
         self.raw = None; self.camera = None; self.camera_result = None
         self.capture = None; self.started_capture = 0.; self.last_capture = 0.
@@ -36,6 +40,11 @@ class LiveViewportPublisher:
         self.sequence = 0; self.camera_sequence = 0
         self.last_error = None; self.sent = 0; self.dropped = 0
         self.transport_error = None
+        self.fleet_produced_at=None;self.fleet_production_error=None
+        self.fleet_attempt_at=None;self._fleet_report_key=None
+        self.fleet_diagnostics={};self._fleet_diag_last=None;self._fleet_diag_at=0.
+        self.fleet_diag_queue=Queue(maxsize=16);self.fleet_diag_thread=None
+        self.fleet_diag_dropped=0;self.fleet_diag_write_errors=0
         self.render_identity = None; self.render_updates = 0; self.render_epoch = 0
 
     def _begin_render_epoch(self, identity):
@@ -54,6 +63,8 @@ class LiveViewportPublisher:
             return True
 
     def start(self):
+        self.fleet_diag_thread=Thread(target=self._fleet_diag_io,name='TwinPulseFleetDiagnostics',daemon=True)
+        self.fleet_diag_thread.start()
         self.thread = Thread(target=self._io, name='TwinPulseViewportIO', daemon=True)
         self.thread.start()
         self.fleet_thread=Thread(target=self._fleet_io,name='TwinPulseFleetIO',daemon=True)
@@ -63,6 +74,7 @@ class LiveViewportPublisher:
         self.stop_event.set()
         if self.thread: self.thread.join(timeout=3.)
         if self.fleet_thread:self.fleet_thread.join(timeout=3.)
+        if self.fleet_diag_thread:self.fleet_diag_thread.join(timeout=.1)
         self.thread = None
         self.fleet_thread=None
         if self.capture_wait and not self.capture_wait.done():self.capture_wait.cancel()
@@ -87,12 +99,22 @@ class LiveViewportPublisher:
         from omni.kit.viewport.utility import capture_viewport_to_buffer, get_active_viewport
         with self.lock:
             fleets=list(self.fleet_pending);self.fleet_pending.clear()
+            rendered=list(self.fleet_render_completed);self.fleet_render_completed.clear()
+        for identity,tokens in rendered:self.fleet_runtime.rendered(identity,tokens)
         for fleet,received_at in fleets:self.fleet_runtime.receive(fleet,received_at=received_at)
         try:
             self.fleet_runtime.update(snapshot)
-            with self.lock:self.fleet_report=dict(applied_revision=snapshot.applied_revision,robots=self.fleet_runtime.report)
+            with self.lock:
+                self.fleet_report=dict(applied_revision=snapshot.applied_revision,robots=self.fleet_runtime.report)
+                self.fleet_attempt_at=time.monotonic();self.fleet_production_error=None
+                key=(snapshot.applied_revision,tuple((r['robot_id'],r['sequence']) for r in self.fleet_runtime.report))
+                if key!=self._fleet_report_key:
+                    self.fleet_produced_at=self.fleet_attempt_at if self.fleet_runtime.report else None
+                    self._fleet_report_key=key
         except Exception as exc:
             self.last_error='fleet_runtime_'+type(exc).__name__[:60]
+            with self.lock:
+                self.fleet_attempt_at=time.monotonic();self.fleet_production_error=type(exc).__name__[:60]
         identity = (snapshot.engine_session_id,snapshot.stage_epoch,snapshot.applied_revision,
                     getattr(self.bridge.adapter,'display_build_id',None))
         transition = identity != self.render_identity
@@ -129,6 +151,7 @@ class LiveViewportPublisher:
                     'stage_epoch':snapshot.stage_epoch,'applied_revision':snapshot.applied_revision,
                     'captured_at_ms':time.time()*1000,'camera_sequence':self.camera_sequence}
         metadata['robot_anchors']=self.fleet_runtime.frame_anchors(viewport)
+        fleet_render_tokens=self.fleet_runtime.render_tokens()
         self.started_capture = self.last_capture = now
         # Mark pending before schedule_capture; callback may be synchronous.
         self.capture = True
@@ -146,6 +169,7 @@ class LiveViewportPublisher:
                 pointer.argtypes = [ctypes.py_object,ctypes.c_char_p]
                 data = ctypes.string_at(pointer(buffer,None),size)
                 if self._queue_capture(render_epoch,metadata,width,height,data):
+                    with self.lock:self.fleet_render_completed.append(fleet_render_tokens)
                     self.last_error = None
             except Exception as exc:
                 self.last_error = 'viewport_buffer_'+type(exc).__name__[:60]
@@ -207,22 +231,64 @@ class LiveViewportPublisher:
     def _fleet_io(self):
         # Robot exchange must not wait for JPEG encoding, display HTTP or a
         # missing GPU frame. USD writes remain exclusively on the Kit thread.
-        while not self.stop_event.wait(.08):
-            if not self.bridge.connected:continue
-            with self.lock:report=self.fleet_report
-            if report is None:continue
-            try:
-                with self.bridge._lock:epoch=self.bridge._shared_stage_epoch
-                response=self.bridge._post('/v1/engine/robots',dict(
-                    engine_session_id=self.bridge.adapter.engine_session_id,stage_epoch=epoch,report=report))
-                # Preserve task/no-input/direction boundaries between Kit
-                # ticks. 16 entries cover >1.2s; overflow is already beyond
-                # the unchanged 500ms main-thread no-catchup watchdog.
-                with self.lock:self.fleet_pending.append((response.get('fleet'),time.monotonic()))
-            except Exception:
-                # The runtime's input/transport expiry pauses motion. A display
-                # error cannot grant fresh input or tear down this channel.
-                continue
+        try:
+            while not self.stop_event.is_set():
+                started=time.monotonic()
+                try:self._fleet_exchange()
+                finally:
+                    # Bounded20Hz, one current report. No expiry/authority change.
+                    if self.stop_event.wait(max(.001,self.FLEET_POLL_PERIOD_S-(time.monotonic()-started))):break
+        finally:
+            close=getattr(self.bridge,'close_robot_channel',None)
+            if close:close()
+
+    def _fleet_diag_io(self):
+        # Optional logging can block or fail without holding up FleetIO/Kit.
+        while not self.stop_event.is_set():
+            try:value=self.fleet_diag_queue.get(timeout=.1)
+            except Empty:continue
+            try:print('TWINPULSE_FLEET_IO '+json.dumps(value,separators=(',',':')),flush=True)
+            except Exception:self.fleet_diag_write_errors+=1
+
+    def _fleet_diagnostic(self,state,started,report=None,*,produced_at=None,attempt_at=None,production_error=None,error=None):
+        now=time.monotonic()
+        rows=(report or {}).get('robots',[])
+        value=dict(state=state,monotonic_s=now,elapsed_s=round(now-started,6),
+            produced_age_s=None if produced_at is None else round(now-produced_at,6),
+            kit_attempt_age_s=None if attempt_at is None else round(now-attempt_at,6),
+            produced_sequence=max((r.get('sequence',0) for r in rows),default=0),
+            production_error=production_error,error_type=type(error).__name__ if error else None,
+            engine_session_id=self.bridge.adapter.engine_session_id,scene_revision=(report or {}).get('applied_revision'))
+        self.fleet_diagnostics=value
+        signature=(state,value['production_error'],value['error_type'])
+        abnormal=state!='success' or value['produced_age_s'] is not None and value['produced_age_s']>.4 or value['elapsed_s']>.25
+        if signature!=self._fleet_diag_last or abnormal and now-self._fleet_diag_at>1:
+            try:self.fleet_diag_queue.put_nowait(value)
+            except Full:self.fleet_diag_dropped+=1
+            self._fleet_diag_last=signature;self._fleet_diag_at=now
+
+    def _fleet_exchange(self):
+        started=time.monotonic()
+        with self.lock:
+            report=self.fleet_report
+            generated=dict(produced_at=self.fleet_produced_at,attempt_at=self.fleet_attempt_at,production_error=self.fleet_production_error)
+        if not self.bridge.connected:
+            self._fleet_diagnostic('bridge_not_connected',started,report,**generated);return
+        if report is None:
+            self._fleet_diagnostic('report_missing',started,**generated);return
+        try:
+            with self.bridge._lock:epoch=self.bridge._shared_stage_epoch
+            response=self.bridge._post('/v1/engine/robots',dict(
+                engine_session_id=self.bridge.adapter.engine_session_id,stage_epoch=epoch,report=report))
+            # Preserve task/no-input/direction boundaries between Kit ticks.
+            # 16 entries cover ~.8s at 20Hz, still beyond the unchanged
+            # 500ms main-thread no-catchup watchdog.
+            with self.lock:self.fleet_pending.append((response.get('fleet'),time.monotonic()))
+            self._fleet_diagnostic('success',started,report,**generated)
+        except Exception as error:
+            # Transport failure never grants input or changes an expiry.
+            self._fleet_diagnostic('transport_error',started,report,error=error,**generated)
+            return
 
     def _io(self):
         from PIL import Image

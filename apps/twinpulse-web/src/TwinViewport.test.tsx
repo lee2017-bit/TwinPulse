@@ -17,6 +17,41 @@ function harness(){return {conversationImage:vi.fn(async()=>new Blob(['photo'],{
   viewportCamera:vi.fn(async(_body:{request_id:string;frame_id:number;action:string})=>({...view(),camera_pending:true})),command:vi.fn()};}
 
 describe('Real Isaac viewport',()=>{
+  it('keeps ordinary robot names transparent without a background card, shadow or second status line',()=>{
+    const css=readFileSync('src/styles.css','utf8');
+    const rule=css.match(/\.chat-workspace \.robot-anchor-layer \.robot-anchor-badge, \.robot-anchor-badge \{([^}]+)\}/)![1];
+    expect(rule).toContain('background:transparent');expect(rule).toContain('box-shadow:none');expect(rule).toContain('border:0');
+  });
+  it('keeps an original current receipt during next-image delivery, uses its camera ID and expires it without timestamp renewal',async()=>{
+    const first=view(1);let metadata=first;
+    const api={...harness(),viewportImageFrame:vi.fn(async()=>({state:metadata,image:new Blob(['frame'],{type:'image/jpeg'})}))};
+    api.viewportState.mockImplementation(async()=>metadata);
+    const component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+    const canvas=await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    let finish!:(packet:{state:ViewportState;image:Blob})=>void;
+    metadata=view(2);api.viewportImageFrame.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    await waitFor(()=>expect(api.viewportImageFrame).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'})).toBe(canvas);
+    fireEvent.click(screen.getByRole('button',{name:'Orbit left'}));
+    expect(api.viewportCamera.mock.calls[0][0].frame_id).toBe(1);
+    await screen.findByRole('img',{name:'Last Isaac preview · not live'},{timeout:1800});
+    expect(canvas.dataset.capturedAt).toBe(String(first.frame!.captured_at_ms));
+    expect(screen.getByRole('button',{name:'Orbit left'})).toHaveProperty('disabled',true);
+    metadata=view(3);
+    await act(async()=>finish({state:metadata,image:new Blob(['new-frame'],{type:'image/jpeg'})}));
+    await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    component.unmount();
+  });
+  it('keeps the decoded surface through control-view switching and folds details outside it',async()=>{
+    const api=harness();const component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+    const canvas=await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    component.rerender(<TwinViewport api={api as unknown as TwinPulseApi} controlView/>);
+    expect(component.container.querySelector('canvas')).toBe(canvas);
+    const details=screen.getByText('Camera, source photo and scene details').closest('details')!;
+    expect(details.open).toBe(false);expect(details.contains(canvas)).toBe(false);
+    component.rerender(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+    expect(component.container.querySelector('canvas')).toBe(canvas);component.unmount();
+  });
   it.each(['accepted','running'])('labels %s resume revalidation as bounded local work without implying a model request',state=>{
     const stage='Rechecking saved candidates · local validation; no model request implied';
     expect(generationStageLabel('resume_revalidation')).toBe(stage);
@@ -244,11 +279,11 @@ describe('Real Isaac viewport',()=>{
     api.viewportState.mockResolvedValue(view(2));
     await waitFor(()=>expect(finish).toBeTypeOf('function'));
     expect(createImageBitmap).toHaveBeenCalledTimes(2);
-    expect(await screen.findByRole('img',{name:'Last Isaac preview · not live'})).toBe(canvas);
+    expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'})).toBe(canvas);
     expect(canvas.getAttribute('data-frame-id')).toBe('1');expect(drawing.clearRect).toHaveBeenCalledTimes(clears);
-    expect(screen.getByRole('button',{name:'Orbit left'})).toHaveProperty('disabled',true);
+    expect(screen.getByRole('button',{name:'Orbit left'})).toHaveProperty('disabled',false);
     expect(component.container.querySelector('.twin-frame-caption')).toBe(caption);
-    expect(caption.textContent).toContain('Static preview from revision rev');
+    expect(caption.textContent).toContain('Frame 1');
     expect(screen.getByRole('img',{name:'Source photo: room.jpg'})).toBe(photo);
     expect(Array.from(actions.parentElement!.children)).toEqual(children);
     await act(async()=>{finish({width:960,height:640,close} as unknown as ImageBitmap);});
@@ -772,9 +807,9 @@ describe('Real Isaac viewport',()=>{
     metadata=view(2);
     api.viewportImageFrame.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
     await waitFor(()=>expect(api.viewportImageFrame).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('img',{name:'Last Isaac preview · not live'}).getAttribute('data-frame-id')).toBe('1');
+    expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'}).getAttribute('data-frame-id')).toBe('1');
     expect(screen.getByRole('img',{name:'Source photo: room.jpg'})).toBe(photo);expect(photo.parentElement).toBe(figure);
-    expect((screen.getByRole('button',{name:'Orbit left'}) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button',{name:'Orbit left'}) as HTMLButtonElement).disabled).toBe(false);
     await act(async()=>{finish({state:metadata,image:new Blob(['new-frame'],{type:'image/jpeg'})});});
     expect((await screen.findByRole('img',{name:'Current Isaac Digital Twin render'})).getAttribute('data-frame-id')).toBe('2');
     const generation:NonNullable<ConversationState['generation']>={operation_id:'same-job',state:'running',summary:'Repairing',can_cancel:true,

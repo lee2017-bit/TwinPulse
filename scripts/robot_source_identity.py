@@ -16,7 +16,7 @@ from pathlib import Path
 ROBOT_CORE_ENTRYPOINTS = ('observed_mission', 'current_mission_evidence',
                          'automatic_mapping', 'automatic_photo_alignment', 'adaptive_mission_contract','cold_start_mission',
                          'mission_correction_contract', 'mission_evidence_contract', 'mission_telemetry', 'cleanup_diagnostics',
-                         'manual_motion_guard')
+                         'manual_motion_guard','field_persistence')
 
 
 def core_members(core):

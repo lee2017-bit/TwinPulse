@@ -271,6 +271,8 @@ class LocalApiServer:
         class Handler(BaseHTTPRequestHandler):
             server_version = "TwinPulseLocal/1.0"
             sys_version = ""
+            protocol_version = 'HTTP/1.1'
+            disable_nagle_algorithm = True
 
             def setup(self):
                 # Socket inactivity, not a model/engine execution deadline.
@@ -282,13 +284,23 @@ class LocalApiServer:
             def log_message(self, _format: str, *_args: object) -> None:
                 return
 
+            def _begin_request(self):
+                # A handler now serves several requests on one TCP connection.
+                # Nothing pinned to a previous body/context/callback may leak.
+                for name in list(vars(self)):
+                    if name.startswith('_twinpulse_'):delattr(self,name)
+                self.close_connection=True
+
             def do_GET(self) -> None:  # noqa: N802
+                self._begin_request()
                 owner._handle(self)
 
             def do_POST(self) -> None:  # noqa: N802
+                self._begin_request()
                 owner._handle(self)
 
             def do_OPTIONS(self) -> None:  # noqa: N802
+                self._begin_request()
                 owner._error(self, 405, "method_not_allowed", "Cross-origin preflight is not supported")
 
         self._httpd = None
@@ -421,9 +433,10 @@ class LocalApiServer:
                     "/v1/product/robot/controller/input": {"stop", "stop_all", "close", "lidar_stop"},
                     '/v1/product/conversation': {'cancel'},
                 }
-                if request.command == "POST" and parsed.path in stop_actions:
+                if request.command == "POST" and (parsed.path in stop_actions or parsed.path=='/v1/product/robots'):
                     gated_body = self._read_json(request)
                 stop_action = gated_body.get("action") if gated_body is not None else None
+                battery_display_only=parsed.path=='/v1/product/robots' and stop_action=='set_battery_display'
                 stopping = (isinstance(stop_action, str) and stop_action in stop_actions.get(parsed.path, ())) or parsed.path in {'/v1/product/automatic-demo/mission-stop','/v1/product/conversation/robot/stop'}
                 if (request.command != "GET"
                         and (self._launcher_project_switch_file is not None and self._launcher_project_switch_file.exists()
@@ -438,8 +451,10 @@ class LocalApiServer:
                 # Owned Stop must not wait for scene-edit/shutdown readiness
                 # inspection. Authentication and exact action classification
                 # above still apply; only the unrelated runtime gate is skipped.
-                runtime_status = None if stopping else (self._supervisor_status(inspect_shutdown=False)
-                    if parsed.path=='/v1/product/robot-fleet' else self._supervisor_status()).get("status")
+                # This is a mutation/startup check, not shutdown admission.
+                # GETs never use it. In particular status/lease renewal must
+                # not wait for a scene edit's shared robot/admission mutex.
+                runtime_status = None if request.command=='GET' or stopping or battery_display_only else self._supervisor_status(inspect_shutdown=False).get("status")
                 if (request.command != "GET" and parsed.path not in {
                         "/v1/product/runtime/retry", "/v1/product/runtime/cancel", '/v1/product/runtime/shutdown',
                         "/v1/product/conversation",
@@ -454,7 +469,7 @@ class LocalApiServer:
                         '/v1/product/automatic-demo/comparison-start', '/v1/product/automatic-demo/comparison-stop',
                         '/v1/product/automatic-demo/comparison-reopen',
                     }
-                        and not stopping and runtime_status in {"starting", "error"}):
+                        and not stopping and not battery_display_only and runtime_status in {"starting", "error"}):
                     code = "runtime_start_failed" if runtime_status == "error" else "runtime_not_ready"
                     raise BrokerError(code, "Launcher is not ready; review runtime status before editing or running", status=409)
                 if request.command == "GET" and parsed.path == "/v1/product/session":
@@ -765,13 +780,24 @@ class LocalApiServer:
                         if physical is None:raise BrokerError('physical_evidence_unavailable','Physical evidence service unavailable.',status=409)
                         payload=physical.evidence_file(operation_id,name,session.session_id,self.broker.project_id)
                         request.send_response(200);request.send_header('Content-Type','application/octet-stream')
-                        request.send_header('Content-Length',str(len(payload)));request.end_headers();request.wfile.write(payload)
+                        # Binary evidence follows the same project-context contract as
+                        # JSON/images. Never disable the renderer's late-result fence.
+                        context=getattr(request,'_twinpulse_context_id',self.context_id)
+                        request.send_header('X-TwinPulse-Context',context)
+                        request.send_header('Cache-Control','no-store')
+                        request.send_header('X-Content-Type-Options','nosniff')
+                        request.send_header('Content-Length',str(len(payload)));request.end_headers()
+                        try:
+                            from .http_io import write_body
+                            write_body(request,payload,LOCAL_SOCKET_IO_TIMEOUT_S)
+                        except (BrokenPipeError,ConnectionAbortedError,ConnectionResetError,TimeoutError):
+                            request.close_connection=True
                         return
                     return self._json(request,200,self.robot_fleet.operation(parsed.path.removeprefix('/v1/product/robot-fleet/operations/'),session.session_id))
                 if parsed.path == '/v1/product/robots' and request.command in ('GET', 'POST'):
                     if self.workspace_devices is None:
                         raise BrokerError('robot_registry_unavailable', 'Robot registry is unavailable', status=503)
-                    body = self._read_json(request) if request.command == 'POST' else None
+                    body = gated_body if request.command == 'POST' else None
                     return self._json(request, 200, self.workspace_devices.robot_registry_api(body, session.session_id))
                 if request.command == "GET" and parsed.path == "/v1/product/robot/report":
                     return self._json(request, 200, self._workflow().robot_report_snapshot())
@@ -1702,7 +1728,7 @@ class LocalApiServer:
                 result['shutdown_requested']=False
                 result['shutdown_request_uncertain']=True
             result['shutdown_available'] = bool(inspect_shutdown and self._launcher_shutdown_file and result['status'] in
-                {'ready', 'starting', 'error'} and not result['shutdown_requested'] and not self._shutdown_busy())
+                {'ready', 'starting', 'error'} and not result['shutdown_requested'] and not self._shutdown_observation_busy())
             result['local_http_requests']=self.workspace.request_diagnostics() if self.workspace else []
             return result
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
@@ -1713,6 +1739,46 @@ class LocalApiServer:
                 "engine": {"owned": True, "state": "unknown"},
                 "browser": {"launched": False},
             }
+
+    def _shutdown_observation_busy(self):
+        # Advisory GET only. A held admission lock means unavailable; reading
+        # the Exit button must not wait behind the work it is describing.
+        from contextlib import ExitStack
+        workflow=self.product_workflow
+        devices=self.workspace_devices
+        locks=[self._robot_start_lock,self.broker._lock]
+        if workflow is not None:
+            locks.extend([workflow._lock,workflow.scene_edit_transaction.lock])
+        if devices is not None:
+            for service,name in ((devices.controller,'lock'),(devices.readiness,'_lock')):
+                lock=getattr(service,name,None)
+                if lock is not None:locks.append(lock)
+        with ExitStack() as held:
+            for lock in locks:
+                if not lock.acquire(blocking=False):return True
+                held.callback(lock.release)
+            if self.workspace is not None and (self.workspace.pending or sum(self.workspace.mutations.values())>1):return True
+            if self.broker.has_pending_operations():return True
+            if (self.broker.supervisor_state().get('snapshot') or {}).get('runtime_state')=='running':return True
+            if self.product_workflow is not None and (self.product_workflow.has_active_generation() or self.product_workflow.scene_edit_transaction.locked()):return True
+            if self.conversation is not None and self.conversation._feedback_worker is not None and self.conversation._feedback_worker.is_alive():return True
+            devices=self.workspace_devices
+            if devices is not None:
+                if devices.operation_active():return True
+                controller=devices.controller
+                if controller is not None:
+                    recovery=getattr(controller,'evidence_recovery',None);thread=getattr(recovery,'thread',None)
+                    if controller.state.get('state')=='STOPPING' or thread and thread.is_alive():return True
+                for context in devices.contexts:
+                    task=getattr(getattr(context.conversation,'navigation',None),'task_loop',None)
+                    if (context.chat_robot_preparation._busy()
+                            or context.automatic_mission.worker and context.automatic_mission.worker.is_alive()
+                            or context.automatic_demo.worker and context.automatic_demo.worker.is_alive()
+                            or task and task.active()):return True
+            # This is only a conservative button hint. The shutdown POST still
+            # rechecks complete pooled-device admission and drains requests;
+            # this GET never copies full physical journals or scan history.
+            return False
 
     def _shutdown_busy(self,*,ignore_http=False):
         if self.workspace is not None and self.workspace.pending:
@@ -2174,6 +2240,11 @@ class LocalApiServer:
             value=request._twinpulse_saved_json
             del request._twinpulse_saved_json
             return value
+        lengths=(request.headers.get_all('Content-Length',[]) if hasattr(request.headers,'get_all')
+                 else [request.headers['Content-Length']] if 'Content-Length' in request.headers else [])
+        if len(lengths)>1 or request.headers.get('Transfer-Encoding') is not None:
+            request.close_connection=True
+            raise BrokerError('request_framing_invalid','Use one Content-Length and no Transfer-Encoding.',status=400)
         if request.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
             raise BrokerError("content_type_invalid", "Content-Type must be application/json", status=415)
         raw_length = request.headers.get("Content-Length")
@@ -2199,6 +2270,7 @@ class LocalApiServer:
         value = json.loads(data.decode("utf-8"))
         if not isinstance(value, Mapping):
             raise BrokerError("json_object_required", "JSON body must be an object", status=400)
+        request._twinpulse_json_framed=True
         return value
 
     @staticmethod
@@ -2256,6 +2328,17 @@ class LocalApiServer:
             request.send_header("Content-Length", str(len(payload)))
             request.send_header("Cache-Control", "no-store")
             request.send_header("X-Content-Type-Options", "nosniff")
+            incoming=getattr(request,'headers',{})
+            connection_values=incoming.get_all('Connection',[]) if hasattr(incoming,'get_all') else [incoming.get('Connection','')]
+            client_close=any(token.strip().lower()=='close' for value in connection_values for token in value.split(','))
+            get_lengths=incoming.get_all('Content-Length',[]) if hasattr(incoming,'get_all') else [incoming['Content-Length']] if 'Content-Length' in incoming else []
+            no_get_body=(getattr(request,'command',None)=='GET' and incoming.get('Transfer-Encoding') is None
+                         and (not get_lengths or get_lengths==['0']))
+            # Only complete successful JSON exchanges are reusable. Errors,
+            # unknown/unread framing and explicit client close always end TCP.
+            reusable=(200<=status<300 and getattr(request,'request_version',None)=='HTTP/1.1' and not client_close
+                      and (no_get_body or getattr(request,'_twinpulse_json_framed',False)))
+            request.send_header('Connection','keep-alive' if reusable else 'close')
             if context:
                 response_context=value.get('context_id',context) if isinstance(value,Mapping) else context
                 request.send_header('X-TwinPulse-Context',str(response_context))

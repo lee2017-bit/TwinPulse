@@ -540,6 +540,30 @@ class R5ProductApiTests(unittest.TestCase):
                 self.assertEqual(status, 409)
                 self.assertEqual(result["error"]["code"], expected_code)
 
+    def test_only_data_only_battery_settings_can_save_before_isaac_is_ready(self):
+        from twinpulse_app.workspace_devices import WorkspaceDevices
+        from twinpulse_app.robot_registry import RobotEndpoint
+        from twinpulse_app.robot_registry_service import RobotRegistryService
+        from twinpulse_core.robot_battery import battery_display_config
+        devices=WorkspaceDevices();service=RobotRegistryService(devices,self.static/'battery-settings')
+        devices.registry_service=service;self.server.workspace_devices=devices
+        row=service.registry.register(label='Offline settings',adapter_id='turtlebot3_burger_v1',
+            endpoint=RobotEndpoint('robot.invalid','twinpulse'),expected_revision=0)
+        for phase in ('starting','error'):
+            self.supervisor_status.write_text(json.dumps({'status':phase}),encoding='utf-8')
+            state=service.snapshot('owner');saved=state['robots'][0]
+            body=dict(action='set_battery_display',id=row['id'],config=battery_display_config(),
+                expected_revision=state['revision'],expected_display_sha256=saved['battery_display_sha256'])
+            status,result,_=self.request('/v1/product/robots',body,headers=self.product_headers)
+            self.assertEqual(status,200);self.assertEqual(result['robots'][0]['battery_display']['mode'],'voltage_only')
+            for action in ('connect','prepare','discover','select'):
+                status,_,_=self.request('/v1/product/robots',dict(action=action,expected_revision=result['revision']),headers=self.product_headers)
+                self.assertEqual(status,409)
+            status,_,_=self.request('/v1/product/robots',dict(body,action='set_battery_display',extra='connect'),headers=self.product_headers)
+            self.assertEqual(status,400)
+            status,_,_=self.request('/v1/product/robots',body,headers={'Cookie':self.cookie,'X-TwinPulse-CSRF':'invalid'})
+            self.assertEqual(status,403)
+
     def test_owned_stop_reaches_controller_during_launcher_failure(self) -> None:
         controller = Mock()
         controller.input.return_value = {"state": "STOPPING", "physical_verified": False}

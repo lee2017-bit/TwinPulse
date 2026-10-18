@@ -370,6 +370,7 @@ def main() -> int:
     temporary.replace(args.ready_file)
     print(f"TWINPULSE_BACKEND_READY port={server.port}", flush=True)
     next_status_write = 0.0
+    status_sample_id=0
     try:
         while not stop.wait(0.2):
             if args.backend_stop_file is not None and args.backend_stop_file.is_file():
@@ -381,7 +382,11 @@ def main() -> int:
                     pass
             if args.engine_status_file is not None and time.monotonic() >= next_status_write:
                 active_broker=server.workspace.active.broker if server.workspace else broker
-                published=_publish_engine_status(args.engine_status_file,active_broker)
+                engine_state=active_broker.supervisor_state()
+                devices.set_engine_process_probe_blocked(bool(engine_state.get('engine_session_id') and not engine_state.get('engine_connected')))
+                status_sample_id+=1
+                published=_publish_engine_status(args.engine_status_file,active_broker,
+                    sample_id=status_sample_id,physical_runtime_active=devices.physical_runtime_active(),state=engine_state)
                 # Optional heartbeat persistence must not kill the whole API on
                 # ENOSPC, nor flood failed temporary files every 200 ms.
                 next_status_write=time.monotonic()+(1.0 if published else 5.0)
@@ -408,10 +413,11 @@ def _write_json_atomic(path: Path, value: object) -> None:
         except OSError:pass
 
 
-def _publish_engine_status(path, broker):
+def _publish_engine_status(path, broker, *, sample_id=None, physical_runtime_active=None,state=None):
     try:
         _write_json_atomic(path, {"schema_version":"1.0",
-            "sampled_at_utc":datetime.now(timezone.utc).isoformat(),**broker.supervisor_state()})
+            "sampled_at_utc":datetime.now(timezone.utc).isoformat(),
+            "status_sample_id":sample_id,"physical_runtime_active":physical_runtime_active,**(state if state is not None else broker.supervisor_state())})
         return True
     except OSError:
         if broker.diagnostics is not None:broker.diagnostics.note_storage_error()

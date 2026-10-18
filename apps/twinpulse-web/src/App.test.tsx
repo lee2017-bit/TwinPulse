@@ -141,11 +141,35 @@ describe('TwinPulse exit contract UI',()=>{
       unmount();expect(unsubscribe).toHaveBeenCalledOnce();
     }finally{delete window.twinpulseDesktop;}
   });
-  it('reports unavailable native close without bypassing the runtime shutdown gate',async()=>{
+  it('submits one native close despite a stale unavailable hint, using server admission',async()=>{
     const api=exitApi(false);let requestClose!:()=>void;const reportExitResult=vi.fn();
     window.twinpulseDesktop={versions:vi.fn().mockResolvedValue({}),onExitRequested:callback=>{requestClose=callback;return vi.fn();},reportExitResult};
+    try{const {unmount}=render(<ChatApp api={api}/>);await screen.findByText('Retained conversation');
+      expect(screen.getByRole('button',{name:'Exit TwinPulse'})).toHaveProperty('disabled',true);
+      await act(async()=>requestClose());await screen.findByRole('status',{name:'TwinPulse shutdown'});
+      expect(reportExitResult).toHaveBeenCalledWith({requested:true});expect(api.shutdownRuntime).toHaveBeenCalledOnce();unmount();
+    }finally{delete window.twinpulseDesktop;}
+  });
+  it('retains the window on authoritative busy rejection after an unavailable native hint',async()=>{
+    const api=exitApi(false);let requestClose!:()=>void;const reportExitResult=vi.fn();
+    vi.mocked(api.shutdownRuntime).mockRejectedValue(new Error('A robot operation remains active'));
+    window.twinpulseDesktop={versions:vi.fn().mockResolvedValue({}),onExitRequested:callback=>{requestClose=callback;return vi.fn();},reportExitResult};
     try{const {unmount}=render(<ChatApp api={api}/>);await screen.findByText('Retained conversation');await act(async()=>requestClose());
-      expect(reportExitResult).toHaveBeenCalledWith({requested:false,code:'shutdown_unavailable'});expect(api.shutdownRuntime).not.toHaveBeenCalled();unmount();
+      expect((await screen.findByRole('alert')).textContent).toContain('A robot operation remains active');
+      expect(reportExitResult).toHaveBeenCalledWith({requested:false,code:'shutdown_unconfirmed'});
+      expect(api.shutdownRuntime).toHaveBeenCalledOnce();expect(screen.queryByRole('status',{name:'TwinPulse shutdown'})).toBeNull();
+      expect(screen.getAllByText('Retained conversation').length).toBeGreaterThan(0);unmount();
+    }finally{delete window.twinpulseDesktop;}
+  });
+  it('does not duplicate or certify an unresolved native close',async()=>{
+    const api=exitApi(false);let requestClose!:()=>void,reject!:(reason:Error)=>void;const reportExitResult=vi.fn();
+    vi.mocked(api.shutdownRuntime).mockImplementation(()=>new Promise((_resolve,fail)=>{reject=fail;}));
+    window.twinpulseDesktop={versions:vi.fn().mockResolvedValue({}),onExitRequested:callback=>{requestClose=callback;return vi.fn();},reportExitResult};
+    try{const {unmount}=render(<ChatApp api={api}/>);await screen.findByText('Retained conversation');
+      await act(async()=>{requestClose();requestClose();});expect(api.shutdownRuntime).toHaveBeenCalledOnce();
+      expect(reportExitResult).not.toHaveBeenCalledWith({requested:true});await act(async()=>reject(new Error('ACK lost')));
+      expect((await screen.findByRole('alert')).textContent).toContain('ACK lost');
+      expect(screen.queryByRole('status',{name:'TwinPulse shutdown'})).toBeNull();expect(api.shutdownRuntime).toHaveBeenCalledOnce();unmount();
     }finally{delete window.twinpulseDesktop;}
   });
   it('sends one explicit exit and keeps its guidance after the backend disconnects',async()=>{

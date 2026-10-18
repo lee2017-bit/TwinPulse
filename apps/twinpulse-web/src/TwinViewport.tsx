@@ -7,7 +7,7 @@ import type { ViewportFrame,ViewportState,ViewportTimings } from './viewport-typ
 import type {ConversationState,GenerationPreview,InventoryWorkProgress} from './conversation-types';
 import {AuthenticatedConversationImage} from './AuthenticatedConversationImage';
 import type {WorkflowState} from './types';
-import {fleetBatteryLabel,fleetRobotFresh,type RobotFleetState} from './robot-fleet-types';
+import {fleetRobotFresh,type RobotFleetState} from './robot-fleet-types';
 
 type RobotAnchor=NonNullable<ViewportFrame['robot_anchors']>[number];
 export type RobotBadgePlacement={robot_id:string;anchorX:number;anchorY:number;left:number;top:number;width:number;height:number;lineX:number;lineY:number};
@@ -17,19 +17,27 @@ export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:numb
   if(!visible.length)return [];
   const margin=Math.min(4,width/8,height/8),gap=Math.min(6,width/(visible.length*4),height/(visible.length*4));
   const areaW=width-2*margin,areaH=height-2*margin;
-  let badgeW=Math.min(108,areaW),badgeH=Math.min(32,areaH);
+  // A label is only a small name, not a persistent status card. Details live
+  // in the controller opened by selecting the name or the rendered body.
+  let badgeW=Math.min(72,areaW),badgeH=Math.min(16,areaH);
   const capacity=()=>Math.floor((areaW+gap)/(badgeW+gap))*Math.floor((areaH+gap)/(badgeH+gap));
   if(capacity()<visible.length){
     let best=0;
     for(let columns=1;columns<=visible.length;columns++){
-      const rows=Math.ceil(visible.length/columns),w=Math.min(108,(areaW-gap*(columns-1))/columns),h=Math.min(32,(areaH-gap*(rows-1))/rows);
-      const score=Math.min(w/108,h/32);
+      const rows=Math.ceil(visible.length/columns),w=Math.min(72,(areaW-gap*(columns-1))/columns),h=Math.min(16,(areaH-gap*(rows-1))/rows);
+      const score=Math.min(w/72,h/16);
       if(score>best){best=score;badgeW=w;badgeH=h;}
     }
   }
   if(badgeW<=0||badgeH<=0)return [];
   const clamp=(value:number,low:number,high:number)=>Math.max(low,Math.min(high,value));
   const order=[...visible].sort((a,b)=>a.robot_id.localeCompare(b.robot_id));
+  // The frame's projected envelopes are conservative display hints, not
+  // mesh segmentation. Still never put a name plate over any such envelope.
+  // In a genuinely overfull view the fleet row remains the selection path.
+  const bodyRects=visible.map(a=>a.screen_bounds_uv).filter(b=>b.length===4&&b.every(Number.isFinite)&&b[2]>b[0]&&b[3]>b[1])
+    .map(b=>({left:b[0]*width,top:b[1]*height,width:(b[2]-b[0])*width,height:(b[3]-b[1])*height}));
+  const occludesBody=(left:number,top:number)=>bodyRects.some(b=>left<b.left+b.width+gap&&left+badgeW+gap>b.left&&top<b.top+b.height+gap&&top+badgeH+gap>b.top);
   const placed:RobotBadgePlacement[]=[];
   const make=(anchor:RobotAnchor,left:number,top:number):RobotBadgePlacement=>{
     const anchorX=anchor.screen_anchor_uv[0]*width,anchorY=anchor.screen_anchor_uv[1]*height;
@@ -40,14 +48,14 @@ export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:numb
   let fallback=false;
   for(const anchor of order){
     const preferredX=clamp(anchor.screen_anchor_uv[0]*width-badgeW/2,margin,width-margin-badgeW);
-    const preferredY=clamp(anchor.screen_anchor_uv[1]*height+8,margin,height-margin-badgeH);
+    const preferredY=clamp(Math.max(anchor.screen_anchor_uv[1],anchor.screen_bounds_uv[3])*height+8,margin,height-margin-badgeH);
     const candidates=[{left:preferredX,top:preferredY}];
     for(let step=1;step<=visible.length;step++)for(const sign of [1,-1]){
       candidates.push({left:preferredX,top:clamp(preferredY+sign*step*(badgeH+gap),margin,height-margin-badgeH)},
         {left:clamp(preferredX+sign*step*(badgeW+gap),margin,width-margin-badgeW),top:preferredY});
     }
     candidates.sort((a,b)=>Math.hypot(a.left-preferredX,a.top-preferredY)-Math.hypot(b.left-preferredX,b.top-preferredY));
-    const candidate=candidates.find(value=>!overlaps(value.left,value.top));
+    const candidate=candidates.find(value=>!overlaps(value.left,value.top)&&!occludesBody(value.left,value.top));
     if(!candidate){fallback=true;break;}
     placed.push(make(anchor,candidate.left,candidate.top));
   }
@@ -56,8 +64,10 @@ export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:numb
     // pixel anchors and the underlying robot poses are never changed.
     placed.length=0;
     const columns=Math.max(1,Math.floor((areaW+gap+.00001)/(badgeW+gap))),rows=Math.max(1,Math.floor((areaH+gap+.00001)/(badgeH+gap)));
-    const slots=Array.from({length:columns*rows},(_,index)=>({left:margin+(index%columns)*(badgeW+gap),top:margin+Math.floor(index/columns)*(badgeH+gap)}));
+    const slots=Array.from({length:columns*rows},(_,index)=>({left:margin+(index%columns)*(badgeW+gap),top:margin+Math.floor(index/columns)*(badgeH+gap)}))
+      .filter(slot=>!occludesBody(slot.left,slot.top));
     for(const anchor of order){
+      if(!slots.length)break;
       const x=anchor.screen_anchor_uv[0]*width-badgeW/2,y=anchor.screen_anchor_uv[1]*height+8;
       let nearest=0;for(let i=1;i<slots.length;i++)if(Math.hypot(slots[i].left-x,slots[i].top-y)<Math.hypot(slots[nearest].left-x,slots[nearest].top-y))nearest=i;
       const slot=slots.splice(nearest,1)[0];if(slot)placed.push(make(anchor,slot.left,slot.top));
@@ -66,9 +76,16 @@ export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:numb
   const byId=new Map(placed.map(item=>[item.robot_id,item]));
   return visible.map(anchor=>byId.get(anchor.robot_id)!).filter(Boolean);
 }
-function badgeBattery(robot:RobotFleetState['robots'][number]){
-  const battery=robot.battery,value=battery.percent!==null?`${battery.percent.toFixed(0)}%`:battery.voltage_v!==null?`${battery.voltage_v.toFixed(1)}V`:'—';
-  return `${value} · ${battery.source}${fleetBatteryLabel(robot).includes('stale')?' · stale':''}`;
+export function pickRobotAnchor(anchors:RobotAnchor[],u:number,v:number):string|null{
+  if(!Number.isFinite(u)||!Number.isFinite(v)||u<0||u>1||v<0||v>1)return null;
+  const hits=anchors.filter(a=>a.visible&&a.screen_bounds_uv.length===4&&a.screen_bounds_uv.every(Number.isFinite)&&
+    a.screen_bounds_uv[2]>a.screen_bounds_uv[0]&&a.screen_bounds_uv[3]>a.screen_bounds_uv[1]&&
+    u>=a.screen_bounds_uv[0]&&u<=a.screen_bounds_uv[2]&&v>=a.screen_bounds_uv[1]&&v<=a.screen_bounds_uv[3]);
+  // These are published projection hints, not mesh/physics picking. Resolve
+  // overlapping hints by distance; do not move models or invent alignment.
+  hits.sort((a,b)=>Math.hypot(u-a.screen_anchor_uv[0],v-a.screen_anchor_uv[1])-
+    Math.hypot(u-b.screen_anchor_uv[0],v-b.screen_anchor_uv[1])||a.robot_id.localeCompare(b.robot_id));
+  return hits[0]?.robot_id??null;
 }
 
 export const inventoryCheckpointSaved=(work:InventoryWorkProgress)=>work.checkpoint_saved||work.draft_saved===true||work.observation_saved===true;
@@ -235,7 +252,7 @@ function GenerationProgress({generation,confirmedPreview,imageDecoded,imageMatch
 }
 
 export type ViewerFault={code:string;execution_id:string|null};
-export function TwinViewport({api,projectId,report,diagnose,generation,sourcePhoto,savedScene=null,appConnected=true,robotFleet,onRobotSelect}: {api:TwinPulseApi;projectId?:string;report?:(fault:ViewerFault|null)=>void;diagnose?:(id:string|null)=>void;appConnected?:boolean;
+export function TwinViewport({api,projectId,report,diagnose,generation,sourcePhoto,savedScene=null,appConnected=true,robotFleet,onRobotSelect,controlView=false}: {api:TwinPulseApi;projectId?:string;report?:(fault:ViewerFault|null)=>void;diagnose?:(id:string|null)=>void;appConnected?:boolean;controlView?:boolean;
   robotFleet?:RobotFleetState;onRobotSelect?:(id:string)=>void;
   generation?:ConversationState['generation'];sourcePhoto?:{url:string;name:string}|null;savedScene?:SavedGenerationScene|null}) {
   const preview=generation?.error?.diagnostics?.generation_preview??generation?.progress?.generation_preview;
@@ -494,17 +511,25 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const currentGeneration=!rebuildRequired&&(!generation||generation.state==='completed'&&
     (!savedBinding.seen||savedBinding.available&&savedBinding.revision===image?.frame.applied_revision)||generation.state==='running'&&
     !!preview&&preview.state==='ready'&&preview.scene_revision===image?.frame.applied_revision);
+  // Metadata often advances before the next JPEG is decoded. The displayed
+  // receipt remains current within its ORIGINAL 1s lifetime, same stage,
+  // revision and camera; a newer receipt must not flash it stale on every poll.
+  const receiptMatches=!!image&&!!state?.frame&&
+    (frameKey(image.frame)===frameKey(state.frame)||
+      image.frame.engine_session_id===state.frame.engine_session_id&&image.frame.stage_epoch===state.frame.stage_epoch&&
+      image.frame.applied_revision===state.frame.applied_revision&&image.frame.camera_sequence===state.frame.camera_sequence&&
+      image.frame.frame_id<state.frame.frame_id);
   const fresh=appConnected&&currentGeneration&&!superseded&&!!image&&!image.previewOnly&&!error&&!!state?.frame&&['live','degraded'].includes(state.state)&&
-    frameKey(image.frame)===frameKey(state.frame)&&displayAge-image.frame.captured_at_ms<1000;
+    receiptMatches&&displayAge-image.frame.captured_at_ms<1000;
   const anchorFrame=fresh&&!state?.camera_pending&&displayAge>=cameraReadyAt?image?.frame:null;
   const fitScale=anchorFrame?Math.min(slotSize.width/anchorFrame.width,slotSize.height/anchorFrame.height):0;
   const fitWidth=(anchorFrame?.width??0)*fitScale,fitHeight=(anchorFrame?.height??0)*fitScale;
   const robotBadges=anchorFrame&&robotFleet?layoutRobotBadges((anchorFrame.robot_anchors??[]).filter(anchor=>robotFleet.robots.some(robot=>robot.robot_id===anchor.robot_id)),fitWidth,fitHeight):[];
   const camera=async(action:string)=>{
-    if(busy||!fresh||!state?.frame||Date.now()-state.frame.captured_at_ms>=1000||Date.now()<cameraReadyAt)return;
+    if(busy||!fresh||!image||Date.now()-image.frame.captured_at_ms>=1000||Date.now()<cameraReadyAt)return;
     setBusy(true);setCameraError(null);
     try{
-      const result=await api.viewportCamera({request_id:crypto.randomUUID(),frame_id:state.frame.frame_id,action});
+      const result=await api.viewportCamera({request_id:crypto.randomUUID(),frame_id:image.frame.frame_id,action});
       if(owner.current.api!==api||owner.current.projectId!==projectId||owner.current.inputOrigin!==inputOrigin)return;
       // Match the server's bounded camera rate; a fast frame ACK is not a
       // permit to send another camera mutation before its 200 ms interval.
@@ -514,42 +539,54 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
     catch(caught){if(owner.current.api===api&&owner.current.projectId===projectId&&owner.current.inputOrigin===inputOrigin)setCameraError(caught instanceof Error?caught.message:'Camera request failed. No automatic retry.');}
     finally{if(owner.current.api===api&&owner.current.projectId===projectId&&owner.current.inputOrigin===inputOrigin)setBusy(false);}
   };
-  return <section className="twin-live-viewport" aria-label="Isaac viewport">
+  const progress=generation&&<GenerationProgress generation={generation} confirmedPreview={confirmedPreview} imageDecoded={!!image}
+    imageMatchesCandidate={!!image&&image.frame.applied_revision===preview?.scene_revision} savedScene={savedScene}/>;
+  return <section className={`twin-live-viewport${controlView?' is-control-view':''}`} aria-label="Isaac viewport">
     <p role="status">{fresh ? state!.state==='live'?'Live Isaac render':'Live render · reduced frame rate' : image?'Last preview · not live':'Viewer waiting / stale'}
       {fresh && ` · ${state!.fps.toFixed(1)} FPS`}</p>
-    {generation&&<GenerationProgress generation={generation} confirmedPreview={confirmedPreview} imageDecoded={!!image}
-      imageMatchesCandidate={!!image&&image.frame.applied_revision===preview?.scene_revision} savedScene={savedScene}/>}
+    {!controlView&&progress}
     {superseded&&<p role="status">The display observation belonged to an earlier scene. Waiting for a fresh current frame; the last preview has no camera control.</p>}
     <div className="twin-frame-slot" ref={frameSlot}><canvas ref={surface} hidden={!image} role={image?'img':undefined}
       aria-label={image?fresh?'Current Isaac Digital Twin render':'Last Isaac preview · not live':undefined}
       data-frame-id={image?.frame.frame_id} data-captured-at={image?.frame.captured_at_ms}
-      data-preview-only={image?!fresh:undefined}/>
+      data-scene-revision={image?.frame.applied_revision} data-stage-epoch={image?.frame.stage_epoch}
+      data-live={fresh} data-frame-age-ms={image?Math.max(0,displayAge-image.frame.captured_at_ms):undefined}
+      data-preview-only={image?!fresh:undefined}
+      onClick={event=>{
+        if(!anchorFrame||!onRobotSelect||!robotFleet||Date.now()-anchorFrame.captured_at_ms>=1000||fitWidth<=0||fitHeight<=0)return;
+        const rect=frameSlot.current?.getBoundingClientRect();if(!rect)return;
+        const u=(event.clientX-rect.left-(slotSize.width-fitWidth)/2)/fitWidth;
+        const v=(event.clientY-rect.top-(slotSize.height-fitHeight)/2)/fitHeight;
+        const id=pickRobotAnchor((anchorFrame.robot_anchors??[]).filter(a=>robotFleet.robots.some(r=>r.robot_id===a.robot_id)),u,v);
+        if(id)onRobotSelect(id);
+      }}/>
     {anchorFrame&&fitScale>0&&robotFleet&&onRobotSelect&&<div className="robot-anchor-layer" aria-label="Robots in current Isaac frame"
       style={{left:(slotSize.width-fitWidth)/2,top:(slotSize.height-fitHeight)/2,width:fitWidth,height:fitHeight}}>
-      <svg className="robot-anchor-leaders" width={fitWidth} height={fitHeight} viewBox={`0 0 ${fitWidth} ${fitHeight}`} aria-hidden="true">
-        {robotBadges.map(badge=><g key={badge.robot_id}><line x1={badge.anchorX} y1={badge.anchorY} x2={badge.lineX} y2={badge.lineY}/><circle cx={badge.anchorX} cy={badge.anchorY} r="2"/></g>)}
-      </svg>
       {robotBadges.map(badge=>{
         const robot=robotFleet.robots.find(row=>row.robot_id===badge.robot_id);if(!robot)return null;
         return <button type="button" key={badge.robot_id} className="robot-anchor-badge"
           style={{left:badge.left,top:badge.top,width:badge.width,height:badge.height,transform:'none'}}
           data-anchor-x={badge.anchorX} data-anchor-y={badge.anchorY} data-robot-id={robot.robot_id}
-          title={`${robot.label} · ${robot.kind==='sim'?'SIM':'Physical'}${robot.display_pose?' · estimated marker':''} · ${fleetBatteryLabel(robot)}`}
-          aria-description={`${robot.kind==='sim'?'SIM':'Physical'}${robot.display_pose?' · estimated marker; visualization only, not sensor/world alignment':''} · ${fleetBatteryLabel(robot)}. Connected status does not certify driving readiness.`}
+          data-screen-bounds={JSON.stringify(anchorFrame.robot_anchors?.find(anchor=>anchor.robot_id===robot.robot_id)?.screen_bounds_uv)}
+          title={robot.label}
+          aria-description={`${robot.kind==='sim'?'SIM':'Physical'}${robot.display_pose?' · estimated marker; visualization only, not sensor/world alignment':''}. Select the robot name or its current rendered body to open connection, battery and controls below the Twin. Connection does not certify driving readiness.`}
           onClick={()=>{if(Date.now()-anchorFrame.captured_at_ms<1000)onRobotSelect(robot.robot_id);}} aria-label={`Select ${robot.label} in Twin`}>
-          <span className="robot-anchor-heading"><span className={`robot-anchor-status ${fleetRobotFresh(robot)?'fresh':''}`}/><strong>{robot.label}</strong><em>{robot.kind==='sim'?'SIM':robot.display_pose?'Physical · estimated':'Physical'}</em></span>
-          <small>{badgeBattery(robot)}</small>
+          <span className="robot-anchor-heading"><span className={`robot-anchor-status ${fleetRobotFresh(robot)?'fresh':''}`}/><strong>{robot.label}</strong></span>
         </button>;
       })}
     </div>}
     {!image && <div className="chat-twin-placeholder"><strong>No current 3D frame</strong>
       <p>Build the scene in Isaac to see a 3D preview.</p></div>}</div>
-    {sourcePhoto&&<figure key="source-photo" className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/>
+    {!controlView&&sourcePhoto&&<figure key="source-photo" className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/>
       <figcaption>Source photo · reference for this Twin</figcaption></figure>}
     {error && <p role="alert">Viewer: {error}. Browser display is unavailable; this does not mean scene apply failed.
       {diagnostic && <button onClick={()=>callbacks.current.diagnose?.(diagnostic)}>View display diagnostics</button>}</p>}
     {cameraError && <p role="alert">Camera: {cameraError}. This action is not retried automatically.</p>}
     {state?.camera_result?.state==='failed' && <p role="alert">Camera action failed: {state.camera_result.code}. No automatic retry.</p>}
+    <details className="twin-display-details" open={controlView?undefined:true} key={controlView?'control-camera':'generation-camera'}>
+    {controlView&&<summary>Camera, source photo and scene details</summary>}
+    {controlView&&progress}
+    {controlView&&sourcePhoto&&<figure className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/><figcaption>Source photo · reference for this Twin</figcaption></figure>}
     <div className="twin-camera-actions" aria-label="Camera controls">
       {([['orbit_left','Orbit left'],['orbit_right','Orbit right'],['zoom_in','Zoom in'],['zoom_out','Zoom out'],
         ['pan_left','Pan left'],['pan_right','Pan right'],['pan_up','Pan up'],['pan_down','Pan down']] as const).map(([action,label])=>
@@ -561,5 +598,6 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       Rendering is not proof of simulation or robot movement.</>:<>
       Static preview from revision {image.frame.applied_revision} · captured {new Date(image.frame.captured_at_ms).toLocaleTimeString('en-GB',{hour12:false})}. It may differ from the current scene. Camera controls require a fresh current frame.</>:
       'Waiting for a decoded Isaac frame. Camera controls require a fresh current frame.'}</small>
+    </details>
   </section>;
 }

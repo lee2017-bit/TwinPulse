@@ -27,6 +27,8 @@ from .command_broker import BrokerError
 from .robot_adapters import instance_binding, require_adapter
 from .session_journal import SessionJournal
 from twinpulse_core.robot_lineage import checked_twin_context
+from twinpulse_core.robot_battery import battery_estimate, battery_display_estimate
+from .robot_registry import record_battery_display
 
 
 def _uuid(value, label):
@@ -174,6 +176,8 @@ class PhysicalFleetAdapter:
             return self.sessions.get(identity)
 
     def _admission(self, entry, owner):
+        if getattr(self.devices,'engine_process_probe_blocked',False):
+            raise BrokerError('engine_observation_stale','Wait for current engine observation before connecting.',status=409)
         # Equivalent scene/collection checks, applied per target rather than
         # using the old workspace-wide "any robot busy" selection restriction.
         for context in getattr(self.devices, 'contexts', []):
@@ -398,6 +402,9 @@ class PhysicalFleetAdapter:
 
     def _live_command(self,robot_id,owner,action,payload,*,connection_epoch=None,motion_epoch=None,request_id=None,request_twin_context=None):
         _owner(owner)
+        if (action in {'prepare','qualify','drive','task','field_arm','field_test'}
+                and getattr(self.devices,'engine_process_probe_blocked',False)):
+            raise BrokerError('engine_observation_stale','Wait for current engine observation before a new physical operation.',status=409)
         entry=self._entry(robot_id)
         if entry is None:raise BrokerError('physical_connection_required','Connect the robot first.',status=409)
         with entry.lock:
@@ -460,7 +467,7 @@ class PhysicalFleetAdapter:
     def save_field_config(self,robot_id,owner,config):
         _owner(owner);_,binding=self._row(robot_id)
         import importlib.util
-        path=self.source_root/'packages/twinpulse_robot_safety/field_tests.py'
+        path=self.source_root/'packages/twinpulse_robot_safety/field_config.py'
         spec=importlib.util.spec_from_file_location('twinpulse_checked_field_config',path)
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         try:checked=module.checked_config(config,robot_id=binding['instance_id'],binding_sha256=binding['sha256'])
@@ -536,6 +543,14 @@ class PhysicalFleetAdapter:
             if isinstance(live.get('battery'),dict):battery.update(live['battery'])
             battery=dict(battery,age_ms=None if battery.get('age_ms') is None else
                          battery['age_ms']+(live.get('telemetry_age_ms') or 0))
+            if entry.binding['adapter_id']=='turtlebot3_burger_v1' and battery.get('source')=='measured':
+                # Keep the measured-percent field nullable. The explicit voltage
+                # estimate never grants motion or refreshes its sample age.
+                battery.update(battery_estimate(battery.get('voltage_v')))
+                battery['reserve_reference_method']='robotis_opencr_voltage_10_5_to_12_3_v1'
+                row=next((r for r in self.registry.snapshot()['robots'] if r['id']==entry.binding['instance_id']),None)
+                if row is not None:
+                    battery.update(battery_display_estimate(battery.get('voltage_v'),record_battery_display(row)))
             setup=live.get('setup') or dict(runtime_state='STARTING' if not live.get('live_heartbeat') else 'CONNECTED',blockers=live.get('blockers',[]),
                                           profile=live.get('profile'),qualification=live.get('qualification'))
             setup['binding_sha256']=entry.binding['sha256']
@@ -548,10 +563,13 @@ class PhysicalFleetAdapter:
                 applied_motion_epoch=live.get('applied_motion_epoch'),
                 connection_state='DISCONNECTED' if ended else 'DEGRADED' if entry.disconnecting else live['connection_state'],
                 observation_state='LIVE_AUTHENTICATED_SESSION' if live.get('live_heartbeat') else 'STALE_OR_UNVERIFIED',
-                live_heartbeat=live.get('live_heartbeat',False),
+                live_heartbeat=live.get('live_heartbeat',False) and not ended,
                 control_state=control,controller_state=reported_control,
                 reason='DISCONNECTING_AWAITING_ROBOT_CLEANUP' if entry.disconnecting else live.get('transport_error') or live.get('reason') or entry.reason,
-                battery=battery,pose=live.get('pose'),field=live.get('field'),scan=live.get('scan'),sensor_frame=live.get('sensor_frame'),lidar_state=live.get('lidar_state','OFF'),
+                battery=battery,pose=live.get('pose'),field=live.get('field'),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),
+                lidar_state=('OFF' if live.get('cleanup_confirmed') else 'FAULT') if ended else live.get('lidar_state','OFF'),
+                telemetry_diagnostic=deepcopy(live.get('telemetry_diagnostic')),native_diagnostic=deepcopy(live.get('lidar')),
+                timing_policy=deepcopy(live.get('timing_policy')),field_evidence=deepcopy(live.get('field_evidence')),
                 recording_state='INCOMPLETE' if recording_error else 'BUFFERING' if robot_recording.get('buffering') else
                     'RECORDING' if not ended else 'COMPLETE' if live.get('cleanup_confirmed') and local_recording.get('complete') else 'INCOMPLETE',
                 operation_id=None if ended else entry.operation_id,last_operation_id=entry.operation_id,project_id=entry.project_id,setup=setup,
@@ -559,7 +577,7 @@ class PhysicalFleetAdapter:
                 cleanup_confirmed=live.get('cleanup_confirmed',False),
                 telemetry_age_ms=live.get('telemetry_age_ms'),telemetry_sequence=live.get('telemetry_sequence',0),
                 capabilities=dict(read_only_connection=True,prepare=True,qualify=True,profile=True,
-                    lidar=live.get('live_heartbeat',False),drive=live.get('drive_ready') is True and live.get('live_heartbeat',False)
+                    lidar=live.get('live_heartbeat',False) and not ended,drive=not ended and live.get('drive_ready') is True and live.get('live_heartbeat',False)
                     and not recording_error),
                 owned=bool(owner and entry.owner==owner),physical_motion_verified=False)
         diagnostics = entry.services.diagnostics.snapshot(owner)
@@ -854,17 +872,28 @@ class PhysicalFleetAdapter:
             except (OSError,ValueError,TypeError,KeyError):
                 missing.append('LIVE_STREAM_RECEIPT_UNVERIFIED');stream=None
         elif any(e['kind']=='persistent_worker_started' for e in events):missing.append('LIVE_STREAM_RECEIPT_ABSENT')
+        recovered={}
+        if stream is not None:
+            try:
+                from .physical_live_history import recover_live_history
+                recovered=recover_live_history(receipt_path.parent,stream,operation_id=identity,project_id=project_id,
+                    robot_id=robot_id,connection_epoch=connection_epoch,binding_sha256=binding['sha256'],source_twin_context=source_twin_context)
+            except (OSError,ValueError,TypeError,KeyError,UnicodeError,RecursionError):missing.append('LIVE_STREAM_HISTORY_UNVERIFIED')
         return dict(schema_version='robot-operation-1.0', operation_id=identity, robot_id=robot_id,
-            project_id=project_id, events=events,
+            project_id=project_id, events=events+recovered.get('events',[]),
             manifest=dict(source='physical_existing_controller_and_read_only_diagnostics',
                 source_twin_context=deepcopy(source_twin_context),
                 lineage_status='RECORDED_OPERATION_START_REFERENCE_NOT_ACQUISITION_SYNC' if source_twin_context is not None else 'LEGACY_UNKNOWN',
                 binding_sha256=binding['sha256'], complete=not missing,
                 completeness='RECOVERED_INCOMPLETE' if missing else 'VERIFIED_CLOSED_RECORDING',
-                missing=missing, event_count=len(events), journal_sha256=hashlib.sha256(payload).hexdigest(),
+                missing=missing, event_count=len(events)+len(recovered.get('events',[])),lifecycle_event_count=len(events), journal_sha256=hashlib.sha256(payload).hexdigest(),
                 authorization_basis='CURRENT_AUTHENTICATED_PROJECT_SESSION', historical_operator_identity_verified=False,
                 integrity_basis='LOCAL_SHA256_COUNT_RECEIPT_NOT_AUTHENTICATED_DEVICE_PROOF',
                 current_robot_binding_matches=True, physical_motion_verified=False, historical=True,
+                worker_sources=recovered.get('worker_sources'),worker_sources_provenance=recovered.get('worker_sources_provenance','NOT_RECORDED'),
+                cleanup_confirmed=recovered.get('cleanup_confirmed'),source_export=recovered.get('source_export'),
+                runtime_event_count=recovered.get('runtime_event_count'),
+                field_trial_resolution=recovered.get('field_trial_resolution'),
                 connection_restored=False, device_authority_restored=False, original_logs_rewritten=False,
                 persistent_manifest='physical-fleet-operations/' + identity + '.jsonl',stream=stream,
                 local_receipt='physical-live/'+identity+'/receipt.json' if stream else None))

@@ -20,6 +20,19 @@ import time
 from uuid import uuid4
 
 
+class FrozenFrame(dict):
+    """JSON-compatible read-only snapshot, shared by all local consumers."""
+    def _readonly(self,*a,**k):raise TypeError('NATIVE_FRAME_READ_ONLY')
+    __setitem__=__delitem__=clear=pop=popitem=setdefault=update=__ior__=_readonly
+    def __deepcopy__(self,memo):return self
+
+
+def freeze_frame(value):
+    if isinstance(value,dict):return FrozenFrame({k:freeze_frame(v) for k,v in value.items()})
+    if isinstance(value,(tuple,list)):return tuple(freeze_frame(v) for v in value)
+    return value
+
+
 def _f32(x):
     return struct.unpack('<f', struct.pack('<f', x))[0]
 
@@ -31,6 +44,31 @@ class NativeDecoder:
         self.offset = self.node_index = self.errors = self.noise_bytes = 0
         self.previous_interval = 0.
         self.receipts = []
+        self.packet_bytes = self.unframed_segments = 0
+        self._unframed_start = None
+        self._unframed_digest = hashlib.sha256()
+        self._unframed_prefix = bytearray()
+        self._unframed_framing_errors = 0
+
+    def _discard_unframed(self):
+        # The bytes remain in the raw capture. Retain bounded provenance here,
+        # including a gap split over any number of serial reads.
+        if self._unframed_start is None:
+            self._unframed_start = self.offset
+            self.unframed_segments += 1
+        value = bytes(self.buffer[:1])
+        self._unframed_digest.update(value)
+        if len(self._unframed_prefix) < 32:self._unframed_prefix.extend(value)
+        del self.buffer[0]
+        self.offset += 1; self.noise_bytes += 1
+
+    def pending_unframed(self):
+        if self._unframed_start is None:return None
+        return dict(start=self._unframed_start, end=self.offset,
+            length=self.offset-self._unframed_start, classification='UNKNOWN',
+            framing_errors=self._unframed_framing_errors,
+            raw_sha256=self._unframed_digest.hexdigest(),
+            prefix_hex=self._unframed_prefix.hex(' '))
 
     def feed(self, data, received_s):
         if not isinstance(data, bytes) or len(data) > 65536 or not math.isfinite(received_s):
@@ -42,14 +80,14 @@ class NativeDecoder:
         width, capacity = (3, 85) if self.intensity else (2, 255)
         while len(self.buffer) >= 2:
             if self.buffer[:2] != b'\xaa\x55':
-                del self.buffer[0]; self.offset += 1; self.noise_bytes += 1
+                self._discard_unframed()
                 continue
             if len(self.buffer) < 10:
                 break
             ct, count = self.buffer[2:4]
             first_raw, last_raw, expected = struct.unpack_from('<HHH', self.buffer, 4)
             if not 0 < count <= capacity or not first_raw & 1 or not last_raw & 1:
-                self.errors += 1; del self.buffer[0]; self.offset += 1
+                self.errors += 1; self._discard_unframed(); self._unframed_framing_errors += 1
                 continue
             size = 10 + count * width
             if len(self.buffer) < size:
@@ -60,6 +98,7 @@ class NativeDecoder:
                 at = 10 + i * width
                 checksum ^= (raw[at] ^ int.from_bytes(raw[at+1:at+3], 'little')) if self.intensity else int.from_bytes(raw[at:at+2], 'little')
             first, last = first_raw >> 1, last_raw >> 1
+            valid = checksum == expected
             fallback = False
             if count == 1:
                 interval = 0.
@@ -67,12 +106,13 @@ class NativeDecoder:
                 interval = self.previous_interval; fallback = True
             else:
                 interval = _f32(_f32(last-first+(360*64 if last < first else 0)) / _f32(count-1))
-                self.previous_interval = interval
+                # A corrupt packet must not poison the next valid packet's
+                # prior-interval fallback. Valid-packet arithmetic is unchanged.
+                if valid:self.previous_interval = interval
             start, finish = self.offset, self.offset + size
             first_receipt = next(t for end, t in self.receipts if end > start)
             last_receipt = next(t for end, t in self.receipts if end >= finish)
             nodes = []
-            valid = checksum == expected
             if not valid:
                 self.errors += 1
             for i in range(count):
@@ -92,9 +132,16 @@ class NativeDecoder:
                     ring_start=bool(ct & 1) and valid, node_index=self.node_index,
                     source_byte_cursor=finish, valid_packet=valid))
                 self.node_index += 1
-            packets.append(dict(offset=start, end=finish, raw_bytes=raw, raw_sha256=hashlib.sha256(raw).hexdigest(),
+            packet = dict(offset=start, end=finish, raw_bytes=raw, raw_sha256=hashlib.sha256(raw).hexdigest(),
                 nodes=nodes, checksum_valid=valid, interval_fallback=fallback,
-                receipt_start_s=first_receipt, receipt_end_s=last_receipt))
+                receipt_start_s=first_receipt, receipt_end_s=last_receipt)
+            if self._unframed_start is not None:
+                packet['preceding_unframed'] = self.pending_unframed()
+                self._unframed_start = None
+                self._unframed_framing_errors = 0
+                self._unframed_digest = hashlib.sha256(); self._unframed_prefix.clear()
+            packets.append(packet)
+            self.packet_bytes += size
             del self.buffer[:size]; self.offset = finish
             self.receipts = [(end, t) for end, t in self.receipts if end > self.offset]
             if not self.receipts and self.buffer:
@@ -118,18 +165,31 @@ class NativeStream:
             raise ValueError('NATIVE_STORAGE_BOUND')
         self.lock = threading.RLock(); self.cancel = threading.Event(); self.thread = None
         self.state = dict(lidar_state='OFF', recording_state='IDLE', reason=None, bytes_received=0, frame_count=0)
-        self.frame = None; self.stream_id = None
+        self.frame = None; self.complete_frame = None; self.stream_id = None
+        self._frame_packets = []; self._complete_start = False
 
     def snapshot(self):
         with self.lock:return deepcopy(self.state)
 
     def latest_frame(self):
-        with self.lock:return deepcopy(self.frame)
+        # Published frames are recursively read-only: no repeated full-ring
+        # deepcopy on the heartbeat, tracker and motor boundary threads.
+        with self.lock:return self.frame
+
+    def control_frames(self):
+        # One atomic pair, same stream. This is storage, not admission: the
+        # consumer must enforce the ORIGINAL complete frame's age and inspect
+        # newer partial returns for stop-only hazards. Never restamp a frame.
+        with self.lock:
+            if self.cancel.is_set() or self.state.get('lidar_state')!='STREAMING' or self.state.get('reason'):
+                return None,None
+            return self.frame,self.complete_frame
 
     def start(self):
         with self.lock:
             if self.thread and self.thread.is_alive():return self.snapshot()
-            self.stream_id = uuid4().hex; self.cancel.clear(); self.frame = None
+            self.stream_id = uuid4().hex; self.cancel.clear(); self.frame = self.complete_frame = None
+            self._frame_packets = []; self._complete_start = False
             self.state = dict(lidar_state='STARTING', recording_state='RECORDING', reason=None,
                 bytes_received=0, frame_count=0, stream_id=self.stream_id)
             self.thread = threading.Thread(target=self._run, daemon=True, name='TwinPulseNativeStream')
@@ -139,6 +199,7 @@ class NativeStream:
     def stop(self):
         self.cancel.set()
         with self.lock:
+            self.frame=self.complete_frame=None
             if self.thread and self.thread.is_alive():self.state['lidar_state'] = 'STOPPING'
         return self.snapshot()
 
@@ -152,7 +213,7 @@ class NativeStream:
         channel = None
         directory = self.directory / self.stream_id
         stream = chunks = None; segment = -1; offset = 0; segment_start = 0; chunk_index = 0
-        decoder = NativeDecoder(); frame_packets = []; complete_start = False; last_emit = -math.inf
+        decoder = NativeDecoder(); last_emit = -math.inf
         manifest = dict(schema='native-stream-manifest-1.0', stream_id=self.stream_id, segments=[], complete=False)
         raw_digest = hashlib.sha256(); timing_digest = hashlib.sha256()
         error = None; started = False
@@ -187,15 +248,14 @@ class NativeStream:
                 raw_digest.update(data); timing_digest.update(line)
                 self.emit('raw', dict(metadata, base64=base64.b64encode(data).decode()))
                 chunk_index += 1; offset += len(data)
-                for packet in decoder.feed(data, received):
-                    if packet['nodes'][0]['ring_start']:
-                        if frame_packets:self._frame(frame_packets, complete_start)
-                        frame_packets = []; complete_start = True
-                    frame_packets.append(packet)
-                    if sum(len(p['nodes']) for p in frame_packets) > 4096:
-                        self._frame(frame_packets, False); frame_packets = []; complete_start = False
+                decode_started=time.perf_counter()
+                packets=decoder.feed(data, received)
+                decode_s=time.perf_counter()-decode_started
+                self._accept_packets(packets)
                 with self.lock:
-                    self.state.update(bytes_received=offset, checksum_errors=decoder.errors, unframed_bytes=decoder.noise_bytes)
+                    self.state.update(bytes_received=offset, checksum_errors=decoder.errors, unframed_bytes=decoder.noise_bytes,
+                        unframed_segments=decoder.unframed_segments,
+                        last_read_wait_s=received-before,last_decode_s=decode_s)
                     frame = self.frame
                 if frame is not None and received-last_emit >= .2:
                     points = [[b['distance_m']*math.cos(math.radians(b['angle_deg'])),
@@ -205,12 +265,16 @@ class NativeStream:
                         points=points, source='physical_native_sensor_unaligned', frame_id='native_sensor',
                         aligned=False, complete=frame['complete'], timing=frame['timing'],
                         raw_sha256=frame['raw_sha256'],raw_digest_basis=frame['raw_digest_basis'],
-                        source_byte_span=frame['source_byte_span'],nodes_sha256=frame['nodes_sha256']))
+                        source_byte_span=frame['source_byte_span'],nodes_sha256=frame['nodes_sha256'],quality=frame['quality']))
                     last_emit = received
         except BaseException as exc:
             error = str(exc) if isinstance(exc, (ValueError, OSError)) else type(exc).__name__
+            with self.lock:
+                self.frame=self.complete_frame=None
+                self.state.update(lidar_state='FAULT',reason=error[:120])
             self.emit('fault', dict(reason=error[:120], subsystem='native_sensor'))
         finally:
+            with self.lock:self.frame=self.complete_frame=None
             stop = dict(write_complete=False, data_quiet=False, port_restored=False, physical_rotor_stopped='UNCONFIRMED')
             try:
                 if channel is None:raise ValueError('NATIVE_PORT_NOT_OPENED')
@@ -230,19 +294,42 @@ class NativeStream:
             try:
                 close_segment()
                 manifest.update(bytes_received=offset, chunks=chunk_index, pending_decoder_bytes=len(decoder.buffer),
-                    incomplete_tail_nodes=sum(len(p['nodes']) for p in frame_packets), cleanup=stop, reason=error,
+                    decoded_packet_bytes=decoder.packet_bytes, unframed_bytes=decoder.noise_bytes,
+                    unframed_segments=decoder.unframed_segments, unframed_tail=decoder.pending_unframed(),
+                    byte_accounting_exact=offset==decoder.packet_bytes+decoder.noise_bytes+len(decoder.buffer),
+                    incomplete_tail_nodes=sum(len(p['nodes']) for p in self._frame_packets), cleanup=stop, reason=error,
                     complete=error is None and stop['write_complete'] and stop['data_quiet'] and stop['port_restored'])
                 (directory/'manifest.json').write_text(json.dumps(manifest, allow_nan=False, indent=2), encoding='utf-8')
             except BaseException as exc:error = 'NATIVE_FINALIZE_'+type(exc).__name__
             with self.lock:
-                self.frame = None
+                self.frame = self.complete_frame = None
                 self.state.update(lidar_state='FAULT' if error or not manifest['complete'] else 'OFF',
                     recording_state='INCOMPLETE' if error or not manifest['complete'] else 'COMPLETE', reason=error,
                     manifest=manifest)
             self.emit('cleanup', dict(subsystem='native_sensor', **manifest))
 
-    def _frame(self, packets, complete):
-        beams = [deepcopy(b) for packet in packets for b in packet['nodes']]
+    def _accept_packets(self, packets):
+        """Assemble original rings; boundary unknown bytes taint the closing ring.
+
+        The next validated ring-start establishes a new boundary. Its preceding
+        gap belongs to the ring being closed, exactly once; no scan is removed.
+        """
+        for packet in packets:
+            if packet['nodes'][0]['ring_start']:
+                if self._frame_packets:
+                    self._frame(self._frame_packets, self._complete_start,
+                                trailing_unframed=packet.get('preceding_unframed'))
+                    packet = dict(packet)
+                    packet.pop('preceding_unframed', None)
+                self._frame_packets = []; self._complete_start = True
+            self._frame_packets.append(packet)
+            if sum(len(p['nodes']) for p in self._frame_packets) > 4096:
+                self._frame(self._frame_packets, False)
+                self._frame_packets = []; self._complete_start = False
+
+    def _frame(self, packets, complete, *, trailing_unframed=None):
+        began=time.perf_counter()
+        beams = [b for packet in packets for b in packet['nodes']]
         first, last = packets[0]['receipt_start_s'], packets[-1]['receipt_end_s']
         timing = dict(receipt_start_s=first, receipt_end_s=last, acquisition_earliest_s=None,
             acquisition_latest_s=None, basis='serial_receipt_unqualified', uncertainty_s=None, evidence_sha256=None)
@@ -250,13 +337,29 @@ class NativeStream:
             p = self.timing_profile
             timing.update(acquisition_earliest_s=first-p['maximum_pipeline_age_s'], acquisition_latest_s=last,
                 basis='conservative_measured_interval', uncertainty_s=p['maximum_pipeline_age_s'], evidence_sha256=p['measurement_sha256'])
-        with self.lock:
-            self.state['frame_count'] += 1
-            self.frame = dict(beams=beams, source_kind='live_sensor', stream_id=self.stream_id, frame_sequence=self.state['frame_count'],
+        # Canonical hashing and freezing never own the publication lock.
+        unframed = [p['preceding_unframed'] for p in packets if p.get('preceding_unframed')]
+        if trailing_unframed is not None:unframed.append(trailing_unframed)
+        contiguous = all(a['end']==b['offset'] for a,b in zip(packets,packets[1:]))
+        quality = dict(schema='native-frame-quality-1.0', complete_start=complete,
+            checksum_invalid_packets=sum(not p['checksum_valid'] for p in packets),
+            interval_fallback_packets=sum(bool(p['interval_fallback']) for p in packets),
+            packet_contiguous=contiguous, unframed_spans=unframed,
+            unframed_bytes=sum(g['length'] for g in unframed),
+            unknown_boundary_policy='GAP_BEFORE_VALID_RING_START_BELONGS_TO_CLOSING_RING')
+        value=freeze_frame(dict(beams=beams, source_kind='live_sensor', stream_id=self.stream_id,
                 complete=complete and all(p['checksum_valid'] for p in packets)
-                    and all(a['end']==b['offset'] for a,b in zip(packets,packets[1:])), timing=timing,
+                    and contiguous and not unframed, timing=timing, quality=quality,
                 interval_fallback=any(p['interval_fallback'] for p in packets),
                 raw_sha256=hashlib.sha256(b''.join(p['raw_bytes'] for p in packets)).hexdigest(),
                 raw_digest_basis='ordered_original_packet_bytes',
                 source_byte_span={'start':packets[0]['offset'],'end':packets[-1]['end']},
-                nodes_sha256=hashlib.sha256(json.dumps(beams, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+                nodes_sha256=hashlib.sha256(json.dumps(beams, sort_keys=True, separators=(',', ':')).encode()).hexdigest()))
+        build_s=time.perf_counter()-began;waiting=time.perf_counter()
+        with self.lock:
+            self.state['frame_count'] += 1
+            self.frame=FrozenFrame(value,frame_sequence=self.state['frame_count'])
+            if self.frame['complete'] and not self.frame['interval_fallback']:self.complete_frame=self.frame
+            self.state.update(last_frame_build_s=build_s,last_publication_lock_wait_s=time.perf_counter()-waiting,
+                last_frame_publish_age_s=max(0.,self.clock()-last),
+                maximum_frame_build_s=max(build_s,self.state.get('maximum_frame_build_s',0.)))

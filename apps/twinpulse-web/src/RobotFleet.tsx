@@ -4,7 +4,9 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import type {TwinPulseApi} from './api';
 import {RobotFieldTests} from './RobotFieldTests';
-import {fleetBatteryLabel,fleetRobotFresh,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
+import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
+import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
+import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
 
 const keyDirections:Record<string,FleetDirection>={ArrowUp:'forward',w:'forward',ArrowDown:'backward',s:'backward',ArrowLeft:'left',a:'left',ArrowRight:'right',d:'right'};
 const scalar=(value:unknown,limit=120):string=>{
@@ -15,8 +17,6 @@ const scalar=(value:unknown,limit=120):string=>{
 };
 const record=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const age=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?`${Math.round(value)} ms`:'unknown';
-const stopCommand=(value:string)=>/(?:멈춰|정지|스톱|\bstop|\bpause)(?:해줘|해|줘)?[.!?]*$/i.test(value.trim())||/^(?:stop|pause)\s*(?:robot|로봇)[.!?]*$/i.test(value.trim());
-const readCommand=(value:string)=>/상태|배터리|battery|status|로그|기록.*(?:보여|분석)|\b(?:logs?|recording)\b/i.test(value);
 const profileLimit=64*1024;
 const evidenceName=(value:unknown):string|null=>typeof value==='string'&&/^(?:events-[0-9]{5}\.jsonl|receipt\.json|ssh-stderr\.log)$/.test(value)?value:null;
 type ProfileReview={name:string;document:Record<string,unknown>;json:string};
@@ -62,6 +62,15 @@ function readProfile(file:File):Promise<ProfileReview>{
 }
 function summarizeOperation(operation:RobotFleetOperation){
   const manifest=operation.manifest,observations:{index:number;kind:string;detail:string}[]=[],commands:{index:number;kind:string;detail:string}[]=[];
+  // Historical receipts never restore current field-session authority.
+  const trials=new Map<string,Record<string,unknown>>();
+  for(const event of operation.events){
+    const field=record(record(event.data).field),values=Array.isArray(field.trials)?field.trials:[];
+    for(const value of values.slice(-64)){
+      const trial=record(value),id=trial.trial_id;
+      if(typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)&&record(trial.context).operation_id===operation.operation_id)trials.set(id,trial);
+    }
+  }
   // Keep raw arrays out of the DOM and accessibility tree. This projection is
   // memoized per fetched operation, not rebuilt on every telemetry receipt.
   for(let index=operation.events.length-1;index>=0;index--){
@@ -98,9 +107,12 @@ function summarizeOperation(operation:RobotFleetOperation){
     ['Coordinate alignment',scalar(record(record(manifest.source_twin_context).alignment).status)],
     ['Source',scalar(manifest.source??manifest.telemetry_source)],['Started',scalar(manifest.started_at)],['Ended',scalar(manifest.ended_at)],
     ['End reason',scalar(manifest.end_reason)],['Events SHA256',scalar(manifest.events_sha256,80)],
-    ['Source files',String(Object.keys(record(manifest.source_files??manifest.worker_sources)).length)],
+    ['Source files',manifest.source_files==null&&manifest.worker_sources==null?'Unknown · not recorded':String(Object.keys(record(manifest.source_files??manifest.worker_sources)).length)],
+    ['Source manifest basis',scalar(manifest.worker_sources_provenance)],
     ['Missing',Array.isArray(missing)?`${missing.length}${missing.length?` · ${missing.slice(0,4).map(item=>scalar(item,60)).join(' · ')}`:''}`:scalar(missing)]];
   const stream=record(manifest.stream),receipt=record(stream.local_receipt??manifest.local_receipt);
+  for(const [id,trial] of [...trials].slice(-12))rows.push([`Historical trial ${id}`,
+    `${scalar(trial.case)} · ${scalar(trial.status)} · ${scalar(trial.reason,180)} · frames ${scalar(trial.frames)} · not current qualification`]);
   const hasStream=manifest.stream!==null&&typeof manifest.stream==='object'&&!Array.isArray(manifest.stream);
   if(hasStream){
     rows.push(['Runtime stream complete',scalar(stream.complete)],['Runtime stream error',scalar(stream.error)],['Cleanup confirmed',scalar(stream.cleanup_confirmed??manifest.cleanup_confirmed)],
@@ -116,14 +128,15 @@ function summarizeOperation(operation:RobotFleetOperation){
 }
 type Hold={robot:RobotFleetRobot;direction:FleetDirection;timer:ReturnType<typeof setInterval>;lastTick:number;token:number};
 type Props={api:TwinPulseApi;state:RobotFleetState|null;selectedId:string|null;onSelect:(id:string)=>void;
-  onChange:(state:RobotFleetState)=>void;available?:boolean;error?:string|null;drawerOpen?:boolean;onClose?:()=>void;selectionPending?:boolean};
-export function RobotFleet({api,state,selectedId,onSelect,onChange,available=true,error:pollError,drawerOpen=true,onClose,selectionPending=false}:Props){
+  onChange:(state:RobotFleetState)=>void;available?:boolean;error?:string|null;drawerOpen?:boolean;onClose?:()=>void;selectionPending?:boolean;layoutVersion?:string|number};
+export function RobotFleet({api,state,selectedId,onSelect,onChange,available=true,error:pollError,drawerOpen=true,onClose,selectionPending=false,layoutVersion=0}:Props){
   const [error,setError]=useState<string|null>(null),[busy,setBusy]=useState(false);
   const [label,setLabel]=useState('SIM robot'),[x,setX]=useState('0'),[y,setY]=useState('0'),[yaw,setYaw]=useState('0');
   const [text,setText]=useState(''),[held,setHeld]=useState<FleetDirection|null>(null);
   const [operation,setOperation]=useState<RobotFleetOperation|null>(null),[logBusy,setLogBusy]=useState(false);
   const [showRegister,setShowRegister]=useState(false);
   const [expanded,setExpanded]=useState(false);
+  const [diagnosticsOpen,setDiagnosticsOpen]=useState(false);
   const [profileReview,setProfileReview]=useState<ProfileReview|null>(null),[profileReviewed,setProfileReviewed]=useState(false);
   const [profileReading,setProfileReading]=useState(false),[profileError,setProfileError]=useState<string|null>(null);
   const [profileDraft,setProfileDraft]=useState('');
@@ -164,12 +177,13 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const release=useRef(stop);release.current=stop;
   useEffect(()=>{
     const blur=()=>release.current();
+    const resize=()=>release.current();
     const visibility=()=>{if(document.hidden)release.current();};
     const keyup=(event:KeyboardEvent)=>{if(keyDirections[event.key]||event.code==='Space')release.current();};
-    window.addEventListener('blur',blur);window.addEventListener('keyup',keyup);document.addEventListener('visibilitychange',visibility);
-    return()=>{window.removeEventListener('blur',blur);window.removeEventListener('keyup',keyup);document.removeEventListener('visibilitychange',visibility);release.current();};
+    window.addEventListener('blur',blur);window.addEventListener('resize',resize);window.addEventListener('keyup',keyup);document.addEventListener('visibilitychange',visibility);
+    return()=>{window.removeEventListener('blur',blur);window.removeEventListener('resize',resize);window.removeEventListener('keyup',keyup);document.removeEventListener('visibilitychange',visibility);release.current();};
   },[api,context]);
-  useEffect(()=>{release.current();setOperation(null);setError(null);},[selectedId]);
+  useEffect(()=>{release.current();setOperation(null);setError(null);setDiagnosticsOpen(false);},[selectedId]);
   useEffect(()=>{
     importGeneration.current++;setProfileReview(null);setProfileReviewed(false);setProfileReading(false);setProfileError(null);
     setProfileDraft('');
@@ -179,6 +193,9 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   useEffect(()=>{setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);},[robot?.connection_epoch]);
   useEffect(()=>{setOperation(null);},[logOperationId]);
   useEffect(()=>{if(!drawerOpen)release.current();},[drawerOpen]);
+  // Layout changes invalidate the current gesture; moving a console never
+  // renews old intent or creates a second control owner.
+  useEffect(()=>{release.current();},[layoutVersion]);
   useEffect(()=>{
     const active=hold.current;
     if(active&&(!available||selectionPending||state?.focused_robot_id!==selectedId||!robot||!fleetRobotFresh(robot)||!['READY','DRIVING','PAUSED'].includes(robot.control_state)||
@@ -224,6 +241,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   function choose(id:string){release.current();onSelect(id);}
   async function logs(){
     if(!robot||!logOperationId)return;
+    release.current();setDiagnosticsOpen(true);
     const id=robot.robot_id;setLogBusy(true);setError(null);
     try{const next=await api.robotFleetOperation(logOperationId);
       if(owner.current.api===api&&owner.current.context===context&&owner.current.selectedId===id&&
@@ -254,7 +272,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     const link=document.createElement('a');link.href=url;link.download=`physical-profile-${robot.robot_id}-unmeasured.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
   }
   const download=()=>{
-    if(!operation)return;const url=URL.createObjectURL(new Blob([JSON.stringify(operation)],{type:'application/json'}));
+    if(!operation||logBusy)return;const url=URL.createObjectURL(new Blob([JSON.stringify(operation)],{type:'application/json'}));
     const link=document.createElement('a');link.href=url;link.download=`robot-operation-${operation.operation_id}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
   };
   async function downloadEvidence(file:string){
@@ -268,7 +286,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     }catch(caught){if(owner.current.selectedId===id&&(selected.current?.operation_id??selected.current?.last_operation_id)===operationId)reportError(caught);}
     finally{setEvidenceBusy(null);}
   }
-  return <section className={`robot-fleet ${expanded?'is-expanded':'is-condensed'}`} aria-label="Robot fleet">
+  return <section className={`robot-fleet ${expanded?'is-expanded':'is-condensed'} ${robot&&drawerOpen?'has-controls':''}`} aria-label="Robot fleet">
     <header><h3>Robots <span>{state?.robots.length??0} · {available?state?.robots.filter(fleetRobotFresh).length??0:0} connected</span></h3>
       <div className="robot-fleet-header-actions"><button type="button" aria-label="Manage robot fleet" aria-expanded={expanded} onClick={()=>{setExpanded(value=>!value);setShowRegister(false);}}>{expanded?'Less':'Manage'}</button>
         <button type="button" onClick={()=>{release.current();void send(envelope('stop_all',null)).catch(reportError);}} disabled={!state}>Stop all</button></div></header>
@@ -278,7 +296,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         title={`${row.label} · ${row.kind==='sim'?'SIM':'Physical'} · ${available?row.connection_state:'STALE'} · ${fleetBatteryLabel(row)}`} onClick={()=>choose(row.robot_id)}>
         <span className={`robot-connection-dot ${available&&fleetRobotFresh(row)?'fresh':''}`} aria-label={available&&fleetRobotFresh(row)?'Fresh connected heartbeat':'Connection not current'}/>
         <span><span className="robot-fleet-row-heading"><strong>{row.label}</strong> <small>{row.kind==='sim'?'SIM':'Physical'}</small></span>
-          {expanded&&<small>{available?row.connection_state:'STALE'} · {row.control_state} · LiDAR {row.lidar_state}</small>}
+          {expanded&&<small>{available?row.connection_state:'STALE'} · {row.control_state} · LiDAR {lidarDiagnosticLabel(row,available)}</small>}
           <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small></span>
       </button>)}
       {!state?.robots.length&&<p>No fleet robot registered. Add a SIM robot or register a supported physical robot in Robots.</p>}
@@ -297,35 +315,68 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     {robot&&drawerOpen&&<section className="robot-fleet-drawer" aria-label={`Control ${robot.label}`}>
       <header><h4>{robot.label} · {robot.kind==='sim'?'SIM':'Physical'}</h4><button type="button" className="robot-fleet-stop" onClick={()=>stop(robot,true)}>Stop</button>
         {onClose&&<button type="button" aria-label="Close robot controls" onClick={()=>{release.current();onClose();}}>×</button>}</header>
-      <p>{robot.connection_state} · {robot.control_state} · LiDAR {robot.lidar_state} · Recording {robot.recording_state}</p>
-      {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&
-        <p role="status">{robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
-      <p>{!physical&&<>{fleetBatteryLabel(robot)}{!available?' · receipt stale':''} · </>}{robot.pose?.aligned?'Pose aligned':'Pose unaligned / unavailable'}</p>
-      {pollError&&<p role="status">{pollError}</p>}
+      <p className="robot-fleet-current-status" title={`${robot.connection_state} · ${robot.control_state} · LiDAR ${lidarDiagnosticLabel(robot,available)} · Recording ${robot.recording_state}`}>
+        <span className={`robot-connection-dot ${available&&fresh?'fresh':''}`} aria-label={available&&fresh?'Selected robot connection current':'Selected robot connection not current'}/>
+        {robot.connection_state} · {robot.control_state} · LiDAR {lidarDiagnosticLabel(robot,available)} · {fleetBatteryLabel(robot)}{!available?' · receipt stale':''}
+      </p>
+      <div className="robot-fleet-notices" aria-label="Robot control readiness">
       {error&&<p role="alert">{error}</p>}
+      {pollError&&<p role="status">{pollError}</p>}
       {robot.reason&&<p className="robot-fleet-reason" role="status">{robot.reason}</p>}
+      {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&
+        <p role="status">{physical?'Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.':robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
       {!focusConfirmed&&!selectionPending&&<p role="status">Control focus differs from this drawer. Select this robot again before driving or sending a command.</p>}
       {!adapterAvailable&&<p className="robot-fleet-reason" role="status">Physical control unavailable in this build. This robot is not replaced with a SIM robot.</p>}
+      {state?.last_command?.robot_id===robot.robot_id&&<p className="robot-fleet-command-result" role="status">{state.last_command.status} · {state.last_command.message}</p>}
+      </div>
+      <div className="robot-fleet-actions">
+        <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||(physical?physicalSessionActive:!['DISCONNECTED','DEGRADED'].includes(robot.connection_state))} onClick={()=>void action(envelope('connect',robot))}>{physicalSessionActive?(robot.connection_state==='CONNECTED'?'Connected':robot.connection_state==='CONNECTING'?'Connecting…':'Disconnect to reconnect'):'Connect'}</button>
+        <button type="button" disabled={!canSetup||!(physical?robot.capabilities.prepare:robot.capabilities.drive)||robot.control_state==='ARMING'||robot.reason==='ISAAC_MODEL_WARMING_UP'||physical&&!prepareConfirmed} onClick={()=>{
+          release.current();setPrepareConfirmed(false);void action(envelope('prepare',robot,physical?{confirmed:true}:{}));}}>Prepare</button>
+        <button type="button" disabled={busy||selectionPending||!available||robot.connection_state==='DISCONNECTED'&&!robot.connection_epoch} onClick={()=>{release.current();void action(envelope('disconnect',robot));}}>Disconnect</button>
+        <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||!robot.capabilities.lidar||!fleetRobotFresh(robot)} aria-pressed={available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)} onClick={()=>{
+          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}}>LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'Off':'On'}</button>
+      </div>
+      <div className="robot-fleet-control-primary">
+        <div className="robot-fleet-pad" role="group" aria-label="Hold to drive" tabIndex={0}
+          onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))release.current();}}
+          onKeyDown={event=>{if(event.code==='Space'){event.preventDefault();stop(robot,true);return;}
+            const direction=keyDirections[event.key];if(direction){event.preventDefault();if(!event.repeat)start(direction);}}}>
+          {(['forward','left','backward','right'] as const).map(direction=><button type="button" key={direction} className={`fleet-drive-${direction}`} disabled={!mayDrive}
+            aria-label={`Hold ${direction}`} aria-pressed={held===direction}
+            onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();event.currentTarget.setPointerCapture?.(event.pointerId);start(direction);}}
+            onPointerUp={()=>release.current()} onPointerCancel={()=>release.current()} onLostPointerCapture={()=>release.current()}>
+            {{forward:'↑',backward:'↓',left:'↶',right:'↷'}[direction]} <span>{direction}</span></button>)}
+        </div>
+        <form className="robot-fleet-command" onSubmit={event=>{event.preventDefault();if(canCommand){
+          release.current();const body=envelope('command',robot,{text:text.trim()});
+          if(commandIsStop)void send(body).catch(reportError);else void action(body);
+        }}}>
+          <label>Robot command<input value={text} maxLength={1000} placeholder="Forward 10 cm, turn left 90°, or stop" onChange={event=>setText(event.target.value)}/></label>
+          <button disabled={!canCommand}>Send command</button>
+          <small>Hold arrows / WASD. Release or Space stops. You can also use the main chat.</small>
+        </form>
+      </div>
+      <div className="robot-fleet-detail-tools"><details className="robot-fleet-diagnostics" open={diagnosticsOpen} onToggle={event=>{setDiagnosticsOpen(event.currentTarget.open);release.current();}}><summary>Setup, sensor details and logs</summary>
+      <p>{robot.pose?.aligned?'Pose aligned':'Pose unaligned / unavailable'} · Recording {available&&fresh?'':'last reported '}{robot.recording_state}</p>
+      <small>Hold a direction or focus the pad and use arrows / WASD. Release, Space or leaving the window stops movement and retains the connection.</small>
+      <p className="robot-fleet-policy">{physical&&robot.field?.config?'Supervised field policy: 0.03 m/s · 0.20 rad/s':`${state?.policy.linear_m_s} m/s · ${state?.policy.angular_rad_s} rad/s`} · input expiry {state?.policy.input_expiry_ms} ms</p>
+      <small>{physical&&!robot.capabilities.drive?'Use status, battery, logs or Stop while movement is unavailable. Complete setup before a finite movement command.':'Commands require a finite distance or angle.'}</small>
       {physical&&<>
         <dl className="robot-physical-status" aria-label="Physical connection and readiness">
           <div><dt>SSH heartbeat</dt><dd>{available&&fresh?'Fresh authenticated session':'Unavailable / stale'} · age {age(robot.telemetry_age_ms)}</dd></div>
           <div><dt>Battery</dt><dd>{fleetBatteryLabel(robot)}{!available?' · receipt stale':''} · age {age(robot.battery.age_ms)}</dd></div>
           <div><dt>Control</dt><dd>{robot.control_state} · controller {scalar(robot.controller_state)}</dd></div>
-          <div><dt>Sensor</dt><dd>LiDAR {robot.lidar_state} · source {scalar(record(robot.sensor_frame).source??robot.scan?.source)} · age {age(record(robot.sensor_frame).age_ms)}{!available?' · receipt stale':''}</dd></div>
-          <div><dt>Recording</dt><dd>{robot.recording_state}</dd></div>
+          <div><dt>Sensor</dt><dd>LiDAR {lidarDiagnosticLabel(robot,available)} · source {scalar(record(robot.sensor_frame).source??robot.scan?.source)} · age {age(record(robot.sensor_frame).age_ms)}{!available?' · receipt stale':''}</dd></div>
+          <div><dt>ROS receipt diagnosis</dt><dd>Last reported check: {scalar(record(robot.telemetry_diagnostic).reason)} · source {age(typeof record(robot.telemetry_diagnostic).source_age_s==='number'?(record(robot.telemetry_diagnostic).source_age_s as number)*1000:null)} · sensor {age(typeof record(robot.telemetry_diagnostic).sensor_receipt_age_s==='number'?(record(robot.telemetry_diagnostic).sensor_receipt_age_s as number)*1000:null)} · guard {age(typeof record(robot.telemetry_diagnostic).guard_receipt_age_s==='number'?(record(robot.telemetry_diagnostic).guard_receipt_age_s as number)*1000:null)}</dd></div>
+          <div><dt>Voltage read</dt><dd>{scalar(record(robot.battery.read_status).state)} · {scalar(record(robot.battery.read_status).reason)}</dd></div>
+          <div><dt>Recording</dt><dd>{available&&fresh?'':'Last reported · '}{robot.recording_state}</dd></div>
           <div><dt>Cleanup</dt><dd>{robot.cleanup_confirmed===true?'Confirmed by robot':robot.cleanup_confirmed===false?'Not confirmed':'Unknown · no cleanup receipt'}</dd></div>
         </dl>
+        {fleetBatteryPolicyMessage(robot)&&<p className="robot-fleet-policy" aria-label="Battery estimate and protection">{fleetBatteryPolicyMessage(robot)}</p>}
         <p className="robot-fleet-policy">Connect keeps one authenticated SSH session and starts no motor or sensor. Fresh heartbeat and measured voltage do not grant driving permission. Reconnect requires Disconnect first.</p>
         {!robot.capabilities.drive&&<p role="status">Protected manual movement is unavailable until the runtime grants drive capability. The separate supervised field-test path has its own explicit admission below. Status, Stop and operation logs remain available.</p>}
       </>}
-      <div className="robot-fleet-actions">
-        <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||(physical?physicalSessionActive:!['DISCONNECTED','DEGRADED'].includes(robot.connection_state))} onClick={()=>void action(envelope('connect',robot))}>{physicalSessionActive?(robot.connection_state==='CONNECTED'?'Connected':robot.connection_state==='CONNECTING'?'Connecting…':'Disconnect to reconnect'):'Connect'}</button>
-        <button type="button" disabled={!canSetup||!(physical?robot.capabilities.prepare:robot.capabilities.drive)||robot.control_state==='ARMING'||physical&&!prepareConfirmed} onClick={()=>{
-          release.current();setPrepareConfirmed(false);void action(envelope('prepare',robot,physical?{confirmed:true}:{}));}}>Prepare</button>
-        <button type="button" disabled={busy||selectionPending||!available||robot.connection_state==='DISCONNECTED'&&!robot.connection_epoch} onClick={()=>{release.current();void action(envelope('disconnect',robot));}}>Disconnect</button>
-        <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||!robot.capabilities.lidar||!fleetRobotFresh(robot)} aria-pressed={['STREAMING','STARTING'].includes(robot.lidar_state)} onClick={()=>{
-          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}}>LiDAR {['STREAMING','STARTING'].includes(robot.lidar_state)?'Off':'On'}</button>
-      </div>
       {physical&&<details className="robot-estimated-marker">
         <summary>Estimated Twin marker</summary>
         <p>Visualization estimate only; not sensor/world alignment or driving permission.</p>
@@ -344,7 +395,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       </details>}
       {physical&&<RobotFieldTests key={`${context}:${robot.robot_id}`} robot={robot} available={available&&adapterAvailable&&!selectionPending} busy={busy}
         onAction={(name,payload)=>{release.current();void action(envelope(name,robot,payload));}} onOpenLogs={()=>void logs()}/>}
-      {physical&&<details className="robot-physical-setup" open>
+      {physical&&<details className="robot-physical-setup">
         <summary>Physical setup · {scalar(robot.setup?.runtime_state)}</summary>
         <p>Prepare opens the reviewed controller in zero-command mode. Qualification performs the existing supervised stop test and may move the robot. Each requires a new explicit confirmation; neither runs on Connect or reconnect.</p>
         <label className="robot-fleet-confirm"><input type="checkbox" checked={prepareConfirmed} onChange={event=>setPrepareConfirmed(event.target.checked)}/>I am present and confirm zero-command controller preparation.</label>
@@ -365,24 +416,24 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           <p>Import the original physical-manual-profile-1.0 JSON with robot/binding identity, measured geometry, sampling, timing, stopping and progress evidence. The App supplies no measured defaults. Review and import do not certify measurement quality; the runtime validates the strict schema and evidence references.</p>
           <small>Wheel odometry does not prove body movement. Independent body progress remains unknown without an independent measured source.</small>
           <p className="robot-fleet-policy">Robot {robot.robot_id} · binding SHA256 {scalar(robot.setup?.binding_sha256,80)}</p>
-          <details key={robot.robot_id} aria-label="측정 프로필 작성 안내">
-            <summary>측정 프로필 작성 안내</summary>
-            <p>이 안내는 측정 준비용 점검표입니다. 자동 측정기나 측정 완료 인증이 아닙니다. 선택한 모드의 필수 항목이 미측정(null)이면 보호 주행은 차단됩니다. 로봇이 꺼진 동안에는 양식 작성·원본 검토만 할 수 있고, 실제 센서·시간·정지·진행 측정은 별도의 현장 감독이 필요합니다.</p>
+          <details key={robot.robot_id} aria-label="Measured profile guide">
+            <summary>Measured profile guide</summary>
+            <p>This is a measurement preparation checklist, not an automatic instrument or certification. Missing required measurements (null) block protected driving. With the robot off, only form preparation and source review are available. Actual sensor, timing, stopping and progress measurements need separate on-site supervision.</p>
             <ol>
-              <li><strong>로봇·근거 고정</strong><p>현재 robot_id와 binding_sha256를 사용합니다. 장착·배선·구성이 바뀌면 이전 프로필을 재사용하기 전에 다시 확인하세요. 각 *_sha256에는 실제 측정 원본의 검증된 SHA256만 넣으세요. 앱은 해시를 만들거나 측정 근거를 인증하지 않습니다.</p></li>
-              <li><strong>Geometry · 차체와 센서</strong><p>base_link 원점·전방 x·좌측 y를 정하고, 줄자와 각도 측정으로 센서 중심의 sensor_xy_yaw=[x(m),y(m),yaw(rad)]와 실제 sensor_frame을 기록합니다. 위치를 아는 불투명 표적의 native 각도로 native_angle_sign(+1 또는 -1)을 확인하세요. 바퀴·돌출부를 포함한 실제 외곽을 footprint_xy_m에 원점 포함·반시계·볼록 다각형 3–16점으로 기록하고 planar_extrinsic_sha256·footprint_sha256 원본을 보관합니다. 사진·명목 URDF·추정 Twin 마커로 대신할 수 없습니다.</p></li>
-              <li><strong>Sampling · 감지 범위와 사각</strong><p>거리를 실측한 불투명 표적을 방향·거리별로 관측해 minimum_range_m, maximum_range_m, minimum_quality, maximum_gap_deg, minimum_target_width_m, range_uncertainty_m를 보수적으로 정하고 opaque_target_coverage_sha256에 시험 원본을 연결합니다. 원래 비균일 각도를 유지하세요. 무반사·낮은 품질·큰 간격은 UNKNOWN이며 빈 공간이 아닙니다. 유리·가는 줄·낮거나 높은 장애물을 감지한다고 인증하는 모델이 아닙니다.</p></li>
-              <li><strong>Timing · 샘플부터 제어까지</strong><p>원시 바이트 수신·샘플 시간 근거와 디코드·전달·guard 시각을 같은 검증된 시간 기준으로 기록해 최악 지연 maximum_pipeline_age_s(초)를 측정하고 measurement_sha256를 연결합니다. provenance는 실제 측정 후에만 measured로 지정합니다. 허용 상한은 0.2초이며 측정 기본값이 아닙니다. timing sidecar 없는 저장 raw·SSH ping·파일 수정 시각으로 샘플 시각을 대신할 수 없습니다.</p></li>
-              <li><strong>Stop model · 실제 정지</strong><p>충분한 공간과 현장 감독 아래 기존 정지 검증 경로로 실제 전후진·회전의 명령/관측 시각과 제동 거리·각도를 기록하세요. reaction_s, 최소 선형/각 감속도, 속도·위치 불확실성과 최대 scan/input age를 원본에서 정하고 stopping_measurement_sha256를 연결합니다. body_clearance_m는 차체 외곽 기준 최소 0.10m, 최대 속도는 0.05m/s·0.30rad/s, scan/input age 상한은 0.2/0.25초입니다. 이 수치는 정책 한계이며 측정값 자동 채움이 아닙니다. 같은 boot/release 정지 qualification도 별도로 필요합니다.</p></li>
-              <li><strong>Progress · 바퀴와 독립 차체</strong><p>감독된 구간에서 encoder tick과 실측 주행 거리·바퀴 간격으로 wheel_metres_per_tick·wheel_separation_m를 구합니다. 같은 시간창의 명령·wheel odometry로 window_s, maximum_sample_gap_s, minimum_command_m_s, minimum_wheel_progress_m, maximum_wheel_speed_m_s를 측정하고 measurement_sha256를 연결합니다. body_progress_policy는 검토 후 명시적으로 선택하며 기본 선택은 없습니다. independent_required 또는 미선택에서는 독립 카메라/위치 계측으로 minimum_body_translation_m, minimum_body_rotation_rad, maximum_body_speed_m_s, maximum_body_rotation_rad_s 네 항목도 측정해야 합니다. explicitly_unverified_supervised를 명시한 경우에만 이 네 항목을 null 그대로 둘 수 있습니다. 양수로 제공한 기존 값은 유지하며 0·추정값을 대신 채우지 않습니다. 이 경로의 body 진행은 UNKNOWN이며 body 정체·slip 검증 PASS가 아닙니다. wheel odometry를 독립 차체 증거로 이름 바꾸지 마세요. geometry·sampling·timing·stop·바퀴 측정은 두 모드 모두 필수입니다.</p></li>
-              <li><strong>원본 검토·저장</strong><p>저장된 native/odom 자료는 재분석에 쓸 수 있지만, 없는 extrinsic·외곽·정지 거리·독립 차체·byte timing 측정을 채워 주지 않습니다. 새 측정 원본과 ID·SHA를 검토한 뒤 JSON을 검토/적용하세요. 서버의 strict schema 검증 오류는 화면에 표시됩니다. 프로필 저장·점검표 읽기는 연결·센서 시작·주행 권한을 부여하지 않습니다.</p></li>
+              <li><strong>Bind robot and evidence</strong><p>Use the current robot_id and binding_sha256. Recheck after mounting, wiring or configuration changes. Each *_sha256 must identify verified original measurement data; the app does not invent hashes or certify evidence.</p></li>
+              <li><strong>Geometry · body and sensor</strong><p>Establish base_link origin, forward x and left y. Measure sensor_xy_yaw=[x(m),y(m),yaw(rad)] and actual sensor_frame. Confirm native_angle_sign (+1 or -1) against an opaque target at a known location. Record the actual outline, including wheels and protrusions, as a counterclockwise convex footprint_xy_m polygon of 3–16 points containing the origin. Retain planar_extrinsic_sha256 and footprint_sha256 sources. Photos, nominal URDF and estimated Twin markers cannot replace measurements.</p></li>
+              <li><strong>Sampling · coverage and blind spots</strong><p>Observe opaque targets at measured distances and directions. Conservatively determine minimum_range_m, maximum_range_m, minimum_quality, maximum_gap_deg, minimum_target_width_m and range_uncertainty_m. Link original tests with opaque_target_coverage_sha256. Keep original nonuniform angles. No returns, low quality and large gaps mean UNKNOWN, not free space. This model does not certify detection of glass, thin cords, or obstacles above or below the sensor plane.</p></li>
+              <li><strong>Timing · sample to control</strong><p>Record original byte receipt, acquisition-time evidence, decoding, delivery and guard times on a verified common time basis. Measure worst-case maximum_pipeline_age_s in seconds and link measurement_sha256. Use measured provenance only after actual measurement. The 0.2-second maximum is a policy limit, not a measured default. Stored raw without timing sidecars, SSH ping and file modification times cannot stand in for sample timing.</p></li>
+              <li><strong>Stop model · actual stopping</strong><p>With sufficient space and supervision, use the existing stop-verification path to record forward/backward and rotation commands, observations, stopping distance and angle. Derive reaction_s, minimum linear/angular deceleration, speed/position uncertainty and maximum scan/input age from original data; link stopping_measurement_sha256. Policy limits: body_clearance_m at least 0.10m from the body outline, speeds at most 0.05m/s and 0.30rad/s, scan/input ages at most 0.2/0.25 seconds. These are not automatically filled measurements. Same-boot/release stop qualification is separately required.</p></li>
+              <li><strong>Progress · wheels and independent body</strong><p>In a supervised interval, derive wheel_metres_per_tick and wheel_separation_m from encoders and measured travel/spacing. Measure window_s, maximum_sample_gap_s, minimum_command_m_s, minimum_wheel_progress_m and maximum_wheel_speed_m_s from same-window commands and wheel odometry; link measurement_sha256. Explicitly review body_progress_policy; there is no default. With independent_required or no selection, independent camera/position measurements must also establish minimum_body_translation_m, minimum_body_rotation_rad, maximum_body_speed_m_s and maximum_body_rotation_rad_s. Only explicitly_unverified_supervised permits these four values to remain null. Preserve supplied positive values; do not substitute zero or estimates. Body progress remains UNKNOWN, not a body-stall/slip PASS. Wheel odometry is not independent body evidence. Geometry, sampling, timing, stopping and wheel measurements are required in both modes.</p></li>
+              <li><strong>Review and save original evidence</strong><p>Stored native/odom data can be reanalysed but cannot supply missing extrinsic, footprint, stopping, independent body or byte-timing measurements. Review new original data and IDs/SHA before reviewing/applying JSON. Strict server schema errors are shown on screen. Saving a profile or reading this checklist grants no connection, sensor-start or driving permission.</p></li>
             </ol>
             <button type="button" disabled={!robot.setup?.binding_sha256} onClick={downloadProfileTemplate}>Download blank measured-profile JSON</button>
             <button type="button" disabled={!robot.setup?.binding_sha256} onClick={()=>{
               importGeneration.current++;setProfileReading(false);setProfileReview(null);setProfileReviewed(false);setProfileError(null);
               setProfileDraft(JSON.stringify(blankMeasuredProfile(robot),null,2));
             }}>Start blank profile in App</button>
-            {!robot.setup?.binding_sha256&&<p>현재 등록 binding ID가 없어 빈 양식을 만들 수 없습니다. 연결 시작이 아니라 등록 상태 갱신을 먼저 확인하세요.</p>}
+            {!robot.setup?.binding_sha256&&<p>The registered binding ID is unavailable. Refresh registration before creating a blank form; starting a connection is not required.</p>}
             <label>Profile JSON editor<textarea rows={16} maxLength={profileLimit} value={profileDraft} spellCheck={false} onChange={event=>{
               setProfileDraft(event.target.value);setProfileReview(null);setProfileReviewed(false);setProfileError(null);
             }}/></label>
@@ -407,51 +458,32 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           </>}
         </details>
       </details>}
-      <div className="robot-fleet-pad" role="group" aria-label="Hold to drive" tabIndex={0}
-        onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))release.current();}}
-        onKeyDown={event=>{if(event.code==='Space'){event.preventDefault();stop(robot,true);return;}
-          const direction=keyDirections[event.key];if(direction){event.preventDefault();if(!event.repeat)start(direction);}}}>
-        {(['forward','left','backward','right'] as const).map(direction=><button type="button" key={direction} className={`fleet-drive-${direction}`} disabled={!mayDrive}
-          aria-label={`Hold ${direction}`} aria-pressed={held===direction}
-          onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();event.currentTarget.setPointerCapture?.(event.pointerId);start(direction);}}
-          onPointerUp={()=>release.current()} onPointerCancel={()=>release.current()} onLostPointerCapture={()=>release.current()}>
-          {{forward:'↑',backward:'↓',left:'↶',right:'↷'}[direction]} <span>{direction}</span></button>)}
-      </div>
-      <small>Hold a direction or focus the pad and use arrows / WASD. Release, Space or leaving the window stops movement and retains the connection.</small>
-      <p className="robot-fleet-policy">{physical&&robot.field?.config?'Supervised field policy: 0.03 m/s · 0.20 rad/s':`${state?.policy.linear_m_s} m/s · ${state?.policy.angular_rad_s} rad/s`} · input expiry {state?.policy.input_expiry_ms} ms</p>
       {robot.scan&&<details><summary>LiDAR points · {robot.scan.points.length} · {robot.scan.source}</summary>
         <svg className="robot-fleet-scan" viewBox="-3 -3 6 6" aria-label={`LiDAR scan · ${robot.scan.source}`} role="img">
           <circle r="0.08" fill="currentColor"/>{robot.scan.points.slice(0,3000).filter(point=>point.every(Number.isFinite)).map(([px,py],i)=><circle key={i} cx={px} cy={-py} r="0.02" fill="#6ed1df"/>)}</svg>
         <small>Sensor points only · obstacle protection depends on the active adapter and guard.</small></details>}
-      <form className="robot-fleet-command" onSubmit={event=>{event.preventDefault();if(canCommand){
-        release.current();const body=envelope('command',robot,{text:text.trim()});
-        if(commandIsStop)void send(body).catch(reportError);else void action(body);
-      }}}>
-        <label>Robot command<input value={text} maxLength={1000} placeholder="Forward 10 cm, turn left 90°, or stop" onChange={event=>setText(event.target.value)}/></label>
-        <button disabled={!canCommand}>Send command</button><small>{physical&&!robot.capabilities.drive?'Use status, battery, logs or Stop while movement is unavailable. Complete setup before a finite movement command.':'Commands require a finite distance or angle. You can also use the main chat.'}</small>
-      </form>
-      {state?.last_command?.robot_id===robot.robot_id&&<p role="status">{state.last_command.status} · {state.last_command.message}</p>}
-      <button type="button" disabled={!logOperationId||logBusy} onClick={()=>void logs()}>Operation logs</button>
       {historicalOperation&&<small>Saved operation logs · historical. Viewing this record does not restore a connection or driving permission.</small>}
       {logOperationId&&<small className="robot-operation-id">Operation {logOperationId}{historicalOperation?' · historical':''}</small>}
-      {logOperationId&&<details aria-label="Robot Twin record linkage"><summary>기록 연결 · 채팅 / Twin 버전</summary>
+      {logOperationId&&<details aria-label="Robot Twin record linkage"><summary>Record linkage · chat / Twin version</summary>
         <dl className="robot-physical-status">
-          <div><dt>채팅 프로젝트</dt><dd>{scalar(shownSourceContext.project_id??robot.current_twin_context?.project_id)}</dd></div>
-          <div><dt>대화 ID</dt><dd>{scalar(shownSourceContext.conversation_session_id,80)}</dd></div>
-          <div><dt>연결 시작 Twin</dt><dd>{scalar(shownSourceContext.scene_revision,80)}</dd></div>
-          <div><dt>현재 Twin</dt><dd>{scalar(robot.current_twin_context?.scene_revision,80)}</dd></div>
-          <div><dt>연결 관계</dt><dd>{scalar(shownRelation)}</dd></div>
-          <div><dt>좌표 정합</dt><dd>{scalar(record(shownSourceContext.alignment).status??'UNKNOWN')}</dd></div>
+          <div><dt>Chat project</dt><dd>{scalar(shownSourceContext.project_id??robot.current_twin_context?.project_id)}</dd></div>
+          <div><dt>Conversation ID</dt><dd>{scalar(shownSourceContext.conversation_session_id,80)}</dd></div>
+          <div><dt>Connection-start Twin</dt><dd>{scalar(shownSourceContext.scene_revision,80)}</dd></div>
+          <div><dt>Current Twin</dt><dd>{scalar(robot.current_twin_context?.scene_revision,80)}</dd></div>
+          <div><dt>Reference relation</dt><dd>{scalar(shownRelation)}</dd></div>
+          <div><dt>Coordinate alignment</dt><dd>{scalar(record(shownSourceContext.alignment).status??'UNKNOWN')}</dd></div>
         </dl>
-        <small>{physical?'실물 원자료는 연결 시작 Twin을 참고 기준으로 기록합니다. 취득 시각의 장면 동기화나 세계 좌표 정합 완료를 뜻하지 않습니다. 새 Twin을 수집 기준으로 삼으려면 Disconnect 후 Check Connection으로 새 작업을 시작하세요.':'SIM 관측은 각 프레임의 실제 engine / stage / Twin 버전을 따로 기록합니다. 연결 시작 버전과 이후 관측 버전은 다를 수 있습니다.'}</small>
+        <small>{physical?'Physical raw data references the connection-start Twin. This does not certify acquisition-time scene synchronization or world alignment. To use a new Twin as collection reference, Disconnect and then Check Connection to start a new operation.':'Each SIM observation records its actual engine / stage / Twin revision. Later observations can differ from the connection-start revision.'}</small>
         {robot.twin_context_relation&& !['SAME_TWIN_REFERENCE_NOT_ALIGNMENT_PROOF','LEGACY_UNKNOWN'].includes(robot.twin_context_relation)&&
-          <p role="status">Twin 기준이 다르거나 현재 확인되지 않습니다. 이전 기록을 현재 Twin으로 재분류하지 않습니다. Stop과 원시 기록은 유지됩니다.</p>}
+          <p role="status">Twin references differ or the current reference is unconfirmed. Historical records are not relabelled as the current Twin. Stop and raw records remain available.</p>}
       </details>}
+      <RobotOperationDiagnostics robot={robot} operation={operation} available={available}/>
       {operation&&operationSummary&&<section className="robot-operation-log" aria-label="Operation summary">
         <h5>Operation · {scalar(operation.operation_id,80)}</h5>
         <p>{operation.events.length} events · showing {operationSummary.events.length} recent summaries, including up to 5 observations.</p>
         <p>{physical?'The JSON contains summaries and receipts. Download the separate runtime evidence segments below for original sensor bytes and helper logs.':'Complete source events, scan points and manifest details are included in the download.'}</p>
-        <button type="button" onClick={download}>Download operation JSON</button>
+        {logBusy&&<p role="status">Refreshing operation log; download waits for the response.</p>}
+        <button type="button" disabled={logBusy} onClick={download}>Download operation JSON</button>
         <dl aria-label="Operation manifest summary">{operationSummary.rows.map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
         {operationSummary.evidenceCount>0&&<details><summary>Physical runtime evidence · {operationSummary.evidenceCount} files</summary>
           <p>Source paths, SHA256 and receipt status come from the runtime manifest. The complete JSON includes all receipts and missing evidence.</p>
@@ -462,6 +494,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <ol aria-label="Recent operation events">{operationSummary.events.map(event=><li key={event.index}>
           <strong>#{event.index+1} · {event.kind}</strong><span>{event.detail}</span></li>)}</ol>
       </section>}
+      </details><button type="button" disabled={!logOperationId||logBusy} onClick={()=>{release.current();void logs();}}>Operation logs</button></div>
     </section>}
     {error&&(!robot||!drawerOpen)&&<p role="alert">{error}</p>}
   </section>;

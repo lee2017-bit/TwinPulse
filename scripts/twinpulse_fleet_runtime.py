@@ -4,6 +4,13 @@ import math
 import time
 
 
+def observe_startup(robot,created,dt,capture_pending):
+    if not created and not robot.get('startup_ready',False):
+        eligible=robot.get('render_observed',False) and not capture_pending and 0<dt<.25
+        robot['startup_samples']=robot.get('startup_samples',0)+1 if eligible else 0
+        robot['startup_ready']=robot['startup_samples']>=2
+
+
 def bind_intent(robot,incoming,now_ms,*,received_at=None,now=None):
     """Monotonic per-epoch input, immutable expiry; no USD or transport work."""
     if not incoming:
@@ -67,6 +74,43 @@ class FleetRuntime:
     def __init__(self):
         self.identity=None;self.robots={};self.desired=None;self.received_at=0.;self.updated_at=time.monotonic()
         self.report=[];self.anchors=[];self.sequence=0;self.obstacles=[];self.scan_at=0.
+        self.bounds_notice=None;self.bounds_dirty=True;self.bounds_watch=False;self.bounds_rebuilds=0
+        self.snapshot_capture_pending=False;self.model_generation=0
+
+    def render_tokens(self):
+        return (self.identity,{key:(row['epoch'],row.get('model_generation')) for key,row in self.robots.items()})
+
+    def rendered(self,identity,tokens):
+        # Called on Kit's main thread after the matching GPU callback completed.
+        if identity!=self.identity:return
+        for key,token in tokens.items():
+            row=self.robots.get(key)
+            if row and (row['epoch'],row.get('model_generation'))==token:row['render_observed']=True
+
+    def _environment_changed(self,notice,_sender):
+        # Fleet transforms and camera updates do not change static environment
+        # collision geometry. Manual edits of that environment still invalidate.
+        root='/World/TwinPulse/Environment'
+        for value in list(notice.GetResyncedPaths())+list(notice.GetChangedInfoOnlyPaths()):
+            text=str(value.GetPrimPath())
+            if text=='/' or text==root or text.startswith(root+'/') or root.startswith(text+'/'):
+                self.bounds_dirty=True;break
+
+    def _watch_environment(self,stage):
+        if self.bounds_notice is not None:self.bounds_notice.Revoke()
+        self.bounds_notice=None;self.bounds_watch=False;self.bounds_dirty=True
+        try:
+            from pxr import Tf,Usd
+            self.bounds_notice=Tf.Notice.Register(Usd.Notice.ObjectsChanged,self._environment_changed,stage)
+            self.bounds_watch=True
+        except (ImportError,AttributeError):
+            # Without a working invalidation subscription retain the old
+            # bounded polling path, never silently keep stale collision bounds.
+            pass
+
+    def _refresh_bounds(self,stage,now):
+        if self.bounds_dirty or not self.bounds_watch and now-self.scan_at>.2:
+            self.obstacles=self._bounds(stage);self.scan_at=now;self.bounds_dirty=False;self.bounds_rebuilds+=1
 
     def receive(self,value,received_at=None):
         self.desired=value;self.received_at=time.monotonic() if received_at is None else received_at
@@ -78,6 +122,10 @@ class FleetRuntime:
                 robot=self.robots.get(request['robot_id'])
                 if robot and robot['epoch']==request['connection_epoch'] and robot['motion_epoch']==request['motion_epoch']:
                     bind_intent(robot,request.get('intent'),now_ms,received_at=self.received_at,now=now)
+                    if not robot.get('startup_ready',False):
+                        robot.update(last_intent=None,intent_active_since=None)
+                        task=request.get('task')
+                        if task:robot['warm_rejected_task']=task['task_id']
 
     def _bounds(self,stage):
         from pxr import UsdGeom, Usd
@@ -125,11 +173,12 @@ class FleetRuntime:
         if identity!=self.identity:
             self.identity=identity;self.robots={};self.report=[];self.anchors=[];self.desired=None
             if stage.GetPrimAtPath(self.ROOT):stage.RemovePrim(self.ROOT)
-            self.obstacles=self._bounds(stage)
+            self._watch_environment(stage)
         fleet=self.desired
         if not snapshot.applied_revision or not fleet or fleet.get('applied_revision')!=snapshot.applied_revision:return
         if not stage.GetPrimAtPath('/World/TwinPulse'):return
-        if now-self.scan_at>.2:self.obstacles=self._bounds(stage);self.scan_at=now
+        bounds_started=time.monotonic();self._refresh_bounds(stage,now)
+        bounds_elapsed=max(0.,time.monotonic()-bounds_started)
         rows=fleet['robots'];wanted={row['robot_id'] for row in rows}
         for identity in set(self.robots)-wanted:
             stage.RemovePrim(self.ROOT+'/Robot_'+identity);del self.robots[identity]
@@ -138,7 +187,9 @@ class FleetRuntime:
             identity=request['robot_id'];path=self.ROOT+'/Robot_'+identity
             robot=self.robots.get(identity)
             active_dt=dt
-            if robot is None or robot['epoch']!=request['connection_epoch']:
+            created=robot is None or robot['epoch']!=request['connection_epoch'] or not stage.GetPrimAtPath(path)
+            model_started=time.monotonic()
+            if created:
                 active_dt=0. # New authority cannot act on time before admission.
                 if stage.GetPrimAtPath(path):stage.RemovePrim(path)
                 placement=UsdGeom.Xform.Define(stage,path)
@@ -152,14 +203,28 @@ class FleetRuntime:
                 placement.AddTranslateOp();placement.AddRotateZOp()
                 robot=dict(epoch=request['connection_epoch'],pose=list(request['position_m']),task=None,travel=0.,scan=None,
                            motion_epoch=request['motion_epoch'],reason=None,scan_at=0.,intent_sequence=None,
-                           last_intent=None,stale_intent_sequence=None,intent_active_since=None)
+                           last_intent=None,stale_intent_sequence=None,intent_active_since=None,
+                           startup_samples=0,startup_ready=False)
+                self.model_generation+=1
+                robot.update(model_generation=self.model_generation,render_observed=False)
                 self.robots[identity]=robot
+            model_elapsed=max(0.,time.monotonic()-model_started) if created else 0.
+            # Do not count the first report's dt: it predates authoring.
+            observe_startup(robot,created,dt,self.snapshot_capture_pending)
             if robot['motion_epoch']!=request['motion_epoch']:
                 active_dt=0.
                 robot.update(motion_epoch=request['motion_epoch'],reason=None,task=None,travel=0.,intent_sequence=None,
-                             last_intent=None,stale_intent_sequence=None,intent_active_since=None)
+                             last_intent=None,stale_intent_sequence=None,intent_active_since=None,warm_rejected_task=None)
             intent=bind_intent(robot,request.get('intent'),time.time()*1000,received_at=self.received_at,now=now)
             task=request.get('task');direction=None;reason=robot['reason']
+            if not robot.get('startup_ready',False):
+                # Consume the sequence fence, but discard all premature intent.
+                # A later ready tick cannot replay this same sequence/task ID.
+                robot.update(last_intent=None,intent_active_since=None)
+                if task:robot['warm_rejected_task']=task['task_id']
+                intent=None;task=None
+            elif task and task['task_id']==robot.get('warm_rejected_task'):
+                task=None
             if not task and robot['task'] is not None:
                 robot.update(task=None,travel=0.)
             if request.get('visual_only'):
@@ -170,8 +235,14 @@ class FleetRuntime:
                 ops[0].Set(Gf.Vec3d(robot['pose'][0],robot['pose'][1],0.));ops[1].Set(math.degrees(robot['pose'][2]))
                 continue
             if task and robot['task']!=task['task_id']:
-                robot.update(task=task['task_id'],travel=0.,reason=None);reason=None;active_dt=0.
-            if now-self.received_at<.5 and not reason:
+                if reason not in {'ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE'}:
+                    robot.update(task=task['task_id'],travel=0.,reason=None);reason=None
+                active_dt=0.
+            if (dt>=.5 or time.monotonic()-now>=.5) and (intent or task):reason='ISAAC_UPDATE_STALLED'
+            if not robot.get('startup_ready',False):
+                # No buffering, renewal or later replay of premature commands.
+                direction=None;intent=None;task=None
+            elif now-self.received_at<.5 and not reason:
                 if task:
                     if time.time()*1000>=task['deadline_ms']:reason='TASK_TIMEOUT'
                     elif robot['travel']>=task['amount']:reason='TASK_COMPLETED'
@@ -184,7 +255,9 @@ class FleetRuntime:
                         # conceal a >=500ms main-thread stall or replay it.
                         if active_dt<.5:
                             active_dt=min(active_dt,max(0.,now-robot['intent_active_since']))
-            elif now-self.received_at>=.5 and (intent or task):reason='INPUT_STALE'
+            elif now-self.received_at>=.5 and (intent or task):reason='ISAAC_TRANSPORT_STALE'
+            if direction and time.monotonic()-self.received_at>=.5:
+                reason='ISAAC_TRANSPORT_STALE';direction=None
             substeps=0;integrated_s=0.
             if direction:
                 boxes=list(self.obstacles)
@@ -195,7 +268,7 @@ class FleetRuntime:
                     max(0.,task['amount']-robot['travel']) if task else None)
                 robot['pose']=new;robot['travel']+=distance
                 integrated_s=distance/(.05 if direction in {'forward','backward'} else .30)
-                if stopped:reason=stopped
+                if stopped:reason='ISAAC_UPDATE_STALLED' if stopped=='INPUT_STALE' and active_dt>=.5 else stopped
                 elif task and robot['travel']>=task['amount']-1e-12:reason='TASK_COMPLETED'
             if reason=='INPUT_STALE' and robot.get('stale_intent_sequence') is None:
                 robot['stale_intent_sequence']=robot.get('intent_sequence')
@@ -211,6 +284,9 @@ class FleetRuntime:
             report.append(dict(robot_id=identity,connection_epoch=robot['epoch'],motion_epoch=robot['motion_epoch'],
                 sequence=self.sequence,position_m=measured,scan=robot['scan'],reason=reason,task_id=robot['task'],
                 runtime_timing=dict(elapsed_s=round(dt,6),integrated_s=round(integrated_s,6),substeps=substeps),
+                runtime_startup=dict(model_authored=True,render_observed=robot.get('render_observed',False),
+                    snapshot_capture_pending=self.snapshot_capture_pending,post_author_updates=robot.get('startup_samples',0),ready=robot.get('startup_ready',False)),
+                runtime_work=dict(bounds_s=round(bounds_elapsed,6),model_authoring_s=round(model_elapsed,6),bounds_rebuilds=self.bounds_rebuilds),
                 intent_sequence=robot.get('stale_intent_sequence') if reason=='INPUT_STALE' else robot.get('intent_sequence')))
         self.report=report
 

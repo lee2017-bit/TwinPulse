@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from threading import Event,Thread
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.integration import test_r5_product_api  # existing source-path bootstrap
 from twinpulse_app.robot_fleet import RobotFleet, parse_robot_command
@@ -31,7 +31,8 @@ class FleetTests(unittest.TestCase):
         state=self.send('register_sim',payload=dict(label=label,position_m=[1,1,0]));return state['focused_robot_id']
     def report(self,robot,**extra):
         row=self.fleet.robots[robot]
-        value=dict(robot_id=robot,connection_epoch=row['connection_epoch'],motion_epoch=row['motion_epoch'],sequence=row['telemetry_sequence']+1,position_m=[1,1,0])
+        value=dict(robot_id=robot,connection_epoch=row['connection_epoch'],motion_epoch=row['motion_epoch'],sequence=row['telemetry_sequence']+1,position_m=[1,1,0],
+            runtime_startup=dict(model_authored=True,render_observed=True,snapshot_capture_pending=False,post_author_updates=2,ready=True))
         value.update(extra)
         return self.fleet.engine_exchange('engine','stage',dict(engine_session_id='engine',stage_epoch='stage',report=dict(applied_revision='revision',robots=[value])))
     def connected(self,label='Alpha'):
@@ -42,6 +43,54 @@ class FleetTests(unittest.TestCase):
         self.report(robot);row=self.fleet.snapshot()['robots'][0]
         self.assertEqual(row['connection_state'],'CONNECTED');self.assertIsNone(row['battery']['percent'])
         self.assertEqual(row['battery']['source'],'simulated')
+    def test_action_and_idempotent_retry_publish_only_one_snapshot(self):
+        self.register('Alpha');self.register('Beta')
+        body=dict(action='status',request_id='same_status',robot_id=self.fleet.focused,
+                  connection_epoch=None,motion_epoch=None,payload={})
+        for _ in range(2):
+            with patch.object(self.fleet,'_snapshot_locked',wraps=self.fleet._snapshot_locked) as snapshot:
+                self.fleet.action(body,'owner')
+                self.assertEqual(snapshot.call_count,1)
+    def test_public_snapshot_reads_one_current_engine_identity_for_all_rows(self):
+        self.register('Alpha');self.register('Beta')
+        with patch.object(self.fleet.broker,'supervisor_state',wraps=self.fleet.broker.supervisor_state) as state:
+            value=self.fleet.snapshot()
+            self.assertEqual(state.call_count,1)
+        self.assertEqual(value['robots'][0]['current_twin_context'],value['robots'][1]['current_twin_context'])
+    def test_physical_diagnostics_survive_public_row_filter_without_granting_drive(self):
+        # Reproduces the powered ee9883.. data path: the adapter supplied these
+        # fields but the initialized public row did not have them.
+        from types import SimpleNamespace
+        identity='p'*32
+        row=self.fleet._robot(identity,'Physical',[0,0,0],kind='physical')
+        self.fleet.robots[identity]=row;self.fleet.physical=SimpleNamespace()
+        source=dict(robot_id=identity,project_id='test-project',
+            telemetry_diagnostic=dict(reason='SENSOR_SOURCE_AGE',source_age_s=.223906317,
+                sensor_receipt_age_s=.000876351,guard_receipt_age_s=.020916754),
+            native_diagnostic=dict(checksum_errors=0,unframed_bytes=191),
+            unreviewed_field='must not be copied')
+        self.fleet._physical_rows(([],[source]))
+        self.assertEqual(row['telemetry_diagnostic'],source['telemetry_diagnostic'])
+        self.assertEqual(row['native_diagnostic'],source['native_diagnostic'])
+        self.assertFalse(row['capabilities']['drive'])
+        self.assertNotIn('unreviewed_field',row)
+        source['telemetry_diagnostic']['reason']='changed'
+        self.assertEqual(row['telemetry_diagnostic']['reason'],'SENSOR_SOURCE_AGE')
+        self.fleet._physical_rows(([],[dict(robot_id=identity,project_id='test-project',
+            telemetry_diagnostic=None,native_diagnostic=None)]))
+        self.assertIsNone(row['telemetry_diagnostic']);self.assertIsNone(row['native_diagnostic'])
+    def test_sim_guard_uses_current_active_query_without_full_physical_journal(self):
+        from types import SimpleNamespace
+        robot=self.connected();row=self.fleet.robots[robot]
+        snapshot=Mock(side_effect=AssertionError('Historical snapshot on motion admission'))
+        query=Mock(return_value=True)
+        self.fleet.devices=SimpleNamespace(snapshot=snapshot,operation_active=query)
+        payload=dict(direction='forward',sequence=1,expires_at_ms=100220)
+        with self.assertRaisesRegex(BrokerError,'active physical'):
+            self.send('drive',robot,payload,connection_epoch=row['connection_epoch'],motion_epoch=row['motion_epoch'])
+        query.return_value=False
+        self.send('drive',robot,payload,connection_epoch=row['connection_epoch'],motion_epoch=row['motion_epoch'])
+        self.assertEqual(query.call_count,2);snapshot.assert_not_called()
     def test_two_sessions_selection_and_disconnect_are_isolated(self):
         a=self.connected('Alpha');b=self.connected('Beta')
         old=self.fleet.robots[a]['connection_epoch'];self.send('focus',a);self.send('disconnect',b)
@@ -68,11 +117,27 @@ class FleetTests(unittest.TestCase):
     def test_old_engine_expiry_cannot_cancel_newer_still_valid_input(self):
         robot=self.connected();row=self.fleet.robots[robot];epoch=row['motion_epoch']
         self.send('drive',robot,dict(direction='forward',sequence=10,expires_at_ms=100220),connection_epoch=row['connection_epoch'],motion_epoch=epoch)
-        desired=self.report(robot,reason='INPUT_STALE',intent_sequence=9)
+        desired=self.report(robot,reason='INPUT_STALE',intent_sequence=9,runtime_timing=dict(elapsed_s=.1,integrated_s=0.,substeps=0))
         self.assertEqual(row['motion_epoch'],epoch);self.assertEqual(row['control_state'],'DRIVING')
         self.assertEqual(desired['fleet']['robots'][0]['intent']['sequence'],10)
         self.report(robot,reason='INPUT_STALE',intent_sequence=10)
         self.assertNotEqual(row['motion_epoch'],epoch);self.assertIsNone(row['_intent'])
+    def test_large_or_unmeasured_engine_gap_cannot_be_hidden_by_newer_held_sequence(self):
+        for reason,timing in [('INPUT_STALE',dict(elapsed_s=.891,integrated_s=0.,substeps=0)),
+                ('INPUT_STALE',None),('ISAAC_UPDATE_STALLED',dict(elapsed_s=.891,integrated_s=0.,substeps=0)),
+                ('ISAAC_TRANSPORT_STALE',dict(elapsed_s=.03,integrated_s=0.,substeps=0))]:
+            robot=self.connected(reason+str(timing));row=self.fleet.robots[robot];epoch=row['motion_epoch']
+            self.send('drive',robot,dict(direction='forward',sequence=10,expires_at_ms=100220),connection_epoch=row['connection_epoch'],motion_epoch=epoch)
+            self.report(robot,reason=reason,intent_sequence=9,runtime_timing=timing)
+            self.assertNotEqual(row['motion_epoch'],epoch);self.assertIsNone(row['_intent'])
+    def test_missing_post_model_or_render_readiness_blocks_prepare_and_drive(self):
+        robot=self.register();self.send('connect',robot)
+        for startup in (None,dict(model_authored=True,render_observed=False,snapshot_capture_pending=False,post_author_updates=2,ready=True),
+                dict(model_authored=True,render_observed=True,snapshot_capture_pending=True,post_author_updates=2,ready=True)):
+            self.report(robot,runtime_startup=startup)
+            with self.assertRaisesRegex(BrokerError,'post-model'):self.send('prepare',robot)
+            self.assertEqual(self.fleet.robots[robot]['reason'],'ISAAC_MODEL_WARMING_UP')
+        self.report(robot);self.send('prepare',robot);self.assertEqual(self.fleet.robots[robot]['control_state'],'READY')
     def test_old_engine_expiry_still_stops_when_current_input_has_expired(self):
         robot=self.connected();row=self.fleet.robots[robot];epoch=row['motion_epoch']
         self.send('drive',robot,dict(direction='forward',sequence=10,expires_at_ms=100100),connection_epoch=row['connection_epoch'],motion_epoch=epoch)

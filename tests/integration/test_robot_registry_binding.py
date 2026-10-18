@@ -19,7 +19,7 @@ from tests.integration import test_r5_product_api
 from tests.integration.test_robot_diagnostics import fixture,observation
 from twinpulse_app.command_broker import BrokerError
 from twinpulse_app.robot_adapters import ADAPTERS,instance_binding,legacy_binding
-from twinpulse_app.robot_registry import RobotEndpoint
+from twinpulse_app.robot_registry import RobotEndpoint,RobotRegistry
 from twinpulse_app.robot_registry_service import RobotRegistryService
 from twinpulse_app.robot_discovery import advertised_candidates,advertised_network,dns_records
 from twinpulse_app.workspace_devices import WorkspaceDevices
@@ -27,6 +27,7 @@ from twinpulse_app.robot_readiness import RobotReadiness
 from twinpulse_app.physical_controller import PhysicalController,worker_command
 from twinpulse_app.robot_evidence_export import export_finished_session
 from twinpulse_app.robot_evidence_recovery import RobotEvidenceRecovery
+from twinpulse_core.robot_battery import battery_display_config
 
 
 def binding(host='burger-new.local', *, user='twinpulse',port=22,domain=86,ident='1'*32):
@@ -44,6 +45,48 @@ def register_selected_robot(service):
 
 
 class RegistryBindingTests(unittest.TestCase):
+    def test_candidate_embedded_display_migrates_losslessly_outside_old_registry(self):
+        with TemporaryDirectory() as directory:
+            service=RobotRegistryService(WorkspaceDevices(),directory);state=register_selected_robot(service)
+            raw=json.loads(service.registry.path.read_text());original=deepcopy(raw)
+            config=battery_display_config('custom');config['points']=[dict(voltage_v=10,percent=0),dict(voltage_v=12,percent=100)]
+            raw['robots'][0]['battery_display']=config
+            service.registry.path.write_text(json.dumps(raw),encoding='utf-8') # Offline old-candidate fixture only.
+            registry=RobotRegistry(directory);after=json.loads(registry.path.read_text())
+            self.assertEqual(after['robots'],original['robots']);self.assertEqual(after['active_id'],original['active_id'])
+            self.assertEqual(registry.snapshot()['robots'][0]['battery_display'],config)
+            self.assertEqual(RobotRegistry(directory).snapshot()['revision'],after['revision']) # Idempotent.
+            # Interrupted preference write is detected by its config hash even
+            # when the registry revision has not yet been published.
+            row=registry.snapshot()['robots'][0];registry._write_battery(row['id'],battery_display_config())
+            with self.assertRaisesRegex(ValueError,'ROBOT_REGISTRY_CHANGED'):
+                registry.set_battery_display(row['id'],config,expected_revision=after['revision'],
+                    expected_display_sha256=row['battery_display_sha256'])
+            self.assertEqual(registry.snapshot()['robots'][0]['battery_display']['mode'],'voltage_only')
+
+    def test_battery_display_is_per_robot_persistent_cas_and_not_a_hardware_binding(self):
+        with TemporaryDirectory() as directory:
+            service=RobotRegistryService(WorkspaceDevices(),directory)
+            state=register_selected_robot(service);first=state['active_id'];before=instance_binding(service.registry.active())
+            self.assertEqual(state['robots'][0]['battery_display']['mode'],'robotis_opencr')
+            state=service.request(dict(action='register',label='Other robot',adapter_id='unreviewed',
+                endpoint=binding('other.local')['endpoint'],expected_revision=state['revision']),'owner')
+            self.assertEqual(state['robots'][1]['battery_display']['mode'],'voltage_only')
+            original_revision=state['revision']
+            with patch.object(service,'_bind',side_effect=AssertionError('Display must not rebind hardware')), \
+                 patch.object(service,'_admission',side_effect=AssertionError('No document or motion permission')):
+                state=service.request(dict(action='set_battery_display',id=first,config=battery_display_config(),expected_revision=original_revision,
+                    expected_display_sha256=state['robots'][0]['battery_display_sha256']),'owner')
+            self.assertEqual(state['active_id'],first);self.assertEqual(instance_binding(service.registry.active()),before)
+            self.assertEqual(state['robots'][0]['battery_display']['mode'],'voltage_only')
+            other=RobotRegistryService(WorkspaceDevices(),directory)
+            self.assertEqual(other.snapshot('owner')['robots'][0]['battery_display'],battery_display_config())
+            raw=json.loads(service.registry.path.read_text())
+            self.assertNotIn('battery_display',raw['robots'][0]) # Old rollback reader stays compatible.
+            with self.assertRaises(BrokerError):other.request(dict(action='set_battery_display',id=first,
+                config=battery_display_config('robotis_opencr'),expected_revision=original_revision,
+                expected_display_sha256=state['robots'][0]['battery_display_sha256']),'owner')
+            self.assertEqual(other.snapshot('owner')['robots'][0]['battery_display']['mode'],'voltage_only')
     def test_connect_pins_revision_and_selected_endpoint_after_another_service_changes_selection(self):
         with TemporaryDirectory() as directory:
             root=Path(directory);diagnostics=fixture(root,lambda *a,**k:self.fail('No remote call'))

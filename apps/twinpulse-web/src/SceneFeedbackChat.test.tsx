@@ -83,9 +83,9 @@ describe('Ordinary feedback chat UI',()=>{
   });
   it('preserves natural feedback and blocks Send plus Enter during child-local Build before a backend poll sees it',async()=>{
     const state=initial();const api=harness(state);
-    const product={engine_connected:true,lease_owned:true,operations:[] as {command_id:string;status:string}[],
-      snapshot:{engine_session_id:'engine',stage_epoch:'epoch',applied_revision:'current',runtime_state:'built',
-        safety_state:null,capabilities:['site_scene_build_v2'],telemetry_available:false,run_id:null},
+    const product={project_id:'feedback-ui',engine_session_id:'engine',stage_epoch:'epoch',engine_connected:true,lease_owned:true,control_lease_id:'lease',operations:[] as {command_id:string;status:string}[],
+      snapshot:{project_id:'feedback-ui',engine_session_id:'engine',stage_epoch:'epoch',applied_revision:'current',runtime_state:'built',
+        safety_state:null,capabilities:['site_scene_build_v2'],permitted_commands:['build_site_scene'],telemetry_available:false,run_id:null},
       engine_readiness:{site_scene_build_v2:{ready:true}}};
     api.productState.mockImplementation(async()=>product);
     api.workflow.mockResolvedValue({phase:'draft_ready',mode:'explicit_fixture',provider:{configured:true,label:'scripted'},

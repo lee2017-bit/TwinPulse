@@ -18,6 +18,12 @@ from pathlib import Path
 import re
 from threading import RLock
 from uuid import uuid4
+from twinpulse_core.robot_battery import battery_display_config, checked_battery_display, battery_display_sha256
+
+
+def record_battery_display(row):
+    return checked_battery_display(row['battery_display']) if 'battery_display' in row else battery_display_config(
+        'robotis_opencr' if row['adapter_id']=='turtlebot3_burger_v1' else 'voltage_only')
 
 
 @dataclass(frozen=True)
@@ -51,7 +57,7 @@ class RobotEndpoint:
 
 def checked_record(row):
     expected = {'id', 'label', 'adapter_id', 'endpoint', 'credential_ref', 'discovery_source'}
-    optional = {'adapter_version', 'host_identity_ref', 'robot_profile_id', 'calibration_ref'}
+    optional = {'adapter_version', 'host_identity_ref', 'robot_profile_id', 'calibration_ref', 'battery_display'}
     if (not isinstance(row, dict) or not expected <= set(row) or set(row) - expected - optional or not isinstance(row.get('id'), str)
             or not re.fullmatch('[a-f0-9]{32}', row['id'])):
         raise ValueError('ROBOT_RECORD_INVALID')
@@ -67,6 +73,7 @@ def checked_record(row):
         value = row.get(key)
         if value is not None and (not isinstance(value, str) or len(value)>160 or any(ord(c)<32 for c in value)):
             raise ValueError('ROBOT_RECORD_INVALID')
+    if 'battery_display' in row:checked_battery_display(row['battery_display'])
     return deepcopy(row)
 
 
@@ -74,6 +81,51 @@ class RobotRegistry:
     def __init__(self, state_root):
         self.path = Path(state_root) / 'robot-registry.json'
         self.lock = RLock()
+        self._migrate_candidate_battery_settings()
+
+    def _battery_path(self,robot_id):
+        if not isinstance(robot_id,str) or not re.fullmatch('[a-f0-9]{32}',robot_id):raise ValueError('ROBOT_NOT_REGISTERED')
+        directory=self.path.parent/'robot-battery-displays'
+        if directory.is_symlink():raise ValueError('ROBOT_BATTERY_STORAGE_INVALID')
+        return directory/(robot_id+'.json')
+
+    def _battery_config(self,row):
+        path=self._battery_path(row['id'])
+        if path.is_symlink():raise ValueError('ROBOT_BATTERY_STORAGE_INVALID')
+        if not path.exists():return record_battery_display(row)
+        if path.stat().st_size>16384:raise ValueError('ROBOT_BATTERY_STORAGE_INVALID')
+        return checked_battery_display(json.loads(path.read_text(encoding='utf-8')))
+
+    def _write_battery(self,robot_id,config):
+        path=self._battery_path(robot_id)
+        if path.is_symlink():raise ValueError('ROBOT_BATTERY_STORAGE_INVALID')
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temporary=path.with_name('.battery-'+uuid4().hex+'.tmp')
+        try:
+            with temporary.open('x',encoding='utf-8') as stream:
+                json.dump(config,stream,ensure_ascii=False,allow_nan=False)
+                stream.flush();os.fsync(stream.fileno())
+            os.replace(temporary,path)
+        finally:temporary.unlink(missing_ok=True)
+
+    def _migrate_candidate_battery_settings(self):
+        # Early local candidates embedded this optional field in the strict old
+        # registry. Move only that field, preserving its exact settings, so older
+        # rollback executables can still read the unchanged registry-1.0 shape.
+        with self.lock:
+            if not self.path.exists():return
+            value=self._read()
+            if not any('battery_display' in row for row in value['robots']):return
+            with self._writer():
+                value=self._read()
+                for row in value['robots']:
+                    if 'battery_display' not in row:continue
+                    config=checked_battery_display(row['battery_display'])
+                    target=self._battery_path(row['id'])
+                    if target.exists() and self._battery_config(row)!=config:raise ValueError('ROBOT_BATTERY_MIGRATION_CONFLICT')
+                    self._write_battery(row['id'],config)
+                    del row['battery_display']
+                self._publish_locked(value,value['revision'])
 
     def _read(self):
         if not self.path.exists():
@@ -97,6 +149,8 @@ class RobotRegistry:
             value = deepcopy(self._read())
             for row in value['robots']:
                 row.pop('credential_ref')
+                row['battery_display']=self._battery_config(row)
+                row['battery_display_sha256']=battery_display_sha256(row['battery_display'])
                 row.update(connection_state='unverified', motion_authorized=False)
             return value
 
@@ -190,6 +244,20 @@ class RobotRegistry:
             value['active_id'] = robot_id
             self._publish(value, expected_revision)
             return self.active()
+
+    def set_battery_display(self, robot_id, config, *, expected_revision, expected_display_sha256):
+        checked=checked_battery_display(config)
+        with self.lock,self._writer():
+            value=self._read()
+            if type(expected_revision) is not int or value['revision']!=expected_revision:raise ValueError('ROBOT_REGISTRY_CHANGED')
+            row=next((r for r in value['robots'] if r['id']==robot_id),None)
+            if row is None:raise ValueError('ROBOT_NOT_REGISTERED')
+            # Config hash also catches a process crash between the two atomic
+            # local publishes. A stale client never overwrites that saved edit.
+            if battery_display_sha256(self._battery_config(row))!=expected_display_sha256:raise ValueError('ROBOT_REGISTRY_CHANGED')
+            self._write_battery(robot_id,checked)
+            self._publish_locked(value,expected_revision)
+            return deepcopy(checked)
 
 
 def enumerate_windows_devices():

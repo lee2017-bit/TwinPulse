@@ -11,7 +11,9 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
   await fs.mkdir(output,{recursive:false});
   await fs.mkdir(path.join(output,'frames'));
   let browser;const connectUntil=Date.now()+45000;
-  while(!browser){try{browser=await chromium.connectOverCDP(endpoint,{timeout:2000});}
+  // A passive recorder must not replace the interactive client's download
+  // directory/focus emulation in the same default BrowserWindow context.
+  while(!browser){try{browser=await chromium.connectOverCDP(endpoint,{timeout:2000,noDefaults:true});}
     catch(error){if(Date.now()>=connectUntil)throw error;await new Promise(r=>setTimeout(r,500));}}
   let pages;const pageUntil=Date.now()+30000;
   do{pages=browser.contexts().flatMap(c=>c.pages()).filter(p=>p.url().startsWith('http://127.0.0.1:8765/'));
@@ -38,14 +40,20 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
   }catch(e){session.errors.push({at:Date.now(),stage:session.stage,observer_error:redact(e)});}});
   const cdp=await page.context().newCDPSession(page);session.cdp=cdp;
   let lastFrame=0;
+  session.capture_policy={format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:4,saved_min_interval_ms:450,
+    scope:'Renderer screencast sampling only. Not application frame cadence, a load benchmark, native capture or a startup-cause repair.'};
+  session.capture_received=0;session.capture_discarded=0;
   cdp.on('Page.screencastFrame',event=>{
+    session.capture_received++;
     void cdp.send('Page.screencastFrameAck',{sessionId:event.sessionId}).catch(()=>{});
-    const at=Date.now();if(!session.recording||at-lastFrame<450)return;lastFrame=at;
+    const at=Date.now();if(!session.recording||at-lastFrame<450){session.capture_discarded++;return;}lastFrame=at;
     const name=String(session.frames.length).padStart(6,'0')+'.jpg';
     session.frames.push({file:'frames/'+name,at,stage:session.stage});
     session.pending=session.pending.then(()=>fs.writeFile(path.join(output,'frames',name),Buffer.from(event.data,'base64')));
   });
-  await cdp.send('Page.startScreencast',{format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:1});
+  // Discarding a received base64 frame cannot undo its renderer-side encoding
+  // and transfer. Request a sampled stream as well as bounding saved frames.
+  await cdp.send('Page.startScreencast',{format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:4});
   session.text=()=>page.locator('body').innerText();
   session.shot=async name=>{await page.screenshot({path:path.join(output,name+'.png'),timeout:8000});await session.save();};
   session.note=async(name,evidence={})=>{session.stage=name;session.events.push({at:Date.now(),name,evidence});await session.save();};
@@ -59,7 +67,10 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
     lines.push("file '"+session.frames.at(-1).file+"'");
     await fs.writeFile(path.join(output,'screen.ffconcat'),lines.join('\n'));
     const log=await fs.open(path.join(output,'video-encode.log'),'wx');
-    const child=spawn('ffmpeg',['-nostdin','-hide_banner','-loglevel','warning','-f','concat','-safe','0','-i',path.join(output,'screen.ffconcat'),'-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-fps_mode','vfr','-c:v','libx264','-preset','fast','-crf','24','-pix_fmt','yuv420p','-movflags','+faststart',path.join(output,'app-screen.mp4')],{windowsHide:true,stdio:['ignore',log.fd,log.fd]});
+    // B-frame reordering can make the MP4 track duration omit long static
+    // holds even when packet PTS retains them. Keep monotonic decode/display
+    // order and the original concat timestamps; never synthesize motion.
+    const child=spawn('ffmpeg',['-nostdin','-hide_banner','-loglevel','warning','-copyts','-start_at_zero','-f','concat','-safe','0','-i',path.join(output,'screen.ffconcat'),'-vf','scale=1600:900:force_original_aspect_ratio=decrease,pad=1600:900:(ow-iw)/2:(oh-ih)/2','-fps_mode','passthrough','-enc_time_base','1/1000','-c:v','libx264','-bf','0','-preset','fast','-crf','24','-pix_fmt','yuv420p','-video_track_timescale','1000','-movflags','+faststart',path.join(output,'app-screen.mp4')],{windowsHide:true,stdio:['ignore',log.fd,log.fd]});
     const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});await log.close();
     await session.note('VIDEO_ENCODE',{code,frames:session.frames.length,wall_ms:end-session.began,no_audio:true,source:'Actual same installed Electron renderer CDP screencast; not native desktop or robot camera.'});
     if(code!==0)throw Error('Video encode failed');return path.join(output,'app-screen.mp4');

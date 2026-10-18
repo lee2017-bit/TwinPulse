@@ -370,6 +370,8 @@ def main() -> int:
             APP.update()
             frame += 1
             try:
+                # Planned-but-not-yet-scheduled initial capture is pending too.
+                live_viewport.fleet_runtime.snapshot_capture_pending=bool(ARGS.viewport_capture) and not capture_finished
                 live_viewport.update(bridge.adapter.snapshot())
             except Exception as error:
                 live_viewport.last_error = "viewport_update_" + type(error).__name__[:60]

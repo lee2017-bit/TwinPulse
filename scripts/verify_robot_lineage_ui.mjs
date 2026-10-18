@@ -12,25 +12,28 @@ await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',started_at:new Date().toISOString(),classification:'INSTALLED_ELECTRON_ISAAC_SAVED_SCENE_TRACEABILITY',
  project,steps:[],screenshots:[],http_errors:[],page_errors:[],request_failed:[],posts:[],physical:'NOT_RUN_OFF',provider_calls:0,
  native_input:'NOT_RUN_TEST_BROWSERWINDOW',fresh_generation:'NOT_RUN_NOT_REQUIRED_FOR_ID_LINKAGE'};
-let browser,page,fleet,conversation,site,initialScene;const fleets=new Map();
+let browser,page,fleet,conversation,site,initialScene,activeStep='ATTACH',exiting=false;const fleets=new Map(),requestTimes=new WeakMap();
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const clean=e=>String(e).replace(/#bootstrap=[^\s"']+/g,'#bootstrap=[REDACTED]').slice(0,1600);
 const save=()=>fs.writeFile(path.join(out,'result.json'),JSON.stringify(result,null,2));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const poll=async(test,timeout=30000)=>{const end=Date.now()+timeout;while(Date.now()<end){if(test())return;await sleep(100);}throw Error('Observed state timeout');};
 const shot=async(name)=>{await page.screenshot({path:path.join(out,name+'.png'),timeout:8000});result.screenshots.push(name+'.png');};
-const step=async(name,fn)=>{const start=Date.now();try{const evidence=await fn();result.steps.push({name,status:'PASS',elapsed_ms:Date.now()-start,evidence});}
+const step=async(name,fn)=>{activeStep=name;const start=Date.now();console.log(JSON.stringify({ui_step:name,at:start}));try{const evidence=await fn();result.steps.push({name,status:'PASS',elapsed_ms:Date.now()-start,evidence});}
  catch(error){result.steps.push({name,status:'FAIL',elapsed_ms:Date.now()-start,error:clean(error)});await shot('failure-'+result.steps.length).catch(()=>{});throw error;}finally{await save();}};
 const label=arg('--label')??'Lineage Alpha';
 const robot=()=>fleet?.robots.find(r=>r.label===label);
 const drawer=(targetLabel=label)=>page.getByRole('region',{name:'Control '+targetLabel,exact:true});
+const showProjects=async()=>{if(!await page.locator('.chat-sidebar-slot').isVisible())await page.getByRole('button',{name:'Toggle conversations and projects',exact:true}).click();};
 const openLinkage=async()=>{const panel=drawer().getByLabel('Robot Twin record linkage');
+ const details=drawer().getByText('Setup, sensor details and logs',{exact:true});
+ if(await details.locator('..').getAttribute('open')===null)await details.click();
  if(await panel.getAttribute('open')===null)await panel.locator('summary').click();
  await expect(panel).toHaveAttribute('open','');await expect(panel.locator('dl')).toBeVisible();return panel;};
 const select=async(targetLabel=label)=>{const open=page.getByRole('button',{name:/^Open saved chat ·/}),message=page.getByRole('textbox',{name:'Message TwinPulse',exact:true});
  // Advanced Return can retire the old chat asynchronously. Explicitly select
  // the sidebar conversation rather than racing the disappearing old form.
- await page.getByRole('button',{name:'Open '+project,exact:true}).click();await expect(message).toBeVisible();
+ await showProjects();await page.getByRole('button',{name:'Open '+project,exact:true}).click();await expect(message).toBeVisible();
  await expect(page.locator('.chat-project-caption')).toContainText(project);
  const show=page.getByRole('button',{name:'Show Twin',exact:true});if(await show.isVisible())await show.click();
  await page.locator('.robot-fleet-row').filter({hasText:targetLabel}).click();await expect(drawer(targetLabel)).toBeVisible();};
@@ -40,15 +43,27 @@ const download=async(name,targetLabel=label)=>{
  const pending=page.waitForEvent('download');await button.click();await (await pending).saveAs(path.join(out,name));
  return JSON.parse(await fs.readFile(path.join(out,name),'utf8'));
 };
+const previewAndSave=async()=>{
+ const edit=page.locator('.scene-edit-review');
+ const pending=page.waitForResponse(r=>new URL(r.url()).pathname==='/v1/product/scene-edit/preview'&&r.request().method()==='POST');
+ await edit.getByRole('button',{name:'Preview change',exact:true}).click();
+ const response=await pending;if(response.status()!==200)throw Error('Scene preview was not acknowledged');
+ const preview=await response.json();
+ await expect(edit.getByText('Preview '+preview.result_revision.slice(0,10),{exact:false})).toBeVisible();
+ const button=edit.getByRole('button',{name:'Save reviewed change',exact:true});await expect(button).toBeEnabled();
+ const saved=page.waitForResponse(r=>new URL(r.url()).pathname==='/v1/product/scene-edit/apply'&&r.request().method()==='POST');
+ await button.click();if((await saved).status()!==200)throw Error('Reviewed scene save was not acknowledged');
+};
 try{
  browser=await chromium.connectOverCDP(endpoint);const pages=browser.contexts().flatMap(c=>c.pages()).filter(p=>p.url().startsWith('http://127.0.0.1:8765/'));
  if(pages.length!==1)throw Error('Exactly one installed renderer required');[page]=pages;page.setDefaultTimeout(15000);
  result.desktop=await page.evaluate(()=>window.twinpulseDesktop?.versions());
  if(!result.desktop?.engine?.launch_id||!(await page.evaluate(()=>navigator.userAgent)).includes('Electron/'))throw Error('Not installed Electron');
  page.on('pageerror',e=>result.page_errors.push(clean(e)));
- page.on('request',r=>{if(r.method()==='POST'&&new URL(r.url()).pathname.startsWith('/v1/product/')){
+ page.on('request',r=>{requestTimes.set(r,{at:Date.now(),step:activeStep,context:r.headers()['x-twinpulse-context']});if(r.method()==='POST'&&new URL(r.url()).pathname.startsWith('/v1/product/')){
   let v;try{v=r.postDataJSON();}catch{}result.posts.push({path:new URL(r.url()).pathname,action:v?.action,request_id:v?.request_id});}});
- page.on('requestfailed',r=>result.request_failed.push({path:new URL(r.url()).pathname,method:r.method(),reason:clean(r.failure()?.errorText)}));
+ page.on('requestfailed',r=>{const sent=requestTimes.get(r);result.request_failed.push({path:new URL(r.url()).pathname,method:r.method(),reason:clean(r.failure()?.errorText),
+  sent,at:Date.now(),elapsed_ms:sent?Date.now()-sent.at:null,step:activeStep,context:conversation?.context_id,exiting});});
  page.on('response',async r=>{const p=new URL(r.url()).pathname;
   if(r.status()>=400){const row={path:p,status:r.status(),method:r.request().method()};
    try{const v=await r.json();row.error={code:v.error?.code,message:clean(v.error?.message)};}catch{}result.http_errors.push(row);}
@@ -165,9 +180,15 @@ try{
    result.initial_events_sha256=hash(record.events);return {source,command_id:command.command_id,frame_sequence:scan.scan.frame_sequence,stream_id:scan.scan.stream_id};
   });
   await step('Stop all retains original request identity in operation',async()=>{
-   await page.getByRole('button',{name:'Stop all',exact:true}).click();await poll(()=>robot()?.control_state==='PAUSED');
+   const acknowledgement=page.waitForResponse(r=>new URL(r.url()).pathname==='/v1/product/robot-fleet'&&
+    r.request().method()==='POST'&&r.request().postDataJSON()?.action==='stop_all');
+   await page.getByRole('button',{name:'Stop all',exact:true}).click();
+   const response=await acknowledgement;
+   if(response.status()!==200)throw Error('Stop all was not acknowledged');
+   const requestId=response.request().postDataJSON().request_id;
+   await poll(()=>robot()?.control_state==='PAUSED'&&robot()?.motion_epoch===robot()?.applied_motion_epoch);
    const record=await download('stop-operation.json');
-   if(!record.events.some(e=>e.kind==='stop_all_request'&&e.request_id))throw Error('Stop all identity missing');
+   if(!record.events.some(e=>e.kind==='stop_all_request'&&e.request_id===requestId))throw Error('Stop all identity missing');
    await drawer().getByRole('button',{name:'Close robot controls',exact:true}).click();return {operation_id:record.operation_id};
   });
  }
@@ -184,7 +205,7 @@ try{
   }else await step('Actual reviewed scene change and Undo preserve per-event revisions',async()=>{
    const initial=JSON.parse(await fs.readFile(path.join(out,'initial-operation.json'),'utf8')),original=initial.manifest.source_twin_context;
    const enter=async()=>{
-    await page.getByRole('button',{name:'Manage projects',exact:true}).click();await page.getByRole('button',{name:'Advanced tools',exact:true}).click();
+    await showProjects();await page.getByRole('button',{name:'Manage projects',exact:true}).click();await page.getByRole('button',{name:'Advanced tools',exact:true}).click();
     await page.getByRole('button',{name:/Review Twin/}).click();await expect(page.getByRole('heading',{name:'Scene edits · local review',exact:true})).toBeVisible();
    };
    const build=async()=>{
@@ -207,7 +228,7 @@ try{
    for(const [name,value] of [['X (m)','0.5'],['Y (m)','0'],['Length (m)','0.1'],['Width (m)','0.1'],['Height (m)','0.1']])
      await edit.getByRole('spinbutton',{name,exact:true}).fill(value);
    const beforeRevision=site.revision;
-   await edit.getByRole('button',{name:'Preview change',exact:true}).click();await edit.getByRole('button',{name:'Save reviewed change',exact:true}).click();
+   await previewAndSave();
    await poll(()=>site?.revision!==beforeRevision&&site.objects.some(o=>o.id==='lineage_revision_probe'));
    await build();}
    await poll(()=>robot()?.current_twin_context?.scene_revision!==original.scene_revision);
@@ -225,8 +246,7 @@ try{
    }else{
     if(site.revision!==changedRevision||!site.objects.some(o=>o.id==='lineage_revision_probe'))throw Error('Saved scene differs from this test change; no Undo sent');
     await page.getByRole('radio',{name:'Undo last edit',exact:true}).check();
-    await page.locator('.scene-edit-review').getByRole('button',{name:'Preview change',exact:true}).click();
-    await page.locator('.scene-edit-review').getByRole('button',{name:'Save reviewed change',exact:true}).click();
+    await previewAndSave();
    }
    await poll(()=>site?.revision!==changedRevision&&!site.objects.some(o=>o.id==='lineage_revision_probe'));
    const undoScene=structuredClone(site),undoRevision=undoScene.revision;
@@ -242,9 +262,10 @@ try{
     geometry_comparison:phase==='resume-edit'?'PREVIOUS_SAVED_UNDO_ID_AND_PROBE_ABSENCE':'EXACT_PRE_EDIT_OBJECTS_SHA',original_events_sha256:hash(initial.events)};
   });
   await step('Project switch closes old operation without relabelling old events',async()=>{
+   await showProjects();
    await page.getByRole('button',{name:'＋ New chat',exact:true}).click();
    await poll(()=>conversation&&conversation.project_id!==project);result.switched_project=conversation.project_id;
-   await page.getByRole('button',{name:'Open '+project,exact:true}).click();await poll(()=>conversation?.project_id===project);await poll(()=>!!robot());
+   await showProjects();await page.getByRole('button',{name:'Open '+project,exact:true}).click();await poll(()=>conversation?.project_id===project);await poll(()=>!!robot());
    await select();const record=await download('closed-operation.json'),initial=JSON.parse(await fs.readFile(path.join(out,'initial-operation.json'),'utf8'));
    if(record.operation_id!==result.operation_id||!record.manifest.complete||hash(record.events.slice(0,initial.events.length))!==hash(initial.events))throw Error('Old context mutated or not finalized');
    if(record.manifest.source_twin_context.conversation_session_id!==result.conversation.session_id||robot().operation_id)throw Error('Reference changed or authority restored');
@@ -257,7 +278,49 @@ try{
    await shot('05-large-history');return {operation_id:record.operation_id,bytes:(await fs.stat(path.join(out,'large-historical-operation.json'))).size,event_count:record.events.length};
   });
  }
- await step('Exit through installed App button',async()=>{const closing=page.waitForEvent('close',{timeout:60000});await page.getByRole('button',{name:'Exit TwinPulse',exact:true}).click();await closing;});
+ if(arg('--physical-history'))await step('Original physical cold failure exposes exact trial, source provenance and cleanup without reconnect',async()=>{
+  const originalProject=arg('--physical-project'),target='Imported existing settings · unverified';
+  await showProjects();
+  await page.getByRole('button',{name:'Open '+originalProject,exact:true}).click();
+  await poll(()=>conversation?.project_id===originalProject);
+  const show=page.getByRole('button',{name:'Show Twin',exact:true});if(await show.isVisible())await show.click();
+  await page.locator('.robot-fleet-row').filter({hasText:target}).click();
+  const r=fleet?.robots.find(v=>v.label===target);
+  if(!r||r.operation_id||r.connection_epoch||r.capabilities.drive)throw Error('Physical authority restored');
+  const record=await download('original-physical-operation.json',target),manifest=record.manifest;
+  // Bind expectations to the preserved powered-run export, never to this new
+  // download or a different operation's historical trial/counts.
+  const priorPath=arg('--physical-prior');if(!priorPath)throw Error('Immutable physical-prior fixture required');
+  const priorBytes=await fs.readFile(priorPath),prior=JSON.parse(priorBytes.toString('utf8').replace(/^\uFEFF/,''));
+  const original=prior.manifest;
+  if(prior.operation_id!==arg('--physical-history')||prior.project_id!==originalProject)throw Error('Physical fixture identity mismatch');
+  if(record.operation_id!==prior.operation_id||hash(record.events)!==hash(prior.events)||
+    manifest.runtime_event_count!==original.stream.event_count||hash(manifest.stream)!==hash(original.stream)||
+    hash(manifest.worker_sources)!==hash(original.worker_sources)||hash(manifest.source_twin_context)!==hash(original.source_twin_context)||
+    manifest.cleanup_confirmed!==original.cleanup_confirmed||
+    manifest.connection_restored||manifest.device_authority_restored||manifest.original_logs_rewritten)throw Error('Original cold evidence changed or incomplete');
+  const expectedTrial=prior.events.map(e=>e.data?.field?.active_trial).filter(Boolean).at(-1);
+  if(!expectedTrial?.trial_id||!['INCONCLUSIVE','CANCELLED','FAIL'].includes(expectedTrial.status)||!expectedTrial.reason||!Number.isFinite(expectedTrial.frames))throw Error('Original failed fixture trial missing');
+  const summary=drawer(target).getByLabel('Operation summary');
+  await expect(summary).toContainText('Historical trial '+expectedTrial.trial_id);
+  await expect(summary).toContainText(expectedTrial.status+' · '+expectedTrial.reason+' · frames '+expectedTrial.frames+' · not current qualification');
+  const trial=summary.getByText('Historical trial '+expectedTrial.trial_id,{exact:true});
+  await trial.scrollIntoViewIfNeeded();await expect(trial).toBeVisible();
+  await shot('original-physical-cold-history');
+  return {operation_id:record.operation_id,events:record.events.length,runtime_event_count:manifest.runtime_event_count,
+    worker_sources:Object.keys(manifest.worker_sources).length,cleanup_confirmed:manifest.cleanup_confirmed,source_context:manifest.source_twin_context,
+    prior_fixture:priorPath,prior_sha256:createHash('sha256').update(priorBytes).digest('hex'),events_sha256:hash(record.events),expected_trial:expectedTrial,physical_activation:0};
+ });
+ await step('Exit through installed App button',async()=>{
+  await page.evaluate(()=>{window.__exitInputReceipt=[];for(const kind of ['pointerdown','pointerup','click'])document.addEventListener(kind,event=>{
+   const button=event.target?.closest?.('button');if(button?.textContent==='Exit TwinPulse')window.__exitInputReceipt.push({kind,at:Date.now(),disabled:button.disabled});
+  },{capture:true,passive:true});});
+  const closing=page.waitForEvent('close',{timeout:60000});closing.catch(()=>{});exiting=true;
+  const ack=page.waitForResponse(r=>new URL(r.url()).pathname==='/v1/product/runtime/shutdown'&&r.request().method()==='POST',{timeout:10000});ack.catch(()=>{});
+  await page.getByRole('button',{name:'Exit TwinPulse',exact:true}).click();
+  try{const response=await ack;result.exit_ack={status:response.status(),request_id:response.request().headers()['x-request-id']};if(response.status()!==202)throw Error('Exit was not acknowledged');}
+  finally{if(!page.isClosed())result.exit_input=await page.evaluate(()=>window.__exitInputReceipt);}
+  await closing;result.exited_at=Date.now();});
  if(result.http_errors.length||result.page_errors.length)throw Error('HTTP/page errors recorded');
  result.status='PASS';
 }catch(error){result.status='FAIL';result.error=clean(error);}

@@ -63,14 +63,18 @@ describe('Ordinary generation continuation',()=>{
     const state:ConversationState={schema_version:'conversation-1.0',session_id:'s',project_id:'p',revision:3,cursor:3,
       mode:'SIM',robot_id:null,physical_authority:false,restore_error:null,budgeted_generation_available:true,
       messages:[],cards:[],events:[],accepted_request_ids:[],generation:{operation_id:'failed',state:'failed',summary:'Output truncated',
-      can_cancel:false,started_at:'now',last_progress_at:'now',error:{code:'provider_response_invalid',message:'Output truncated'}}};
+      can_cancel:false,started_at:'now',last_progress_at:'now',progress:{budget:{stop_reason:'PROVIDER_OUTPUT_TRUNCATED'}},error:{code:'provider_response_invalid',message:'Output truncated'}}};
     let current=state;
+    let connected=false;
     const api={bootstrap:vi.fn().mockResolvedValue(undefined),conversation:vi.fn(async()=>current),
-      runtimeState:vi.fn().mockResolvedValue({status:'starting'}),productState:vi.fn().mockResolvedValue({engine_connected:false}),
-      workflow:vi.fn().mockResolvedValue({phase:'generation_failed'}),conversationAction:vi.fn(async()=>{
+      runtimeState:vi.fn(async()=>({status:connected?'ready':'starting'})),productState:vi.fn(async()=>({engine_connected:connected})),
+      workflow:vi.fn(async()=>{if(!connected)throw new Error('Workflow observation delayed');return {phase:'generation_failed'};}),conversationAction:vi.fn(async()=>{
         current={...state,revision:4,cursor:4,generation:{...state.generation!,state:'running',error:null}};return current;})};
     render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);
     const review=await screen.findByRole('button',{name:'Continue unfinished work'});
+    expect(review).toHaveProperty('disabled',true);fireEvent.click(review);expect(api.conversationAction).not.toHaveBeenCalled();
+    connected=true;
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Continue unfinished work'})).toHaveProperty('disabled',false),{timeout:3500});
     expect(api.conversationAction).not.toHaveBeenCalled();fireEvent.click(review);
     await waitFor(()=>expect(api.conversationAction).toHaveBeenCalledWith(expect.objectContaining({action:'generation_retry',operation_id:'failed'})));
     expect(api.conversationAction).toHaveBeenCalledTimes(1);

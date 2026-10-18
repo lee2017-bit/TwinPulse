@@ -376,3 +376,34 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(publisher.last_error,'viewport_capture_timeout')
         self.assertIsNone(publisher.transport_error)
         bridge.adapter.snapshot.assert_not_called()
+
+    def test_fleet_poll_subtracts_http_time_without_overlapping_or_extending_input(self):
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        for rtt,expected in ((.01,.04),(.10,.001)):
+            publisher=LiveViewportPublisher(Mock());clock=[0.];active=[False];requests=[]
+            class EndAfterTwo:
+                def is_set(self):return False
+                def wait(self,delay):
+                    requests.append(delay);clock[0]+=delay
+                    return len(requests)==2
+            publisher.stop_event=EndAfterTwo()
+            def exchange():
+                self.assertFalse(active[0]);active[0]=True
+                clock[0]+=rtt;active[0]=False
+            publisher._fleet_exchange=exchange
+            with patch('scripts.twinpulse_live_viewport.time.monotonic',side_effect=lambda:clock[0]):
+                publisher._fleet_io()
+            self.assertEqual(len(requests),2)
+            for delay in requests:self.assertAlmostEqual(delay,expected)
+
+    def test_fleet_exchange_preserves_server_intent_and_receipt_time(self):
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        bridge=Mock();bridge.connected=True;bridge._lock=Lock();bridge._shared_stage_epoch='stage'
+        bridge.adapter.engine_session_id='engine'
+        original={'intent':{'sequence':8,'expires_at_ms':250}}
+        bridge._post.return_value={'fleet':original}
+        publisher=LiveViewportPublisher(bridge);publisher.fleet_report={'robots':[]}
+        with patch('scripts.twinpulse_live_viewport.time.monotonic',return_value=12.):publisher._fleet_exchange()
+        self.assertEqual(list(publisher.fleet_pending),[(original,12.)])
+        self.assertEqual(original['intent']['expires_at_ms'],250)
+        bridge.adapter.snapshot.assert_not_called()

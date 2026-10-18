@@ -62,7 +62,9 @@ def main(*, translation_only=False):
         now=time.monotonic()
         if topic=='sensor_state':
             report['last_board']=dict(voltage_v=float(msg.battery),torque=bool(msg.torque),encoders=[msg.left_encoder,msg.right_encoder])
-            if not math.isfinite(msg.battery) or msg.battery<11.4:cancel.set();raise RuntimeError('VOLTAGE_BELOW_FIELD_MARGIN')
+            # Match the unchanged production source guard, not the obsolete
+            # 11.4V field-only margin (~50% by the OpenCR display formula).
+            if not math.isfinite(msg.battery) or msg.battery<=11.1:cancel.set();raise RuntimeError('LOW_VOLTAGE_GUARD')
         if topic=='odom':
             q=msg.pose.pose.orientation
             yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))

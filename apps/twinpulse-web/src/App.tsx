@@ -86,9 +86,14 @@ export function App({ api = DEFAULT_API }: { api?: TwinPulseApi }) {
     void api.bootstrap().then(()=>{if(!closed)void poll();}).catch(()=>{/* Existing workspace shows the session diagnosis. */});
     return()=>{closed=true;clearTimeout(timer);};
   },[api]);
-  const shutdown=async()=>{
+  const shutdown=async(nativeClose=false)=>{
     if(requested.current){window.twinpulseDesktop?.reportExitResult({requested:true});return;}
-    if(inFlight.current||!state.available){window.twinpulseDesktop?.reportExitResult({requested:false,code:inFlight.current?'shutdown_pending':'shutdown_unavailable'});return;}
+    // A native Close is an explicit request, not an advisory button poll.
+    // A background/occluded renderer may retain a starting or momentarily
+    // busy hint. Submit once to the authoritative server admission instead
+    // of refusing forever from that stale hint. Active work still vetoes
+    // the POST; no retry, force-exit or robot/engine guard is bypassed.
+    if(inFlight.current||(!nativeClose&&!state.available)){window.twinpulseDesktop?.reportExitResult({requested:false,code:inFlight.current?'shutdown_pending':'shutdown_unavailable'});return;}
     // Stop child effects before the shutdown POST can close their backend.
     // Activity retains unsent text/files if a rejected exit must reopen them.
     inFlight.current=true;flushSync(()=>setExit(current=>({...current,phase:'pending',error:null})));
@@ -103,7 +108,7 @@ export function App({ api = DEFAULT_API }: { api?: TwinPulseApi }) {
     finally{if(owner.current===api)inFlight.current=false;}
   };
   const desktopShutdown=useRef(shutdown);desktopShutdown.current=shutdown;
-  useEffect(()=>window.twinpulseDesktop?.onExitRequested(()=>void desktopShutdown.current()),[]);
+  useEffect(()=>window.twinpulseDesktop?.onExitRequested(()=>void desktopShutdown.current(true)),[]);
   const runtimeExit=<span><DesktopTesting/><button type="button" disabled={!state.available||state.phase!=='idle'} onClick={()=>void shutdown()}
     title="Available when owned runtime work is idle. Exit stops TwinPulse's owned Isaac and backend normally.">Exit TwinPulse</button>
     <small>{window.twinpulseDesktop?' Closing this app requests the same normal runtime shutdown.':' Browser close only closes this screen; Exit stops owned Isaac/backend normally.'}</small>

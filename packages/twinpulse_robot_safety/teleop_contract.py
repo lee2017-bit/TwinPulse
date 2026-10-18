@@ -9,6 +9,7 @@ Never refresh a delayed command's lifetime. No transport or device imports.
 import math
 import secrets
 import time
+from control_timing import INPUT_TTL_S,OPERATOR_PRESENCE_S
 
 DIRECTIONS = {'forward': (.03, 0.), 'backward': (-.03, 0.),
               'left': (0., .20), 'right': (0., -.20)}
@@ -76,9 +77,19 @@ class InputGate:
         self.recoverable = recoverable is True and self.persistent
         self.generation=0;self.source_created=None;self.pause_reason=None
 
-    def pause(self,reason=None):
+    def pause(self,reason=None,*,repeated_observation=False):
+        # A repeated automatic observation of the same fault is not a new
+        # authority transition when ALL authority was already discarded. Still
+        # burn intermediate nonces. Explicit Stop/config/arm retain the default
+        # unconditional fence, and any accepted watch/input starts a new one.
+        already_revoked=(repeated_observation and reason is not None
+            and self.pause_reason==reason and not self.active
+            and self.deadline==0. and self.hold_end==0.
+            and self.presence_at is None and self.source_created is None)
         self.active=False;self.deadline=self.hold_end=0.;self.presence_at=None
-        self.challenges.clear();self.generation+=1;self.source_created=None;self.pause_reason=reason
+        self.challenges.clear()
+        if not already_revoked:self.generation+=1
+        self.source_created=None;self.pause_reason=reason
 
     def suspend_for_arm(self):
         """Arming consumes a preparation intent, never a movement lifetime."""
@@ -149,20 +160,20 @@ class InputGate:
         if not isinstance(challenge, str) or challenge not in self.challenges:
             raise ValueError('INPUT_CHALLENGE')
         extra = packet['age_ms']
-        if type(extra) not in (int,float) or not math.isfinite(extra) or not 0<=extra<250:
+        if type(extra) not in (int,float) or not math.isfinite(extra) or not 0<=extra<INPUT_TTL_S*1000:
             raise ValueError('INPUT_AGE')
         # Conservative sum: time already spent before relay plus the robot nonce
         # round trip. A queued PC request cannot receive a new 250ms lifetime.
         created=self.challenges[challenge]-extra/1000
         age = self.clock()-created
-        if not 0 <= age < .25: raise ValueError('INPUT_EXPIRED')
+        if not 0 <= age < INPUT_TTL_S: raise ValueError('INPUT_EXPIRED')
         self.challenges.pop(challenge);self.sequence=seq;self.source_created=created;self.pause_reason=None
         self.presence_at = self.clock()
         if not self.active or (self.last_action == 'watch' and action != 'watch') or (self.continuous and action in DIRECTIONS):
             self.hold_end = self.clock() + (60. if action == 'watch' else 2.)
         self.last_action = action
         self.active = True
-        self.deadline = created+.25
+        self.deadline = created+INPUT_TTL_S
         return action, age
 
     def check(self):
@@ -170,7 +181,7 @@ class InputGate:
         reason = ('SESSION_EXPIRED' if not self.persistent and now-self.started >= 60 else
                   'INPUT_DEADLINE_EXPIRED' if self.active and now >= self.deadline else
                   'HOLD_LIMIT_EXCEEDED' if self.active and now >= self.hold_end else
-                  'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=.5 else None)
+                  'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=OPERATOR_PRESENCE_S else None)
         if reason:
             if self.recoverable and reason in {'INPUT_DEADLINE_EXPIRED','OPERATOR_PRESENCE_EXPIRED','HOLD_LIMIT_EXCEEDED'}:
                 self.pause(reason)

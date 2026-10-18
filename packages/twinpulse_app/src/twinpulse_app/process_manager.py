@@ -509,6 +509,9 @@ class TwinPulseProcessManager:
         return outcome
 
     def _monitor(self, *, poll_s: float = 0.25) -> int:
+        from .engine_loss_probe import EngineLossProbe
+        loss_probe=EngineLossProbe(self._clock)
+        suspect=False
         while True:
             if _read_json(self.launcher_shutdown_file) == {'schema_version': '1.0', 'action': 'shutdown'}:
                 return 0
@@ -543,18 +546,47 @@ class TwinPulseProcessManager:
                 self._terminal_error = ("engine_exited", message)
                 self._write_status("error", "engine_exited", message)
                 return 1
-            engine_status = _read_json(self.engine_status_file)
-            if (
-                engine_status is not None
-                and engine_status.get("engine_session_id")
-                and not engine_status.get("engine_connected")
-            ):
+            engine_status,read_info = _read_engine_status(self.engine_status_file)
+            if read_info:
+                self._note_engine_liveness('status_read_diagnostic',engine_status,read_info=read_info)
+            decision=loss_probe.observe(engine_status)
+            if decision=='pending':
+                if not suspect:
+                    self._note_engine_liveness('suspect',engine_status)
+                    self._write_status('error','engine_liveness_suspect',
+                        'Engine observation is stale. Idle/SIM process loss awaits a distinct status sample; no motion permission was restored.')
+                    print('TWINPULSE_ENGINE_LIVENESS_SUSPECT launch_id='+self._launch_id,flush=True)
+                suspect=True
+            elif decision=='healthy' and suspect:
+                self._note_engine_liveness('recovered_without_command_resume',engine_status)
+                self._write_status('ready','engine_recovered',
+                    'Authenticated engine observation recovered; expired or unknown commands were not resumed.')
+                print('TWINPULSE_ENGINE_LIVENESS_RECOVERED launch_id='+self._launch_id,flush=True)
+                suspect=False
+            elif decision=='failed':
+                self._note_engine_liveness('confirmed_or_physical_not_idle',engine_status)
                 message = "engine heartbeat is stale while its PID is still running"
                 message += "; see local engine log"
                 self._terminal_error = ("engine_unresponsive", message)
                 self._write_status("error", "engine_unresponsive", message)
                 return 1
             self._sleep(poll_s)
+
+    def _note_engine_liveness(self,phase,value,*,read_info=None):
+        """Bounded, secret-free evidence bound to the actual monitor ID."""
+        rows=getattr(self,'_engine_liveness_events',[])
+        row=dict(phase=phase,at_utc=_utc_now(),manager_monotonic_s=self._clock(),
+            value_kind=type(value).__name__,read_info=read_info,
+            status_sample_id=(value or {}).get('status_sample_id'),
+            engine_session_id=(value or {}).get('engine_session_id'),
+            engine_connected=(value or {}).get('engine_connected'),
+            physical_runtime_active=(value or {}).get('physical_runtime_active'))
+        rows=(rows+[row])[-32:];self._engine_liveness_events=rows
+        trace=getattr(self,'_monitor_trace',None)
+        try:_write_json_atomic(self.launch_dir/'engine-liveness-observations.json',dict(schema='engine-liveness-confirmation-1.0',
+            launch_id=self._launch_id,execution_id=getattr(trace,'execution_id',None),events=rows))
+        except OSError:
+            if trace:trace.store.note_storage_error()
 
     def stop(self, *, final_status: str = "stopped") -> None:
         if not self._lock_owned and not self._owned and not self._logs and not self._jobs:
@@ -1167,6 +1199,29 @@ def _validated_loopback_url(value: object) -> str:
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ProcessManagerError("backend_url_invalid", "Backend URL contains unsupported components")
     return f"http://127.0.0.1:{parsed.port}"
+
+
+def _read_engine_status(path: Path):
+    """Retry only transient local read/parse errors, never a health decision.
+
+    Three attempts, no sleeps/cache/restamping. This is NOT a wall-time bound
+    on OS I/O. A successfully read stale/invalid sample is returned unchanged.
+    """
+    failures=[]
+    for attempt in range(1,4):
+        try:
+            with path.open('rb') as stream:raw=stream.read(1024*1024+1)
+            if len(raw)>1024*1024:
+                return None,dict(attempt=attempt,reason='oversized_status',failures=failures)
+            value=json.loads(raw.decode('utf-8'))
+            if not isinstance(value,dict):
+                return None,dict(attempt=attempt,reason='non_object_status',value_kind=type(value).__name__,failures=failures)
+            missing=[key for key in ('engine_connected','engine_session_id','status_sample_id','physical_runtime_active') if key not in value]
+            info=dict(attempt=attempt,reason='missing_health_fields' if missing else 'read_recovered',missing_fields=missing,failures=failures) if missing or failures else None
+            return value,info
+        except (OSError,UnicodeError,json.JSONDecodeError) as error:
+            failures.append(dict(attempt=attempt,type=type(error).__name__,errno=getattr(error,'errno',None),winerror=getattr(error,'winerror',None)))
+    return None,dict(attempt=3,reason='status_read_failed',failures=failures)
 
 
 def _read_json(path: Path) -> dict[str, object] | None:

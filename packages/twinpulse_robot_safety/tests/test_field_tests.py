@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,13 @@ def ring(now=1.,gap=1.):
     return dict(complete=True,interval_fallback=False,frame_sequence=1,
         timing=dict(receipt_start_s=now-.1,receipt_end_s=now),source_byte_span=dict(start=0,end=1080),
         raw_sha256='a'*64,nodes_sha256='b'*64,beams=beams)
+
+
+def persist(owner):
+    until=time.monotonic()+2.
+    while owner.field_pending and time.monotonic()<until:
+        owner._poll_field_writes();time.sleep(.002)
+    if owner.field_pending:raise AssertionError('real local writer ACK not received')
 
 
 class FieldTests(unittest.TestCase):
@@ -105,6 +113,7 @@ class FieldTests(unittest.TestCase):
             owner._field_command(command)
             for i in range(82):
                 now[0]=1.+i*.1;frame.update(ring(now[0]));frame['frame_sequence']=i+1;owner._field_tick()
+            persist(owner)
             self.assertEqual(owner.field_trials[0]['status'],'PASS');self.assertIsNone(owner.link);self.assertIsNone(owner.profile)
             self.assertIsNone(owner.field_receipt);self.assertFalse(owner.field_until)
             trial=owner.field_trials[0]
@@ -120,6 +129,18 @@ class FieldTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'STOPPED_IDLE'):
             owner._field_command(dict(action='field_arm',payload={'confirmed':True}))
         self.assertEqual(before,(owner.gate.sequence,owner.gate.source_created,owner.gate.deadline))
+    def test_idle_arm_rechecks_source_freshness_before_accepting_current_nonce(self):
+        owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(latest_frame=lambda:ring()),clock=lambda:1.)
+        owner.field_config=config()
+        def stale():raise ValueError('BATTERY_BUTTON_OR_SOURCE_AGE')
+        owner.link=SimpleNamespace(enabled=False,fresh=stale)
+        nonce=owner.gate.challenge()
+        packet=dict(action='field_arm',sequence=1,payload=dict(confirmed=True,
+            challenge=nonce,source_age_ms=0,motion_generation=owner.gate.generation))
+        with self.assertRaisesRegex(ValueError,'BATTERY_BUTTON_OR_SOURCE_AGE'):
+            owner._field_command(packet)
+        self.assertEqual(owner.gate.sequence,0);self.assertFalse(owner.field_until)
+        self.assertIsNone(owner.direction);self.assertIsNone(owner.drive_command)
 
     def test_zero_collection_blocks_drive_and_stop_precedes_failed_recording(self):
         order=[];owner=RobotControl({},'.',lambda *_:None,SimpleNamespace())
@@ -130,8 +151,10 @@ class FieldTests(unittest.TestCase):
         owner.link=SimpleNamespace(enabled=True,sensor=SimpleNamespace(torque=True),release=lambda:order.append('ZERO_OFF'))
         def failed(*_):order.append('RECORD');raise OSError('FULL')
         owner._field_write=failed
-        with self.assertRaises(OSError):owner._pause('OPERATOR_STOP')
+        owner._pause('OPERATOR_STOP')
         self.assertEqual(order,['ZERO_OFF','RECORD']);self.assertIsNone(owner.direction)
+        self.assertEqual(owner.field_trial['status'],'INCONCLUSIVE')
+        self.assertEqual(owner.field_evidence_fault,'FIELD_EVIDENCE_WRITE_FAILED')
 
     def test_proximity_human_clearance_cannot_pass_without_motion_and_readback(self):
         owner=RobotControl({},'.',lambda *_:None,SimpleNamespace())
@@ -154,6 +177,7 @@ class FieldTests(unittest.TestCase):
                     payload=dict(confirmed=True,case='bootstrap_stop',challenge=owner.gate.challenge(),source_age_ms=0,motion_generation=owner.gate.generation))
                 with patch('teleop_worker.qualify',return_value=dict(status='STOP_POLICY_PASS' if passed else 'STOP_POLICY_FAIL')) as qualify:
                     owner._field_bootstrap(c)
+                persist(owner)
                 self.assertEqual(qualify.call_args.kwargs['supervised_field_speed'],.03)
                 if passed:
                     self.assertEqual(owner.field_receipt['scope'],'FORWARD_WHEEL_WATCHDOG_OBSERVATION_ONLY')

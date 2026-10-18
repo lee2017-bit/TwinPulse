@@ -8,7 +8,7 @@ $tpState = Join-Path $env:LOCALAPPDATA 'TwinPulse\runtime'
 if (Test-Path -LiteralPath (Join-Path $tpState 'launcher.lock')) {
     throw 'Exit the current TwinPulse normally before starting this new test session.'
 }
-$tpEntry = Join-Path $tpInstalled 'Start-TwinPulse-Test.cmd'
+$tpEntry = Join-Path (Split-Path $PSScriptRoot -Parent) 'Start-TwinPulse-Test.cmd'
 if (-not (Test-Path -LiteralPath $tpEntry)) { throw 'Install the current test-enabled package first.' }
 $tpActive = Get-Content -LiteralPath (Join-Path $tpInstalled 'active-release.json') -Raw | ConvertFrom-Json
 $tpExpected = Join-Path (Split-Path (Join-Path $tpInstalled $tpActive.exe)) 'desktop\TwinPulseDesktop.exe'

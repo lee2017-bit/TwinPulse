@@ -40,8 +40,11 @@ def board_safe_for_sensor(health):
 
 def board_safe_for_motion(health):
     board = health.get('health', {}).get('board', {})
-    # A field-session margin, not a manufacturer capacity or stop specification.
-    return board_safe_for_sensor(health) and board.get('voltage_v', 0) >= 11.4
+    # User reserve uses the public OpenCR display mapping. Do not reintroduce
+    # the superseded arbitrary 11.4V (~50%) margin. The >11.1V source guard
+    # remains independent and takes priority before the estimated 20% reserve.
+    return (board_safe_for_sensor(health)
+            and max(0.,min(100.,(board['voltage_v']-10.5)/1.8*100))>20)
 
 
 def same_boot_release(health, binding):

@@ -14,6 +14,15 @@ const rawExport=(job_id:string,json_text:string)=>({schema_version:'robot-observ
 function setup(value=state){const api={robotRegistry:vi.fn().mockResolvedValue(value),updateRobotRegistry:vi.fn().mockResolvedValue(value)};
   const result=render(<RobotRegistry runtimeReady={true} api={api as unknown as TwinPulseApi} close={vi.fn()}/>);return {api,...result};}
 describe('robot registry supplementary UI contracts',()=>{
+  it('shows the actual saved voltage estimate as historical without reconnecting',async()=>{
+    const value={...state,connection:{state:'completed',job_id:'battery-job',logs_saved:true}};
+    const api={robotRegistry:vi.fn().mockResolvedValue(value),updateRobotRegistry:vi.fn(),robotObservation:vi.fn().mockResolvedValue({
+      job_id:'battery-job',record:{battery:{voltage_v:11.34,estimated_percent:46.7,capacity_measured:false}}})};
+    render(<RobotRegistry runtimeReady={true} api={api as unknown as TwinPulseApi} close={vi.fn()}/>);
+    fireEvent.click(await screen.findByRole('button',{name:'View connection log'}));
+    expect((await screen.findByLabelText('Recorded battery estimate')).textContent).toContain('approximately 47% (voltage estimate) · 11.34 V · historical record');
+    expect(api.updateRobotRegistry).not.toHaveBeenCalled();
+  });
   it('gates startup mutations on launcher readiness without replay while retaining saved reads',async()=>{
     const value={...state,active_id:'r',robots:[{id:'r',label:'Burger',adapter_id:'turtlebot3_burger_v1',endpoint:{host:'robot.local',user:'tp',port:22,ros_domain_id:86},connection_state:'unverified' as const,motion_authorized:false as const}]};
     const api={robotRegistry:vi.fn().mockResolvedValue(value),updateRobotRegistry:vi.fn().mockResolvedValue(value)};

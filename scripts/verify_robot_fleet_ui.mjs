@@ -4,17 +4,32 @@ import {chromium,expect} from '../apps/twinpulse-web/node_modules/@playwright/te
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {currentControlView,checkControlView,visibleMotion} from './control_view_acceptance.mjs';
+import {safeUnknownDriveRejection,scopedFetchBoundaryFailure} from './explicit_fault_recovery.mjs';
+import {recordStopReceipt,assertFinalStopReceipt} from './control_stop_receipt.mjs';
 const args=process.argv.slice(2),arg=n=>args[args.indexOf(n)+1];
 const out=arg('--output'),endpoint=arg('--cdp'),phase=arg('--phase')??'fresh';
 if(!out||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit CDP/output required');
 await fs.mkdir(out,{recursive:false});
-const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],native_os_input:'NOT_RUN',physical:'OFF_CHARGING_NOT_RUN'};
+const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],display_samples:[],native_os_input:'NOT_RUN',physical:'OFF_NOT_RUN'};
+result.fault_classification_contract='07b_NORMAL_FIRST_SINGLE_FINAL_FAULT_WINDOW_ORDINARY_ABORT_REMAINS_FAILURE';
+result.keyboard_release_trials=[];
+const recordViewportReceipts=args.includes('--viewport-receipts');
+result.viewport_receipt_trace={enabled:recordViewportReceipts,method:'Passive existing GET response bodies/headers only; no request interception, extra fetch or product state injection',receipts:[]};
+const finalFaultSteps=[];
 const faultRequests=new WeakMap(),requestMeta=new WeakMap(),responseChecks=[];let observedOrder=0;
-let browser,page,fleet=null,conversation=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null;const fleetsByContext=new Map();
+let browser,page,fleet=null,conversation=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null,conversationFaultHandler=null,imageFaultHandler=null;const fleetsByContext=new Map();
+const faultRoutePattern=/\/v1\/product\/(?:robot-fleet|conversation|viewport\/current)(?:\?.*)?$/;
+const faultFleetRoute=request=>new URL(request.request().url()).pathname.endsWith('/viewport/current')
+ ?imageFaultHandler?imageFaultHandler(request):request.continue()
+ :new URL(request.request().url()).pathname.endsWith('/conversation')
+ ?conversationFaultHandler?conversationFaultHandler(request):request.continue()
+ :fleetRouteHandler?fleetRouteHandler(request):request.continue();
+let routeBoundary;
 const save=()=>fs.writeFile(path.join(out,'result.json'),JSON.stringify(result,null,2));
 const shot=async name=>{await page.screenshot({path:path.join(out,name+'.png'),timeout:5000});result.screenshots.push(name+'.png');};
 const clean=e=>String(e).replace(/#bootstrap=[^\s"']+/g,'#bootstrap=[REDACTED]').slice(0,2000);
-const step=async(name,fn)=>{activeStep=name;const start=Date.now();try{const evidence=await fn();result.steps.push({name,status:'PASS',elapsed_ms:Date.now()-start,evidence});}
+const step=async(name,fn)=>{activeStep=name;const start=Date.now();console.log(JSON.stringify({ui_step:name,at:start}));try{const evidence=await fn();result.steps.push({name,status:'PASS',elapsed_ms:Date.now()-start,evidence});}
  catch(e){result.steps.push({name,status:'FAIL',elapsed_ms:Date.now()-start,error:clean(e)});await shot('failure-'+result.steps.length).catch(()=>{});throw e;}finally{await save();}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const poll=async(predicate,ms=15000)=>{const end=Date.now()+ms;while(Date.now()<end){if(predicate())return;await sleep(100);}throw Error('Observed state did not meet condition');};
@@ -43,8 +58,31 @@ try{
  result.desktop=await page.evaluate(()=>window.twinpulseDesktop?.versions());
  if(!result.desktop?.engine?.launch_id)throw Error('Installed desktop identity missing');
  const network=await page.context().newCDPSession(page),networkRequests=new Map();
- network.on('Network.requestWillBeSent',e=>{const pathname=new URL(e.request.url).pathname;if(pathname.startsWith('/v1/product/'))networkRequests.set(e.requestId,{path:pathname,method:e.request.method,at:Date.now(),step:activeStep});});
- network.on('Network.loadingFailed',e=>{const request=networkRequests.get(e.requestId);if(request)result.network_failures.push({...request,failed_at:Date.now(),failed_step:activeStep,error:e.errorText,canceled:e.canceled,blocked_reason:e.blockedReason,cors:e.corsErrorStatus});});
+ result.control_network_timings=[];result.viewport_network_timings=[];result.viewport_network_extra=[];result.browser_console_errors=[];result.fetch_boundaries=[];
+ await network.send('Performance.enable');
+ routeBoundary=async action=>{const metrics=await network.send('Performance.getMetrics');
+  result.fetch_boundaries.push({action,node_at:Date.now(),cdp_monotonic_s:metrics.metrics.find(v=>v.name==='Timestamp')?.value,step:activeStep});};
+ const networkExtra=new Map();
+ network.on('Network.responseReceivedExtraInfo',e=>{
+  const h=e.headers??{},value={request_id:e.requestId,status:e.statusCode,blocked_cookies:e.blockedCookies?.length??0,
+   headers:{content_length:h['Content-Length']??h['content-length'],content_type:h['Content-Type']??h['content-type'],connection:h.Connection??h.connection}};
+  networkExtra.set(e.requestId,value);if(networkRequests.get(e.requestId)?.path.startsWith('/v1/product/viewport'))result.viewport_network_extra.push(value);
+ });
+ network.on('Network.requestWillBeSent',e=>{const pathname=new URL(e.request.url).pathname;if(pathname.startsWith('/v1/product/')){
+  let body;try{body=JSON.parse(e.request.postData??'null');}catch{}
+  const row={path:pathname,method:e.request.method,at:Date.now(),step:activeStep,cdp_timestamp:e.timestamp,cdp_wall_time:e.wallTime,context_id:e.request.headers['x-twinpulse-context']??e.request.headers['X-TwinPulse-Context']};
+  if(pathname==='/v1/product/robot-fleet'&&body?.action==='drive')Object.assign(row,{drive:true,request_id:body.request_id,sequence:body.payload?.sequence,expires_at_ms:body.payload?.expires_at_ms});
+  row.application_request_id=row.request_id;row.browser_request_id=e.requestId;networkRequests.set(e.requestId,row);
+ }});
+ network.on('Network.responseReceived',e=>{const row=networkRequests.get(e.requestId);
+  if(row?.drive||row?.path.startsWith('/v1/product/viewport')){
+   const receipt={...row,request_id:e.requestId,response_cdp_timestamp:e.timestamp,response_node_received_at:Date.now(),timing:e.response.timing,status:e.response.status,
+    connection_reused:e.response.connectionReused,connection_id:e.response.connectionId,protocol:e.response.protocol};
+   (row.drive?result.control_network_timings:result.viewport_network_timings).push(receipt);
+  }});
+ network.on('Network.loadingFailed',e=>{const request=networkRequests.get(e.requestId);if(request)result.network_failures.push({...request,request_id:e.requestId,failure_cdp_timestamp:e.timestamp,failed_at:Date.now(),failed_step:activeStep,error:e.errorText,canceled:e.canceled,blocked_reason:e.blockedReason,cors:e.corsErrorStatus,extra_info:networkExtra.get(e.requestId)});});
+ page.on('console',message=>{if(message.type()==='error')result.browser_console_errors.push({at:Date.now(),step:activeStep,
+  text:clean(message.text()).replace(/Bearer\s+\S+/gi,'Bearer [REDACTED]')});});
  await network.send('Network.enable');
  page.on('request',r=>{if(new URL(r.url()).pathname!=='/v1/product/robot-fleet'||r.method()!=='POST')return;
   let body;try{body=r.postDataJSON();}catch{return;}
@@ -58,29 +96,37 @@ try{
  });
  page.on('response',r=>{const meta=requestMeta.get(r.request());if(meta){meta.response_order=++observedOrder;meta.response_at=Date.now();meta.status=r.status();}
   responseChecks.push((async()=>{const p=new URL(r.url()).pathname;if(r.status()>=400){
-    let payload=null,body=null;try{payload=await r.json();}catch{}try{body=r.request().postDataJSON();}catch{}
+    let payload=null,body=null,bodyAvailable=false;try{payload=await r.json();bodyAvailable=true;}catch{}try{body=r.request().postDataJSON();}catch{}
     const fault=faultRequests.get(r.request());const code=payload?.code??payload?.error?.code;
     const row={path:p,status:r.status(),method:r.request().method(),action:body?.action,request_id:body?.request_id,
-     code,message:payload?.message??payload?.error?.message,fault};
+     code,message:payload?.message??payload?.error?.message,response_body_available:bodyAvailable,fault};
     if(fault&&p==='/v1/product/robot-fleet'&&r.status()===409&&body?.action==='drive'&&['fleet_input_expired','fleet_motion_changed','fleet_sequence'].includes(code))result.fault_rejections.push(row);
     else if(expectInvalidProfile&&p==='/v1/product/robot-fleet'&&body?.action==='profile'&&r.status()===400&&code==='physical_profile_invalid')result.expected_rejections.push(row);
     else result.http_errors.push(row);
    }
    const context=r.headers()['x-twinpulse-context']??'';
+   if(recordViewportReceipts&&['/v1/product/viewport','/v1/product/viewport/current'].includes(p)){
+    const receivedAt=Date.now();
+    try{
+     const state=p.endsWith('/current')?JSON.parse(r.headers()['x-twinpulse-viewport']??'null'):await r.json();
+     const frame=f=>f?Object.fromEntries(['frame_id','captured_at_ms','engine_session_id','stage_epoch','applied_revision','camera_sequence','sha256'].map(k=>[k,f[k]])):null;
+     result.viewport_receipt_trace.receipts.push({at:receivedAt,body_observed_at:Date.now(),step:activeStep,path:p,status:r.status(),context,
+      state:state?.state,fps:state?.fps,camera_pending:state?.camera_pending,frame:frame(state?.frame),last_frame:frame(state?.last_frame)});
+    }catch(e){result.viewport_receipt_trace.receipts.push({at:receivedAt,step:activeStep,path:p,status:r.status(),error:clean(e)});}
+   }
    if(p==='/v1/product/conversation'&&r.status()===200)try{const incoming=await r.json();conversation={project_id:incoming.project_id,session_id:incoming.session_id,context};
      fleet=fleetsByContext.get(context)??null;result.conversation=conversation;}catch{}
    if(p==='/v1/product/robot-fleet'&&r.status()===200)try{const incoming=await r.json(),previous=fleetsByContext.get(context);const old=previous&&incoming.revision<previous.revision;
-     if(meta?.action==='stop'){meta.result_revision=incoming.revision;meta.result_robots=incoming.robots.map(v=>({robot_id:v.robot_id,
-      operation_id:v.operation_id,connection_epoch:v.connection_epoch,motion_epoch:v.motion_epoch,applied_motion_epoch:v.applied_motion_epoch,control_state:v.control_state}));}
+     recordStopReceipt(meta,incoming);
      if(!old)fleetsByContext.set(context,incoming);if(context===conversation?.context)fleet=fleetsByContext.get(context);result.samples.push({at:Date.now(),context,observation_order:++observedOrder,revision:incoming.revision,observer_rejected_old_revision:!!old,
      focused:incoming.focused_robot_id,robots:incoming.robots.map(v=>({...v,scan:v.scan?{source:v.scan.source,count:v.scan.points.length}:null}))});
      // Preserve the original early Stop/applied-epoch evidence through the
      // final assertion. Never silently evict it during the 60-second soak.
      if(result.samples.length>5000){result.errors.push('Telemetry evidence capacity exceeded; original early receipts preserved');result.samples.pop();}}catch{}})());});
- // Keep interception installed for this whole test window. Repeatedly
- // enabling/disabling Chromium interception in a live polling renderer is a
- // harness confounder; only delay configuration changes during fault tests.
- await page.route('**/v1/product/robot-fleet',request=>fleetRouteHandler?fleetRouteHandler(request):request.continue());
+ // Ordinary-user steps must have no Fetch interception/Node continue hop.
+ // Install one route only for the explicitly labelled fault window, while
+ // controls are stopped; never toggle interception during a held gesture.
+ result.normal_control_network_interception=false;
  await step('Visible Isaac startup readiness before scene operations',async()=>{
   await expect(page.getByText('Isaac connected',{exact:true}).first()).toBeVisible({timeout:120000});
   await shot('startup-ready');return {criterion:'UI current authenticated engine connection; startup waiting is measured, not immediate readiness'};});
@@ -177,6 +223,32 @@ try{
    await poll(()=>robot('Alpha')?.connection_state==='DISCONNECTED');
    await drawer('Alpha').getByRole('button',{name:'Close robot controls',exact:true}).click();return {moves};
   });
+  await step('FAULT INJECTION: cold delayed ACK preserves and actually submits the next robot draft before confirmed Stop',async()=>{
+   for(const name of ['Alpha','Beta']){await select(name);await drawer(name).getByRole('button',{name:'Connect',exact:true}).click();
+    await poll(()=>robot(name)?.connection_state==='CONNECTED');await drawer(name).getByRole('button',{name:'Prepare',exact:true}).click();
+    if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'LiDAR On',exact:true}).click();
+    await poll(()=>robot(name)?.lidar_state==='STREAMING');}
+   await select('Alpha');const alphaText='Alpha 로봇 왼쪽으로 90도 회전해',betaText='Beta 로봇 오른쪽으로 90도 회전해';let delayed=0;
+   conversationFaultHandler=async route=>{let body;try{body=route.request().postDataJSON();}catch{}
+    if(route.request().method()==='POST'&&body?.action==='message'&&body.text===alphaText){delayed++;await sleep(500);}await route.continue();};
+   result.normal_steps_before_fault_window=result.steps.map(row=>row.name);
+   await routeBoundary('before_enable_cold_ack');await page.route(faultRoutePattern,faultFleetRoute);await routeBoundary('after_enable_cold_ack');
+   let concurrent;
+   try{await sendChat(alphaText);await poll(()=>delayed===1);
+    const input=page.getByRole('textbox',{name:'Message TwinPulse',exact:true}),send=page.getByRole('button',{name:'Send',exact:true});
+    await input.fill(betaText);await expect(send).toBeDisabled();await expect(send).toBeEnabled();await expect(input).toHaveValue(betaText);
+    await select('Beta');await expect(input).toHaveValue(betaText);await send.click();
+    await poll(()=>sims().every(row=>row.control_state==='DRIVING'));concurrent=structuredClone(sims());
+    await page.getByRole('button',{name:'Stop all',exact:true}).click();
+    await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
+   }finally{conversationFaultHandler=null;await Promise.all(responseChecks);await routeBoundary('cold_fault_handlers_cleared_no_fetch_teardown');
+    result.fault_window_held_until_exit=true;}
+   await shot('cold-delayed-draft-submitted');
+   for(const name of ['Alpha','Beta']){await select(name);await drawer(name).getByRole('button',{name:'Disconnect',exact:true}).click();
+    await poll(()=>robot(name)?.connection_state==='DISCONNECTED');}
+   await drawer('Beta').getByRole('button',{name:'Close robot controls',exact:true}).click();
+   return {delayed,concurrent,preserved_draft_submitted:true,classification:'Separate cold fault branch, not ordinary network coexistence'};
+  });
  }else if(['fresh','controls-only','controls-tail'].includes(phase)){
   if(phase==='controls-tail')await select('Alpha');
   else{
@@ -189,6 +261,32 @@ try{
     await poll(()=>robot(name)?.lidar_state==='STREAMING');
    }
    await select('Alpha');await shot('two-connected');return sims();});
+  await step('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',async()=>{
+   const rows=[];
+   for(const [width,height] of [[1920,1080],[1366,768],[1093,614],[911,512],[1600,900]]){
+    await page.setViewportSize({width,height});await sleep(1000);
+    const value=await currentControlView(page,'Alpha');checkControlView(value);rows.push(value);
+    await shot(`control-layout-${width}-${height}`);
+   }
+   const bodySelections=[];
+   if(args.includes('--compact-labels')){
+    for(const name of ['Beta','Alpha']){
+     const close=page.getByRole('button',{name:'Close robot controls',exact:true});if(await close.isVisible())await close.click();
+     await sleep(400);
+     const badge=page.getByRole('button',{name:'Select '+name+' in Twin',exact:true});await expect(badge).toBeVisible();
+     const hint=await badge.evaluate(el=>{const style=getComputedStyle(el),layer=el.closest('.robot-anchor-layer').getBoundingClientRect(),b=JSON.parse(el.dataset.screenBounds),canvas=document.querySelector('.twin-frame-slot canvas');
+      const x=layer.left+(b[0]+b[2])/2*layer.width,y=layer.top+(b[1]+b[3])/2*layer.height;
+      return {text:el.textContent,background:style.backgroundColor,border:style.borderTopWidth,shadow:style.boxShadow,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,
+       extraLines:el.querySelectorAll('small,em').length,point:{x,y},bodyHit:document.elementFromPoint(x,y)===canvas,frame_id:Number(canvas.dataset.frameId),age_ms:Date.now()-Number(canvas.dataset.capturedAt)};});
+     if(hint.text!==name||hint.background!=='rgba(0, 0, 0, 0)'||hint.border!=='0px'||hint.shadow!=='none'||hint.extraLines||hint.width>72.1||hint.height>16.1||!hint.bodyHit||hint.age_ms>=1000)
+      throw Error('Ordinary label still hides the robot or body selection is not current: '+JSON.stringify(hint));
+     await page.mouse.click(hint.point.x,hint.point.y);await expect(drawer(name)).toBeVisible();
+     await poll(()=>fleet?.focused_robot_id===robot(name)?.robot_id);bodySelections.push({name,...hint});
+    }
+    await shot('name-only-body-selection');
+   }
+   return {rows,bodySelections,windows_dpi:'NOT_RUN_OS_SETTING_UNCHANGED',method:'Same installed BrowserWindow CSS viewport sizes; 125/150% equivalent available-area probes only; optional actual canvas body clicks use current projection hints, not mesh picking'};
+  });
   await step('Held button moves selected robot; release retains both connections and scans',async()=>{
    const before=structuredClone(sims());const button=drawer('Alpha').getByRole('button',{name:'Hold forward',exact:true});
    const b=await padBox('Alpha','forward');await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();await sleep(2100);await page.mouse.up();
@@ -198,6 +296,32 @@ try{
    if(after.some((r,i)=>r.connection_epoch!==before[i].connection_epoch||r.connection_state!=='CONNECTED'||r.lidar_state!=='STREAMING'))throw Error('Connection/sensor lost');
    if(JSON.stringify(beta.pose)!==JSON.stringify(before.find(r=>r.label==='Beta').pose))throw Error('Wrong robot moved');
    await shot('held-release');return {before,after};});
+  await step('Actual resize releases held input without replay or session loss',async()=>{
+   const before=structuredClone(robot('Alpha')),box=await padBox('Alpha','left');
+   await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
+   try{await poll(()=>robot('Alpha')?.control_state==='DRIVING');await sleep(700);await page.setViewportSize({width:1366,height:768});
+    await poll(stopped);const confirmed=structuredClone(robot('Alpha'));await sleep(700);
+    const after=structuredClone(robot('Alpha'));if(Math.abs(after.pose.position_m[2]-confirmed.pose.position_m[2])>.01||after.connection_epoch!==before.connection_epoch)throw Error('Resize replayed input or disconnected');
+    const display=await currentControlView(page,'Alpha');checkControlView(display);await shot('resize-paused');return {before,confirmed,after,display};
+   }finally{await page.mouse.up();await page.setViewportSize({width:1600,height:900});await sleep(500);}
+  });
+  finalFaultSteps.push(async()=>{await step('FAULT INJECTION: image delivery gap retains exact decoded image, reports stale, disables camera and recovers',async()=>{
+   await poll(stopped);let intercepted=0;
+   const cameraDetails=page.getByText('Camera, source photo and scene details',{exact:true});
+   if(await cameraDetails.locator('..').getAttribute('open')===null)await cameraDetails.click();
+   await expect(page.getByRole('button',{name:'Orbit left',exact:true})).toBeVisible();
+   const handler=async route=>{intercepted++;faultRequests.set(route.request(),{kind:'viewport-delivery-gap',delay_ms:3500});await sleep(3500);await route.continue().catch(()=>{});};
+   let before,stale,after;await routeBoundary('before_viewport_gap');imageFaultHandler=handler;
+   try{await poll(()=>intercepted>0);await sleep(250);
+    const canvas=page.locator('.twin-frame-slot canvas');before={view:await currentControlView(page,'Alpha'),pixels:await canvas.evaluate(el=>el.toDataURL())};
+    await sleep(1300);stale={view:await currentControlView(page,'Alpha'),pixels:await canvas.evaluate(el=>el.toDataURL())};
+    if(stale.view.live||!stale.view.canvas_visible||stale.view.frame_id!==before.view.frame_id||stale.pixels!==before.pixels)throw Error('Missing last image or stale promoted to live');
+    await expect(page.getByRole('button',{name:'Orbit left',exact:true})).toBeDisabled();await shot('frame-gap-last-image');
+   }finally{imageFaultHandler=null;await routeBoundary('after_viewport_gap');await cameraDetails.click();}
+   const end=Date.now()+15000;do{await sleep(200);after=await currentControlView(page,'Alpha');}while(!after.live&&Date.now()<end);
+   checkControlView(after);if(after.frame_id<=stale.view.frame_id)throw Error('No new decoded image after transport recovery');
+   return {intercepted,before:{...before,pixels:createHash('sha256').update(before.pixels).digest('hex')},stale:{...stale,pixels:createHash('sha256').update(stale.pixels).digest('hex')},after,method:'Delay-only real image GET fault while stopped; no response replacement'};
+  });});
   await step('All four normal pointer directions without injected delay',async()=>{
    const moves=[];for(const direction of ['forward','backward','left','right']){
     const before=structuredClone(robot('Alpha')),box=await padBox('Alpha',direction);
@@ -210,6 +334,7 @@ try{
    try{
     await poll(()=>robot('Alpha')?.control_state==='DRIVING');const start=Date.now();
     while(Date.now()-start<60000){await sleep(500);const row=structuredClone(robot('Alpha'));
+     const display=await currentControlView(page,'Alpha');checkControlView(display);result.display_samples.push(display);
      observations.push({at:Date.now(),control_state:row.control_state,reason:row.reason,telemetry_sequence:row.telemetry_sequence,yaw:row.pose.position_m[2]});
      if(row.control_state!=='DRIVING'||row.connection_epoch!==before.connection_epoch||row.connection_state!=='CONNECTED'||row.lidar_state!=='STREAMING'||Date.now()-result.samples.at(-1).at>2500)throw Error('Continuous held rotation interrupted or observation became stale');
     }
@@ -217,7 +342,7 @@ try{
    await poll(stopped);const after=structuredClone(robot('Alpha'));
    if(after.pose.position_m[2]-before.pose.position_m[2]<2*Math.PI)throw Error('Sustained SIM rotation did not complete a measured turn');
    await shot('held-60s');return {before,after,observed_samples:observations.length,classification:'actual kinematic SIM, not hardware continuous-motion acceptance'};});
-  await step('FAULT INJECTION: delayed drive dispatch pauses, retains connection, needs fresh input',async()=>{
+  finalFaultSteps.push(async()=>{await step('FAULT INJECTION: delayed drive dispatch pauses, retains connection, needs fresh input',async()=>{
    const before=structuredClone(robot('Alpha'));let delayed=0;
    const route=async request=>{let body;try{body=request.request().postDataJSON();}catch{}
     if(request.request().method()==='POST'&&body?.action==='drive'){delayed++;faultRequests.set(request.request(),{delay_ms:350,kind:'dispatch-delay'});await sleep(350);}
@@ -229,26 +354,51 @@ try{
    await poll(()=>robot('Alpha')?.control_state==='PAUSED');const after=structuredClone(robot('Alpha'));
    if(!delayed||after.connection_epoch!==before.connection_epoch||after.connection_state!=='CONNECTED'||after.lidar_state!=='STREAMING')throw Error('Delay ended session/sensor');
    await sleep(700);if(Math.abs(robot('Alpha').pose.position_m[2]-after.pose.position_m[2])>.01)throw Error('Old intent resumed');
-   return {before,after,delayed,method:'350ms dispatch delay only; no fake response or product state injection'};});
-  await step('FAULT MATRIX: 100/250/500/1000ms dispatch gaps preserve session and never replay after confirmed Stop',async()=>{
+   return {before,after,delayed,method:'350ms dispatch delay only; no fake response or product state injection'};});});
+  finalFaultSteps.push(async()=>{await step('FAULT MATRIX: 100/250/500/1000ms dispatch gaps preserve session and never replay after confirmed Stop',async()=>{
    const trials=[];result.fault_matrix_trials=trials;
    for(const delay of [100,250,500,1000]){
-    const epoch=robot('Alpha').connection_epoch;let dispatches=0;
+    const epoch=robot('Alpha').connection_epoch;let dispatches=0;const requestIds=[];
     const route=async request=>{let body;try{body=request.request().postDataJSON();}catch{}
-     if(request.request().method()==='POST'&&body?.action==='drive'){dispatches++;faultRequests.set(request.request(),{delay_ms:delay,kind:'dispatch-delay-matrix'});await sleep(delay);}
+     if(request.request().method()==='POST'&&body?.action==='drive'){dispatches++;requestIds.push(body.request_id);faultRequests.set(request.request(),{delay_ms:delay,kind:'dispatch-delay-matrix'});await sleep(delay);}
      await request.continue().catch(()=>{});};
     fleetRouteHandler=route;
     try{const b=await padBox('Alpha','left');
      await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();await sleep(900);await page.mouse.up();}
     finally{await sleep(delay+100);fleetRouteHandler=null;}
     await poll(()=>robot('Alpha')?.control_state==='PAUSED'&&robot('Alpha')?.applied_motion_epoch===robot('Alpha')?.motion_epoch);
-    const confirmed=structuredClone(robot('Alpha'));await sleep(500);const after=structuredClone(robot('Alpha'));
-    trials.push({delay_ms:delay,dispatches,expected_connection_epoch:epoch,confirmed,after});await save();
+    const confirmed=structuredClone(robot('Alpha')),confirmedAt=Date.now();await sleep(500);const after=structuredClone(robot('Alpha'));
+    trials.push({delay_ms:delay,dispatches,request_ids:requestIds,expected_connection_epoch:epoch,confirmed,after,confirmed_at:confirmedAt,after_at:Date.now()});await save();
     if(!dispatches)throw Error(`Fault matrix ${delay}ms: no drive request observed after pointer input`);
     if(after.connection_epoch!==epoch||after.connection_state!=='CONNECTED'||after.lidar_state!=='STREAMING')throw Error(`Fault matrix ${delay}ms: connection/sensor changed`);
     if(Math.abs(after.pose.position_m[2]-confirmed.pose.position_m[2])>.01)throw Error('Delayed direction replayed after engine Stop');
    }
-   return {trials,method:'Delay-only routing on actual renderer requests; not Wi-Fi disconnection or fake engine data'};});
+   await Promise.all(responseChecks);
+   return {trials,method:'Delay-only routing on actual renderer requests; not Wi-Fi disconnection or fake engine data'};});});
+  finalFaultSteps.push(async()=>{await step('FAULT INJECTION: delayed chat ACK preserves a newly typed draft; confirmed Stop before closing final fault window',async()=>{
+   const alphaText='Alpha 로봇 왼쪽으로 90도 회전해',betaText='Beta 로봇 오른쪽으로 90도 회전해';let delayed=0;
+   conversationFaultHandler=async route=>{let body;try{body=route.request().postDataJSON();}catch{}
+    if(route.request().method()==='POST'&&body?.action==='message'&&body.text===alphaText){delayed++;await sleep(500);}
+    await route.continue();};
+   try{
+    await sendChat(alphaText);await poll(()=>delayed===1);
+    const input=page.getByRole('textbox',{name:'Message TwinPulse',exact:true}),send=page.getByRole('button',{name:'Send',exact:true});
+    await input.fill(betaText);await expect(send).toBeDisabled();await expect(send).toBeEnabled();await expect(input).toHaveValue(betaText);
+    await select('Beta');await expect(input).toHaveValue(betaText);
+    await page.getByRole('button',{name:'Stop all',exact:true}).click();
+    await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
+    await input.fill('');await select('Alpha');
+   }finally{conversationFaultHandler=null;await Promise.all(responseChecks);
+    const beforeStop=structuredClone(sims()),stopRequestStart=result.fleet_requests.length;
+    await page.getByRole('button',{name:'Stop all',exact:true}).click();await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
+    await Promise.all(responseChecks);const stopRequest=result.fleet_requests.slice(stopRequestStart).find(row=>row.action==='stop_all'&&row.status===200);
+    const before=await currentControlView(page,'Alpha'),stoppedRobots=structuredClone(sims());await routeBoundary('final_fault_handlers_cleared_no_fetch_teardown');
+    let after;const until=Date.now()+15000;do{await sleep(100);after=await currentControlView(page,'Alpha');}while((!after.live||!after.robot_badge_visible||after.frame_id<=before.frame_id)&&Date.now()<until);
+    checkControlView(after);if(after.frame_id<=before.frame_id||after.scene_revision!==before.scene_revision||after.stage_epoch!==before.stage_epoch)throw Error('No exact-scene decoded recovery after explicit fault handlers cleared');
+    result.final_fault_recovery={before,after,stopped_robots:stoppedRobots,before_stop_robots:beforeStop,stop_request_id:stopRequest?.request_id,
+     scope:'Handlers cleared but Fetch remains enabled until normal App Exit; no ordinary movement follows'};}
+   return {delayed,draft_preserved_while_previous_ack_pending:true,method:'500ms actual POST dispatch fault inside the existing isolated Fetch window; no fixed response'};
+  });});
   await step('Keyboard hold and control focus loss pause without disconnect',async()=>{
    // Navigate to the pad using actual keyboard focus. Clicking a direction
    // merely to focus it emits a tiny drive+Stop and races the next keydown.
@@ -264,8 +414,13 @@ try{
   await step('WASD and all arrow key releases; Space stops without replay',async()=>{
    await focusPad('Alpha');const moves=[];
    for(const [key,direction] of [['w','forward'],['s','backward'],['a','left'],['d','right'],['ArrowUp','forward'],['ArrowDown','backward'],['ArrowLeft','left'],['ArrowRight','right']]){
-    const before=structuredClone(robot('Alpha'));await page.keyboard.down(key);await sleep(750);await page.keyboard.up(key);
-    await poll(stopped);const after=structuredClone(robot('Alpha'));checkedTravel(before,after,direction);moves.push({key,direction,before,after});
+    const before=structuredClone(robot('Alpha')),requestStart=result.fleet_requests.length;await page.keyboard.down(key);await sleep(750);
+    const releaseIntent=Date.now();await page.keyboard.up(key);
+    await poll(stopped);const after=structuredClone(robot('Alpha')),confirmedAt=Date.now();checkedTravel(before,after,direction);
+    await sleep(700);const quiet=structuredClone(robot('Alpha')),afterAt=Date.now();
+    if(!stopped()||!quiet.pose.position_m.every((x,i)=>Math.abs(x-after.pose.position_m[i])<=.01)||quiet.telemetry_sequence<=after.telemetry_sequence)throw Error('Released key did not remain stopped with advancing telemetry');
+    result.keyboard_release_trials.push({key,request_ids:result.fleet_requests.slice(requestStart).filter(v=>v.action==='drive').map(v=>v.request_id),release_intent_at:releaseIntent,confirmed_at:confirmedAt,after_at:afterAt,confirmed:after,after:quiet});
+    moves.push({key,direction,before,after,quiet});
    }
    await page.keyboard.down('w');await poll(()=>robot('Alpha')?.control_state==='DRIVING');await page.keyboard.press('Space');
    await poll(stopped);const afterSpace=structuredClone(robot('Alpha'));await sleep(500);const quiet=structuredClone(robot('Alpha'));await page.keyboard.up('w');
@@ -273,12 +428,13 @@ try{
    await shot('keyboard-matrix');return {moves,afterSpace,quiet,native_os_input:'NOT_RUN'};});
   await step('Main chat bounded 90 degree command, measured completion',async()=>{
    const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha 로봇 왼쪽으로 90도 회전해');
-   await poll(()=>robot('Alpha')?.control_state==='DRIVING');await poll(()=>robot('Alpha')?.reason==='TASK_COMPLETED',15000);
-   const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-Math.PI/2)>.01)throw Error('Wrong angular motion');return {delta,operation_id:robot('Alpha').operation_id};});
+   await poll(()=>robot('Alpha')?.control_state==='DRIVING');
+   const display=await visibleMotion(page,'Alpha',()=>robot('Alpha')?.reason==='TASK_COMPLETED',{onSample:v=>result.display_samples.push(v)});
+   const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-Math.PI/2)>.01)throw Error('Wrong angular motion');return {delta,display,operation_id:robot('Alpha').operation_id};});
   await step('One session full turn with actual simulated scan',async()=>{
    const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha 로봇 한바퀴 돌면서 라이다 기록해');
    await poll(()=>robot('Alpha')?.control_state==='DRIVING');await shot('turn-scan-running');
-   await poll(()=>robot('Alpha')?.reason==='TASK_COMPLETED',35000);
+   await visibleMotion(page,'Alpha',()=>robot('Alpha')?.reason==='TASK_COMPLETED',{timeout:35000,onSample:v=>result.display_samples.push(v)});
    const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-2*Math.PI)>.01)throw Error('Full turn incomplete');
    await shot('turn-scan-complete');return {delta,scan_points:robot('Alpha').scan?.points.length,operation_id:robot('Alpha').operation_id};});
   await step('LiDAR Off pauses but retains connection; On restarts sensor',async()=>{
@@ -300,29 +456,17 @@ try{
    await sendChat('Alpha 로봇 멈춰');await poll(()=>robot('Alpha')?.reason==='OPERATOR_STOP');
    if(robot('Alpha').connection_epoch!==epoch||robot('Alpha').connection_state!=='CONNECTED')throw Error('Stop disconnected');return {operation_id:robot('Alpha').operation_id,epoch};});
   await step('Two named finite tasks coexist; visible Stop all confirms both without disconnect',async()=>{
-   const before=structuredClone(sims()),alphaText='Alpha 로봇 왼쪽으로 90도 회전해',betaText='Beta 로봇 오른쪽으로 90도 회전해';let delayed=0;
-   const route=async request=>{let body;try{body=request.request().postDataJSON();}catch{}
-    if(request.request().method()==='POST'&&body?.action==='message'&&body.text===alphaText){delayed++;await sleep(500);}
-    await request.continue();};
-   await page.route('**/v1/product/conversation',route);
-   try{
-    await sendChat(alphaText);await poll(()=>delayed===1);
-    const input=page.getByRole('textbox',{name:'Message TwinPulse',exact:true}),send=page.getByRole('button',{name:'Send',exact:true});
-    await input.fill(betaText);await expect(send).toBeDisabled();
-    await expect(send).toBeEnabled();await expect(input).toHaveValue(betaText);
-    // Explicit per-robot selection is the product's movement admission contract.
-    // Selecting Beta must preserve Alpha's finite task and the newly typed draft.
-    await select('Beta');await expect(input).toHaveValue(betaText);
-    await send.click();
-   }finally{await page.unroute('**/v1/product/conversation',route);}
+   const before=structuredClone(sims());
+   await sendChat('Alpha 로봇 왼쪽으로 90도 회전해');await poll(()=>robot('Alpha')?.control_state==='DRIVING');
+   await select('Beta');await sendChat('Beta 로봇 오른쪽으로 90도 회전해');
    await poll(()=>sims().every(row=>row.control_state==='DRIVING'));
    const concurrent=structuredClone(sims());
    await page.getByRole('button',{name:'Stop all',exact:true}).click();
    await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
    const after=structuredClone(sims());
    if(after.some(row=>row.connection_state!=='CONNECTED'||row.lidar_state!=='STREAMING'||row.connection_epoch!==before.find(old=>old.robot_id===row.robot_id).connection_epoch))throw Error('Stop all ended a connection or sensor');
-   await select('Alpha');await shot('two-task-stop-all');return {before,concurrent,after,delayed,explicit_selection_required:true,
-    draft_preserved_while_previous_ack_pending:true,method:'500ms dispatch-only delay on actual UI conversation POST; original server response unmodified'};});
+   await select('Alpha');await shot('two-task-stop-all');return {before,concurrent,after,explicit_selection_required:true,
+    method:'Ordinary actual UI requests with no network interception; delayed ACK preservation is a separate fault step'};});
   await step('Operation summary opens; raw JSON download is separate',async()=>{
    await drawer('Alpha').getByRole('button',{name:'Operation logs',exact:true}).click();
    await expect(drawer('Alpha').getByRole('button',{name:'Download operation JSON',exact:true})).toBeVisible();
@@ -333,6 +477,7 @@ try{
    await drawer('Alpha').getByRole('button',{name:'Close robot controls',exact:true}).click();return {operation_id:record.operation_id,event_count:record.events.length,manifest:record.manifest};});
   await step('Actual frame anchors and camera transition',async()=>{
    const badges=page.locator('.robot-anchor-badge');result.anchor_count=await badges.count();
+   const camera=page.getByText('Camera, source photo and scene details',{exact:true});if(await camera.isVisible())await camera.click();
    await page.getByRole('button',{name:'Orbit left',exact:true}).click();await sleep(1000);await shot('camera-after-orbit');
    const count=await badges.count();if(count<2)throw Error('Missing current robot badge');
    const clicks=[];for(const name of ['Alpha','Beta']){
@@ -348,6 +493,10 @@ try{
   result.physical_robot_id=physical.robot_id;result.physical_label=physical.label;
   await page.locator('.robot-fleet-row').filter({hasText:physical.label}).first().click();
   const controls=drawer(physical.label);await expect(controls).toBeVisible();
+  const setupDetails=controls.getByText('Setup, sensor details and logs',{exact:true});
+  if(await setupDetails.locator('..').getAttribute('open')===null)await setupDetails.click();
+  const physicalSetup=controls.locator('.robot-physical-setup>summary');
+  if(await physicalSetup.locator('..').getAttribute('open')===null)await physicalSetup.click();
   await expect(controls.getByRole('region',{name:'Physical connection and readiness'})).toHaveCount(0);
   await expect(controls.getByText('Fresh authenticated session',{exact:false})).toHaveCount(0);
   await expect(controls.getByRole('button',{name:'Hold forward',exact:true})).toBeDisabled();
@@ -356,9 +505,9 @@ try{
   if(await advanced.locator('..').getAttribute('open')===null)await advanced.click();
   await expect(controls.getByRole('button',{name:'Prepare',exact:true})).toBeDisabled();
   await expect(controls.getByRole('button',{name:'Run same-boot stop qualification',exact:true})).toBeDisabled();
-  const guide=controls.getByText('측정 프로필 작성 안내',{exact:true});
+  const guide=controls.getByText('Measured profile guide',{exact:true});
   if(await guide.locator('..').getAttribute('open')===null)await guide.click();
-  await expect(controls.getByText('이 안내는 측정 준비용 점검표입니다.',{exact:false})).toBeVisible();
+  await expect(controls.getByText('This is a measurement preparation checklist,',{exact:false})).toBeVisible();
   const pending=page.waitForEvent('download');await controls.getByRole('button',{name:'Download blank measured-profile JSON',exact:true}).click();
   await (await pending).saveAs(path.join(out,'blank-measured-profile.json'));
   const template=JSON.parse(await fs.readFile(path.join(out,'blank-measured-profile.json'),'utf8'));
@@ -375,11 +524,18 @@ try{
   const contrast=(a,b)=>(Math.max(luminance(a),luminance(b))+.05)/(Math.min(luminance(a),luminance(b))+.05);
   if(contrast(colors.label,'rgb(255,255,255)')<4.5||contrast(colors.input,colors.background)<4.5)throw Error('Field form label/input contrast below 4.5:1');
   const runtime=()=>fleet?.robots.find(r=>r.robot_id===result.physical_robot_id);
+  let saved_request_id=null;
   const form=section.getByRole('form',{name:'Supervised field setup',exact:true});
   if(phase!=='reopen'){
    await form.getByRole('spinbutton',{name:'Outer footprint radius (m)',exact:true}).fill('0.13');
    await form.getByRole('checkbox',{name:'I reviewed robot model applicability, forward X, left Y, sensor pose, native angle sign and these setup values.',exact:true}).check();
+   const acknowledged=page.waitForResponse(response=>{
+    if(!new URL(response.url()).pathname.endsWith('/v1/product/robot-fleet')||response.request().method()!=='POST')return false;
+    try{const value=response.request().postDataJSON();return value?.action==='field_setup'&&value.robot_id===result.physical_robot_id;}catch{return false;}
+   },{timeout:15000});
    await form.getByRole('button',{name:'Save supervised setup',exact:true}).click();
+   const response=await acknowledged;saved_request_id=response.request().postDataJSON().request_id;
+   if(response.status()!==200)throw Error('Exact supervised setup request was not acknowledged: '+saved_request_id);
    await poll(()=>runtime()?.field?.config?.footprint_radius_m===.13);
   }else{
    const expected=JSON.parse(await fs.readFile(arg('--field-config'),'utf8'));
@@ -387,6 +543,12 @@ try{
    await expect(form.getByRole('spinbutton',{name:'Outer footprint radius (m)',exact:true})).toHaveValue('0.13');
   }
   const field=runtime()?.field;
+  const powerSequence=section.getByRole('region',{name:'Power-on test sequence',exact:true});
+  const powerHeading=powerSequence.getByRole('heading',{name:'이번 전원 세션의 시험 순서',exact:true});
+  await powerHeading.scrollIntoViewIfNeeded();
+  await expect(powerHeading).toBeInViewport();
+  await shot('power-on-test-sequence');
+  await expect(section.getByText('Bootstrap stop does not require a prior stop receipt',{exact:false})).toBeVisible();
   if(!field?.config||field.config.provenance!=='reference'||field.armed||field.stop_receipt||runtime().operation_id||runtime().capabilities.drive)throw Error('Offline setup promoted measurements or restored physical authority');
   await fs.writeFile(path.join(out,'saved-field-config.json'),JSON.stringify(field.config,null,2));
   const cases=section.getByRole('list',{name:'Available field test cases',exact:true});
@@ -396,8 +558,8 @@ try{
   const physicalRequests=result.fleet_requests.filter(r=>r.robot_id===result.physical_robot_id);
   if(physicalRequests.some(r=>['connect','prepare','qualify','drive','field_arm','field_test'].includes(r.action)))throw Error('Physical activation requested while OFF');
   await shot(phase==='reopen'?'field-cold-restored':'field-offline-saved');
-  return {field,colors,label_contrast:contrast(colors.label,'rgb(255,255,255)'),input_contrast:contrast(colors.input,colors.background),
-    physical_activation_requests:0,physical_outcomes:'NOT_RUN_ROBOT_OFF'};
+  return {field,saved_request_id,colors,label_contrast:contrast(colors.label,'rgb(255,255,255)'),input_contrast:contrast(colors.input,colors.background),
+    physical_activation_requests:0,power_on_sequence_visible:true,physical_outcomes:'NOT_RUN_ROBOT_OFF'};
  });
  await step('In-App measured-profile editor preserves identity and blocks null or mismatched measurements',async()=>{
   const controls=drawer(result.physical_label),before=result.fleet_requests.filter(row=>row.action==='profile').length;
@@ -450,6 +612,10 @@ try{
  });
  if(phase!=='reopen')await step('Invalid measured profile rejected by real installed service without fake measured defaults',async()=>{
   const controls=drawer(result.physical_label);expectInvalidProfile=true;
+  const diagnostics=controls.locator('.robot-fleet-diagnostics>summary');
+  if(await diagnostics.locator('..').getAttribute('open')===null)await diagnostics.click();
+  const setup=controls.locator('.robot-physical-setup>summary');
+  if(await setup.locator('..').getAttribute('open')===null)await setup.click();
   const advanced=controls.getByText('Advanced measured protective profile · strict JSON',{exact:true});
   if(await advanced.locator('..').getAttribute('open')===null)await advanced.click();
   await controls.getByLabel('Measured profile JSON',{exact:true}).setInputFiles({name:'invalid-profile.json',mimeType:'application/json',buffer:Buffer.from('{}')});
@@ -461,6 +627,23 @@ try{
   expectInvalidProfile=false;await shot('profile-shape-rejected');
   return {classification:'invalid input user flow; DOM file selection, not OS clipboard',rejections:result.expected_rejections};
  });
+ if(finalFaultSteps.length){
+  await select('Alpha');await page.getByRole('button',{name:'Stop all',exact:true}).click();
+  await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
+  result.normal_steps_before_fault_window=result.steps.map(row=>row.name);
+  await routeBoundary('before_enable');await page.route(faultRoutePattern,faultFleetRoute);await routeBoundary('after_enable');
+  result.fault_window_held_until_exit=true;
+  for(const faultStep of finalFaultSteps)await faultStep();
+  await step('FAULT EVIDENCE: final stopped operations exported after all injected requests without new movement',async()=>{
+   const exports=[];for(const name of ['Alpha','Beta']){await select(name);await drawer(name).getByRole('button',{name:'Operation logs',exact:true}).click();
+    const pending=page.waitForEvent('download');await drawer(name).getByRole('button',{name:'Download operation JSON',exact:true}).click();
+    const download=await pending,file=`final-fault-${name.toLowerCase()}-operation.json`;await download.saveAs(path.join(out,file));
+    const bytes=await fs.readFile(path.join(out,file)),record=JSON.parse(bytes.toString());
+    if(record.operation_id!==robot(name).operation_id)throw Error('Final fault operation identity mismatch');
+    exports.push({file,operation_id:record.operation_id,sha256:createHash('sha256').update(bytes).digest('hex'),events:record.events.length});}
+   return {exports,scope:'Explicit final fault evidence readout, not ordinary movement after interception'};});
+ }
+ if(phase==='fresh'&&finalFaultSteps.length){await Promise.all(responseChecks);assertFinalStopReceipt(result);}
  await step('Visible Exit TwinPulse normal shutdown',async()=>{exiting=true;const close=page.waitForEvent('close',{timeout:60000});
   await page.getByRole('button',{name:'Exit TwinPulse',exact:true}).click();await close;});
  await Promise.all(responseChecks);
@@ -482,6 +665,9 @@ try{
     classification:'Old-epoch rejection overlapping an exact Stop request; engine-applied new epoch confirmed, sole rejection cause not inferred'});return false;}
   return true;
  });
+ result.original_http_errors=structuredClone(result.http_errors);result.original_request_failures=structuredClone(result.request_failures);result.scoped_fault_recovery=[];
+ result.http_errors=result.http_errors.filter(error=>{const proof=safeUnknownDriveRejection(error,result);if(proof){result.scoped_fault_recovery.push({error,proof});return false;}return true;});
+ result.request_failures=result.request_failures.map(error=>{const proof=scopedFetchBoundaryFailure(error,result);if(proof){result.scoped_fault_recovery.push({error,proof});return {...error,fault:{kind:'explicit-fetch-boundary-associated',root_cause:'UNKNOWN',browser_request_id:proof.browser_request_id}};}return error;});
  result.status=result.errors.length||result.http_errors.length||result.request_failures.some(r=>!r.exiting&&!r.fault)?'FAIL':'PASS';
 }catch(e){result.status='FAIL';result.error=clean(e);}
 finally{if(page&&!page.isClosed()){await page.mouse.up().catch(()=>{});await page.keyboard.up('ArrowLeft').catch(()=>{});}await save();if(browser)await browser.close().catch(()=>{});console.log(JSON.stringify({status:result.status,steps:result.steps.map(({name,status})=>({name,status})),error:result.error}));}

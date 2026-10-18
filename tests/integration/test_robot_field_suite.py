@@ -156,12 +156,17 @@ class FieldSuiteTests(unittest.TestCase):
         self.assertEqual(report['stages']['ros_scan']['reason'],
                          'QUALIFICATION_CLEANUP_NOT_CONFIRMED')
 
-    def test_low_pre_motion_voltage_skips_movement_but_allows_sensor(self):
+    def test_superseded_11_4_margin_does_not_reject_healthy_voltage(self):
         report, calls = self.run_fake(health_values=[observed(torque=True), observed(11.25),
                                                      observed(11.25), observed(11.25)])
-        self.assertNotIn('qualification', calls)
+        self.assertIn('qualification', calls)
         self.assertIn('scan', calls)
-        self.assertEqual(report['stages']['qualification']['status'], 'SKIPPED')
+        self.assertEqual(report['stages']['qualification']['status'], 'QUALIFIED')
+
+    def test_actual_low_voltage_guard_remains_independent_of_reserve(self):
+        for voltage in (11.1,11.0,10.86,float('nan')):
+            self.assertFalse(suite.board_safe_for_motion(observed(voltage)))
+        self.assertTrue(suite.board_safe_for_motion(observed(11.34)))
 
     def test_unknown_motion_state_blocks_sensor(self):
         report, calls = self.run_fake(qualified={'status': 'REMOTE_STATE_UNKNOWN'},
