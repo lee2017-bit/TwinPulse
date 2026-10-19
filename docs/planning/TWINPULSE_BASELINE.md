@@ -2,6 +2,8 @@
 
 - 문서 버전: **Baseline v1.0.551**
 
+> **게시 영수증:** v551 source main `328221d412a567588dd5b5e4fcccfce33ac354d2` 원격 exact, 기존private [full-journey Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-full-journey) MP4 2742739B/SHA1dc125a6…183f15·SUMS109B 실제재다운로드 SHA exact. README 최상단 Release/직접영상 연결, 새ZIP/공개전환0. 후속문서영수증은 같은 동결설치09cc의 기록이다.
+
 > **v551 / 2026-10-19 · 현재 이름/센서OFF/전체 데모 인수.** 최종 설치 `20261019T041616Z-09ccb64bf047`/source `09ccb64bf047b9099f95a89eabf8dcd8fea36ac3d0891aa59304fd295612ddb2`/1622 exact. 이름은 표시 모델 하단+2px/중앙, 겹침 허용/packing·숨기기·초록 원0. actual body/이름 선택→상태/조종기 유지. 센서STREAMING+현재 연결/동작epoch+원시각/현재frame만 점·레이 표시; OFF 시 화면0과 상태OFF를 검사한다. 동작명 `Turn LiDAR on/off`와 현재상태를 분리했다. 이전 marker-to-metadata/비겹침만으로 이름 근접성 PASS를 준 검증 공백은 정정하며 원자료를 수정하지 않았다.
 >
 > 같은 동결본 actual Test BrowserWindow/real Flash·Nemotron/Isaac fresh38/cold13/수정·Undo-lineage8/원과거이력4 whole PASS.690이동표본 하단/중심오차 최대.012450/.012337px/원0,최대화면나이906.247ms/1초초과0,60초고정dock변동0px. 일반Start44.142/restart59.035s·sameowner/8765하나/debug0,실제 Computer Use native AltF4 두번과 owned정리PASS. 재시작 AX0은ready로세지않고창활성화/새AX인증Home을확인했다. 현재SHA gateREADY_FOR_SUPERVISED_POWERED_TEST/issues0/원FAIL·Stop고장 negative거절. 실제실물·센서세계정합·Pi/제동/주행/OSpaste/Explorer/다른PC NOT_RUN. 보호·기하·속도·8192B 변경0.

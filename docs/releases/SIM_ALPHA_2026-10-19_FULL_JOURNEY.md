@@ -2,6 +2,8 @@
 
 Frozen local installation: `20261019T041616Z-09ccb64bf047`, source manifest `09ccb64bf047b9099f95a89eabf8dcd8fea36ac3d0891aa59304fd295612ddb2`,1622 exact files. This source checkpoint and small demo target the existing **private** repository, not a public launch. No new installer ZIP is attached; older ZIPs are not this build. Isaac/API configuration remain prerequisites.
 
+Publication verified: main source `328221d412a567588dd5b5e4fcccfce33ac354d2` matched the remote. Both full MP4(2742739bytes) and SHA256SUMS(109bytes) were downloaded from the new Release and matched original SHA256. Follow-up receipt documentation does not rebuild the frozen product. Unrelated unreviewed PNGs,personal photos,raw physical sensor histories and all failed/intermediate videos were not uploaded.
+
 ## Changes
 
 - Small plain names centered2 CSS px below the actual projected model envelope. Names may overlap; no displacement/packing/hiding to avoid another name. No green origin circle in the Twin. Select the actual body or name to inspect connection and control details below.

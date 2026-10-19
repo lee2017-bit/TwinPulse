@@ -1,5 +1,7 @@
 # TwinPulse progress
 
+v551 publication receipt: source main `328221d412a567588dd5b5e4fcccfce33ac354d2` remote exact;existing private [full-journey Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-full-journey) MP4 2742739B/SHA1dc125a6…183f15 and SUMS109B re-downloaded/hash-exact. README top links directly. No ZIP/visibility change or private data/failure-video upload. Follow-up documentation records the same frozen09cc installation,not a rebuild.
+
 ## 2026-10-19 — v551 names under actual robots, no rings, sensor OFF and full fresh demo
 
 Installed `20261019T041616Z-09ccb64bf047`/source09ccb64bf047/1622 exact files. Names stay centered2px below displayed model bounds, allowing overlaps instead of packing/hiding. Origin rings are removed. Actual body/name selection still opens connection/control details. Scan display now requires current connection/motion epochs, STREAMING, fresh original timestamps and current decoded frame; sensor OFF removes hits/rays, independently of display-only hiding. Explicit `Turn LiDAR on/off` labels avoid confusing actions with status. Existing safety/frame/speed/geometry/header limits are unchanged.
