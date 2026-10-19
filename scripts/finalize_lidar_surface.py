@@ -71,6 +71,10 @@ def main():
     body=body.replace('<h1>TwinPulse: 장면 목적지 이동 · 안정된 Twin 화면</h1>',heading)
     section='<section><h2>이번 LiDAR 판정</h2><p>SIM 모델의 base_scan 좌표를 직접 읽어 높이 18.2cm·뒤쪽 3.2cm를 적용한다. 수평면과 실제 표시 가구의 삼각형 교차선으로 첫 반사점을 계산한다. 숨은 단순 충돌 상자를 센서 표면으로 대신 쓰지 않는다. 주행 충돌/속도/원시각/기한 정책은 변경하지 않았다. 기본은 반사점이며 선택 광선은 깊이 가림 없는 X-ray 보조 표시다.</p><p>실물·SIM·저장 점군은 같은 sensor-local 표시기를 사용한다. 정합되지 않은 실물 점군을 Twin 공간에 자동 중첩하지 않는다. 실제 로봇 OFF: 새 센서 수신·실물 주행·정합 PASS 아님. 현재 SIM은 180방향/8m의 기하 근사이며 광학·정확한 LDS 샘플링·다른 로봇의 센서 차폐는 미검증/미포함이다.</p><pre>'+html.escape(json.dumps(proof,ensure_ascii=False,indent=2))+'</pre><img src="ui-fresh-'+a.tag+'/saved-real-scan-shared.png" alt="최종 설치 앱의 실제 저장 점군 검토 창"><p><a href="implementation-notes.json">모든 빌드/실패·정확한 미검증 범위</a> · <a href="attempts.json">모든 원 실행</a> · <a href="lidar-acceptance.json">LiDAR 원본 SHA·인수</a></p></section>'
     body=body.replace(heading,heading+section)
+    if (root/'media-review.json').exists():
+        media=load(root/'media-review.json')
+        if digest(root/media['output_video'])!=media['output_sha256']:raise ValueError('REVIEWED_DEMO_CHANGED')
+        body=body.replace('</html>','<h2>게시용 SIM 발췌본</h2><p>녹화 session 시작과 첫 MP4표본의10.007초 차이를 반영했다.247개 원표본203–449만 포함하며 마지막표본의 유지시간은 미관측 움직임/최종도착 증거가 아니다. 이전 잘못 자른 local발췌본은 게시하지 않았다.</p><video controls preload="metadata" src="'+html.escape(media['output_video'])+'"></video><pre>'+html.escape(json.dumps(media,ensure_ascii=False,indent=2))+'</pre><p><a href="aggregate-first-failed/gate-result.json">첫 집계의 원 NOT_READY</a> · <a href="native-lifecycle.json">실제 native 종료/AX·도구 실패 기록</a></p></html>')
     if (root/'github-release.json').exists():
         uploaded=load(root/'github-release.json')
         body=body.replace('현재 변경의 Git commit/push/Release 업로드는 수행하지 않았다.','아래 GitHub 영수증의 기존 private 저장소에만 게시했다. 공개 전환은 하지 않았다.')
