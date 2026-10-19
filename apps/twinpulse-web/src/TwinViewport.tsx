@@ -45,33 +45,20 @@ export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:numb
       lineX:clamp(anchorX,left,left+badgeW),lineY:clamp(anchorY,top,top+badgeH)};
   };
   const overlaps=(left:number,top:number)=>placed.some(other=>left<other.left+other.width+gap&&left+badgeW+gap>other.left&&top<other.top+other.height+gap&&top+badgeH+gap>other.top);
-  let fallback=false;
   for(const anchor of order){
     const preferredX=clamp(anchor.screen_anchor_uv[0]*width-badgeW/2,margin,width-margin-badgeW);
     const preferredY=clamp(Math.max(anchor.screen_anchor_uv[1],anchor.screen_bounds_uv[3])*height+8,margin,height-margin-badgeH);
     const candidates=[{left:preferredX,top:preferredY}];
-    for(let step=1;step<=visible.length;step++)for(const sign of [1,-1]){
+    // Never move a name across the room to satisfy label packing. The exact
+    // model marker remains independently fixed even if a crowded name hides.
+    for(let step=1;step<=2;step++)for(const sign of [1,-1]){
       candidates.push({left:preferredX,top:clamp(preferredY+sign*step*(badgeH+gap),margin,height-margin-badgeH)},
         {left:clamp(preferredX+sign*step*(badgeW+gap),margin,width-margin-badgeW),top:preferredY});
     }
     candidates.sort((a,b)=>Math.hypot(a.left-preferredX,a.top-preferredY)-Math.hypot(b.left-preferredX,b.top-preferredY));
     const candidate=candidates.find(value=>!overlaps(value.left,value.top)&&!occludesBody(value.left,value.top));
-    if(!candidate){fallback=true;break;}
+    if(!candidate)continue;
     placed.push(make(anchor,candidate.left,candidate.top));
-  }
-  if(fallback){
-    // Dense clusters use separate grid slots. Only labels move; the original
-    // pixel anchors and the underlying robot poses are never changed.
-    placed.length=0;
-    const columns=Math.max(1,Math.floor((areaW+gap+.00001)/(badgeW+gap))),rows=Math.max(1,Math.floor((areaH+gap+.00001)/(badgeH+gap)));
-    const slots=Array.from({length:columns*rows},(_,index)=>({left:margin+(index%columns)*(badgeW+gap),top:margin+Math.floor(index/columns)*(badgeH+gap)}))
-      .filter(slot=>!occludesBody(slot.left,slot.top));
-    for(const anchor of order){
-      if(!slots.length)break;
-      const x=anchor.screen_anchor_uv[0]*width-badgeW/2,y=anchor.screen_anchor_uv[1]*height+8;
-      let nearest=0;for(let i=1;i<slots.length;i++)if(Math.hypot(slots[i].left-x,slots[i].top-y)<Math.hypot(slots[nearest].left-x,slots[nearest].top-y))nearest=i;
-      const slot=slots.splice(nearest,1)[0];if(slot)placed.push(make(anchor,slot.left,slot.top));
-    }
   }
   const byId=new Map(placed.map(item=>[item.robot_id,item]));
   return visible.map(anchor=>byId.get(anchor.robot_id)!).filter(Boolean);
@@ -255,6 +242,7 @@ export type ViewerFault={code:string;execution_id:string|null};
 export function TwinViewport({api,projectId,report,diagnose,generation,sourcePhoto,savedScene=null,appConnected=true,robotFleet,onRobotSelect,controlView=false}: {api:TwinPulseApi;projectId?:string;report?:(fault:ViewerFault|null)=>void;diagnose?:(id:string|null)=>void;appConnected?:boolean;controlView?:boolean;
   robotFleet?:RobotFleetState;onRobotSelect?:(id:string)=>void;
   generation?:ConversationState['generation'];sourcePhoto?:{url:string;name:string}|null;savedScene?:SavedGenerationScene|null}) {
+  const [scanMode,setScanMode]=useState<'off'|'points'|'rays'>('points');
   const preview=generation?.error?.diagnostics?.generation_preview??generation?.progress?.generation_preview;
   const rebuildRequired=preview?.state==='blocked'&&preview.error_code==='PREVIEW_REBUILD_REQUIRED';
   const [state,setState]=useState<ViewportState|null>(null);
@@ -525,6 +513,11 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const fitScale=anchorFrame?Math.min(slotSize.width/anchorFrame.width,slotSize.height/anchorFrame.height):0;
   const fitWidth=(anchorFrame?.width??0)*fitScale,fitHeight=(anchorFrame?.height??0)*fitScale;
   const robotBadges=anchorFrame&&robotFleet?layoutRobotBadges((anchorFrame.robot_anchors??[]).filter(anchor=>robotFleet.robots.some(robot=>robot.robot_id===anchor.robot_id)),fitWidth,fitHeight):[];
+  const selectedScan=anchorFrame?.lidar_overlay;
+  // Display-only lifetime, not a control watchdog. Preserve original stamp;
+  // never transform a scan using a later robot pose or imply localization.
+  const shownScan=selectedScan&&selectedScan.robot_id===robotFleet?.focused_robot_id&&
+    displayAge-selectedScan.captured_at_ms>=0&&displayAge-selectedScan.captured_at_ms<700?selectedScan:null;
   const camera=async(action:string)=>{
     if(busy||!fresh||!image||Date.now()-image.frame.captured_at_ms>=1000||Date.now()<cameraReadyAt)return;
     setBusy(true);setCameraError(null);
@@ -562,6 +555,18 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       }}/>
     {anchorFrame&&fitScale>0&&robotFleet&&onRobotSelect&&<div className="robot-anchor-layer" aria-label="Robots in current Isaac frame"
       style={{left:(slotSize.width-fitWidth)/2,top:(slotSize.height-fitHeight)/2,width:fitWidth,height:fitHeight}}>
+      {shownScan&&scanMode!=='off'&&<svg className="robot-lidar-overlay" viewBox={`0 0 ${fitWidth} ${fitHeight}`} aria-label="Latest frame-bound simulated LiDAR hits" data-scan-captured-at={shownScan.captured_at_ms} data-robot-id={shownScan.robot_id}>
+        {scanMode==='rays'&&shownScan.points_uv.filter((_,i)=>i%8===0).map(([u,v],i)=><line key={`ray-${i}`} x1={shownScan.origin_uv[0]*fitWidth} y1={shownScan.origin_uv[1]*fitHeight} x2={u*fitWidth} y2={v*fitHeight}/>)}
+        {shownScan.points_uv.map(([u,v],i)=><circle key={i} cx={u*fitWidth} cy={v*fitHeight} r="1.7"/>)}
+      </svg>}
+      {(anchorFrame.robot_anchors??[]).filter(a=>a.visible&&robotFleet.robots.some(r=>r.robot_id===a.robot_id)).map(a=>{
+        const robot=robotFleet.robots.find(r=>r.robot_id===a.robot_id)!;
+        return <button type="button" className={`robot-frame-origin-dot ${fleetRobotFresh(robot)?'is-connected':''}`} key={`origin-${a.robot_id}`}
+          style={{left:a.screen_anchor_uv[0]*fitWidth,top:a.screen_anchor_uv[1]*fitHeight}}
+          data-robot-id={a.robot_id} data-anchor-x={a.screen_anchor_uv[0]*fitWidth} data-anchor-y={a.screen_anchor_uv[1]*fitHeight}
+          aria-label={`Select ${robot.label} connection marker`} title={`${robot.label} · current model projection`}
+          onClick={()=>{if(Date.now()-anchorFrame.captured_at_ms<1000)onRobotSelect(robot.robot_id);}}/>;
+      })}
       {robotBadges.map(badge=>{
         const robot=robotFleet.robots.find(row=>row.robot_id===badge.robot_id);if(!robot)return null;
         return <button type="button" key={badge.robot_id} className="robot-anchor-badge"
@@ -571,7 +576,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
           title={robot.label}
           aria-description={`${robot.kind==='sim'?'SIM':'Physical'}${robot.display_pose?' · estimated marker; visualization only, not sensor/world alignment':''}. Select the robot name or its current rendered body to open connection, battery and controls below the Twin. Connection does not certify driving readiness.`}
           onClick={()=>{if(Date.now()-anchorFrame.captured_at_ms<1000)onRobotSelect(robot.robot_id);}} aria-label={`Select ${robot.label} in Twin`}>
-          <span className="robot-anchor-heading"><span className={`robot-anchor-status ${fleetRobotFresh(robot)?'fresh':''}`}/><strong>{robot.label}</strong></span>
+          <span className="robot-anchor-heading"><strong>{robot.label}</strong></span>
         </button>;
       })}
     </div>}
@@ -579,6 +584,11 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       <p>Build the scene in Isaac to see a 3D preview.</p></div>}</div>
     {!controlView&&sourcePhoto&&<figure key="source-photo" className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/>
       <figcaption>Source photo · reference for this Twin</figcaption></figure>}
+    <div className="twin-scan-toolbar" aria-label="LiDAR display">
+      <label>LiDAR view <select aria-label="LiDAR visualization" value={scanMode} onChange={event=>setScanMode(event.target.value as 'off'|'points'|'rays')}>
+        <option value="off">Off</option><option value="points">Hit points</option><option value="rays">Sparse rays + hits</option></select></label>
+      <span role="status" title="Horizontal geometric scan, not an optical sensor model. Rays are an X-ray overlay without depth occlusion; use hit points to inspect the first surface.">{shownScan?`Scanning obstacles · ${shownScan.points_uv.length} visible hits · SIM geometry`:'No current projected scan'} · {shownScan?'Isaac pose · no correction applied':'not a localization result'}{shownScan?.height_m!==undefined?` · sensor ${(shownScan.height_m*100).toFixed(1)} cm · surface hits${scanMode==='rays'?' · X-ray rays':''}`:''}</span>
+    </div>
     {error && <p role="alert">Viewer: {error}. Browser display is unavailable; this does not mean scene apply failed.
       {diagnostic && <button onClick={()=>callbacks.current.diagnose?.(diagnostic)}>View display diagnostics</button>}</p>}
     {cameraError && <p role="alert">Camera: {cameraError}. This action is not retried automatically.</p>}

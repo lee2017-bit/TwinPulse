@@ -567,6 +567,7 @@ class PhysicalFleetAdapter:
                 control_state=control,controller_state=reported_control,
                 reason='DISCONNECTING_AWAITING_ROBOT_CLEANUP' if entry.disconnecting else live.get('transport_error') or live.get('reason') or entry.reason,
                 battery=battery,pose=live.get('pose'),field=live.get('field'),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),
+                scan_receipt=None if ended else deepcopy(live.get('scan_receipt')),
                 lidar_state=('OFF' if live.get('cleanup_confirmed') else 'FAULT') if ended else live.get('lidar_state','OFF'),
                 telemetry_diagnostic=deepcopy(live.get('telemetry_diagnostic')),native_diagnostic=deepcopy(live.get('lidar')),
                 timing_policy=deepcopy(live.get('timing_policy')),field_evidence=deepcopy(live.get('field_evidence')),

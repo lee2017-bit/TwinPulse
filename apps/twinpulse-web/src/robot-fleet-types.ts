@@ -58,7 +58,11 @@ export type RobotFleetRobot = {
   setup?:{runtime_state:string;blockers:string[];profile:Record<string,unknown>|null;qualification:Record<string,unknown>|null;binding_sha256?:string};
   field?:RobotFieldState;
   capabilities:{drive:boolean;lidar:boolean;read_only_connection?:boolean;prepare?:boolean;qualify?:boolean;profile?:boolean};
-  scan:{points:[number,number][];source:string}|null;
+  scan:{points:[number,number][];source:string;height_m?:number;captured_at_ms?:number;complete?:boolean;frame_id?:string;frame_sequence?:number;raw_sha256?:string;
+    point_frame?:'sensor_local';sensor_xy_yaw_world?:[number,number,number]|null;sensor_frame?:string|null;geometry?:Record<string,unknown>|null}|null;
+  scan_receipt?:{age_ms:number;age_basis:string;frame_id:string;aligned:false}|null;
+  command?:{request_id:string;text:string;kind:'finite'|'navigate';state:'ACCEPTED'|'PLANNING'|'RUNNING'|'ARRIVED'|'COMPLETED'|'CANCELLED'|'FAILED';
+    target_kind?:string;target_label?:string;target_id?:string;goal_xy?:[number,number];waypoints?:[number,number][];remaining_m?:number;reason?:string|null}|null;
 };
 export type RobotFleetState = {
   schema_version:'robot-fleet-1.0';revision:number;focused_robot_id:string|null;robots:RobotFleetRobot[];

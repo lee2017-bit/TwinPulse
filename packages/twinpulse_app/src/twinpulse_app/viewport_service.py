@@ -10,6 +10,7 @@ from collections import deque
 import hashlib
 from io import BytesIO
 import math
+import re
 from threading import RLock
 import time
 
@@ -57,16 +58,29 @@ class ViewportService:
             frame = body['frame']
             if frame is not None:
                 required = {'frame_id', 'applied_revision', 'captured_at_ms', 'width', 'height', 'jpeg_base64', 'camera_sequence'}
-                if not isinstance(frame, dict) or set(frame) not in (required,required|{'robot_anchors'}):
+                if not isinstance(frame, dict) or not required<=set(frame) or set(frame)-required-{'robot_anchors','lidar_overlay'}:
                     raise BrokerError('viewport_frame_invalid', 'Viewport frame shape is invalid', status=400)
                 anchors=frame.get('robot_anchors',[])
                 if (not isinstance(anchors,list) or len(anchors)>16 or any(not isinstance(a,dict)
                         or set(a)!={'robot_id','screen_anchor_uv','screen_bounds_uv','visible'}
-                        or not isinstance(a['robot_id'],str) or len(a['robot_id'])>100 or type(a['visible']) is not bool
+                        or not isinstance(a['robot_id'],str) or re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',a['robot_id']) is None or type(a['visible']) is not bool
                         or any(not isinstance(a[key],list) or len(a[key])!=size or
                                any(type(n) not in (int,float) or not math.isfinite(n) or not 0<=n<=1 for n in a[key])
                                for key,size in (('screen_anchor_uv',2),('screen_bounds_uv',4))) for a in anchors)):
                     raise BrokerError('viewport_robot_anchors_invalid','Invalid bounded robot screen coordinates.',status=400)
+                scan=frame.get('lidar_overlay')
+                if scan is not None:
+                    if (not isinstance(scan,dict) or not {'robot_id','origin_uv','points_uv','captured_at_ms','source','physical_authority'}<=set(scan)
+                            or set(scan)-{'robot_id','origin_uv','points_uv','captured_at_ms','source','physical_authority','height_m'}
+                            or not isinstance(scan['robot_id'],str) or re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',scan['robot_id']) is None
+                            or scan['source'] not in {'isaac_usd_aabb_rays','isaac_usd_surface_rays'} or scan['physical_authority'] is not False
+                            or (scan['source']=='isaac_usd_surface_rays' and (type(scan.get('height_m')) not in (int,float) or not math.isfinite(scan['height_m']) or not 0<scan['height_m']<2))
+                            or type(scan['captured_at_ms']) not in (int,float) or not math.isfinite(scan['captured_at_ms'])
+                            or type(frame['captured_at_ms']) not in (int,float) or not -50<=frame['captured_at_ms']-scan['captured_at_ms']<=350
+                            or not isinstance(scan['points_uv'],list) or len(scan['points_uv'])>90
+                            or any(not isinstance(p,list) or len(p)!=2 or any(type(n) not in (int,float) or not math.isfinite(n) or not 0<=n<=1 for n in p)
+                                   for p in [scan['origin_uv'],*scan['points_uv']])):
+                        raise BrokerError('viewport_scan_invalid','Invalid frame-bound SIM scan overlay.',status=400)
                 seq = frame['frame_id']
                 stamp = frame['captured_at_ms']
                 if (type(seq) is not int or seq <= self.sequence or seq > 2**53-1
@@ -188,8 +202,21 @@ class ViewportService:
                    if len(self.arrivals)>1 and self.arrivals[-1]>self.arrivals[0] else 0.0)
             status = 'live' if current and fps >= 5 else 'degraded' if current else 'stale' if frame else 'waiting'
             public = {k:v for k,v in frame.items() if k != 'data'} if current else None
-            if public: public['url'] = f"/v1/product/viewport/frame/{frame['frame_id']}"
-            last = {k:v for k,v in self.last_preview.items() if k != 'data'} if self.last_preview else None
+            if public:
+                public['url'] = f"/v1/product/viewport/frame/{frame['frame_id']}"
+                # Display UVs only, sub-.002px rounding at the maximum image
+                # size. Never round clocks, poses, geometry or identities.
+                # Keep the existing 8192-byte atomic receipt contract even
+                # with sixteen robots and ninety selected scan hits.
+                if 'robot_anchors' in public:
+                    public['robot_anchors']=[{**a,**{key:[round(n,6) for n in a[key]] for key in ('screen_anchor_uv','screen_bounds_uv')}} for a in public['robot_anchors']]
+                if public.get('lidar_overlay'):
+                    scan=public['lidar_overlay']
+                    public['lidar_overlay']={**scan,'origin_uv':[round(n,6) for n in scan['origin_uv']],
+                        'points_uv':[[round(n,6) for n in point] for point in scan['points_uv']]}
+            # A static preview cannot carry live tracking/scan authority.
+            # Do not duplicate transient point data in every JPEG header.
+            last = {k:v for k,v in self.last_preview.items() if k not in {'data','robot_anchors','lidar_overlay'}} if self.last_preview else None
             if last:
                 last.update(url=f"/v1/product/viewport/preview/{last['sha256']}",
                             preview_only=True,physical_authority=False)

@@ -35,7 +35,7 @@ def main():
     env={**os.environ,'PYTHONPATH':os.pathsep.join(str(ROOT/'packages'/p/'src') for p in ('twinpulse_app','twinpulse_core','twinpulse_provider'))+os.pathsep+str(ROOT/'packages/twinpulse_robot_safety')+os.pathsep+str(ROOT/'packages/twinpulse_robot_safety/tests')}
     node=shutil.which('node')
     groups=[('lineage-and-pc',ROOT,[sys.executable,'-m','unittest','tests.integration.test_engine_loss_probe','tests.integration.test_r6_process_manager','tests.integration.test_backend_status_storage','tests.integration.test_robot_twin_lineage',
-        'tests.integration.test_fleet_elapsed_motion','tests.integration.test_bootstrap_integrity_current','tests.integration.test_robot_focus_gate',
+        'tests.integration.test_fleet_elapsed_motion','tests.integration.test_sim_fleet_navigation','tests.integration.test_bootstrap_integrity_current','tests.integration.test_robot_focus_gate',
         'tests.integration.test_physical_live_session','tests.integration.test_physical_fleet_adapter','tests.integration.test_robot_fleet',
         'tests.integration.test_field_app_readiness','tests.integration.test_http_mutation_lifecycle','tests.integration.test_http_reuse','tests.integration.test_bridge_robot_channel','tests.integration.test_bridge_lease_rotation','tests.integration.test_live_viewport','tests.integration.test_fleet_diagnostic_isolation','tests.integration.test_residual_status_admission','tests.integration.test_workspace_devices',
         'tests.integration.test_conversation_save_rename','tests.integration.test_conversation_preservation','tests.integration.test_project_sim_retirement',

@@ -151,6 +151,7 @@ class LiveViewportPublisher:
                     'stage_epoch':snapshot.stage_epoch,'applied_revision':snapshot.applied_revision,
                     'captured_at_ms':time.time()*1000,'camera_sequence':self.camera_sequence}
         metadata['robot_anchors']=self.fleet_runtime.frame_anchors(viewport)
+        metadata['lidar_overlay']=self.fleet_runtime.frame_scan
         fleet_render_tokens=self.fleet_runtime.render_tokens()
         self.started_capture = self.last_capture = now
         # Mark pending before schedule_capture; callback may be synchronous.

@@ -34,6 +34,12 @@ REQUIRED={
   'Two named finite tasks coexist; visible Stop all confirms both without disconnect',
   'Operation summary opens; raw JSON download is separate',
   'Actual frame anchors and camera transition',
+  'Frame-bound selected LiDAR points and optional sparse rays, no localization claim',
+  'Missing scene destination fails explicitly; command receipt is not arrival',
+  'Destination Stop cancels planning or travel and never replays old route',
+  'Actual panel nearest bed destination reaches scene-derived approach with visible receipt',
+  'Actual main-chat nearest chair destination reaches scene-derived approach with visible receipt',
+  'Actual saved native scan imported via UI and shown by the shared renderer without world alignment',
   'Physical setup shown while robot remains off; no Connect or movement',
   'App-only supervised setup saves offline; all eleven trial paths visible without physical activation',
   'In-App measured-profile editor preserves identity and blocks null or mismatched measurements',
@@ -154,6 +160,10 @@ def validate_display(fresh):
     issues=[];steps={s.get('name'):s for s in fresh.get('steps',[])}
     layout=steps.get('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',{}).get('evidence',{}).get('rows',[])
     if len(layout)!=5:issues.append('DISPLAY_LAYOUT_MATRIX_MISSING')
+    bodies=steps.get('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',{}).get('evidence',{}).get('bodySelections',[])
+    if (len(bodies)!=2 or {r.get('name') for r in bodies}!={'Alpha','Beta'} or
+            any(r.get('bodyHit') is not True or type(r.get('marker_error_px')) not in (int,float) or not 0<=r['marker_error_px']<=1 for r in bodies)):
+        issues.append('CURRENT_MODEL_BODY_SELECTION_NOT_PROVEN')
     targets=[(1920,1080),(1366,768),(1093,614),(911,512),(1600,900)]
     sizes=[(r.get('window',{}).get('width',0),r.get('window',{}).get('height',0)) for r in layout]
     if len(set(sizes))!=5 or any(not any(abs(w-x)<=1 and abs(h-y)<=1 for w,h in sizes) for x,y in targets):issues.append('DISPLAY_LAYOUT_SIZES_NOT_PROVEN')

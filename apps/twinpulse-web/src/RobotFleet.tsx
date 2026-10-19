@@ -6,6 +6,8 @@ import type {TwinPulseApi} from './api';
 import {RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
+import {LidarPointView} from './LidarPointView';
+import {LidarReviewDialog} from './LidarReviewDialog';
 import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
 
 const keyDirections:Record<string,FleetDirection>={ArrowUp:'forward',w:'forward',ArrowDown:'backward',s:'backward',ArrowLeft:'left',a:'left',ArrowRight:'right',d:'right'};
@@ -133,10 +135,13 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const [error,setError]=useState<string|null>(null),[busy,setBusy]=useState(false);
   const [label,setLabel]=useState('SIM robot'),[x,setX]=useState('0'),[y,setY]=useState('0'),[yaw,setYaw]=useState('0');
   const [text,setText]=useState(''),[held,setHeld]=useState<FleetDirection|null>(null);
+  const [submitted,setSubmitted]=useState<{request_id:string;text:string;state:string;prior_command_id?:string}|null>(null);
   const [operation,setOperation]=useState<RobotFleetOperation|null>(null),[logBusy,setLogBusy]=useState(false);
   const [showRegister,setShowRegister]=useState(false);
   const [expanded,setExpanded]=useState(false);
   const [diagnosticsOpen,setDiagnosticsOpen]=useState(false);
+  const [lidarReviewOpen,setLidarReviewOpen]=useState(false);
+  useEffect(()=>{setLidarReviewOpen(false);},[selectedId,api.context]);
   const [profileReview,setProfileReview]=useState<ProfileReview|null>(null),[profileReviewed,setProfileReviewed]=useState(false);
   const [profileReading,setProfileReading]=useState(false),[profileError,setProfileError]=useState<string|null>(null);
   const [profileDraft,setProfileDraft]=useState('');
@@ -184,6 +189,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     return()=>{window.removeEventListener('blur',blur);window.removeEventListener('resize',resize);window.removeEventListener('keyup',keyup);document.removeEventListener('visibilitychange',visibility);release.current();};
   },[api,context]);
   useEffect(()=>{release.current();setOperation(null);setError(null);setDiagnosticsOpen(false);},[selectedId]);
+  useEffect(()=>{setSubmitted(null);},[api,context,selectedId]);
   useEffect(()=>{
     importGeneration.current++;setProfileReview(null);setProfileReviewed(false);setProfileReading(false);setProfileError(null);
     setProfileDraft('');
@@ -349,11 +355,27 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
             {{forward:'↑',backward:'↓',left:'↶',right:'↷'}[direction]} <span>{direction}</span></button>)}
         </div>
         <form className="robot-fleet-command" onSubmit={event=>{event.preventDefault();if(canCommand){
-          release.current();const body=envelope('command',robot,{text:text.trim()});
-          if(commandIsStop)void send(body).catch(reportError);else void action(body);
+          release.current();const commandText=text.trim(),body=envelope('command',robot,{text:commandText}),captured=owner.current;
+          const prior_command_id=robot?.command?.request_id;
+          setSubmitted({request_id:body.request_id,text:text.trim(),state:'SENDING',prior_command_id});
+          const dispatch=async()=>{
+            if(!commandIsStop)setBusy(true);setError(null);
+            try{await send(body);if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId)
+              setSubmitted({request_id:body.request_id,text:commandText,state:'ACCEPTED',prior_command_id});}
+            catch(caught){reportError(caught);if(owner.current===captured||owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId)
+              setSubmitted({request_id:body.request_id,text:commandText,state:'FAILED',prior_command_id});}
+            finally{if(owner.current.api===captured.api&&owner.current.context===captured.context)setBusy(false);}
+          };void dispatch();
         }}}>
-          <label>Robot command<input value={text} maxLength={1000} placeholder="Forward 10 cm, turn left 90°, or stop" onChange={event=>setText(event.target.value)}/></label>
+          <label>Robot command<input value={text} maxLength={1000} placeholder="Go to the nearest bed, go to the nearest chair, or stop" onChange={event=>setText(event.target.value)}/></label>
           <button disabled={!canCommand}>Send command</button>
+          <output className="robot-command-receipt" aria-label="Robot command progress" aria-live="polite">
+            {robot.command&&(!submitted||submitted.request_id===robot.command.request_id||robot.command.request_id!==submitted.prior_command_id)?<>
+              <strong>{robot.command.state}{robot.command.target_label?` · ${robot.command.target_label}`:''}</strong>
+              <span>{robot.command.text}{typeof robot.command.remaining_m==='number'?` · ${robot.command.remaining_m.toFixed(2)} m remaining`:''}{robot.command.reason?` · ${robot.command.reason}`:''}</span>
+              <small>Request {robot.command.request_id}</small>
+            </>:submitted?<><strong>{submitted.state}</strong><span>{submitted.text}</span><small>Request {submitted.request_id}</small></>:<span>Choose a SIM scene destination. Arrival is reported by Isaac, not by request acceptance.</span>}
+          </output>
           <small>Hold arrows / WASD. Release or Space stops. You can also use the main chat.</small>
         </form>
       </div>
@@ -361,7 +383,8 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       <p>{robot.pose?.aligned?'Pose aligned':'Pose unaligned / unavailable'} · Recording {available&&fresh?'':'last reported '}{robot.recording_state}</p>
       <small>Hold a direction or focus the pad and use arrows / WASD. Release, Space or leaving the window stops movement and retains the connection.</small>
       <p className="robot-fleet-policy">{physical&&robot.field?.config?'Supervised field policy: 0.03 m/s · 0.20 rad/s':`${state?.policy.linear_m_s} m/s · ${state?.policy.angular_rad_s} rad/s`} · input expiry {state?.policy.input_expiry_ms} ms</p>
-      <small>{physical&&!robot.capabilities.drive?'Use status, battery, logs or Stop while movement is unavailable. Complete setup before a finite movement command.':'Commands require a finite distance or angle.'}</small>
+      <small>{physical?'Object destinations require verified physical world navigation and are currently SIM-only. Use finite movement, status, battery, logs or Stop under the physical setup.':'SIM supports a nearby scene destination, finite distance/angle, status, logs and Stop.'}</small>
+      <button type="button" onClick={()=>{release.current();setLidarReviewOpen(true);}}>Review LiDAR scans</button>
       {physical&&<>
         <dl className="robot-physical-status" aria-label="Physical connection and readiness">
           <div><dt>SSH heartbeat</dt><dd>{available&&fresh?'Fresh authenticated session':'Unavailable / stale'} · age {age(robot.telemetry_age_ms)}</dd></div>
@@ -458,9 +481,10 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           </>}
         </details>
       </details>}
+      {lidarReviewOpen&&<LidarReviewDialog api={api} robot={robot} onClose={()=>setLidarReviewOpen(false)} onStopAll={()=>{release.current();void send(envelope('stop_all',null)).catch(reportError);}}/>}
       {robot.scan&&<details><summary>LiDAR points · {robot.scan.points.length} · {robot.scan.source}</summary>
-        <svg className="robot-fleet-scan" viewBox="-3 -3 6 6" aria-label={`LiDAR scan · ${robot.scan.source}`} role="img">
-          <circle r="0.08" fill="currentColor"/>{robot.scan.points.slice(0,3000).filter(point=>point.every(Number.isFinite)).map(([px,py],i)=><circle key={i} cx={px} cy={-py} r="0.02" fill="#6ed1df"/>)}</svg>
+        <LidarPointView points={robot.scan.points} source={robot.scan.source} height={robot.scan.height_m}/>
+        {robot.kind==='physical'&&<small>PC scan receipt age: {age(robot.scan_receipt?.age_ms)} · acquisition timing is separate · {robot.scan.complete===true?'complete ring':'incomplete / unknown ring'} · not projected into Twin without a synchronized pose and sensor transform.</small>}
         <small>Sensor points only · obstacle protection depends on the active adapter and guard.</small></details>}
       {historicalOperation&&<small>Saved operation logs · historical. Viewing this record does not restore a connection or driving permission.</small>}
       {logOperationId&&<small className="robot-operation-id">Operation {logOperationId}{historicalOperation?' · historical':''}</small>}

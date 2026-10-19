@@ -24,6 +24,21 @@ function setup(state=fleet(),custom?:(body:RobotFleetAction)=>Promise<RobotFleet
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
 describe('robot fleet controls (supplementary UI tests)',()=>{
+  it('distinguishes local dispatch from real arrival and shows a later main-chat receipt',async()=>{
+    const state=fleet();const {props,rerender,action}=setup(state);
+    fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'Go to the nearest bed'}});
+    fireEvent.click(screen.getByRole('button',{name:'Send command'}));
+    await waitFor(()=>expect(screen.getByLabelText('Robot command progress').textContent).toContain('ACCEPTED'));
+    expect(screen.getByLabelText('Robot command progress').textContent).not.toContain('ARRIVED');
+    const id=action.mock.calls.find(([b])=>b.action==='command')![0].request_id;
+    const current=fleet([{...robot(),command:{request_id:id,text:'Go to the nearest bed',kind:'navigate',state:'ARRIVED',target_label:'bed bed1'}}]);
+    rerender(<RobotFleet {...props} state={current}/>);
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('ARRIVED');
+    const next=fleet([{...robot(),command:{request_id:'main-chat-new',text:'Go to the nearest chair',kind:'navigate',state:'PLANNING',target_kind:'chair'}}]);
+    rerender(<RobotFleet {...props} state={next}/>);
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('main-chat-new');
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('PLANNING');
+  });
   it('keeps the compact primary pad and Stop before collapsed setup and opens logs explicitly',async()=>{
     const {action,container}=setup();
     const dock=screen.getByLabelText('Control Robot a'),details=container.querySelector('.robot-fleet-diagnostics')!;
@@ -755,10 +770,12 @@ describe('robot badge collision placement (supplementary geometry)',()=>{
     expect(placed[1]).toMatchObject({anchorX:290,anchorY:180});expect(JSON.stringify(anchors)).toBe(original);
     expect(placed.every(row=>row.lineX>=row.left&&row.lineX<=row.left+row.width&&row.lineY>=row.top&&row.lineY<=row.top+row.height)).toBe(true);
   });
-  it.each([[400,300],[280,180],[200,100]])('packs all 16 co-located robots inside %dx%d without overlapping hit targets',(width,height)=>{
-    const placed=layoutRobotBadges(Array.from({length:16},(_,index)=>anchor(`robot-${index}`,.5,.5)),width,height);expect(placed).toHaveLength(16);
+  it.each([[400,300],[280,180],[200,100]])('hides crowded names instead of moving 16 co-located markers away in %dx%d',(width,height)=>{
+    const placed=layoutRobotBadges(Array.from({length:16},(_,index)=>anchor(`robot-${index}`,.5,.5)),width,height);
+    expect(placed.length).toBeGreaterThan(0);expect(placed.length).toBeLessThan(16);
     for(let i=0;i<placed.length;i++){
       const badge=placed[i];expect(badge.left).toBeGreaterThanOrEqual(0);expect(badge.top).toBeGreaterThanOrEqual(0);
+      expect(badge.anchorX).toBe(width*.5);expect(badge.anchorY).toBe(height*.5);
       expect(badge.left+badge.width).toBeLessThanOrEqual(width+.00001);expect(badge.top+badge.height).toBeLessThanOrEqual(height+.00001);
       for(let j=i+1;j<placed.length;j++)expect(rectanglesOverlap(badge,placed[j])).toBe(false);
     }
@@ -775,6 +792,20 @@ describe('robot badge collision placement (supplementary geometry)',()=>{
 });
 
 describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
+  it('pins the connection marker to the original model projection and draws only selected original scan samples',async()=>{
+    const h=viewportHarness(),stamp=Date.now();
+    h.getState().frame!.lidar_overlay={robot_id:'a',origin_uv:[.25,.5],points_uv:[[.2,.3],[.3,.4]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};
+    render(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={vi.fn()}/>);
+    const marker=await screen.findByRole('button',{name:'Select Robot a connection marker'});
+    expect(marker.style.left).toBe('100px');expect(marker.style.top).toBe('200px');
+    const overlay=await screen.findByLabelText('Latest frame-bound simulated LiDAR hits');
+    expect(overlay.querySelectorAll('circle')).toHaveLength(2);expect(overlay.querySelectorAll('line')).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText('LiDAR visualization'),{target:{value:'rays'}});
+    expect(overlay.querySelectorAll('line')).toHaveLength(1);expect(marker.style.left).toBe('100px');
+    vi.spyOn(Date,'now').mockReturnValue(stamp+800);
+    await waitFor(()=>expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull());
+    expect(screen.getByText(/No current projected scan/)).toBeTruthy();
+  });
   it('labels an estimated physical marker and selects its original robot identity without granting live status',async()=>{
     const h=viewportHarness(),select=vi.fn(),physical:RobotFleetRobot={...robot(),kind:'physical',connection_state:'DISCONNECTED',connection_epoch:null,
       live_heartbeat:false,capabilities:{drive:false,lidar:false},pose:null,battery:{voltage_v:null,percent:null,source:'unknown',age_ms:null},

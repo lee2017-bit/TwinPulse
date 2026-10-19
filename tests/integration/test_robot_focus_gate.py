@@ -34,6 +34,7 @@ def fixture():
     rows['fresh']['fleet_requests']=[dict(action='stop_all',request_id='stop-id',status=200,result_robots=deepcopy(robots))]
     rows['fresh']['display_samples']=[dict(display,frame_id=i+1,at=1+i*500) for i in range(120)]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['rows']=[dict(deepcopy(display),window=dict(width=w,height=h)) for w,h in [(1920,1080),(1366,768),(1093,614),(911,512),(1600,900)]]
+    next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['bodySelections']=[dict(name=n,bodyHit=True,marker_error_px=.01) for n in ('Alpha','Beta')]
     rows['fresh']['sustained_hold_observations']=[dict(at=r['at']) for r in rows['fresh']['display_samples']]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Continuous 60-second'))['elapsed_ms']=61000
     rows.update(normal=dict(status='PASS_NORMAL_START_REUSE_DEBUG_OFF',release_id='release',source_sha256='source',launch_id='first',ready_wait_ms=40000,
@@ -48,6 +49,15 @@ def fixture():
     return rows
 
 class GateTests(unittest.TestCase):
+    def test_actual_shared_sensor_import_is_required_not_an_unclassified_normal_step(self):
+        r=fixture();name='Actual saved native scan imported via UI and shown by the shared renderer without world alignment'
+        r['fresh']['steps']=[s for s in r['fresh']['steps'] if s['name']!=name]
+        self.assertIn('MISSING_OR_FAILED_STEP:fresh:'+name,validate(r,'release','source'))
+    def test_missing_body_click_or_detached_marker_is_not_full_acceptance(self):
+        for value in ([],[dict(name='Alpha',bodyHit=True,marker_error_px=0)],
+                      [dict(name=n,bodyHit=True,marker_error_px=20) for n in ('Alpha','Beta')]):
+            rows=fixture();next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['bodySelections']=value
+            self.assertIn('CURRENT_MODEL_BODY_SELECTION_NOT_PROVEN',validate(rows,'release','source'))
     def test_final_stop_rejects_missing_or_duplicate_ids_and_old_epochs(self):
         mutations=(lambda r:r['fresh']['final_fault_recovery'].pop('stop_request_id'),
             lambda r:r['fresh']['final_fault_recovery'].update(stop_request_id=''),

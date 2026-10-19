@@ -3,6 +3,7 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import { useEffect, useRef, useState } from "react";
 import type { TwinPulseApi } from "./api";
+import {LidarPointView} from './LidarPointView';
 
 export interface NativePhotoBinding {
   role: "room" | "top_view"; sha256: string; media_type: "image/jpeg";
@@ -192,6 +193,9 @@ export function NativeScanReview({ api }: { api: TwinPulseApi }) {
         <p>No acquisition-time playback, room scale estimate or geometry approval.</p></section>
         <section key={bundle.digest}>{bundle.photos.map(binding => <NativePhoto key={binding.sha256} binding={binding} />)}</section>
       </div>
+      <details><summary>Shared sensor view · recorded returns</summary>
+        <LidarPointView points={frame.points.map(p=>[p.x_m,p.y_m])} source="saved_physical_native_sensor" historical/>
+      </details>
       <p>3D export uses native axes only, never the display hypothesis. Open the USD as a separate evidence stage.
         z=0 is the sensor drawing plane, not the floor. No furniture heights, colliders or world alignment are inferred.</p>
       <details className="native-registration"><summary>Coordinate correspondence review (optional, not calibration)</summary>

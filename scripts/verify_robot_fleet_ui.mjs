@@ -7,9 +7,11 @@ import {createHash} from 'node:crypto';
 import {currentControlView,checkControlView,visibleMotion} from './control_view_acceptance.mjs';
 import {safeUnknownDriveRejection,scopedFetchBoundaryFailure} from './explicit_fault_recovery.mjs';
 import {recordStopReceipt,assertFinalStopReceipt} from './control_stop_receipt.mjs';
-const args=process.argv.slice(2),arg=n=>args[args.indexOf(n)+1];
+import {sceneRobotUx} from './scene_robot_ux_acceptance.mjs';
+const args=process.argv.slice(2),arg=n=>{const i=args.indexOf(n);return i<0?undefined:args[i+1];};
 const out=arg('--output'),endpoint=arg('--cdp'),phase=arg('--phase')??'fresh';
 if(!out||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit CDP/output required');
+if(phase==='reopen'&&(!arg('--project')||!arg('--field-config')))throw Error('Cold reopen requires explicit --project and --field-config before any UI action');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],display_samples:[],native_os_input:'NOT_RUN',physical:'OFF_NOT_RUN'};
 result.fault_classification_contract='07b_NORMAL_FIRST_SINGLE_FINAL_FAULT_WINDOW_ORDINARY_ABORT_REMAINS_FAILURE';
@@ -149,7 +151,7 @@ try{
    const home=page.getByRole('button',{name:'＋ Start a new chat',exact:true});
    if(await home.isVisible())await home.click();else await page.getByRole('button',{name:'＋ New chat',exact:true}).click();
    result.project=(await page.getByRole('banner').innerText()).match(/chat_[a-zA-Z0-9_]+/)?.[0];
-   const text='6m x 5m 크기의 추정 방을 만들어줘. 뒤쪽 벽 근처 왼쪽에 침대 1개, 오른쪽에 책상 1개와 의자 1개를 놓고, 가운데와 앞쪽 바닥은 로봇 2대의 저속 시뮬레이션을 위해 넓게 비워줘. 치수는 추정이라고 표시해줘.';
+   const text='Create an estimated 6m by 5m room. Place one bed near the back wall on the left, and one desk with one chair near the back wall on the right. Leave the middle and front floor wide open for two robots in a low-speed simulation. Label all dimensions as estimates.';
    result.input_sha256=createHash('sha256').update(text).digest('hex');
    await sendChat(text);
    const mode=page.getByRole('radio',{name:'Simulation only',exact:true});
@@ -228,7 +230,7 @@ try{
     await poll(()=>robot(name)?.connection_state==='CONNECTED');await drawer(name).getByRole('button',{name:'Prepare',exact:true}).click();
     if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'LiDAR On',exact:true}).click();
     await poll(()=>robot(name)?.lidar_state==='STREAMING');}
-   await select('Alpha');const alphaText='Alpha 로봇 왼쪽으로 90도 회전해',betaText='Beta 로봇 오른쪽으로 90도 회전해';let delayed=0;
+   await select('Alpha');const alphaText='Alpha robot turn left 90 degrees',betaText='Beta robot turn right 90 degrees';let delayed=0;
    conversationFaultHandler=async route=>{let body;try{body=route.request().postDataJSON();}catch{}
     if(route.request().method()==='POST'&&body?.action==='message'&&body.text===alphaText){delayed++;await sleep(500);}await route.continue();};
    result.normal_steps_before_fault_window=result.steps.map(row=>row.name);
@@ -269,16 +271,19 @@ try{
     await shot(`control-layout-${width}-${height}`);
    }
    const bodySelections=[];
-   if(args.includes('--compact-labels')){
+   if(phase==='fresh'||args.includes('--compact-labels')){
     for(const name of ['Beta','Alpha']){
      const close=page.getByRole('button',{name:'Close robot controls',exact:true});if(await close.isVisible())await close.click();
      await sleep(400);
      const badge=page.getByRole('button',{name:'Select '+name+' in Twin',exact:true});await expect(badge).toBeVisible();
      const hint=await badge.evaluate(el=>{const style=getComputedStyle(el),layer=el.closest('.robot-anchor-layer').getBoundingClientRect(),b=JSON.parse(el.dataset.screenBounds),canvas=document.querySelector('.twin-frame-slot canvas');
       const x=layer.left+(b[0]+b[2])/2*layer.width,y=layer.top+(b[1]+b[3])/2*layer.height;
+      const marker=[...document.querySelectorAll('.robot-frame-origin-dot')].find(e=>e.getAttribute('aria-label')==='Select '+el.textContent+' connection marker'),m=marker?.getBoundingClientRect();
       return {text:el.textContent,background:style.backgroundColor,border:style.borderTopWidth,shadow:style.boxShadow,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,
-       extraLines:el.querySelectorAll('small,em').length,point:{x,y},bodyHit:document.elementFromPoint(x,y)===canvas,frame_id:Number(canvas.dataset.frameId),age_ms:Date.now()-Number(canvas.dataset.capturedAt)};});
-     if(hint.text!==name||hint.background!=='rgba(0, 0, 0, 0)'||hint.border!=='0px'||hint.shadow!=='none'||hint.extraLines||hint.width>72.1||hint.height>16.1||!hint.bodyHit||hint.age_ms>=1000)
+       extraLines:el.querySelectorAll('small,em').length,point:{x,y},bodyHit:document.elementFromPoint(x,y)===canvas||document.elementFromPoint(x,y)===marker,
+       marker_error_px:m?Math.hypot(m.x+m.width/2-x,m.y+m.height/2-y):null,
+       frame_id:Number(canvas.dataset.frameId),age_ms:Date.now()-Number(canvas.dataset.capturedAt)};});
+     if(hint.text!==name||hint.background!=='rgba(0, 0, 0, 0)'||hint.border!=='0px'||hint.shadow!=='none'||hint.extraLines||hint.width>72.1||hint.height>16.1||!hint.bodyHit||hint.age_ms>=1000||hint.marker_error_px===null||hint.marker_error_px>1)
       throw Error('Ordinary label still hides the robot or body selection is not current: '+JSON.stringify(hint));
      await page.mouse.click(hint.point.x,hint.point.y);await expect(drawer(name)).toBeVisible();
      await poll(()=>fleet?.focused_robot_id===robot(name)?.robot_id);bodySelections.push({name,...hint});
@@ -323,10 +328,13 @@ try{
    return {intercepted,before:{...before,pixels:createHash('sha256').update(before.pixels).digest('hex')},stale:{...stale,pixels:createHash('sha256').update(stale.pixels).digest('hex')},after,method:'Delay-only real image GET fault while stopped; no response replacement'};
   });});
   await step('All four normal pointer directions without injected delay',async()=>{
-   const moves=[];for(const direction of ['forward','backward','left','right']){
+   const moves=[],baseline=await currentControlView(page,'Alpha');for(const direction of ['forward','backward','left','right']){
     const before=structuredClone(robot('Alpha')),box=await padBox('Alpha',direction);
     await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await sleep(900);await page.mouse.up();
-    await poll(stopped);const after=structuredClone(robot('Alpha'));checkedTravel(before,after,direction);moves.push({direction,before,after});
+    await poll(stopped);const after=structuredClone(robot('Alpha'));checkedTravel(before,after,direction);
+    const display=await currentControlView(page,'Alpha');checkControlView(display);
+    for(const key of ['canvas','dock'])for(const dim of ['x','y','width','height'])if(Math.abs(display[key][dim]-baseline[key][dim])>1)throw Error('Direction/status changed '+key+' geometry: '+JSON.stringify({baseline,display}));
+    moves.push({direction,before,after,display});
    }await shot('four-pad-directions');return {moves};});
   await step('Continuous 60-second held SIM rotation keeps session, sensor and fresh input',async()=>{
    const before=structuredClone(robot('Alpha')),box=await padBox('Alpha','left'),observations=[];
@@ -376,7 +384,7 @@ try{
    await Promise.all(responseChecks);
    return {trials,method:'Delay-only routing on actual renderer requests; not Wi-Fi disconnection or fake engine data'};});});
   finalFaultSteps.push(async()=>{await step('FAULT INJECTION: delayed chat ACK preserves a newly typed draft; confirmed Stop before closing final fault window',async()=>{
-   const alphaText='Alpha 로봇 왼쪽으로 90도 회전해',betaText='Beta 로봇 오른쪽으로 90도 회전해';let delayed=0;
+   const alphaText='Alpha robot turn left 90 degrees',betaText='Beta robot turn right 90 degrees';let delayed=0;
    conversationFaultHandler=async route=>{let body;try{body=route.request().postDataJSON();}catch{}
     if(route.request().method()==='POST'&&body?.action==='message'&&body.text===alphaText){delayed++;await sleep(500);}
     await route.continue();};
@@ -427,12 +435,12 @@ try{
    if(Math.hypot(...quiet.pose.position_m.slice(0,2).map((n,i)=>n-afterSpace.pose.position_m[i]))>.01)throw Error('Space did not keep the held direction stopped');
    await shot('keyboard-matrix');return {moves,afterSpace,quiet,native_os_input:'NOT_RUN'};});
   await step('Main chat bounded 90 degree command, measured completion',async()=>{
-   const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha 로봇 왼쪽으로 90도 회전해');
+   const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha robot turn left 90 degrees');
    await poll(()=>robot('Alpha')?.control_state==='DRIVING');
    const display=await visibleMotion(page,'Alpha',()=>robot('Alpha')?.reason==='TASK_COMPLETED',{onSample:v=>result.display_samples.push(v)});
    const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-Math.PI/2)>.01)throw Error('Wrong angular motion');return {delta,display,operation_id:robot('Alpha').operation_id};});
   await step('One session full turn with actual simulated scan',async()=>{
-   const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha 로봇 한바퀴 돌면서 라이다 기록해');
+   const old=robot('Alpha').pose.position_m[2];await sendChat('Alpha robot one full turn and scan lidar');
    await poll(()=>robot('Alpha')?.control_state==='DRIVING');await shot('turn-scan-running');
    await visibleMotion(page,'Alpha',()=>robot('Alpha')?.reason==='TASK_COMPLETED',{timeout:35000,onSample:v=>result.display_samples.push(v)});
    const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-2*Math.PI)>.01)throw Error('Full turn incomplete');
@@ -443,22 +451,22 @@ try{
    await drawer('Alpha').getByRole('button',{name:'LiDAR On',exact:true}).click();await poll(()=>robot('Alpha')?.lidar_state==='STREAMING');return {epoch};});
   await step('Actual obstacle approach stops Beta and fresh reverse escapes',async()=>{
    await select('Beta');const before=structuredClone(robot('Beta'));
-   await sendChat('Beta 로봇 앞으로 1m 이동해');await poll(()=>robot('Beta')?.control_state==='DRIVING');
+   await sendChat('Beta robot forward 1m');await poll(()=>robot('Beta')?.control_state==='DRIVING');
    await poll(()=>robot('Beta')?.reason==='OBSTACLE_STOP',30000);const stopped=structuredClone(robot('Beta'));
    if(stopped.pose.position_m[0]<=before.pose.position_m[0]+.05)throw Error('No approach before obstacle result');
-   await shot('obstacle-stop');await sendChat('Beta 로봇 뒤로 10cm 이동해');
+   await shot('obstacle-stop');await sendChat('Beta robot backward 10cm');
    await poll(()=>robot('Beta')?.control_state==='DRIVING');await poll(()=>robot('Beta')?.reason==='TASK_COMPLETED',10000);
    const escaped=structuredClone(robot('Beta'));if(stopped.pose.position_m[0]-escaped.pose.position_m[0]<.09)throw Error('Fresh escape failed');
    await select('Alpha');return {before,stopped,escaped,guard:'AABB kinematic SIM only, not physical stopping-distance qualification'};});
   await step('Named chat Stop interrupts finite task without model call or disconnect',async()=>{
-   const epoch=robot('Alpha').connection_epoch;await sendChat('Alpha 로봇 앞으로 10cm 이동해');
+   const epoch=robot('Alpha').connection_epoch;await sendChat('Alpha robot forward 10cm');
    await poll(()=>robot('Alpha')?.control_state==='DRIVING');await sleep(300);
-   await sendChat('Alpha 로봇 멈춰');await poll(()=>robot('Alpha')?.reason==='OPERATOR_STOP');
+   await sendChat('Alpha stop');await poll(()=>robot('Alpha')?.reason==='OPERATOR_STOP');
    if(robot('Alpha').connection_epoch!==epoch||robot('Alpha').connection_state!=='CONNECTED')throw Error('Stop disconnected');return {operation_id:robot('Alpha').operation_id,epoch};});
   await step('Two named finite tasks coexist; visible Stop all confirms both without disconnect',async()=>{
    const before=structuredClone(sims());
-   await sendChat('Alpha 로봇 왼쪽으로 90도 회전해');await poll(()=>robot('Alpha')?.control_state==='DRIVING');
-   await select('Beta');await sendChat('Beta 로봇 오른쪽으로 90도 회전해');
+   await sendChat('Alpha robot turn left 90 degrees');await poll(()=>robot('Alpha')?.control_state==='DRIVING');
+   await select('Beta');await sendChat('Beta robot turn right 90 degrees');
    await poll(()=>sims().every(row=>row.control_state==='DRIVING'));
    const concurrent=structuredClone(sims());
    await page.getByRole('button',{name:'Stop all',exact:true}).click();
@@ -485,6 +493,7 @@ try{
     await expect(drawer(name)).toBeVisible();clicks.push(name);await drawer(name).getByRole('button',{name:'Close robot controls',exact:true}).click();
    }
    await shot('badges-both-clicked');return {count,clicks};});
+  if(phase==='fresh')await sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result});
  }
  await step('Physical setup shown while robot remains off; no Connect or movement',async()=>{
   const physical=fleet?.robots.find(r=>r.kind==='physical'&&r.robot_id!=='legacy-physical');

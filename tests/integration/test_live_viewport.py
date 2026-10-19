@@ -3,6 +3,7 @@
 # Source: https://github.com/lee2017-bit/TwinPulse
 """Display contracts, not actual Isaac or physics acceptance."""
 import base64
+import json
 from io import BytesIO
 import sys
 from pathlib import Path
@@ -20,6 +21,34 @@ from tests.integration.test_r4_bridge_api import R4ApiTests
 
 
 class ViewportTests(unittest.TestCase):
+    def test_surface_scan_requires_finite_model_height(self):
+        packet=self.frame();packet['frame']['lidar_overlay']=dict(robot_id='a',origin_uv=[.5,.5],points_uv=[[.1,.2]],
+            captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,physical_authority=False)
+        self.service.exchange('engine','stage',packet)
+        self.assertEqual(self.service.status()['frame']['lidar_overlay']['height_m'],.182)
+        for height in (None,float('nan'),-1,3):
+            row=self.frame(2);row['frame']['lidar_overlay']={**packet['frame']['lidar_overlay'],'height_m':height}
+            with self.assertRaisesRegex(BrokerError,'frame-bound SIM scan'):self.service.exchange('engine','stage',row)
+    def test_maximum_visual_metadata_fits_original_atomic_receipt_without_static_scan_duplication(self):
+        packet=self.frame();uv=[.12345678901234567,.8765432109876543]
+        packet['frame']['robot_anchors']=[dict(robot_id=str(i)+'a'*98,screen_anchor_uv=uv,screen_bounds_uv=[*uv,.99,.99],visible=True) for i in range(16)]
+        packet['frame']['lidar_overlay']=dict(robot_id='a'*100,origin_uv=uv,points_uv=[uv]*90,captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,physical_authority=False)
+        self.service.exchange('engine','stage',packet)
+        state=self.service.status();header=json.dumps(state)
+        self.assertLessEqual(len(header.encode()),8192)
+        self.assertNotIn('lidar_overlay',state['last_frame']);self.assertNotIn('robot_anchors',state['last_frame'])
+        self.assertEqual(state['frame']['captured_at_ms'],100000)
+        self.assertEqual(self.service.latest['lidar_overlay']['points_uv'][0],uv)
+        self.assertLess(abs(state['frame']['lidar_overlay']['points_uv'][0][0]-uv[0])*1280,.002)
+    def test_scan_overlay_is_frame_bound_bounded_and_not_physical_authority(self):
+        packet=self.frame();packet['frame']['lidar_overlay']=dict(robot_id='a',origin_uv=[.5,.5],points_uv=[[.1,.2]],
+            captured_at_ms=100000,source='isaac_usd_aabb_rays',physical_authority=False)
+        self.service.exchange('engine','stage',packet)
+        self.assertEqual(self.service.status()['frame']['lidar_overlay']['points_uv'],[[.1,.2]])
+        for patch in (dict(captured_at_ms=99000),dict(physical_authority=True),dict(points_uv=[[2.,0.]]),dict(points_uv=[[0.,0.]]*91)):
+            row=self.frame(2);row['frame']['lidar_overlay']={**packet['frame']['lidar_overlay'],**patch}
+            with self.assertRaisesRegex(BrokerError,'frame-bound SIM scan'):
+                self.service.exchange('engine','stage',row)
     def setUp(self):
         self.now=100.
         self.broker=Mock()

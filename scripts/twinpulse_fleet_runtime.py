@@ -76,6 +76,78 @@ class FleetRuntime:
         self.report=[];self.anchors=[];self.sequence=0;self.obstacles=[];self.scan_at=0.
         self.bounds_notice=None;self.bounds_dirty=True;self.bounds_watch=False;self.bounds_rebuilds=0
         self.snapshot_capture_pending=False;self.model_generation=0
+        self.planner=None;self.frame_scan=None;self.navigation_geometry_epoch=0
+        self.sensor_sections={};self.sensor_geometry_epoch=-1
+
+    def _navigation_scene(self,stage):
+        from pxr import UsdGeom,Usd
+        cache=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_,UsdGeom.Tokens.render,UsdGeom.Tokens.guide])
+        targets=[];floors=[];boxes=[]
+        root=stage.GetPrimAtPath('/World/TwinPulse/Environment')
+        for prim in Usd.PrimRange(root):
+            if not (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube) or prim.IsA(UsdGeom.Cylinder)):continue
+            r=cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            if r.IsEmpty():continue
+            lo,hi=r.GetMin(),r.GetMax();box=[float(lo[0]),float(lo[1]),float(hi[0]),float(hi[1])]
+            if hi[2]<=.08 and box[2]-box[0]>1 and box[3]-box[1]>1:floors.append(box)
+            if lo[2]<=.18<=hi[2] and hi[2]>.08 and box[0]<box[2] and box[1]<box[3]:boxes.append(box)
+        visual=stage.GetPrimAtPath('/World/TwinPulse/Presentation/RoomModels')
+        if visual:
+            for prim in visual.GetChildren():
+                kind=prim.GetCustomDataByKey('catalogKind');members=prim.GetCustomDataByKey('currentGeometryIds')
+                if not kind or not members:continue
+                ranges=[]
+                for identity in members:
+                    geometry=stage.GetPrimAtPath('/World/TwinPulse/Environment/'+identity)
+                    if geometry:
+                        r=cache.ComputeWorldBound(geometry).ComputeAlignedRange()
+                        if not r.IsEmpty():ranges.append(r)
+                if ranges:
+                    bounds=[min(float(r.GetMin()[0]) for r in ranges),min(float(r.GetMin()[1]) for r in ranges),
+                            max(float(r.GetMax()[0]) for r in ranges),max(float(r.GetMax()[1]) for r in ranges)]
+                    targets.append(dict(id=prim.GetName().removeprefix('Item_'),kind=kind,label=kind+' '+prim.GetName().removeprefix('Item_'),bounds=bounds))
+        if not floors:raise ValueError('NAVIGATION_FLOOR_BOUNDS_MISSING')
+        if len(boxes)>128:raise ValueError('NAVIGATION_SCENE_BUDGET')
+        bounds=max(floors,key=lambda b:(b[2]-b[0])*(b[3]-b[1]))
+        return targets,bounds,boxes
+
+    def _navigate(self,robot,task,stage,identity):
+        from twinpulse_core.sim_fleet_navigation import approach_plan,next_leg
+        navigation=robot.get('navigation')
+        if navigation is None:
+            navigation=dict(request_id=task['task_id'],state='PLANNING',target_kind=task['target_kind'],reason=None)
+            robot['navigation']=navigation;robot['navigation_index']=0;robot['navigation_geometry_epoch']=self.navigation_geometry_epoch
+            try:
+                targets,bounds,boxes=self._navigation_scene(stage)
+                discs=[(*other['pose'][:2],.105) for key,other in self.robots.items() if key!=identity]
+                if self.planner is None:
+                    from concurrent.futures import ThreadPoolExecutor
+                    self.planner=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sim-object-plan')
+                # Only pure copied geometry crosses this boundary; no USD or
+                # mutation on the worker, and no wait on Kit's main thread.
+                robot['navigation_future']=self.planner.submit(approach_plan,list(robot['pose']),task['target_kind'],targets,bounds,boxes,discs)
+            except ValueError as exc:
+                navigation.update(state='FAILED',reason=str(exc));return None,0.,str(exc)
+        if robot.get('navigation_geometry_epoch')!=self.navigation_geometry_epoch:
+            navigation.update(state='FAILED',reason='NAVIGATION_SCENE_CHANGED');return None,0.,'NAVIGATION_SCENE_CHANGED'
+        future=robot.get('navigation_future')
+        if navigation['state']=='PLANNING':
+            if future is None or not future.done():return None,0.,None
+            try:plan=future.result()
+            except ValueError as exc:
+                navigation.update(state='FAILED',reason=str(exc));return None,0.,str(exc)
+            except Exception as exc:
+                reason='NAVIGATION_PLANNER_ERROR_'+type(exc).__name__
+                navigation.update(state='FAILED',reason=reason);return None,0.,reason
+            navigation.update({key:value for key,value in plan.items() if key in {'target_id','target_label','goal_xy','waypoints','path_length_m','clearance_m'}})
+            navigation['state']='RUNNING'
+        direction,remaining,index=next_leg(robot['pose'],navigation['waypoints'],robot['navigation_index'])
+        robot['navigation_index']=index
+        navigation['waypoint_index']=index
+        navigation['remaining_m']=sum(math.dist(a,b) for a,b in zip([robot['pose'][:2],*navigation['waypoints'][index:]],navigation['waypoints'][index:]))
+        if direction is None:
+            navigation.update(state='ARRIVED',reason='NAVIGATION_ARRIVED');return None,0.,'NAVIGATION_ARRIVED'
+        return direction,remaining,None
 
     def render_tokens(self):
         return (self.identity,{key:(row['epoch'],row.get('model_generation')) for key,row in self.robots.items()})
@@ -90,11 +162,11 @@ class FleetRuntime:
     def _environment_changed(self,notice,_sender):
         # Fleet transforms and camera updates do not change static environment
         # collision geometry. Manual edits of that environment still invalidate.
-        root='/World/TwinPulse/Environment'
+        root='/World/TwinPulse/Environment';visual='/World/TwinPulse/Presentation/RoomModels'
         for value in list(notice.GetResyncedPaths())+list(notice.GetChangedInfoOnlyPaths()):
             text=str(value.GetPrimPath())
-            if text=='/' or text==root or text.startswith(root+'/') or root.startswith(text+'/'):
-                self.bounds_dirty=True;break
+            if text=='/' or text==root or text.startswith(root+'/') or root.startswith(text+'/') or text==visual or text.startswith(visual+'/') or visual.startswith(text+'/'):
+                self.bounds_dirty=True;self.navigation_geometry_epoch+=1;break
 
     def _watch_environment(self,stage):
         if self.bounds_notice is not None:self.bounds_notice.Revoke()
@@ -110,7 +182,9 @@ class FleetRuntime:
 
     def _refresh_bounds(self,stage,now):
         if self.bounds_dirty or not self.bounds_watch and now-self.scan_at>.2:
-            self.obstacles=self._bounds(stage);self.scan_at=now;self.bounds_dirty=False;self.bounds_rebuilds+=1
+            boxes=self._bounds(stage)
+            if not self.bounds_watch and boxes!=self.obstacles:self.navigation_geometry_epoch+=1
+            self.obstacles=boxes;self.scan_at=now;self.bounds_dirty=False;self.bounds_rebuilds+=1
 
     def receive(self,value,received_at=None):
         self.desired=value;self.received_at=time.monotonic() if received_at is None else received_at
@@ -136,7 +210,8 @@ class FleetRuntime:
             if prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube) or prim.IsA(UsdGeom.Cylinder):
                 if len(boxes)>=512:break
                 bounds=cache.ComputeWorldBound(prim).ComputeAlignedRange();lo,hi=bounds.GetMin(),bounds.GetMax()
-                # Ground is not an obstacle; native 2D sensor is at 0.18m.
+                # Retained motion-guard slice; independent of the model-mounted
+                # geometric sensing plane. This change does not relax driving.
                 if lo[2] <= .18 <= hi[2] and hi[2]>.08:
                     boxes.append((float(lo[0]),float(lo[1]),float(hi[0]),float(hi[1])))
         return boxes
@@ -145,23 +220,6 @@ class FleetRuntime:
     def _gap(pose,box):
         x,y,_=pose;a,b,c,d=box
         return math.hypot(max(a-x,0,x-c),max(b-y,0,y-d))-.105
-
-    def _scan(self,pose,boxes):
-        x,y,yaw=pose;points=[]
-        for index in range(180):
-            angle=index*math.pi/90;dx,dy=math.cos(angle+yaw),math.sin(angle+yaw);distance=8.
-            for a,b,c,d in boxes:
-                enter,leave=0.,distance
-                for origin,delta,lo,hi in ((x,dx,a,c),(y,dy,b,d)):
-                    if abs(delta)<1e-9:
-                        if not lo<=origin<=hi:leave=-1.;break
-                    else:
-                        first,last=(lo-origin)/delta,(hi-origin)/delta
-                        if first>last:first,last=last,first
-                        enter=max(enter,first);leave=min(leave,last)
-                if leave>=enter>=0:distance=min(distance,enter)
-            if distance<8:points.append([round(distance*math.cos(angle),4),round(distance*math.sin(angle),4)])
-        return dict(points=points,source='isaac_usd_aabb_rays')
 
     def update(self,snapshot):
         import omni.usd
@@ -207,11 +265,16 @@ class FleetRuntime:
                            startup_samples=0,startup_ready=False)
                 self.model_generation+=1
                 robot.update(model_generation=self.model_generation,render_observed=False)
+                bounds=UsdGeom.BBoxCache(0,[UsdGeom.Tokens.default_,UsdGeom.Tokens.render]).ComputeRelativeBound(model,placement.GetPrim()).ComputeAlignedRange()
+                robot['model_local_corners']=None if bounds.IsEmpty() else [list(bounds.GetCorner(i)) for i in range(8)]
                 self.robots[identity]=robot
             model_elapsed=max(0.,time.monotonic()-model_started) if created else 0.
             # Do not count the first report's dt: it predates authoring.
             observe_startup(robot,created,dt,self.snapshot_capture_pending)
             if robot['motion_epoch']!=request['motion_epoch']:
+                future=robot.pop('navigation_future',None)
+                if future:future.cancel()
+                robot['navigation']=None
                 active_dt=0.
                 robot.update(motion_epoch=request['motion_epoch'],reason=None,task=None,travel=0.,intent_sequence=None,
                              last_intent=None,stale_intent_sequence=None,intent_active_since=None,warm_rejected_task=None)
@@ -226,6 +289,9 @@ class FleetRuntime:
             elif task and task['task_id']==robot.get('warm_rejected_task'):
                 task=None
             if not task and robot['task'] is not None:
+                future=robot.pop('navigation_future',None)
+                if future:future.cancel()
+                robot['navigation']=None
                 robot.update(task=None,travel=0.)
             if request.get('visual_only'):
                 # Pure visualization. No intent, synthetic sensor, physical
@@ -235,6 +301,9 @@ class FleetRuntime:
                 ops[0].Set(Gf.Vec3d(robot['pose'][0],robot['pose'][1],0.));ops[1].Set(math.degrees(robot['pose'][2]))
                 continue
             if task and robot['task']!=task['task_id']:
+                future=robot.pop('navigation_future',None)
+                if future:future.cancel()
+                robot['navigation']=None
                 if reason not in {'ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE'}:
                     robot.update(task=task['task_id'],travel=0.,reason=None);reason=None
                 active_dt=0.
@@ -245,6 +314,8 @@ class FleetRuntime:
             elif now-self.received_at<.5 and not reason:
                 if task:
                     if time.time()*1000>=task['deadline_ms']:reason='TASK_TIMEOUT'
+                    elif task.get('kind')=='navigate':
+                        direction,nav_remaining,reason=self._navigate(robot,task,stage,identity)
                     elif robot['travel']>=task['amount']:reason='TASK_COMPLETED'
                     else:direction=task['direction']
                 elif intent:
@@ -265,11 +336,11 @@ class FleetRuntime:
                     if other_id!=identity:
                         x,y,_=other['pose'];boxes.append((x-.105,y-.105,x+.105,y+.105))
                 new,distance,stopped,substeps=integrate_motion(robot['pose'],direction,active_dt,boxes,
-                    max(0.,task['amount']-robot['travel']) if task else None)
+                    nav_remaining if task and task.get('kind')=='navigate' else max(0.,task['amount']-robot['travel']) if task else None)
                 robot['pose']=new;robot['travel']+=distance
                 integrated_s=distance/(.05 if direction in {'forward','backward'} else .30)
                 if stopped:reason='ISAAC_UPDATE_STALLED' if stopped=='INPUT_STALE' and active_dt>=.5 else stopped
-                elif task and robot['travel']>=task['amount']-1e-12:reason='TASK_COMPLETED'
+                elif task and task.get('kind')!='navigate' and robot['travel']>=task['amount']-1e-12:reason='TASK_COMPLETED'
             if reason=='INPUT_STALE' and robot.get('stale_intent_sequence') is None:
                 robot['stale_intent_sequence']=robot.get('intent_sequence')
             robot['reason']=reason
@@ -279,30 +350,67 @@ class FleetRuntime:
             matrix=placement.ComputeLocalToWorldTransform(0);p=matrix.ExtractTranslation()
             measured=[float(p[0]),float(p[1]),math.radians(float(ops[1].Get()))]
             if request['lidar'] and now-robot['scan_at']>=.2:
-                robot['scan']=self._scan(measured,self.obstacles);robot['scan_at']=now
+                from twinpulse_app.lidar_scene_geometry import sensor_pose,scene_section
+                scan_started=time.monotonic();scan_stamp=time.time()*1000
+                try:
+                    sensor,height,sensor_path=sensor_pose(stage,path)
+                    geometry_epoch=(self.identity,self.navigation_geometry_epoch)
+                    if geometry_epoch!=self.sensor_geometry_epoch:
+                        self.sensor_sections={};self.sensor_geometry_epoch=geometry_epoch
+                    key=round(height,9)
+                    if key not in self.sensor_sections:self.sensor_sections[key]=scene_section(stage,height)
+                    section,geometry=self.sensor_sections[key]
+                    robot['scan']=dict(points=section.scan(sensor),source='isaac_usd_surface_rays',
+                        position_m=sensor,height_m=height,sensor_frame=sensor_path,
+                        geometry={k:v for k,v in geometry.items() if k!='surfaces'},captured_at_ms=scan_stamp)
+                    robot['scan_error']=None
+                except ValueError as exc:
+                    robot['scan']=None;robot['scan_error']=str(exc)
+                robot['scan_at']=now;robot['scan_compute_s']=time.monotonic()-scan_started
             if not request['lidar']:robot['scan']=None
             report.append(dict(robot_id=identity,connection_epoch=robot['epoch'],motion_epoch=robot['motion_epoch'],
                 sequence=self.sequence,position_m=measured,scan=robot['scan'],reason=reason,task_id=robot['task'],
                 runtime_timing=dict(elapsed_s=round(dt,6),integrated_s=round(integrated_s,6),substeps=substeps),
                 runtime_startup=dict(model_authored=True,render_observed=robot.get('render_observed',False),
                     snapshot_capture_pending=self.snapshot_capture_pending,post_author_updates=robot.get('startup_samples',0),ready=robot.get('startup_ready',False)),
-                runtime_work=dict(bounds_s=round(bounds_elapsed,6),model_authoring_s=round(model_elapsed,6),bounds_rebuilds=self.bounds_rebuilds),
+                    runtime_work=dict(bounds_s=round(bounds_elapsed,6),model_authoring_s=round(model_elapsed,6),bounds_rebuilds=self.bounds_rebuilds,
+                        scan_s=round(robot.get('scan_compute_s',0.),6),scan_error=robot.get('scan_error')),
+                navigation=dict(robot['navigation']) if robot.get('navigation') else None,
                 intent_sequence=robot.get('stale_intent_sequence') if reason=='INPUT_STALE' else robot.get('intent_sequence')))
+            robot['selected']=request.get('selected',False)
         self.report=report
 
     def frame_anchors(self,viewport):
+        self.frame_scan=None
         if not self.robots:return []
         from pxr import Gf, UsdGeom
         import omni.usd
         stage=omni.usd.get_context().get_stage();camera=UsdGeom.Camera(stage.GetPrimAtPath(str(viewport.camera_path)))
         if not camera:return []
         frustum=camera.GetCamera(0).frustum;view=frustum.ComputeViewMatrix();projection=frustum.ComputeProjectionMatrix();out=[]
+        def project(world):
+            if view.Transform(world)[2]>=0:return None
+            p=(view*projection).Transform(world);return [float((p[0]+1)/2),float((1-p[1])/2)]
         for identity,robot in self.robots.items():
-            x,y,_=robot['pose'];world=Gf.Vec3d(x,y,.05)
-            camera_point=view.Transform(world)
-            if camera_point[2]>=0:continue
-            projected=(view*projection).Transform(world);u,v=(projected[0]+1)/2,(1-projected[1])/2
-            if 0<=u<=1 and 0<=v<=1:
-                out.append(dict(robot_id=identity,screen_anchor_uv=[float(u),float(v)],
-                    screen_bounds_uv=[max(0,float(u)-.025),max(0,float(v)-.08),min(1,float(u)+.025),float(v)],visible=True))
+            corners=robot.get('model_local_corners')
+            if not corners:continue
+            matrix=UsdGeom.Xform(stage.GetPrimAtPath(self.ROOT+'/Robot_'+identity)).ComputeLocalToWorldTransform(0)
+            points=[project(matrix.Transform(Gf.Vec3d(*p))) for p in corners]
+            points=[p for p in points if p is not None]
+            if not points:continue
+            a,b=min(p[0] for p in points),min(p[1] for p in points);c,d=max(p[0] for p in points),max(p[1] for p in points)
+            u,v=(a+c)/2,(b+d)/2
+            if 0<=u<=1 and 0<=v<=1 and a<c and b<d:
+                out.append(dict(robot_id=identity,screen_anchor_uv=[u,v],
+                    screen_bounds_uv=[max(0.,a),max(0.,b),min(1.,c),min(1.,d)],visible=True))
+            scan=robot.get('scan')
+            if robot.get('selected') and scan and 0<=time.time()*1000-scan.get('captured_at_ms',0)<350:
+                x,y,yaw=scan['position_m'];height=scan['height_m'];origin=project(Gf.Vec3d(x,y,height));hits=[]
+                for px,py in scan['points'][::2]:
+                    hit=project(Gf.Vec3d(x+px*math.cos(yaw)-py*math.sin(yaw),y+px*math.sin(yaw)+py*math.cos(yaw),height))
+                    if hit and all(0<=n<=1 for n in hit):hits.append(hit)
+                if origin and all(0<=n<=1 for n in origin):
+                    self.frame_scan=dict(robot_id=identity,origin_uv=origin,points_uv=hits[:90],
+                        captured_at_ms=scan['captured_at_ms'],source='isaac_usd_surface_rays',physical_authority=False,
+                        height_m=height)
         return out

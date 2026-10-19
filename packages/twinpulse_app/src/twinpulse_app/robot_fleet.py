@@ -41,6 +41,10 @@ def parse_robot_command(text):
     if (re.search(r'방|환경|가구|공간|장면|\b(?:room|environment|scene|furniture)\b',value)
             and re.search(r'만들|생성|배치|놓아|놓고|create|build|generate|place|arrange',value)):
         return None
+    from twinpulse_core.sim_fleet_navigation import destination_intent
+    try:destination=destination_intent(value)
+    except ValueError as exc:raise BrokerError('robot_target_ambiguous',str(exc),status=409) from exc
+    if destination is not None:return destination
     if (re.search(r'침대|의자|책상|소파|가구|벽|\b(?:bed|chair|desk|sofa|table|wall)\b',value)
             and not re.search(r'로봇|robot|turtlebot',value)):
         return None
@@ -107,8 +111,8 @@ class RobotFleet:
             motion_epoch=None,applied_motion_epoch=None,control_state='UNPREPARED',lidar_state='OFF',recording_state='IDLE',operation_id=None,last_operation_id=None,
             reason=None,battery=dict(voltage_v=None,percent=None,source='simulated' if kind=='sim' else 'unknown',age_ms=None),
             pose=dict(position_m=list(pose),frame_id='isaac_world',source='user_spawn',aligned=kind=='sim') if kind=='sim' else None,
-            telemetry_age_ms=None,telemetry_sequence=0,capabilities=dict(drive=kind=='sim',lidar=kind=='sim'),scan=None,
-            live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,
+            telemetry_age_ms=None,telemetry_sequence=0,capabilities=dict(drive=kind=='sim',lidar=kind=='sim'),scan=None,scan_receipt=None,
+            live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,command=None,
             telemetry_diagnostic=None,native_diagnostic=None,project_id=None,display_pose=None,
             source_twin_context=None,
             _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf)
@@ -241,6 +245,10 @@ class RobotFleet:
 
     def _pause(self,row,reason=None):
         had=row['_intent'] is not None or row['_task'] is not None
+        command=row.get('command')
+        if command and command.get('state') in {'ACCEPTED','PLANNING','RUNNING'}:
+            command.update(state='ARRIVED' if reason=='NAVIGATION_ARRIVED' else 'COMPLETED' if reason=='TASK_COMPLETED'
+                else 'CANCELLED' if reason in {'OPERATOR_STOP','FOCUS_CHANGED','DISCONNECTED','LIDAR_OFF','ISAAC_SCENE_CHANGED'} else 'FAILED',reason=reason)
         row['_intent']=row['_task']=None;row['motion_epoch']=uuid4().hex;row['_sequence']=0
         row['control_state']='PAUSED';row['reason']=reason
         self.revision+=1
@@ -358,6 +366,8 @@ class RobotFleet:
                 self._physical_rows(physical)
                 if identity not in self.robots:raise BrokerError('fleet_selection_required','Select the robot to control.',status=409)
                 row=self.robots[identity]
+                if action=='navigate' and row['kind']!='sim':
+                    raise BrokerError('physical_target_navigation_unavailable','Object destinations are currently SIM-only. Physical navigation needs a verified world binding and robot navigation adapter; no motion was sent.',status=409)
                 if action=='focus':
                     if self.focused in self.robots and self.focused!=identity:
                         previous=self.robots[self.focused]
@@ -450,15 +460,15 @@ class RobotFleet:
                     if not payload['enabled']:self._pause(row,'LIDAR_OFF')
                     row['lidar_state']='STARTING' if payload['enabled'] else 'OFF';row['scan']=None
                     self._event(row,'lidar_requested',enabled=payload['enabled'],request_id=request)
-                elif action in {'drive','task'}:
-                    if action=='task' and body['action']!='command':
+                elif action in {'drive','task','navigate'}:
+                    if action in {'task','navigate'} and body['action']!='command':
                         raise BrokerError('fleet_task_text_required','Use a bounded robot command.',status=400)
                     self._ready(row,body,epoch=body['action']!='command')
                     if self.focused!=identity:
                         raise BrokerError('fleet_focus_changed','Select this robot and wait for selection confirmation before moving.',status=409)
                     if row['control_state'] not in {'READY','DRIVING','PAUSED'}:raise BrokerError('fleet_prepare_required','Prepare the selected robot first.',status=409)
                     direction=payload.get('direction')
-                    if direction not in {'forward','backward','left','right'}:raise BrokerError('fleet_direction','Invalid direction.',status=400)
+                    if action!='navigate' and direction not in {'forward','backward','left','right'}:raise BrokerError('fleet_direction','Invalid direction.',status=400)
                     if action=='drive':
                         if set(payload)!={'direction','sequence','expires_at_ms'} or type(payload['sequence']) is not int or payload['sequence']<=row['_sequence']:
                             raise BrokerError('fleet_sequence','Old or invalid movement input.',status=409)
@@ -466,12 +476,21 @@ class RobotFleet:
                         if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=300:
                             self._pause(row,'INPUT_STALE');raise BrokerError('fleet_input_expired','Movement input expired; robot paused.',status=409)
                         row['_sequence']=payload['sequence'];row['_task']=None
+                        if row.get('command') and row['command']['state'] in {'ACCEPTED','PLANNING','RUNNING'}:
+                            row['command'].update(state='CANCELLED',reason='MANUAL_OVERRIDE')
                         row['_intent']=dict(direction=direction,expires_at_ms=expires,sequence=payload['sequence'])
+                    elif action=='navigate':
+                        row['_task']=dict(task_id=request,kind='navigate',target_kind=payload['target_kind'],
+                            deadline_ms=self.wall()*1000+120000)
+                        row['_intent']=None
+                        row['command']=dict(request_id=request,text=body['payload']['text'],kind='navigate',
+                            state='ACCEPTED',target_kind=payload['target_kind'],reason=None)
                     else:
                         row['_task']=dict(task_id=request,direction=direction,amount=payload['amount'],scan=payload.get('scan',False),
                             start_pose=deepcopy(row['pose']['position_m']),deadline_ms=self.wall()*1000+min(120000,payload['amount']/(.30 if direction in {'left','right'} else .05)*1000+5000))
                         if payload.get('scan'):row['lidar_state']='STARTING'
                         row['_intent']=None
+                        row['command']=dict(request_id=request,text=body['payload']['text'],kind='finite',state='RUNNING',reason=None)
                     row.update(control_state='DRIVING',reason=None,recording_state='RECORDING')
                     request_context=self._twin_context(row)
                     if len(self.command_contexts)>=8192:self.command_contexts.pop(next(iter(self.command_contexts)))
@@ -558,9 +577,21 @@ class RobotFleet:
                 if scan and row['lidar_state'] in {'STARTING','STREAMING'}:
                     points=scan.get('points',[]) if isinstance(scan,dict) else []
                     if len(points)<=360 and all(isinstance(p,list) and len(p)==2 and all(type(v) in (float,int) and math.isfinite(v) for v in p) for p in points):
-                        row['scan']=dict(points=points,source='isaac_usd_aabb_rays',twin_context=self._twin_context(row,state),
+                        row['scan']=dict(points=points,source='isaac_usd_surface_rays' if scan.get('source')=='isaac_usd_surface_rays' else 'isaac_usd_aabb_rays',
+                            height_m=scan.get('height_m'),sensor_frame=scan.get('sensor_frame'),geometry=deepcopy(scan.get('geometry')),
+                            sensor_xy_yaw_world=deepcopy(scan.get('position_m')),point_frame='sensor_local',
+                            captured_at_ms=scan.get('captured_at_ms'),twin_context=self._twin_context(row,state),
                             stream_id=row['connection_epoch'],frame_sequence=sequence);row['lidar_state']='STREAMING'
                 reason=value.get('reason')
+                navigation=value.get('navigation')
+                if row.get('_task',{} ) and row['_task'].get('kind')=='navigate' and isinstance(navigation,dict):
+                    from twinpulse_core.sim_fleet_navigation import checked_navigation_report
+                    checked=checked_navigation_report(navigation,row['_task']['task_id'])
+                    if checked is not None and value.get('motion_epoch')==row['motion_epoch']:
+                        before=row['command'].get('state')
+                        row['command'].update(checked)
+                        if before!=checked['state']:
+                            self._event(row,'navigation_state',command=deepcopy(row['command']),observed_twin_context=observed_context)
                 timing=value.get('runtime_timing')
                 timing=deepcopy(timing) if (isinstance(timing,dict) and set(timing)=={'elapsed_s','integrated_s','substeps'}
                     and all(type(timing[k]) in (int,float) and math.isfinite(timing[k]) and 0<=timing[k]<=86400 for k in ('elapsed_s','integrated_s'))
@@ -575,7 +606,7 @@ class RobotFleet:
                 if superseded:
                     self._event(row,'superseded_input_report',reason=reason,reported_input_sequence=reported_input,
                         current_input_sequence=intent['sequence'],observed_twin_context=observed_context)
-                if not superseded and reason in {'OBSTACLE_STOP','INPUT_STALE','ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE','TASK_COMPLETED','TASK_TIMEOUT','MOVEMENT_STALLED'} and value.get('motion_epoch')==row['motion_epoch']:
+                if not superseded and (reason in {'OBSTACLE_STOP','INPUT_STALE','ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE','TASK_COMPLETED','TASK_TIMEOUT','MOVEMENT_STALLED','NAVIGATION_ARRIVED'} or isinstance(reason,str) and reason.startswith('NAVIGATION_')) and value.get('motion_epoch')==row['motion_epoch']:
                     self._event(row,'motion_result',reason=reason,position_m=pose,command_id=value.get('task_id'),
                         runtime_timing=timing,observed_twin_context=observed_context,request_twin_context=deepcopy(self.command_contexts.get(value.get('task_id'))))
                     self._pause(row,reason);self._save_operation(row)
@@ -590,7 +621,7 @@ class RobotFleet:
             for row in self.robots.values():
                 if row['kind']=='sim' and row['_connected']:
                     desired.append(dict(robot_id=row['robot_id'],label=row['label'],connection_epoch=row['connection_epoch'],
-                        motion_epoch=row['motion_epoch'],position_m=row['_spawn'],intent=deepcopy(row['_intent']),task=deepcopy(row['_task']),
+                        motion_epoch=row['motion_epoch'],position_m=row['_spawn'],intent=deepcopy(row['_intent']),task=deepcopy(row['_task']),selected=row['robot_id']==self.focused,
                         lidar=row['lidar_state'] in {'STARTING','STREAMING'},control_state=row['control_state']))
                 elif row['kind']=='physical' and len(desired)<16 and row.get('display_pose') is not None:
                     pose=row['display_pose']
