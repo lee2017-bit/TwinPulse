@@ -411,7 +411,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(fleetRobotFresh(physical)).toBe(false);
     expect(screen.queryByLabelText('Fresh connected heartbeat')).toBeNull();
     expect(screen.getByText(/Fresh heartbeat and measured voltage do not grant driving permission/)).toBeTruthy();
-    for(const name of ['Prepare','LiDAR On','Hold forward'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
+    for(const name of ['Prepare','Turn LiDAR on','Hold forward'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'forward 10 cm'}});
     expect((screen.getByRole('button',{name:'Send command'}) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(screen.getByLabelText('Robot command').closest('form')!);expect(action).not.toHaveBeenCalled();
@@ -573,7 +573,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(screen.getByLabelText('Physical connection and readiness').textContent).toContain('Unknown · no cleanup receipt');
     expect(screen.getByLabelText('Physical setup blockers').textContent).toContain('MEASURED_FOOTPRINT_REQUIRED');
     expect(screen.getByLabelText('Physical setup blockers').textContent).toContain('SAME_BOOT_STOP_QUALIFICATION_REQUIRED');
-    for(const name of ['Hold forward','LiDAR On'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
+    for(const name of ['Hold forward','Turn LiDAR on'])expect((screen.getByRole('button',{name}) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByLabelText('Fresh connected heartbeat')).toBeTruthy();
     expect(fleetRobotFresh({...physical,telemetry_age_ms:2499})).toBe(true);
     expect(fleetRobotFresh({...physical,telemetry_age_ms:2500})).toBe(false);
@@ -762,49 +762,55 @@ describe('robot badge collision placement (supplementary geometry)',()=>{
     for(const plate of placed)for(const a of anchors){const b=a.screen_bounds_uv;
       expect(rectanglesOverlap(plate,{left:b[0]*800,top:b[1]*500,width:(b[2]-b[0])*800,height:(b[3]-b[1])*500})).toBe(false);}
   });
-  it('separates badges for two original anchors only 50px apart without moving those anchors',()=>{
+  it('allows names to overlap rather than separating them from their robots',()=>{
     const anchors=[anchor('alpha',.6,.6),anchor('beta',.725,.6)],original=JSON.stringify(anchors);
     const placed=layoutRobotBadges(anchors,400,300);
-    expect(placed).toHaveLength(2);expect(rectanglesOverlap(placed[0],placed[1])).toBe(false);
+    expect(placed).toHaveLength(2);expect(rectanglesOverlap(placed[0],placed[1])).toBe(true);
     expect(placed[0]).toMatchObject({anchorX:240,anchorY:180,width:72,height:16});
     expect(placed[1]).toMatchObject({anchorX:290,anchorY:180});expect(JSON.stringify(anchors)).toBe(original);
-    expect(placed.every(row=>row.lineX>=row.left&&row.lineX<=row.left+row.width&&row.lineY>=row.top&&row.lineY<=row.top+row.height)).toBe(true);
+    expect(placed.every(row=>row.top===row.anchorY+2&&row.left+row.width/2===row.anchorX)).toBe(true);
   });
-  it.each([[400,300],[280,180],[200,100]])('hides crowded names instead of moving 16 co-located markers away in %dx%d',(width,height)=>{
+  it.each([[400,300],[280,180],[200,100]])('keeps all 16 co-located names immediately below their bodies in %dx%d',(width,height)=>{
     const placed=layoutRobotBadges(Array.from({length:16},(_,index)=>anchor(`robot-${index}`,.5,.5)),width,height);
-    expect(placed.length).toBeGreaterThan(0);expect(placed.length).toBeLessThan(16);
+    expect(placed).toHaveLength(16);
     for(let i=0;i<placed.length;i++){
       const badge=placed[i];expect(badge.left).toBeGreaterThanOrEqual(0);expect(badge.top).toBeGreaterThanOrEqual(0);
       expect(badge.anchorX).toBe(width*.5);expect(badge.anchorY).toBe(height*.5);
       expect(badge.left+badge.width).toBeLessThanOrEqual(width+.00001);expect(badge.top+badge.height).toBeLessThanOrEqual(height+.00001);
-      for(let j=i+1;j<placed.length;j++)expect(rectanglesOverlap(badge,placed[j])).toBe(false);
+      expect(badge.top-badge.anchorY).toBe(2);expect(badge.left+badge.width/2).toBe(badge.anchorX);
     }
   });
-  it('keeps edge badges visible after resize and preserves placement under anchor list reordering',()=>{
+  it('keeps edge labels spatially attached even when clipped and ignores list order',()=>{
     const anchors=[anchor('left',0,0),anchor('right',1,1),anchor('near-right',.98,.99)];
     for(const [width,height] of [[400,400],[220,160]]){
       const first=layoutRobotBadges(anchors,width,height),reordered=layoutRobotBadges([...anchors].reverse(),width,height);
       for(const badge of first){expect(reordered.find(item=>item.robot_id===badge.robot_id)).toEqual(badge);
-        expect(badge.left+badge.width).toBeLessThanOrEqual(width);expect(badge.top+badge.height).toBeLessThanOrEqual(height);}
+        expect(badge.left+badge.width/2).toBe(badge.anchorX);expect(badge.top).toBe(badge.anchorY+2);}
     }
     expect(layoutRobotBadges(anchors,0,0)).toEqual([]);
   });
 });
 
 describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
-  it('pins the connection marker to the original model projection and draws only selected original scan samples',async()=>{
+  it('has no connection circle and clears old scan geometry/status on sensor Off and mismatched epochs',async()=>{
     const h=viewportHarness(),stamp=Date.now();
-    h.getState().frame!.lidar_overlay={robot_id:'a',origin_uv:[.25,.5],points_uv:[[.2,.3],[.3,.4]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};
-    render(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={vi.fn()}/>);
-    const marker=await screen.findByRole('button',{name:'Select Robot a connection marker'});
-    expect(marker.style.left).toBe('100px');expect(marker.style.top).toBe('200px');
+    h.getState().frame!.lidar_overlay={robot_id:'a',connection_epoch:'connection-a',motion_epoch:'motion-a',origin_uv:[.25,.5],points_uv:[[.2,.3],[.3,.4]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};
+    const current=fleet();current.robots[0].scan={points:[[.1,.2]],source:'test'};
+    const component=render(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
+    await screen.findByRole('button',{name:'Select Robot a in Twin'});
+    expect(document.querySelector('.robot-frame-origin-dot')).toBeNull();
     const overlay=await screen.findByLabelText('Latest frame-bound simulated LiDAR hits');
     expect(overlay.querySelectorAll('circle')).toHaveLength(2);expect(overlay.querySelectorAll('line')).toHaveLength(0);
     fireEvent.change(screen.getByLabelText('LiDAR visualization'),{target:{value:'rays'}});
-    expect(overlay.querySelectorAll('line')).toHaveLength(1);expect(marker.style.left).toBe('100px');
+    expect(overlay.querySelectorAll('line')).toHaveLength(1);
+    component.rerender(<TwinViewport api={h.api} robotFleet={{...current,robots:[{...current.robots[0],lidar_state:'OFF'}]}} onRobotSelect={vi.fn()}/>);
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull();expect(screen.getByText('LiDAR sensor: OFF')).toBeTruthy();
+    component.rerender(<TwinViewport api={h.api} robotFleet={{...current,robots:[{...current.robots[0],motion_epoch:'new-motion'}]}} onRobotSelect={vi.fn()}/>);
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull();
+    component.rerender(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
     vi.spyOn(Date,'now').mockReturnValue(stamp+800);
     await waitFor(()=>expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull());
-    expect(screen.getByText(/No current projected scan/)).toBeTruthy();
+    expect(screen.getByText(/awaiting current scan/)).toBeTruthy();
   });
   it('labels an estimated physical marker and selects its original robot identity without granting live status',async()=>{
     const h=viewportHarness(),select=vi.fn(),physical:RobotFleetRobot={...robot(),kind:'physical',connection_state:'DISCONNECTED',connection_epoch:null,
@@ -827,7 +833,7 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     expect(screen.queryByRole('button',{name:'Select Robot b in Twin'})).toBeNull();
     const layer=screen.getByLabelText('Robots in current Isaac frame');
     expect(layer.style.left).toBe('100px');expect(layer.style.width).toBe('400px');expect(layer.style.height).toBe('400px');
-    expect(badge.style.left).toBe('64px');expect(badge.style.top).toBe('208px');
+    expect(badge.style.left).toBe('64px');expect(badge.style.top).toBe('202px');
     expect(badge.getAttribute('data-anchor-x')).toBe('100');expect(badge.getAttribute('data-anchor-y')).toBe('200');expect(badge.style.transform).toBe('none');
     fireEvent.click(badge);expect(select).toHaveBeenCalledWith('a');
   });
@@ -848,13 +854,13 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     render(<TwinViewport api={h.api} robotFleet={fleet()} onRobotSelect={select}/>);
     const alpha=await screen.findByRole('button',{name:'Select Robot a in Twin'}),beta=screen.getByRole('button',{name:'Select Robot b in Twin'});
     const bounds=(button:HTMLElement)=>({left:parseFloat(button.style.left),top:parseFloat(button.style.top),width:parseFloat(button.style.width),height:parseFloat(button.style.height)});
-    expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(false);
+    expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(true);
     expect(screen.getByLabelText('Robots in current Isaac frame').querySelectorAll('svg')).toHaveLength(0);
     expect(alpha.querySelector('small,em')).toBeNull();expect(alpha.textContent).toBe('Robot a');
     fireEvent.click(alpha);fireEvent.click(beta);expect(select.mock.calls).toEqual([['a'],['b']]);
     h.setSlot(320,220);fireEvent.resize(window);
     const layer=screen.getByLabelText('Robots in current Isaac frame');expect(parseFloat(layer.style.width)).toBeCloseTo(220);expect(parseFloat(layer.style.left)).toBeCloseTo(50);
-    expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(false);
+    expect(rectanglesOverlap(bounds(alpha),bounds(beta))).toBe(true);
     for(const button of [alpha,beta]){const badge=bounds(button);expect(badge.left).toBeGreaterThanOrEqual(0);expect(badge.top).toBeGreaterThanOrEqual(0);
       expect(badge.left+badge.width).toBeLessThanOrEqual(220);expect(badge.top+badge.height).toBeLessThanOrEqual(220);}
   });

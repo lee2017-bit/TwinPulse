@@ -13,55 +13,11 @@ type RobotAnchor=NonNullable<ViewportFrame['robot_anchors']>[number];
 export type RobotBadgePlacement={robot_id:string;anchorX:number;anchorY:number;left:number;top:number;width:number;height:number;lineX:number;lineY:number};
 export function layoutRobotBadges(anchors:RobotAnchor[],width:number,height:number):RobotBadgePlacement[]{
   if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0)return [];
-  const visible=anchors.filter(anchor=>anchor.visible&&anchor.screen_anchor_uv.every(value=>Number.isFinite(value)&&value>=0&&value<=1));
-  if(!visible.length)return [];
-  const margin=Math.min(4,width/8,height/8),gap=Math.min(6,width/(visible.length*4),height/(visible.length*4));
-  const areaW=width-2*margin,areaH=height-2*margin;
-  // A label is only a small name, not a persistent status card. Details live
-  // in the controller opened by selecting the name or the rendered body.
-  let badgeW=Math.min(72,areaW),badgeH=Math.min(16,areaH);
-  const capacity=()=>Math.floor((areaW+gap)/(badgeW+gap))*Math.floor((areaH+gap)/(badgeH+gap));
-  if(capacity()<visible.length){
-    let best=0;
-    for(let columns=1;columns<=visible.length;columns++){
-      const rows=Math.ceil(visible.length/columns),w=Math.min(72,(areaW-gap*(columns-1))/columns),h=Math.min(16,(areaH-gap*(rows-1))/rows);
-      const score=Math.min(w/72,h/16);
-      if(score>best){best=score;badgeW=w;badgeH=h;}
-    }
-  }
-  if(badgeW<=0||badgeH<=0)return [];
-  const clamp=(value:number,low:number,high:number)=>Math.max(low,Math.min(high,value));
-  const order=[...visible].sort((a,b)=>a.robot_id.localeCompare(b.robot_id));
-  // The frame's projected envelopes are conservative display hints, not
-  // mesh segmentation. Still never put a name plate over any such envelope.
-  // In a genuinely overfull view the fleet row remains the selection path.
-  const bodyRects=visible.map(a=>a.screen_bounds_uv).filter(b=>b.length===4&&b.every(Number.isFinite)&&b[2]>b[0]&&b[3]>b[1])
-    .map(b=>({left:b[0]*width,top:b[1]*height,width:(b[2]-b[0])*width,height:(b[3]-b[1])*height}));
-  const occludesBody=(left:number,top:number)=>bodyRects.some(b=>left<b.left+b.width+gap&&left+badgeW+gap>b.left&&top<b.top+b.height+gap&&top+badgeH+gap>b.top);
-  const placed:RobotBadgePlacement[]=[];
-  const make=(anchor:RobotAnchor,left:number,top:number):RobotBadgePlacement=>{
-    const anchorX=anchor.screen_anchor_uv[0]*width,anchorY=anchor.screen_anchor_uv[1]*height;
-    return {robot_id:anchor.robot_id,anchorX,anchorY,left,top,width:badgeW,height:badgeH,
-      lineX:clamp(anchorX,left,left+badgeW),lineY:clamp(anchorY,top,top+badgeH)};
-  };
-  const overlaps=(left:number,top:number)=>placed.some(other=>left<other.left+other.width+gap&&left+badgeW+gap>other.left&&top<other.top+other.height+gap&&top+badgeH+gap>other.top);
-  for(const anchor of order){
-    const preferredX=clamp(anchor.screen_anchor_uv[0]*width-badgeW/2,margin,width-margin-badgeW);
-    const preferredY=clamp(Math.max(anchor.screen_anchor_uv[1],anchor.screen_bounds_uv[3])*height+8,margin,height-margin-badgeH);
-    const candidates=[{left:preferredX,top:preferredY}];
-    // Never move a name across the room to satisfy label packing. The exact
-    // model marker remains independently fixed even if a crowded name hides.
-    for(let step=1;step<=2;step++)for(const sign of [1,-1]){
-      candidates.push({left:preferredX,top:clamp(preferredY+sign*step*(badgeH+gap),margin,height-margin-badgeH)},
-        {left:clamp(preferredX+sign*step*(badgeW+gap),margin,width-margin-badgeW),top:preferredY});
-    }
-    candidates.sort((a,b)=>Math.hypot(a.left-preferredX,a.top-preferredY)-Math.hypot(b.left-preferredX,b.top-preferredY));
-    const candidate=candidates.find(value=>!overlaps(value.left,value.top)&&!occludesBody(value.left,value.top));
-    if(!candidate)continue;
-    placed.push(make(anchor,candidate.left,candidate.top));
-  }
-  const byId=new Map(placed.map(item=>[item.robot_id,item]));
-  return visible.map(anchor=>byId.get(anchor.robot_id)!).filter(Boolean);
+  // Preserve spatial meaning, even if names overlap. Never pack, hide or
+  // clamp a name into another part of the room. The layer clips edge labels.
+  return anchors.filter(a=>a.visible&&a.screen_anchor_uv.every(Number.isFinite)&&a.screen_bounds_uv.every(Number.isFinite))
+    .map(a=>{const anchorX=(a.screen_bounds_uv[0]+a.screen_bounds_uv[2])/2*width,anchorY=a.screen_bounds_uv[3]*height;
+      return {robot_id:a.robot_id,anchorX,anchorY,left:anchorX-36,top:anchorY+2,width:72,height:16,lineX:anchorX,lineY:anchorY};});
 }
 export function pickRobotAnchor(anchors:RobotAnchor[],u:number,v:number):string|null{
   if(!Number.isFinite(u)||!Number.isFinite(v)||u<0||u>1||v<0||v>1)return null;
@@ -514,9 +470,12 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const fitWidth=(anchorFrame?.width??0)*fitScale,fitHeight=(anchorFrame?.height??0)*fitScale;
   const robotBadges=anchorFrame&&robotFleet?layoutRobotBadges((anchorFrame.robot_anchors??[]).filter(anchor=>robotFleet.robots.some(robot=>robot.robot_id===anchor.robot_id)),fitWidth,fitHeight):[];
   const selectedScan=anchorFrame?.lidar_overlay;
+  const scanRobot=robotFleet?.robots.find(r=>r.robot_id===robotFleet.focused_robot_id);
   // Display-only lifetime, not a control watchdog. Preserve original stamp;
   // never transform a scan using a later robot pose or imply localization.
-  const shownScan=selectedScan&&selectedScan.robot_id===robotFleet?.focused_robot_id&&
+  const shownScan=selectedScan&&scanRobot&&fleetRobotFresh(scanRobot)&&scanRobot.lidar_state==='STREAMING'&&!!scanRobot.scan&&
+    selectedScan.connection_epoch===scanRobot.connection_epoch&&selectedScan.motion_epoch===scanRobot.motion_epoch&&
+    selectedScan.robot_id===scanRobot.robot_id&&
     displayAge-selectedScan.captured_at_ms>=0&&displayAge-selectedScan.captured_at_ms<700?selectedScan:null;
   const camera=async(action:string)=>{
     if(busy||!fresh||!image||Date.now()-image.frame.captured_at_ms>=1000||Date.now()<cameraReadyAt)return;
@@ -559,14 +518,6 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
         {scanMode==='rays'&&shownScan.points_uv.filter((_,i)=>i%8===0).map(([u,v],i)=><line key={`ray-${i}`} x1={shownScan.origin_uv[0]*fitWidth} y1={shownScan.origin_uv[1]*fitHeight} x2={u*fitWidth} y2={v*fitHeight}/>)}
         {shownScan.points_uv.map(([u,v],i)=><circle key={i} cx={u*fitWidth} cy={v*fitHeight} r="1.7"/>)}
       </svg>}
-      {(anchorFrame.robot_anchors??[]).filter(a=>a.visible&&robotFleet.robots.some(r=>r.robot_id===a.robot_id)).map(a=>{
-        const robot=robotFleet.robots.find(r=>r.robot_id===a.robot_id)!;
-        return <button type="button" className={`robot-frame-origin-dot ${fleetRobotFresh(robot)?'is-connected':''}`} key={`origin-${a.robot_id}`}
-          style={{left:a.screen_anchor_uv[0]*fitWidth,top:a.screen_anchor_uv[1]*fitHeight}}
-          data-robot-id={a.robot_id} data-anchor-x={a.screen_anchor_uv[0]*fitWidth} data-anchor-y={a.screen_anchor_uv[1]*fitHeight}
-          aria-label={`Select ${robot.label} connection marker`} title={`${robot.label} · current model projection`}
-          onClick={()=>{if(Date.now()-anchorFrame.captured_at_ms<1000)onRobotSelect(robot.robot_id);}}/>;
-      })}
       {robotBadges.map(badge=>{
         const robot=robotFleet.robots.find(row=>row.robot_id===badge.robot_id);if(!robot)return null;
         return <button type="button" key={badge.robot_id} className="robot-anchor-badge"
@@ -587,7 +538,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
     <div className="twin-scan-toolbar" aria-label="LiDAR display">
       <label>LiDAR view <select aria-label="LiDAR visualization" value={scanMode} onChange={event=>setScanMode(event.target.value as 'off'|'points'|'rays')}>
         <option value="off">Off</option><option value="points">Hit points</option><option value="rays">Sparse rays + hits</option></select></label>
-      <span role="status" title="Horizontal geometric scan, not an optical sensor model. Rays are an X-ray overlay without depth occlusion; use hit points to inspect the first surface.">{shownScan?`Scanning obstacles · ${shownScan.points_uv.length} visible hits · SIM geometry`:'No current projected scan'} · {shownScan?'Isaac pose · no correction applied':'not a localization result'}{shownScan?.height_m!==undefined?` · sensor ${(shownScan.height_m*100).toFixed(1)} cm · surface hits${scanMode==='rays'?' · X-ray rays':''}`:''}</span>
+      <span role="status" title="Horizontal geometric scan, not an optical sensor model. Rays are an X-ray overlay without depth occlusion; use hit points to inspect the first surface.">{!scanRobot?'Select a robot to inspect LiDAR':scanRobot.lidar_state==='OFF'?'LiDAR sensor: OFF':scanMode==='off'?`LiDAR display hidden · sensor ${scanRobot.lidar_state}`:shownScan?`LiDAR sensor: ON · Scanning obstacles · ${shownScan.points_uv.length} visible hits · SIM geometry`:`LiDAR sensor: ${scanRobot.lidar_state} · awaiting current scan`}{shownScan&&scanMode!=='off'&&<> · Isaac pose · no correction applied{shownScan.height_m!==undefined?` · sensor ${(shownScan.height_m*100).toFixed(1)} cm · surface hits${scanMode==='rays'?' · X-ray rays':''}`:''}</>}</span>
     </div>
     {error && <p role="alert">Viewer: {error}. Browser display is unavailable; this does not mean scene apply failed.
       {diagnostic && <button onClick={()=>callbacks.current.diagnose?.(diagnostic)}>View display diagnostics</button>}</p>}

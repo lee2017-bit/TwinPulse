@@ -71,10 +71,11 @@ class ViewportService:
                 scan=frame.get('lidar_overlay')
                 if scan is not None:
                     if (not isinstance(scan,dict) or not {'robot_id','origin_uv','points_uv','captured_at_ms','source','physical_authority'}<=set(scan)
-                            or set(scan)-{'robot_id','origin_uv','points_uv','captured_at_ms','source','physical_authority','height_m'}
+                            or set(scan)-{'robot_id','origin_uv','points_uv','captured_at_ms','source','physical_authority','height_m','connection_epoch','motion_epoch'}
                             or not isinstance(scan['robot_id'],str) or re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',scan['robot_id']) is None
                             or scan['source'] not in {'isaac_usd_aabb_rays','isaac_usd_surface_rays'} or scan['physical_authority'] is not False
                             or (scan['source']=='isaac_usd_surface_rays' and (type(scan.get('height_m')) not in (int,float) or not math.isfinite(scan['height_m']) or not 0<scan['height_m']<2))
+                            or (scan['source']=='isaac_usd_surface_rays' and any(not isinstance(scan.get(k),str) or re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',scan[k]) is None for k in ('connection_epoch','motion_epoch')))
                             or type(scan['captured_at_ms']) not in (int,float) or not math.isfinite(scan['captured_at_ms'])
                             or type(frame['captured_at_ms']) not in (int,float) or not -50<=frame['captured_at_ms']-scan['captured_at_ms']<=350
                             or not isinstance(scan['points_uv'],list) or len(scan['points_uv'])>90

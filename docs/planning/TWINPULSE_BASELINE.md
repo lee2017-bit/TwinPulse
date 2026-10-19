@@ -1,6 +1,12 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.550**
+- 문서 버전: **Baseline v1.0.551**
+
+> **v551 / 2026-10-19 · 현재 이름/센서OFF/전체 데모 인수.** 최종 설치 `20261019T041616Z-09ccb64bf047`/source `09ccb64bf047b9099f95a89eabf8dcd8fea36ac3d0891aa59304fd295612ddb2`/1622 exact. 이름은 표시 모델 하단+2px/중앙, 겹침 허용/packing·숨기기·초록 원0. actual body/이름 선택→상태/조종기 유지. 센서STREAMING+현재 연결/동작epoch+원시각/현재frame만 점·레이 표시; OFF 시 화면0과 상태OFF를 검사한다. 동작명 `Turn LiDAR on/off`와 현재상태를 분리했다. 이전 marker-to-metadata/비겹침만으로 이름 근접성 PASS를 준 검증 공백은 정정하며 원자료를 수정하지 않았다.
+>
+> 같은 동결본 actual Test BrowserWindow/real Flash·Nemotron/Isaac fresh38/cold13/수정·Undo-lineage8/원과거이력4 whole PASS.690이동표본 하단/중심오차 최대.012450/.012337px/원0,최대화면나이906.247ms/1초초과0,60초고정dock변동0px. 일반Start44.142/restart59.035s·sameowner/8765하나/debug0,실제 Computer Use native AltF4 두번과 owned정리PASS. 재시작 AX0은ready로세지않고창활성화/새AX인증Home을확인했다. 현재SHA gateREADY_FOR_SUPERVISED_POWERED_TEST/issues0/원FAIL·Stop고장 negative거절. 실제실물·센서세계정합·Pi/제동/주행/OSpaste/Explorer/다른PC NOT_RUN. 보호·기하·속도·8192B 변경0.
+>
+> 원 lineage01의 약60GB GPU AccelStruct할당/OOM/native crash는 exact원로그SHA로 보존, 원인UNKNOWN/재발위험을남긴다. 동일장면/90°/scan/수정·Undo02 PASS는원인해결이아니다. 데모01의Control view toggle 시험기오류와02의Stop409 exact증거누락도보존·게시제외. 읽기관찰기보강후03을Home부터실제새생성해수동/센서OFF·ON/360°/침대·의자도착/Stop까지184.480s·2.74MB 전부녹화했다.279원표본/280packet PTS최대20ms/첫·끝decode확인·trim/배속/보간0,렌더러표본이며native시작/실물촬영아니다. 이번20HTTP추정.1794705/새UNKNOWN0·추가50누적2.6980218/잔여47.3019782·이전20별도불변. 로봇OFF/새의존성·Cloud·삭제0. [전체 인수·정확 한계](../releases/SIM_ALPHA_2026-10-19_FULL_JOURNEY.md) · [단일 보고서](../../outputs/robot-undername-off-20261019/requested-report.html). 아래v550은이전판이다.
 
 > **v550 / 2026-10-19 · 모델 기준 LiDAR·표면 첫 반사·sensor-local 공통 검토, SIM/저장 센서 한정 PASS.** 현재 `20261019T023227Z-26b7974d6b6e`/source `26b7974d6b6ea94a2d1ef1544cbeadc333c9b2f9d22f0851d7cd2346994a3aea`/1622파일 exact. 실제 `base_scan`(명목18.2cm/뒤3.2cm), 표시 USD 표면/수평 첫교차를 사용하며 가구의 빈공간/다리/낮은 물체를 독립 실제 USD로 확인했다. 실제 실측/광학·정확 LDS가 아닌180방향/8m 기하근사, 다른 로봇의 센서 차폐 미포함. 기존 motion 충돌 상자·시간·속도·현재프레임·8192B 보호는 바꾸지 않았다. 원시각/센서pose/height/source 기록·기본 점/선택 X-ray선·300px 센서 검토창과 공통 SIM/live실물/저장 native 표시기를 추가했다. 앱으로 원저장346→342반사점을 전환했으나 새 실물 수신/세계 정합으로 승격하지 않는다.
 >
@@ -1392,6 +1398,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-551 | 2026-10-19 | 1.0.551 | 모델 바로 아래 이름·초록 원 제거·sensor OFF 화면/epoch결속·Home부터 전체 새생성 데모 | 09cc 실제38/13/8/4·일반native lifecycle·현재SHA gateREADY/negative거절. GPU OOM1 UNKNOWN·데모01FAIL/02증거제외 보존, 최종03 원영상184.480s. 실물 NOT_RUN. [보고서](../../outputs/robot-undername-off-20261019/requested-report.html) |
 | BL-550 | 2026-10-19 | 1.0.550 | 모델 장착 frame·표시 표면 first-hit·공통 sensor-local 검토·body/정상단계 필수 gate | 최종26b 실제 fresh38/cold13/lineage8/history4 및 일반native lifecycle PASS; 첫집계 NOT_READY 보존 후 필수단계 보강·현재gate READY/issues0/negative 거절. 실물/정합 NOT_RUN. [보고서](../../outputs/lidar-surface-20261019/lidar-report.html) |
 | BL-547 | 2026-10-19 | 1.0.547 | 같은 동결08 새10 전체재인수·Stop all ACK 시험기 누락 수정·원시계 영상/종료판정 분리 | fresh32/cold13/lineage8/history4·현재gate READY_FOR_SUPERVISED_POWERED_TEST/issues0. 원08FAIL·09증거FAIL·역사적UNKNOWN/Kit누락 보존, 실제Pi/제동/주행 NOT_RUN. [보고서](../../outputs/robot-test-entry-20261019/report.html) |
 | BL-546 | 2026-10-19 | 1.0.546 | 감독관측/수집·bootstrap 순환/Close·liveness·표시/첫GET 영구회복불능 수정, 현재08 설치 | fresh14후360 화면1초초과 wholeFAIL; cold13/lineage8/history4/진단7 독립PASS. 원인미확정/원Kit1개보존누락·현재gate NOT_READY. [보고서](../../outputs/robot-test-entry-20261019/report.html) |

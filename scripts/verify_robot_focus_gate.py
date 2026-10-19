@@ -162,8 +162,12 @@ def validate_display(fresh):
     if len(layout)!=5:issues.append('DISPLAY_LAYOUT_MATRIX_MISSING')
     bodies=steps.get('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',{}).get('evidence',{}).get('bodySelections',[])
     if (len(bodies)!=2 or {r.get('name') for r in bodies}!={'Alpha','Beta'} or
-            any(r.get('bodyHit') is not True or type(r.get('marker_error_px')) not in (int,float) or not 0<=r['marker_error_px']<=1 for r in bodies)):
+            any(r.get('bodyHit') is not True or r.get('origin_marker_count')!=0 or
+                any(type(r.get(k)) not in (int,float) or not 0<=r[k]<=1 for k in ('label_under_body_error_px','label_horizontal_error_px')) for r in bodies)):
         issues.append('CURRENT_MODEL_BODY_SELECTION_NOT_PROVEN')
+    off=steps.get('LiDAR Off pauses but retains connection; On restarts sensor',{}).get('evidence',{}).get('off',{})
+    if off.get('overlay_count')!=0 or off.get('sensor_state')!='OFF' or off.get('observed_ms',0)<900:
+        issues.append('SENSOR_OFF_OVERLAY_REMOVAL_NOT_PROVEN')
     targets=[(1920,1080),(1366,768),(1093,614),(911,512),(1600,900)]
     sizes=[(r.get('window',{}).get('width',0),r.get('window',{}).get('height',0)) for r in layout]
     if len(set(sizes))!=5 or any(not any(abs(w-x)<=1 and abs(h-y)<=1 for w,h in sizes) for x,y in targets):issues.append('DISPLAY_LAYOUT_SIZES_NOT_PROVEN')
@@ -180,6 +184,9 @@ def validate_display(fresh):
                 or any(type(n) not in (int,float) or not math.isfinite(n) or not 0<=n<=1 for n in bounds)
                 or bounds[2]<=bounds[0] or bounds[3]<=bounds[1]):
             issues.append('INVALID_OR_OBSCURED_CURRENT_DISPLAY');break
+        if (value.get('origin_marker_count')!=0 or any(type(value.get(k)) not in (int,float) or not 0<=value[k]<=1
+                for k in ('label_under_body_error_px','label_horizontal_error_px'))):
+            issues.append('ROBOT_LABEL_NOT_ATTACHED_TO_BODY');break
     if displays and displays[-1].get('frame_id',0)<=displays[0].get('frame_id',0):issues.append('DECODED_DISPLAY_NOT_ADVANCING')
     if (displays and (not displays[0].get('scene_revision') or not displays[0].get('stage_epoch')
             or any((r.get('scene_revision'),r.get('stage_epoch'))!=(displays[0].get('scene_revision'),displays[0].get('stage_epoch')) for r in displays)

@@ -5,10 +5,11 @@
 import {expect} from '../apps/twinpulse-web/node_modules/@playwright/test/index.mjs';
 import {currentControlView,checkControlView,visibleMotion} from './control_view_acceptance.mjs';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 
-export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result}){
+export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result,demoRecorder}){
  await select('Alpha');
  const command=async text=>{await drawer('Alpha').getByRole('textbox',{name:'Robot command',exact:true}).fill(text);
   await drawer('Alpha').getByRole('button',{name:'Send command',exact:true}).click();};
@@ -58,6 +59,15 @@ export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sen
   const view=await currentControlView(page,'Alpha');checkControlView(view);await shot('destination-'+kind+'-arrived');
   return {before,after,motion,source,criteria:'Current scene target and exterior standoff; original collision guard and low speed unchanged. Not physical navigation.'};
  });
+ if(demoRecorder){
+  // End the continuous public Home→new generation→controls video BEFORE any
+  // private historical sensor import or saved physical configuration is shown.
+  result.demo_end_at=Date.now();result.demo_end='AFTER_ACTUAL_CHAIR_ARRIVAL_BEFORE_NATIVE_OR_PC_SETUP';
+  await fs.writeFile(path.join(demoRecorder,'finish-recording.request'),'Actual chair arrival completed; stop before private reviews.\n');
+  const end=Date.now()+60000;let complete=false;
+  while(Date.now()<end){try{await fs.access(path.join(demoRecorder,'app-screen.mp4'));complete=true;break;}catch{}await sleep(250);}
+  if(!complete)throw Error('Public demo recorder did not finish before private review');
+ }
  await step('Actual saved native scan imported via UI and shown by the shared renderer without world alignment',async()=>{
   const inputPath=fileURLToPath(new URL('../artifacts/photo-scan-review-20260927/native-scan-bundle.json',import.meta.url));
   const bytes=await fs.readFile(inputPath),original=JSON.parse(bytes);

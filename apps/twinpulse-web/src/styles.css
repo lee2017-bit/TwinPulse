@@ -469,12 +469,9 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .chat-workspace .robot-anchor-layer .robot-anchor-badge, .robot-anchor-badge { position:absolute; pointer-events:auto; min-width:0; min-height:0; max-width:none; padding:1px 2px; box-sizing:border-box; overflow:hidden; border:0; border-radius:0; background:transparent; color:#173940; text-align:left; line-height:1.15; font-size:10px; box-shadow:none; text-shadow:0 0 2px #fff,0 1px 1px #fff; transition:none; }
 .chat-workspace .robot-anchor-layer .robot-anchor-badge:hover, .robot-anchor-badge:hover { background:transparent; }
 .robot-anchor-badge:focus-visible { outline:1px solid #086f67; outline-offset:1px; }
-.robot-anchor-heading { display:flex; align-items:center; gap:4px; min-width:0; }
+.robot-anchor-heading { display:flex; align-items:center; justify-content:center; text-align:center; gap:4px; min-width:0; }
 .robot-anchor-heading strong { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
 .robot-anchor-heading em { flex:0 0 auto; font-size:8px; font-style:normal; }
-.chat-workspace .robot-frame-origin-dot { position:absolute; z-index:2; pointer-events:auto; width:7px; height:7px; min-width:0; min-height:0; padding:0; margin:0; border:1.5px solid #84969c; background:transparent; border-radius:50%; transform:translate(-50%,-50%); box-shadow:0 0 0 1px #fff9; }
-.chat-workspace .robot-frame-origin-dot.is-connected { border-color:#07976c; }
-.chat-workspace .robot-frame-origin-dot:hover { background:transparent; }
 .robot-lidar-overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; }
 .robot-lidar-overlay circle { fill:#07aeb4; opacity:.78; }
 .robot-lidar-overlay line { stroke:#07aeb4; stroke-width:.8; opacity:.18; }

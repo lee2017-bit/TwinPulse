@@ -132,7 +132,7 @@ try{
  await step('Visible Isaac startup readiness before scene operations',async()=>{
   await expect(page.getByText('Isaac connected',{exact:true}).first()).toBeVisible({timeout:120000});
   await shot('startup-ready');return {criterion:'UI current authenticated engine connection; startup waiting is measured, not immediate readiness'};});
- await step('Robots menu PC preparation and connection entry while hardware stays OFF',async()=>{
+ const checkPcPreparation=()=>step('Robots menu PC preparation and connection entry while hardware stays OFF',async()=>{
   await page.getByRole('button',{name:'Robots',exact:true}).click();const panel=page.getByRole('dialog');
   await expect(panel.getByRole('heading',{name:'Registered robots',exact:true})).toBeVisible();
   const active=panel.getByRole('combobox',{name:'Active robot',exact:true});
@@ -145,6 +145,7 @@ try{
   await shot('robot-pc-prepared');const evidence={pc_preparation:await checks.innerText(),connection_requested:false};
   await panel.getByRole('button',{name:/^Close/}).click();return evidence;
  });
+ if(phase!=='fresh')await checkPcPreparation();
  if(['physical-only','controls-only','controls-tail'].includes(phase))result.project=arg('--project');
  if(phase==='fresh'){
   await step('Visible New chat and original robot-containing scene brief',async()=>{
@@ -228,7 +229,7 @@ try{
   await step('FAULT INJECTION: cold delayed ACK preserves and actually submits the next robot draft before confirmed Stop',async()=>{
    for(const name of ['Alpha','Beta']){await select(name);await drawer(name).getByRole('button',{name:'Connect',exact:true}).click();
     await poll(()=>robot(name)?.connection_state==='CONNECTED');await drawer(name).getByRole('button',{name:'Prepare',exact:true}).click();
-    if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'LiDAR On',exact:true}).click();
+    if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'Turn LiDAR on',exact:true}).click();
     await poll(()=>robot(name)?.lidar_state==='STREAMING');}
    await select('Alpha');const alphaText='Alpha robot turn left 90 degrees',betaText='Beta robot turn right 90 degrees';let delayed=0;
    conversationFaultHandler=async route=>{let body;try{body=route.request().postDataJSON();}catch{}
@@ -259,7 +260,7 @@ try{
     await select(name);if(robot(name)?.connection_state!=='CONNECTED')await drawer(name).getByRole('button',{name:'Connect',exact:true}).click();
     await poll(()=>robot(name)?.connection_state==='CONNECTED');
     await drawer(name).getByRole('button',{name:'Prepare',exact:true}).click();
-    if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'LiDAR On',exact:true}).click();
+    if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'Turn LiDAR on',exact:true}).click();
     await poll(()=>robot(name)?.lidar_state==='STREAMING');
    }
    await select('Alpha');await shot('two-connected');return sims();});
@@ -278,12 +279,14 @@ try{
      const badge=page.getByRole('button',{name:'Select '+name+' in Twin',exact:true});await expect(badge).toBeVisible();
      const hint=await badge.evaluate(el=>{const style=getComputedStyle(el),layer=el.closest('.robot-anchor-layer').getBoundingClientRect(),b=JSON.parse(el.dataset.screenBounds),canvas=document.querySelector('.twin-frame-slot canvas');
       const x=layer.left+(b[0]+b[2])/2*layer.width,y=layer.top+(b[1]+b[3])/2*layer.height;
-      const marker=[...document.querySelectorAll('.robot-frame-origin-dot')].find(e=>e.getAttribute('aria-label')==='Select '+el.textContent+' connection marker'),m=marker?.getBoundingClientRect();
+      const plate=el.getBoundingClientRect();
       return {text:el.textContent,background:style.backgroundColor,border:style.borderTopWidth,shadow:style.boxShadow,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,
-       extraLines:el.querySelectorAll('small,em').length,point:{x,y},bodyHit:document.elementFromPoint(x,y)===canvas||document.elementFromPoint(x,y)===marker,
-       marker_error_px:m?Math.hypot(m.x+m.width/2-x,m.y+m.height/2-y):null,
+       extraLines:el.querySelectorAll('small,em').length,point:{x,y},bodyHit:document.elementFromPoint(x,y)===canvas,
+       origin_marker_count:document.querySelectorAll('.robot-frame-origin-dot').length,
+       label_under_body_error_px:Math.abs(plate.top-(layer.top+b[3]*layer.height+2)),
+       label_horizontal_error_px:Math.abs(plate.left+plate.width/2-x),
        frame_id:Number(canvas.dataset.frameId),age_ms:Date.now()-Number(canvas.dataset.capturedAt)};});
-     if(hint.text!==name||hint.background!=='rgba(0, 0, 0, 0)'||hint.border!=='0px'||hint.shadow!=='none'||hint.extraLines||hint.width>72.1||hint.height>16.1||!hint.bodyHit||hint.age_ms>=1000||hint.marker_error_px===null||hint.marker_error_px>1)
+     if(hint.text!==name||hint.background!=='rgba(0, 0, 0, 0)'||hint.border!=='0px'||hint.shadow!=='none'||hint.extraLines||hint.width>72.1||hint.height>16.1||!hint.bodyHit||hint.age_ms>=1000||hint.origin_marker_count!==0||hint.label_under_body_error_px>1||hint.label_horizontal_error_px>1)
       throw Error('Ordinary label still hides the robot or body selection is not current: '+JSON.stringify(hint));
      await page.mouse.click(hint.point.x,hint.point.y);await expect(drawer(name)).toBeVisible();
      await poll(()=>fleet?.focused_robot_id===robot(name)?.robot_id);bodySelections.push({name,...hint});
@@ -446,9 +449,13 @@ try{
    const delta=robot('Alpha').pose.position_m[2]-old;if(Math.abs(delta-2*Math.PI)>.01)throw Error('Full turn incomplete');
    await shot('turn-scan-complete');return {delta,scan_points:robot('Alpha').scan?.points.length,operation_id:robot('Alpha').operation_id};});
   await step('LiDAR Off pauses but retains connection; On restarts sensor',async()=>{
-   const epoch=robot('Alpha').connection_epoch;await drawer('Alpha').getByRole('button',{name:'LiDAR Off',exact:true}).click();
+   const epoch=robot('Alpha').connection_epoch;await drawer('Alpha').getByRole('button',{name:'Turn LiDAR off',exact:true}).click();
    await poll(()=>robot('Alpha')?.lidar_state==='OFF');if(robot('Alpha').connection_epoch!==epoch)throw Error('Disconnected');
-   await drawer('Alpha').getByRole('button',{name:'LiDAR On',exact:true}).click();await poll(()=>robot('Alpha')?.lidar_state==='STREAMING');return {epoch};});
+   await expect(page.locator('.robot-lidar-overlay')).toHaveCount(0);await expect(page.getByText('LiDAR sensor: OFF',{exact:true})).toBeVisible();
+   await sleep(900);await expect(page.locator('.robot-lidar-overlay')).toHaveCount(0);await shot('lidar-sensor-off-no-overlay');
+   const off={overlay_count:await page.locator('.robot-lidar-overlay').count(),sensor_state:robot('Alpha').lidar_state,observed_ms:900};
+   await drawer('Alpha').getByRole('button',{name:'Turn LiDAR on',exact:true}).click();await poll(()=>robot('Alpha')?.lidar_state==='STREAMING');
+   await expect(page.locator('.robot-lidar-overlay')).toHaveCount(1);return {epoch,off};});
   await step('Actual obstacle approach stops Beta and fresh reverse escapes',async()=>{
    await select('Beta');const before=structuredClone(robot('Beta'));
    await sendChat('Beta robot forward 1m');await poll(()=>robot('Beta')?.control_state==='DRIVING');
@@ -493,9 +500,10 @@ try{
     await expect(drawer(name)).toBeVisible();clicks.push(name);await drawer(name).getByRole('button',{name:'Close robot controls',exact:true}).click();
    }
    await shot('badges-both-clicked');return {count,clicks};});
-  if(phase==='fresh')await sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result});
+  if(phase==='fresh')await sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result,demoRecorder:arg('--public-demo-recorder-dir')});
  }
- await step('Physical setup shown while robot remains off; no Connect or movement',async()=>{
+  if(phase==='fresh')await checkPcPreparation();
+  await step('Physical setup shown while robot remains off; no Connect or movement',async()=>{
   const physical=fleet?.robots.find(r=>r.kind==='physical'&&r.robot_id!=='legacy-physical');
   if(!physical)throw Error('Existing registered physical robot required; no fake registration');
   if(phase==='fresh'&&physical.display_pose)throw Error('A previous project/revision physical marker leaked into this new scene');

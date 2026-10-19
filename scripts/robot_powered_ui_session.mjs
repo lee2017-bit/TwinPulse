@@ -21,6 +21,9 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
   if(pages.length!==1)throw Error('Exactly one installed renderer required');
   const page=pages[0];page.setDefaultTimeout(10000);
   const session={output,browser,page,events:[],errors:[],fleet:null,registry:null,operation:null,stage:'ATTACH',frames:[],pending:Promise.resolve(),began:Date.now(),recording:true};
+  let httpOrder=0;const requestRows=new WeakMap();session.fleet_requests=[];session.fleet_samples=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname!=='/v1/product/robot-fleet'||request.method()!=='POST')return;
+    const row={...request.postDataJSON(),order:++httpOrder,at:Date.now()};requestRows.set(request,row);session.fleet_requests.push(row);});
   const redact=s=>String(s).replace(/#bootstrap=[^\s"']+/g,'#bootstrap=[REDACTED]');
   session.identity=await page.evaluate(()=>window.twinpulseDesktop?.versions());
   if(!session.identity?.engine?.launch_id)throw Error('Installed identity unavailable');
@@ -28,11 +31,14 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
   page.on('pageerror',e=>session.errors.push({at:Date.now(),stage:session.stage,error:redact(e)}));
   page.on('requestfailed',r=>session.errors.push({at:Date.now(),stage:session.stage,path:new URL(r.url()).pathname,method:r.method(),failure:r.failure()}));
   page.on('response',async r=>{try{
-    const pathname=new URL(r.url()).pathname;
+    const pathname=new URL(r.url()).pathname,order=++httpOrder,requestRow=requestRows.get(r.request());
     if(!pathname.startsWith('/v1/product/'))return;
-    if(r.status()>=400)session.errors.push({at:Date.now(),stage:session.stage,path:pathname,method:r.request().method(),status:r.status(),body:await r.json().catch(()=>null)});
+    const mini=body=>(body.fleet??body).robots?.map(v=>({robot_id:v.robot_id,operation_id:v.operation_id,connection_epoch:v.connection_epoch,motion_epoch:v.motion_epoch,applied_motion_epoch:v.applied_motion_epoch,control_state:v.control_state}));
+    if(requestRow){requestRow.status=r.status();requestRow.response_order=order;const body=await r.json().catch(()=>null);if(body)requestRow.result_robots=mini(body);}
+    if(r.status()>=400)session.errors.push({at:Date.now(),stage:session.stage,path:pathname,method:r.request().method(),status:r.status(),request:requestRow,body:await r.json().catch(()=>null)});
     if(pathname==='/v1/product/robot-fleet'&&r.ok()){
       const body=await r.json();session.fleet=body.fleet??body;
+      session.fleet_samples.push({order,revision:session.fleet.revision,robots:mini(body)});
       const safe=JSON.stringify({at:Date.now(),stage:session.stage,method:r.request().method(),request:r.request().method()==='POST'?r.request().postDataJSON():undefined,response:body});
       session.pending=session.pending.then(()=>fs.appendFile(path.join(output,'fleet-observations.jsonl'),safe+'\n'));
     }
@@ -61,6 +67,7 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
   session.finishVideo=async()=>{
     session.recording=false;await cdp.send('Page.stopScreencast').catch(error=>session.errors.push({at:Date.now(),stage:session.stage,recorder_stop:redact(error)}));await session.pending;
     const end=Date.now();await fs.writeFile(path.join(output,'frame-times.json'),JSON.stringify({began:session.began,end,frames:session.frames},null,2));
+    await fs.writeFile(path.join(output,'fleet-http-receipts.json'),JSON.stringify({requests:session.fleet_requests,samples:session.fleet_samples},null,2));
     if(!session.frames.length)throw Error('No actual screencast frames received');
     const lines=['ffconcat version 1.0'];
     for(let i=0;i<session.frames.length;i++){const frame=session.frames[i],next=session.frames[i+1]?.at??end;lines.push("file '"+frame.file+"'",'duration '+Math.max(.02,(next-frame.at)/1000).toFixed(3));}
@@ -75,6 +82,6 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
     await session.note('VIDEO_ENCODE',{code,frames:session.frames.length,wall_ms:end-session.began,no_audio:true,source:'Actual same installed Electron renderer CDP screencast; not native desktop or robot camera.'});
     if(code!==0)throw Error('Video encode failed');return path.join(output,'app-screen.mp4');
   };
-  await session.note('ATTACHED_RECORDING',{native:'NOT_RUN_GEOMETRY_CAPTURE_FAILED',path:'Same installed explicit Test BrowserWindow',robot_authority:'Only public UI, no API mutation'});
+  await session.note('ATTACHED_RECORDING',{native:'NOT_RUN_RENDERER_RECORDING_ONLY',path:'Same installed explicit Test BrowserWindow',robot_authority:'Only public UI, no API mutation'});
   return session;
 }

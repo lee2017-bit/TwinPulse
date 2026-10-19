@@ -22,7 +22,7 @@ def fixture():
         if s['name']=='One session full turn with actual simulated scan':s['evidence']['delta']=2*math.pi
     rows['lineage']['requested_command']='left 90 degrees'
     display=dict(at=1,frame_id=1,frame_age_ms=20,live=True,scene_revision='scene',stage_epoch='stage',canvas_visible=True,canvas=dict(height=300),intersection_px2=0,
-        stop_visible=True,pad_visible=True,robot_badge_visible=True,robot_bounds=[.1,.2,.15,.3])
+        stop_visible=True,pad_visible=True,robot_badge_visible=True,robot_bounds=[.1,.2,.15,.3],origin_marker_count=0,label_under_body_error_px=0,label_horizontal_error_px=0)
     cold_prefix=[]
     for n in required['cold']:
         if n.startswith('FAULT'):break
@@ -34,7 +34,8 @@ def fixture():
     rows['fresh']['fleet_requests']=[dict(action='stop_all',request_id='stop-id',status=200,result_robots=deepcopy(robots))]
     rows['fresh']['display_samples']=[dict(display,frame_id=i+1,at=1+i*500) for i in range(120)]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['rows']=[dict(deepcopy(display),window=dict(width=w,height=h)) for w,h in [(1920,1080),(1366,768),(1093,614),(911,512),(1600,900)]]
-    next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['bodySelections']=[dict(name=n,bodyHit=True,marker_error_px=.01) for n in ('Alpha','Beta')]
+    next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['bodySelections']=[dict(name=n,bodyHit=True,origin_marker_count=0,label_under_body_error_px=.01,label_horizontal_error_px=.01) for n in ('Alpha','Beta')]
+    next(s for s in rows['fresh']['steps'] if s['name']=='LiDAR Off pauses but retains connection; On restarts sensor')['evidence']['off']=dict(overlay_count=0,sensor_state='OFF',observed_ms=900)
     rows['fresh']['sustained_hold_observations']=[dict(at=r['at']) for r in rows['fresh']['display_samples']]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Continuous 60-second'))['elapsed_ms']=61000
     rows.update(normal=dict(status='PASS_NORMAL_START_REUSE_DEBUG_OFF',release_id='release',source_sha256='source',launch_id='first',ready_wait_ms=40000,
@@ -49,6 +50,13 @@ def fixture():
     return rows
 
 class GateTests(unittest.TestCase):
+    def test_sensor_off_leftover_hits_and_detached_names_are_rejected(self):
+        for overlay in (1,None):
+            r=fixture();next(s for s in r['fresh']['steps'] if s['name']=='LiDAR Off pauses but retains connection; On restarts sensor')['evidence']['off']['overlay_count']=overlay
+            self.assertIn('SENSOR_OFF_OVERLAY_REMOVAL_NOT_PROVEN',validate(r,'release','source'))
+        for change in (dict(origin_marker_count=1),dict(label_under_body_error_px=20),dict(label_horizontal_error_px=20)):
+            r=fixture();r['fresh']['display_samples'][0].update(change)
+            self.assertIn('ROBOT_LABEL_NOT_ATTACHED_TO_BODY',validate(r,'release','source'))
     def test_actual_shared_sensor_import_is_required_not_an_unclassified_normal_step(self):
         r=fixture();name='Actual saved native scan imported via UI and shown by the shared renderer without world alignment'
         r['fresh']['steps']=[s for s in r['fresh']['steps'] if s['name']!=name]

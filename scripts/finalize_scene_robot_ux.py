@@ -16,7 +16,8 @@ from verify_robot_lineage_offline import source_receipt
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('root',type=Path);p.add_argument('--tag',default='01')
-    p.add_argument('--installation-file',default='installation.json');p.add_argument('--offline-dir',default='offline');a=p.parse_args()
+    p.add_argument('--installation-file',default='installation.json');p.add_argument('--offline-dir',default='offline');p.add_argument('--lineage-tag');a=p.parse_args()
+    lineage_tag=a.lineage_tag or a.tag
     root=a.root.resolve();identity=source_receipt();prior=root.parent/'robot-test-entry-20261019'
     load=lambda path:json.loads(path.read_text(encoding='utf-8-sig'))
     digest=lambda path:sha256(path.read_bytes()).hexdigest()
@@ -33,7 +34,7 @@ def main():
     review=load(prior/'evidence-manifest10.json')['physical_readiness_review']
     review['replay']=dict(path='observation-replay.json',sha256=digest(root/'observation-replay.json'))
     review['basis']='Unchanged hardware safety sources; exact original-input replay is source-hash checked. New actual installed SIM/UI and ordinary lifecycle evidence is separate. Historical unknown causes are not claimed repaired.'
-    names=dict(fresh=f'ui-fresh-{a.tag}/result.json',cold=f'ui-cold-{a.tag}/result.json',lineage=f'lineage-{a.tag}/result.json',lineage_cold=f'lineage-cold-{a.tag}/result.json',
+    names=dict(fresh=f'ui-fresh-{a.tag}/result.json',cold=f'ui-cold-{a.tag}/result.json',lineage=f'lineage-{lineage_tag}/result.json',lineage_cold=f'lineage-cold-{lineage_tag}/result.json',
         normal='normal/result.json',lifecycle='normal-lifecycle.json',installation=a.installation_file,supplementary=a.offline_dir+'/result.json',budget='budget-final.json')
     records={k:load(root/v) for k,v in names.items()}
     review['unresolved']=['CURRENT_JOURNEY_NOT_PASS:'+role for role in ('fresh','cold','lineage','lineage_cold') if records[role].get('status')!='PASS']
@@ -57,7 +58,7 @@ def main():
         expected='RUN_NOT_PASS:fresh' if condition=='original-failure' else 'KNOWN_PHYSICAL_BLOCKER:LIVE_STOP_BROKEN_NEGATIVE_GATE_TEST'
         if rejected['status']!='NOT_READY' or expected not in rejected['issues']:raise ValueError('Negative failed '+condition)
     videos=[]
-    for folder in (f'recording-fresh{a.tag}',f'recording-cold{a.tag}',f'recording-lineage{a.tag}',f'recording-lineage-cold{a.tag}'):
+    for folder in (f'recording-fresh{a.tag}',f'recording-cold{a.tag}',f'recording-lineage{lineage_tag}',f'recording-lineage-cold{lineage_tag}'):
         path=root/folder/'app-screen.mp4';clock=load(root/folder/'frame-times.json');frames=clock['frames'];expected=[(r['at']-frames[0]['at'])/1000 for r in frames]+[(clock['end']-frames[0]['at'])/1000]
         probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v','-show_packets','-show_entries','packet=pts_time:format=duration','-of','json',str(path)],text=True))
         pts=[float(v['pts_time']) for v in probe['packets']];error=max((abs(x-y) for x,y in zip(pts,expected)),default=1000);duration=float(probe['format']['duration'])
@@ -66,8 +67,9 @@ def main():
     save('video-receipts.json',videos)
     attempts=[]
     for path in sorted(root.glob('*/result.json')):
-        r=load(path);engine=r.get('desktop',{}).get('engine',{})
-        attempts.append(dict(path=str(path.relative_to(root)),sha256=digest(path),status=r.get('status'),error=r.get('error'),release=engine.get('release_id',r.get('release_id')),launch_id=engine.get('launch_id',r.get('launch_id')),project=r.get('project'),input_sha256=r.get('input_sha256'),steps=r.get('steps'),operation_id=r.get('operation_id')))
+        r=load(path);engine=r.get('desktop',r.get('identity',{})).get('engine',{})
+        review_path=path.parent/'post-review.json'
+        attempts.append(dict(path=str(path.relative_to(root)),sha256=digest(path),status=r.get('status'),post_review=load(review_path) if review_path.exists() else None,error=r.get('error'),release=engine.get('release_id',r.get('release_id')),launch_id=engine.get('launch_id',r.get('launch_id')),project=r.get('project'),input_sha256=r.get('input_sha256'),steps=r.get('steps'),operation_id=r.get('operation_id')))
     save('attempts.json',attempts)
     fresh=records['fresh'];display=fresh['display_samples'];budget=records['budget'];layout=next(s['evidence'] for s in fresh['steps'] if s['name'].startswith('Non-overlapping dock'))
     hold=fresh['sustained_hold_observations'];hold_samples=[v for v in display if hold[0]['at']-50<=v['at']<=hold[-1]['at']+50]

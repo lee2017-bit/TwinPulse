@@ -410,7 +410,7 @@ class FleetRuntime:
                     hit=project(Gf.Vec3d(x+px*math.cos(yaw)-py*math.sin(yaw),y+px*math.sin(yaw)+py*math.cos(yaw),height))
                     if hit and all(0<=n<=1 for n in hit):hits.append(hit)
                 if origin and all(0<=n<=1 for n in origin):
-                    self.frame_scan=dict(robot_id=identity,origin_uv=origin,points_uv=hits[:90],
+                    self.frame_scan=dict(robot_id=identity,connection_epoch=robot['epoch'],motion_epoch=robot['motion_epoch'],origin_uv=origin,points_uv=hits[:90],
                         captured_at_ms=scan['captured_at_ms'],source='isaac_usd_surface_rays',physical_authority=False,
                         height_m=height)
         return out

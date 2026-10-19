@@ -341,7 +341,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           release.current();setPrepareConfirmed(false);void action(envelope('prepare',robot,physical?{confirmed:true}:{}));}}>Prepare</button>
         <button type="button" disabled={busy||selectionPending||!available||robot.connection_state==='DISCONNECTED'&&!robot.connection_epoch} onClick={()=>{release.current();void action(envelope('disconnect',robot));}}>Disconnect</button>
         <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||!robot.capabilities.lidar||!fleetRobotFresh(robot)} aria-pressed={available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)} onClick={()=>{
-          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}}>LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'Off':'On'}</button>
+          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}}>Turn LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}</button>
       </div>
       <div className="robot-fleet-control-primary">
         <div className="robot-fleet-pad" role="group" aria-label="Hold to drive" tabIndex={0}

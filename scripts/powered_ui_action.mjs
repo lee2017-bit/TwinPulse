@@ -25,7 +25,7 @@ try {
  }
  else if(action==='controller') await page.locator('.robot-fleet-row').filter({hasText:label}).click();
  else if(action==='connect') await control.getByRole('button',{name:'Connect',exact:true}).click();
- else if(action==='lidar-on'||action==='lidar-off') await control.getByRole('button',{name:action==='lidar-on'?'LiDAR On':'LiDAR Off',exact:true}).click();
+ else if(action==='lidar-on'||action==='lidar-off') await control.getByRole('button',{name:action==='lidar-on'?'Turn LiDAR on':'Turn LiDAR off',exact:true}).click();
  else if(action==='prepare') {
    await control.getByRole('checkbox',{name:'I am present and confirm zero-command controller preparation.',exact:true}).check();
    await control.getByRole('button',{name:'Prepare',exact:true}).click();

@@ -20,11 +20,15 @@ export async function currentControlView(page,name){
   const bounds=badge?.dataset.screenBounds?JSON.parse(badge.dataset.screenBounds):null;
   const labels=[...document.querySelectorAll('.robot-anchor-badge')],layer=badge?.closest('.robot-anchor-layer')?.getBoundingClientRect();
   let badgeBodyOverlap=0;
-  if(layer)for(const label of labels)for(const other of labels){const b=JSON.parse(other.dataset.screenBounds??'null');
+  if(layer)for(const label of labels){const b=JSON.parse(label.dataset.screenBounds??'null');
    if(!b||b.length!==4||b[2]<=b[0]||b[3]<=b[1])continue;const plate=label.getBoundingClientRect();
    badgeBodyOverlap+=Math.max(0,Math.min(plate.right,layer.left+b[2]*layer.width)-Math.max(plate.left,layer.left+b[0]*layer.width))*
     Math.max(0,Math.min(plate.bottom,layer.top+b[3]*layer.height)-Math.max(plate.top,layer.top+b[1]*layer.height));}
-  return {at:Date.now(),frame_id:Number(canvas.dataset.frameId),captured_at_ms:Number(canvas.dataset.capturedAt),
+  const plate=badge?.getBoundingClientRect();
+  return {origin_marker_count:document.querySelectorAll('.robot-frame-origin-dot').length,
+   label_under_body_error_px:plate&&layer&&bounds?Math.abs(plate.top-(layer.top+bounds[3]*layer.height+2)):null,
+   label_horizontal_error_px:plate&&layer&&bounds?Math.abs(plate.left+plate.width/2-(layer.left+(bounds[0]+bounds[2])/2*layer.width)):null,
+   at:Date.now(),frame_id:Number(canvas.dataset.frameId),captured_at_ms:Number(canvas.dataset.capturedAt),
    frame_age_ms:Date.now()-Number(canvas.dataset.capturedAt),live:canvas.dataset.live==='true',scene_revision:canvas.dataset.sceneRevision,
    stage_epoch:canvas.dataset.stageEpoch,canvas_visible:shown(canvas),canvas:{x:c.x,y:c.y,width:c.width,height:c.height},
    dock:{x:d.x,y:d.y,width:d.width,height:d.height},intersection_px2:intersection,stop_visible:hit(stop),pad_visible:shown(pad)&&directions.length===4&&directions.every(hit),
@@ -36,6 +40,7 @@ export function checkControlView(value,{fresh=true,robot=true}={}){
  if(fresh&&(!value.live||!Number.isFinite(value.frame_id)||!Number.isFinite(value.frame_age_ms)||value.frame_age_ms<0||value.frame_age_ms>=1000))throw Error('Motion display is not current: '+JSON.stringify(value));
  if(robot&&(!value.robot_badge_visible||!value.robot_bounds||value.robot_bounds.length!==4||value.robot_bounds.some(n=>!Number.isFinite(n)||n<0||n>1)||value.robot_bounds[2]<=value.robot_bounds[0]||value.robot_bounds[3]<=value.robot_bounds[1]))throw Error('Selected rendered robot not visible: '+JSON.stringify(value));
  if(robot&&value.badge_body_overlap_px2>0)throw Error('Name plate overlaps a projected robot envelope: '+JSON.stringify(value));
+ if(robot&&(value.origin_marker_count!==0||value.label_under_body_error_px===null||value.label_under_body_error_px>1||value.label_horizontal_error_px===null||value.label_horizontal_error_px>1))throw Error('Name is detached from model bottom or origin circle remains: '+JSON.stringify(value));
 }
 export async function visibleMotion(page,name,condition,{duration=0,timeout=15000,onSample=()=>{}}={}){
  const began=Date.now();let first=null,last=null,count=0;

@@ -122,7 +122,7 @@ try{
    });
    await step('Actual LiDAR and readable Twin linkage after failed command',async()=>{
     await drawer().getByRole('button',{name:'Prepare',exact:true}).click();
-    const on=drawer().getByRole('button',{name:'LiDAR On',exact:true});if(await on.isVisible())await on.click();await poll(()=>robot()?.scan?.points.length>0,30000);
+    const on=drawer().getByRole('button',{name:'Turn LiDAR on',exact:true});if(await on.isVisible())await on.click();await poll(()=>robot()?.scan?.points.length>0,30000);
     // Public scan readiness can precede the bounded 0.5s journal cadence.
     await sleep(800);
     const record=await download('initial-operation.json'),source=record.manifest.source_twin_context,
@@ -132,7 +132,7 @@ try{
     const layout=await linkage.locator('dl').evaluate(e=>({display:getComputedStyle(e).display,valueWidths:[...e.querySelectorAll('dd')].map(d=>d.getBoundingClientRect().width)}));
     if(layout.display!=='block'||layout.valueWidths.some(w=>w<100))throw Error('Unreadable actual linkage layout');
     result.lineage_layout=layout;await linkage.screenshot({path:path.join(out,'03-linkage-panel.png')});result.screenshots.push('03-linkage-panel.png');await shot('03-linked-ids');
-    await drawer().getByRole('button',{name:'LiDAR Off',exact:true}).click();await page.getByRole('button',{name:'Stop all',exact:true}).click();
+    await drawer().getByRole('button',{name:'Turn LiDAR off',exact:true}).click();await page.getByRole('button',{name:'Stop all',exact:true}).click();
     await drawer().getByRole('button',{name:'Close robot controls',exact:true}).click();
     return {source,stream_id:scan.scan.stream_id,frame_sequence:scan.scan.frame_sequence};
    });
@@ -165,7 +165,7 @@ try{
    const requestedCommand=arg('--command')??'left 90 degrees';result.requested_command=requestedCommand;
    const input=drawer().getByRole('textbox',{name:'Robot command',exact:true});await input.fill(requestedCommand);
    await drawer().getByRole('button',{name:'Send command',exact:true}).click();await poll(()=>robot()?.reason==='TASK_COMPLETED',30000);
-   const lidar=drawer().getByRole('button',{name:'LiDAR On',exact:true});await lidar.click();await poll(()=>robot()?.scan?.points.length>0);
+   const lidar=drawer().getByRole('button',{name:'Turn LiDAR on',exact:true});await lidar.click();await poll(()=>robot()?.scan?.points.length>0);
    await sleep(800);const record=await download('initial-operation.json'),source=record.manifest.source_twin_context;
    if(source.project_id!==project||source.conversation_session_id!==conversation.session_id||!source.scene_revision)throw Error('Missing conversation/Twin link');
    const command=record.events.find(e=>e.kind==='command_accepted'),completion=record.events.find(e=>e.kind==='motion_result'&&e.command_id===command?.command_id),scan=record.events.find(e=>e.kind==='engine_observation'&&e.scan?.points.length);
@@ -176,7 +176,7 @@ try{
    if(layout.display!=='block'||layout.valueWidths.some(w=>w<100))throw Error('Linkage IDs unreadable in actual layout');
    result.lineage_layout=layout;await linkage.screenshot({path:path.join(out,'03-linkage-panel.png')});result.screenshots.push('03-linkage-panel.png');
    await shot('03-linked-ids');
-   await drawer().getByRole('button',{name:'LiDAR Off',exact:true}).click();await poll(()=>robot()?.lidar_state==='OFF');
+   await drawer().getByRole('button',{name:'Turn LiDAR off',exact:true}).click();await poll(()=>robot()?.lidar_state==='OFF');
    result.initial_events_sha256=hash(record.events);return {source,command_id:command.command_id,frame_sequence:scan.scan.frame_sequence,stream_id:scan.scan.stream_id};
   });
   await step('Stop all retains original request identity in operation',async()=>{

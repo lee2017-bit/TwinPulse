@@ -23,7 +23,7 @@ from tests.integration.test_r4_bridge_api import R4ApiTests
 class ViewportTests(unittest.TestCase):
     def test_surface_scan_requires_finite_model_height(self):
         packet=self.frame();packet['frame']['lidar_overlay']=dict(robot_id='a',origin_uv=[.5,.5],points_uv=[[.1,.2]],
-            captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,physical_authority=False)
+            captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,connection_epoch='epoch',motion_epoch='motion',physical_authority=False)
         self.service.exchange('engine','stage',packet)
         self.assertEqual(self.service.status()['frame']['lidar_overlay']['height_m'],.182)
         for height in (None,float('nan'),-1,3):
@@ -32,7 +32,7 @@ class ViewportTests(unittest.TestCase):
     def test_maximum_visual_metadata_fits_original_atomic_receipt_without_static_scan_duplication(self):
         packet=self.frame();uv=[.12345678901234567,.8765432109876543]
         packet['frame']['robot_anchors']=[dict(robot_id=str(i)+'a'*98,screen_anchor_uv=uv,screen_bounds_uv=[*uv,.99,.99],visible=True) for i in range(16)]
-        packet['frame']['lidar_overlay']=dict(robot_id='a'*100,origin_uv=uv,points_uv=[uv]*90,captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,physical_authority=False)
+        packet['frame']['lidar_overlay']=dict(robot_id='a'*100,origin_uv=uv,points_uv=[uv]*90,captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,connection_epoch='a'*100,motion_epoch='b'*100,physical_authority=False)
         self.service.exchange('engine','stage',packet)
         state=self.service.status();header=json.dumps(state)
         self.assertLessEqual(len(header.encode()),8192)
