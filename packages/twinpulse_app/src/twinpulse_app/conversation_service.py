@@ -713,6 +713,29 @@ class ConversationService:
         self._goal_progress_at=tick;self._goal_progress_phase=phase
         self._persist()
 
+    def _sync_fleet_registrations(self):
+        receipts=getattr(self.robot_fleet,'registration_receipts',None)
+        if not callable(receipts):return
+        # Consume factual menu receipts on the chat observation path. Never
+        # put conversation fsync/locks on held-drive, Stop or telemetry paths.
+        known={e['payload']['registration']['request_id'] for e in self._state['events']
+               if e['type']=='fleet_sim_registered'}
+        pending=[r for r in receipts(self._state['session_id']) if r['request_id'] not in known]
+        if not pending:return
+        if len(self._state['messages'])+2*len(pending)>1000 or len(self._state['events'])+3*len(pending)>2100:
+            raise BrokerError('conversation_limit','Robot registration was accepted but chat history is full. Preserve this project; no robot action was replayed.',status=409)
+        for receipt in pending:
+            x,y,yaw=receipt['position_m']
+            action=self._message('user',f"Menu action · Add SIM robot: {receipt['label']}. "
+                f"Start X={x:g} m, Y={y:g} m, yaw={yaw:g} rad (SIM scene coordinates).")
+            message=self._message('assistant',f"SIM robot registered: {receipt['label']}. "
+                "Model: TurtleBot3 Burger (built-in SIM model; not selected by the name). "
+                f"Start X={x:g} m, Y={y:g} m, yaw={yaw:g} rad. "
+                "Registration does not connect, display or move the robot. Select it, then use Connect and Prepare separately. "
+                f"Robot ID: {receipt['robot_id']}.",origin_message_id=action['message_id'])
+            self._event('fleet_sim_registered',registration=deepcopy(receipt),menu_message_id=action['message_id'],message_id=message['message_id'])
+        self._persist()
+
     def snapshot(self, owner=None):
         with self._lock:
             if self._restore_error is None:
@@ -722,6 +745,7 @@ class ConversationService:
                 self._sync_robot(owner)
                 self._sync_inspection(owner)
                 self._sync_goal_demonstration(owner)
+                self._sync_fleet_registrations()
                 if self._flush_queued_edit():self._persist()
             public = deepcopy(self._state)
             # Attachment bytes are retained locally for a pending restart, not

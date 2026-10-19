@@ -8,10 +8,11 @@ import {currentControlView,checkControlView,visibleMotion} from './control_view_
 import {safeUnknownDriveRejection,scopedFetchBoundaryFailure} from './explicit_fault_recovery.mjs';
 import {recordStopReceipt,assertFinalStopReceipt} from './control_stop_receipt.mjs';
 import {sceneRobotUx} from './scene_robot_ux_acceptance.mjs';
+import {registrationHistory} from './registration_history_receipt.mjs';
 const args=process.argv.slice(2),arg=n=>{const i=args.indexOf(n);return i<0?undefined:args[i+1];};
 const out=arg('--output'),endpoint=arg('--cdp'),phase=arg('--phase')??'fresh';
 if(!out||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit CDP/output required');
-if(phase==='reopen'&&(!arg('--project')||!arg('--field-config')))throw Error('Cold reopen requires explicit --project and --field-config before any UI action');
+if(phase==='reopen'&&(!arg('--project')||!arg('--field-config')||!arg('--registration-prior')))throw Error('Cold reopen requires explicit project, field-config and registration-prior before any UI action');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],display_samples:[],native_os_input:'NOT_RUN',physical:'OFF_NOT_RUN'};
 result.fault_classification_contract='07b_NORMAL_FIRST_SINGLE_FINAL_FAULT_WINDOW_ORDINARY_ABORT_REMAINS_FAILURE';
@@ -20,7 +21,7 @@ const recordViewportReceipts=args.includes('--viewport-receipts');
 result.viewport_receipt_trace={enabled:recordViewportReceipts,method:'Passive existing GET response bodies/headers only; no request interception, extra fetch or product state injection',receipts:[]};
 const finalFaultSteps=[];
 const faultRequests=new WeakMap(),requestMeta=new WeakMap(),responseChecks=[];let observedOrder=0;
-let browser,page,fleet=null,conversation=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null,conversationFaultHandler=null,imageFaultHandler=null;const fleetsByContext=new Map();
+let browser,page,fleet=null,conversation=null,chatState=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null,conversationFaultHandler=null,imageFaultHandler=null;const fleetsByContext=new Map();
 const faultRoutePattern=/\/v1\/product\/(?:robot-fleet|conversation|viewport\/current)(?:\?.*)?$/;
 const faultFleetRoute=request=>new URL(request.request().url()).pathname.endsWith('/viewport/current')
  ?imageFaultHandler?imageFaultHandler(request):request.continue()
@@ -116,7 +117,7 @@ try{
       state:state?.state,fps:state?.fps,camera_pending:state?.camera_pending,frame:frame(state?.frame),last_frame:frame(state?.last_frame)});
     }catch(e){result.viewport_receipt_trace.receipts.push({at:receivedAt,step:activeStep,path:p,status:r.status(),error:clean(e)});}
    }
-   if(p==='/v1/product/conversation'&&r.status()===200)try{const incoming=await r.json();conversation={project_id:incoming.project_id,session_id:incoming.session_id,context};
+   if(p==='/v1/product/conversation'&&r.status()===200)try{const incoming=await r.json();conversation={project_id:incoming.project_id,session_id:incoming.session_id,context};chatState=incoming;
      fleet=fleetsByContext.get(context)??null;result.conversation=conversation;}catch{}
    if(p==='/v1/product/robot-fleet'&&r.status()===200)try{const incoming=await r.json(),previous=fleetsByContext.get(context);const old=previous&&incoming.revision<previous.revision;
      recordStopReceipt(meta,incoming);
@@ -180,6 +181,11 @@ try{
     await page.getByRole('button',{name:'Add SIM robot',exact:true}).click();await poll(()=>!!robot(name));
    }
    await page.getByRole('button',{name:'Manage robot fleet',exact:true}).click();return sims();});
+  await step('SIM menu registrations persist once in the matching chat',async()=>{
+   await poll(()=>chatState?.project_id===result.project&&sims().every(r=>chatState.events.some(e=>e.type==='fleet_sim_registered'&&e.payload.registration.robot_id===r.robot_id)));
+   result.registration_history=registrationHistory(chatState,sims());
+   const reply=page.getByText('SIM robot registered: Beta.',{exact:false});await reply.scrollIntoViewIfNeeded();await expect(reply).toBeVisible();
+   await shot('registration-chat-history');return result.registration_history;});
  }
  if(phase==='reopen'){
   await step('Open saved conversation from visible sidebar',async()=>{
@@ -189,6 +195,13 @@ try{
   await step('Cold restore preserves definitions but no motion authority',async()=>{
    if(sims().some(r=>r.connection_state!=='DISCONNECTED'||r.operation_id||r.motion_epoch))throw Error('Restored authority');
    await shot('cold-restored');return sims();});
+  await step('Saved menu registration history reopens unchanged without reconnecting',async()=>{
+   await poll(()=>chatState?.project_id===result.project&&sims().every(r=>chatState.events.some(e=>e.type==='fleet_sim_registered'&&e.payload.registration.robot_id===r.robot_id)));
+   const priorBytes=await fs.readFile(arg('--registration-prior')),prior=JSON.parse(priorBytes).registration_history;
+   result.registration_history=registrationHistory(chatState,sims());
+   if(JSON.stringify(result.registration_history)!==JSON.stringify(prior))throw Error('Saved registration messages/events changed or duplicated');
+   await page.getByText('SIM robot registered: Beta.',{exact:false}).scrollIntoViewIfNeeded();await shot('cold-registration-chat-history');
+   return {...result.registration_history,prior_sha256:createHash('sha256').update(priorBytes).digest('hex')};});
   await step('Historical operation reopened and downloaded without reconnecting',async()=>{
    await select('Alpha');const prior=robot('Alpha').last_operation_id;
    if(!prior)throw Error('Historical operation ID missing');

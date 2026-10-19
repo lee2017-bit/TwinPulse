@@ -32,15 +32,28 @@ try{
   await expect(page.getByText('Your environment Twin is saved without a SIM robot or automatic route.',{exact:false})).toBeVisible({timeout:240000});
   await expect(page.getByRole('img',{name:'Current Isaac Digital Twin render',exact:true})).toBeVisible();
   result.project=(await page.getByRole('banner').innerText()).match(/chat_[a-zA-Z0-9_]+/)?.[0];await s.shot('generated');});
- await step('Register robot and explicit Connect and Prepare',async()=>{
-  await page.getByRole('button',{name:'Manage robot fleet',exact:true}).click();await page.getByText('Add SIM robot',{exact:true}).click();
-  await page.getByRole('textbox',{name:'Name',exact:true}).fill('TurtleBot3');
-  await page.getByRole('spinbutton',{name:'X (m)',exact:true}).fill('1');await page.getByRole('spinbutton',{name:'Y (m)',exact:true}).fill('1');
+ await step('Slow visible menu registration, persistent chat receipt, explicit Connect and Prepare',async()=>{
+  await page.getByRole('button',{name:'Manage robot fleet',exact:true}).click();await sleep(2000);
+  await page.getByText('Add SIM robot',{exact:true}).click();
+  const form=page.locator('.robot-fleet-register');await form.scrollIntoViewIfNeeded();
+  await expect(form.getByText('Model: TurtleBot3 Burger (built-in SIM model). The name is only a label.',{exact:true})).toBeVisible();await sleep(3000);
+  await s.note('Name is a label; built-in TurtleBot3 Burger model');
+  const name=page.getByRole('textbox',{name:'Name',exact:true});await name.fill('');await name.pressSequentially('TurtleBot3',{delay:180});await sleep(1500);
+  await page.getByRole('spinbutton',{name:'X (m)',exact:true}).fill('1');await sleep(1500);
+  await page.getByRole('spinbutton',{name:'Y (m)',exact:true}).fill('1');await sleep(1500);
+  await page.getByRole('spinbutton',{name:'Yaw (rad)',exact:true}).fill('0');await s.shot('registration-form');await sleep(4000);
   await page.getByRole('button',{name:'Add SIM robot',exact:true}).click();await poll(()=>!!robot());
+  await poll(()=>s.conversation?.project_id===result.project&&s.conversation.events.some(e=>e.type==='fleet_sim_registered'&&e.payload.registration.robot_id===robot().robot_id));
+  result.registration_event=structuredClone(s.conversation.events.find(e=>e.type==='fleet_sim_registered'&&e.payload.registration.robot_id===robot().robot_id));
+  const receipt=page.getByText('SIM robot registered: TurtleBot3.',{exact:false});await receipt.scrollIntoViewIfNeeded();await expect(receipt).toBeVisible();
+  await s.shot('registration-chat-receipt');await sleep(5000);
   await page.getByRole('button',{name:'Manage robot fleet',exact:true}).click();
-  await page.locator('.robot-fleet-row').filter({hasText:'TurtleBot3'}).click();
+  await sleep(1500);await page.locator('.robot-fleet-row').filter({hasText:'TurtleBot3'}).click();await sleep(2000);
+  await s.note('Explicit Connect after registration; no automatic connection');
   await drawer().getByRole('button',{name:'Connect',exact:true}).click();await poll(()=>robot()?.connection_state==='CONNECTED');
+  await sleep(2500);
   await drawer().getByRole('button',{name:'Prepare',exact:true}).click();
+  await sleep(2500);
   const on=drawer().getByRole('button',{name:'Turn LiDAR on',exact:true});if(await on.isVisible())await on.click();await poll(()=>robot()?.lidar_state==='STREAMING');
   // Selecting a fleet row already opens Control view. It is a toggle, so an
   // unconditional second click would leave the compact control layout.

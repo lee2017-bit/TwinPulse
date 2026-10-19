@@ -43,6 +43,10 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
       session.pending=session.pending.then(()=>fs.appendFile(path.join(output,'fleet-observations.jsonl'),safe+'\n'));
     }
     if(pathname==='/v1/product/robots'&&r.ok())session.registry=await r.json();
+    if(pathname==='/v1/product/conversation'&&r.ok()){
+      const body=await r.json();
+      if(!session.conversation||session.conversation.project_id!==body.project_id||body.revision>=session.conversation.revision)session.conversation=body;
+    }
   }catch(e){session.errors.push({at:Date.now(),stage:session.stage,observer_error:redact(e)});}});
   const cdp=await page.context().newCDPSession(page);session.cdp=cdp;
   let lastFrame=0;

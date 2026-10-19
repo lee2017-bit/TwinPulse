@@ -1,6 +1,16 @@
 # TwinPulse
 
-> **2026-10-19 latest SIM checkpoint — names below robots, no origin circles, true LiDAR OFF and a full fresh demo.** [Latest full demo in GitHub Releases](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-full-journey) · [Download full MP4, 2.74 MB / 3:04](https://github.com/lee2017-bit/TwinPulse/releases/download/sim-alpha-2026-10-19-full-journey/TwinPulse-Full-Journey-Demo-2026-10-19.mp4). Source is on **main**; videos are Release assets, not files in the main tree. This is the existing private repository, not a public launch.
+> **2026-10-19 latest SIM checkpoint — persistent robot-add chat history and slow, readable registration.** [Latest full demo in Releases](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-registration-history) · [Download MP4, 3.28 MB / 3:46](https://github.com/lee2017-bit/TwinPulse/releases/download/sim-alpha-2026-10-19-registration-history/TwinPulse-Slow-Robot-Add-Demo-2026-10-19.mp4). Source belongs on **main**; videos are **Release assets**, not files in the main tree. Existing private repository, not a public launch. No new installer ZIP; older ZIPs are not this build.
+
+![Actual menu registration and its matching saved chat entry](docs/media/twinpulse-registration-20261019.png)
+
+Installed `20261019T055138Z-23d3cd0036ec` records each actual **Manage → Add SIM robot** action once in the matching project/chat: name, built-in model, starting pose and robot/request/Twin identities. Menu actions are explicitly labeled, not presented as typed or model-interpreted requests. Registration is not connection, rendered placement or movement; **Connect and Prepare remain explicit**. The current SIM model is built-in TurtleBot3 Burger; entering a name is not choosing a model. Old registrations without receipts are not given invented history.
+
+The entire new video starts at Home → New chat → English input/Create → actual fresh generation → **32.368 seconds of readable model/name/X/Y/yaw/Add/chat receipt/Connect/Prepare** → manual controls → LiDAR OFF/ON → chat360° scan → nearest bed/chair → Stop/OFF. Actual slow typing and pauses, not a slowed or reused scene recording. The exact registration event/messages survive cold reopening of this very demo; connection/drive authority does not. Whole same-installed real-provider/Isaac acceptance: fresh39/cold14/edit-Undo8/history4, plus independent demo restore and ordinary Start/native close/restart. Robot OFF; physical driving/world alignment and full native/Explorer/OSclipboard/DPI/anotherPC remain NOT_RUN. Historical GPU OOM root remains UNKNOWN, not claimed fixed by a clean rerun. [Acceptance and exact limits](docs/releases/SIM_ALPHA_2026-10-19_REGISTRATION_HISTORY.md) · [One detailed local report](outputs/robot-registration-history-20261019/requested-report.html).
+
+### Previous full-journey checkpoint (v551)
+
+[Previous full demo](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-full-journey) · [Previous MP4, 2.74 MB / 3:04](https://github.com/lee2017-bit/TwinPulse/releases/download/sim-alpha-2026-10-19-full-journey/TwinPulse-Full-Journey-Demo-2026-10-19.mp4). The entries below are historical, not the current registration-history acceptance.
 
 ![Actual installed Twin: name directly below the robot, no circle and compact bottom controls](docs/media/twinpulse-full-journey-20261019.png)
 

@@ -1,6 +1,8 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.551**
+- 문서 버전: **Baseline v1.0.552**
+
+> **v552 / 2026-10-19 · 등록 이력·느린 전체 데모 PC/SIM 인수:** 설치 `20261019T055138Z-23d3cd0036ec`/source `23d3cd0036ec7c70c9523c851cf69c9d299c2db508a64cd19b0cc999eb5e6631`/1622 exact. 실제 등록 영수증 outbox→같은 project/chat의 명시 menu action/anchored reply/event·이름/내장Burger모델/시작pose·robot/request/chat/TwinID,중복0/coldexact·권한복원0. typed/모델요청·연결/표시/이동과구분,drive/Stop/telemetry채팅IO0·옛이력발명0. 폼도 이름/기종구분. 실제Flash/Nemotron/Isaac whole39/14/8/4 및 별도새full demo/cold PASS. Home부터 실제생성37.038초/느린등록·이력·Connect·Prepare32.368초/수동·scan·침대·의자·StopOFF,원MP4 226.160초3280557B/SHA6f2ba06e…339450·344sample/345packet PTS최대20ms/자르기·배속0. 같은demo원event/메시지exact복원.697이동표본/이름<.013px·원0/최대화면776.305ms/60초geometry변동0. 일반Start41.581/재시작57.740s·sameowner/debug0·실제nativeAltF4두번owned10/26→0·lock/ports0. 최초AX0은거절/창활성화뒤인증Home확인. 현재9역할SHA gateREADY/issues0·원FAIL/Stop고장negative거절,보조62/gate26/offline5별도. 새10HTTP 추정USD.0895623/새UNKNOWN0·추가50누적2.7875841/잔여47.2124159·이전20별도불변. 실물OFF/Pi·제동/주행/정합·새사진/Explorer/OSpaste/fullnative/DPI/다른PC NOT_RUN;v551GPU OOM근본원인UNKNOWN은새PASS로해결주장0. 새의존성/OS·Isaac/Cloud/삭제0·원자료/dirty/무관PNG7보존. [현재범위/영상](../releases/SIM_ALPHA_2026-10-19_REGISTRATION_HISTORY.md)·[단일실제보고서](../../outputs/robot-registration-history-20261019/requested-report.html). 게시영수증은원격검증후별도기록한다.
 
 > **게시 영수증:** v551 source main `328221d412a567588dd5b5e4fcccfce33ac354d2` 원격 exact, 기존private [full-journey Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-full-journey) MP4 2742739B/SHA1dc125a6…183f15·SUMS109B 실제재다운로드 SHA exact. README 최상단 Release/직접영상 연결, 새ZIP/공개전환0. 후속문서영수증은 같은 동결설치09cc의 기록이다.
 
@@ -1400,6 +1402,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-552 | 2026-10-19 | 1.0.552 | 메뉴 SIM등록의 같은채팅 불변이력·권한분리·느린 실제추가와Home부터새전체영상 |23d 실제39/14/8/4+별도demo/cold·일반native lifecycle·9역할SHA gateREADY/issues0/negative거절. 원MP4 226.160초/추가32.368초. 실물NOT_RUN·과거GPU원인UNKNOWN보존. [보고서](../../outputs/robot-registration-history-20261019/requested-report.html)|
 | BL-551 | 2026-10-19 | 1.0.551 | 모델 바로 아래 이름·초록 원 제거·sensor OFF 화면/epoch결속·Home부터 전체 새생성 데모 | 09cc 실제38/13/8/4·일반native lifecycle·현재SHA gateREADY/negative거절. GPU OOM1 UNKNOWN·데모01FAIL/02증거제외 보존, 최종03 원영상184.480s. 실물 NOT_RUN. [보고서](../../outputs/robot-undername-off-20261019/requested-report.html) |
 | BL-550 | 2026-10-19 | 1.0.550 | 모델 장착 frame·표시 표면 first-hit·공통 sensor-local 검토·body/정상단계 필수 gate | 최종26b 실제 fresh38/cold13/lineage8/history4 및 일반native lifecycle PASS; 첫집계 NOT_READY 보존 후 필수단계 보강·현재gate READY/issues0/negative 거절. 실물/정합 NOT_RUN. [보고서](../../outputs/lidar-surface-20261019/lidar-report.html) |
 | BL-547 | 2026-10-19 | 1.0.547 | 같은 동결08 새10 전체재인수·Stop all ACK 시험기 누락 수정·원시계 영상/종료판정 분리 | fresh32/cold13/lineage8/history4·현재gate READY_FOR_SUPERVISED_POWERED_TEST/issues0. 원08FAIL·09증거FAIL·역사적UNKNOWN/Kit누락 보존, 실제Pi/제동/주행 NOT_RUN. [보고서](../../outputs/robot-test-entry-20261019/report.html) |

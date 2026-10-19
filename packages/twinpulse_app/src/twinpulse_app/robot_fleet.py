@@ -104,6 +104,7 @@ class RobotFleet:
                 if item.get('kind')=='sim' and _id(item.get('robot_id')):
                     self.robots[item['robot_id']]=self._robot(item['robot_id'],item['label'],item['position_m'])
                     self.robots[item['robot_id']]['last_operation_id']=item.get('last_operation_id') if _id(item.get('last_operation_id')) else None
+                    self.robots[item['robot_id']]['_registration']=deepcopy(item.get('registration'))
             self.focused=value.get('focused_robot_id') if value.get('focused_robot_id') in self.robots else None
 
     def _robot(self, identity,label,pose,kind='sim'):
@@ -115,15 +116,26 @@ class RobotFleet:
             live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,command=None,
             telemetry_diagnostic=None,native_diagnostic=None,project_id=None,display_pose=None,
             source_twin_context=None,
-            _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf)
+            _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf,_registration=None)
 
     def _persist(self):
         value=dict(schema_version='robot-fleet-definitions-1.0',focused_robot_id=self.focused,
             physical_history=self.physical_history,
             physical_display_poses=deepcopy(self.physical_display_poses),
-            robots=[dict(robot_id=r['robot_id'],label=r['label'],kind=r['kind'],position_m=r['_spawn'],last_operation_id=r['last_operation_id'])
+            robots=[dict(robot_id=r['robot_id'],label=r['label'],kind=r['kind'],position_m=r['_spawn'],last_operation_id=r['last_operation_id'],
+                         **({'registration':deepcopy(r['_registration'])} if r['_registration'] else {}))
                     for r in self.robots.values() if r['kind']=='sim'])
         self.snapshot_writer.submit(self.definitions,json.dumps(value,ensure_ascii=False,allow_nan=False).encode('utf-8'))
+
+    def registration_receipts(self,conversation_session_id):
+        # Durable definition outbox, not telemetry or an operation/drive lease.
+        # Legacy definitions have no receipt; never invent an old menu action.
+        with self.lock:
+            return [deepcopy(row['_registration']) for row in self.robots.values()
+                    if row['kind']=='sim' and isinstance(row['_registration'],dict)
+                    and isinstance(row['_registration'].get('source_twin_context'),dict)
+                    and row['_registration']['source_twin_context'].get('project_id')==self.broker.project_id
+                    and row['_registration'].get('source_twin_context',{}).get('conversation_session_id')==conversation_session_id]
 
     def _physical_values(self):
         service=getattr(self.devices,'registry_service',None)
@@ -333,6 +345,13 @@ class RobotFleet:
     def _action(self,body,owner,encoded,physical,effects):
         with self.lock:
             request=body['request_id'];known=self.requests.get(request)
+            if body['action']=='register_sim':
+                receipt=next((r['_registration'] for r in self.robots.values()
+                    if r['_registration'] and r['_registration'].get('request_id')==request),None)
+                if receipt:
+                    if receipt['body_sha256']!=hashlib.sha256(encoded.encode('utf-8')).hexdigest():
+                        raise BrokerError('fleet_request_conflict','Request ID already has different content.',status=409)
+                    return # A restored registration retry neither adds nor reconnects.
             if known:
                 if known!=encoded:raise BrokerError('fleet_request_conflict','Request ID already has different content.',status=409)
                 return
@@ -354,7 +373,15 @@ class RobotFleet:
                 if (not isinstance(label,str) or not 1<=len(label.strip())<=80 or any(ord(c)<32 for c in label)
                         or not isinstance(pose,list) or len(pose)!=3 or any(type(v) not in (int,float) or not math.isfinite(v) or abs(v)>100 for v in pose)):
                     raise BrokerError('fleet_registration','Invalid robot name or spawn pose.',status=400)
-                identity=uuid4().hex;self.robots[identity]=self._robot(identity,label.strip(),pose);self.focused=identity;self._persist()
+                previous_focus=self.focused
+                identity=uuid4().hex;self.robots[identity]=self._robot(identity,label.strip(),pose);self.focused=identity
+                self.robots[identity]['_registration']=dict(schema='sim-registration-1.0',request_id=request,
+                    body_sha256=hashlib.sha256(encoded.encode('utf-8')).hexdigest(),robot_id=identity,label=label.strip(),
+                    model_id='turtlebot3_burger',position_m=list(pose),registered_at=_stamp(),source_twin_context=self._twin_context(self.robots[identity]))
+                try:self._persist()
+                except OSError:
+                    self.robots.pop(identity,None);self.focused=previous_focus
+                    raise
             elif action=='stop_all':
                 requested=self._twin_context()
                 for row in self.robots.values():

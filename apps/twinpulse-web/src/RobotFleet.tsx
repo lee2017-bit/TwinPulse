@@ -312,6 +312,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       {showRegister&&<form onSubmit={event=>{event.preventDefault();const position=[Number(x),Number(y),Number(yaw)];
         if(!label.trim()||position.some(value=>!Number.isFinite(value))){setError('Enter a name and finite position values.');return;}
         void action(envelope('register_sim',null,{label:label.trim(),position_m:position}));}}>
+        <p className="robot-fleet-policy">Model: TurtleBot3 Burger (built-in SIM model). The name is only a label.</p>
         <label>Name<input value={label} maxLength={80} onChange={event=>setLabel(event.target.value)} required/></label>
         <div className="robot-fleet-position">{([['X (m)',x,setX],['Y (m)',y,setY],['Yaw (rad)',yaw,setYaw]] as const).map(([name,value,set])=>
           <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>

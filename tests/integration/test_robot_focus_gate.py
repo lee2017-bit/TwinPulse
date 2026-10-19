@@ -16,6 +16,8 @@ def fixture():
         desktop=dict(engine=dict(release_id='release')),steps=[dict(name=n,status='PASS',evidence={}) for n in names]) for role,names in required.items()}
     normal=[n for n in required['fresh'] if not n.startswith('FAULT') and n!='Visible Exit TwinPulse normal shutdown']
     rows['fresh'].update(normal_steps_before_fault_window=normal,fault_window_held_until_exit=True)
+    rows['fresh']['registration_history']=dict(project_id='p',session_id='session',entries=[dict(robot_id=n) for n in ('Alpha','Beta')])
+    rows['cold']['registration_history']=deepcopy(rows['fresh']['registration_history'])
     rows['fresh']['steps'].sort(key=lambda s:0 if s['name'] in normal else 2 if s['name']=='Visible Exit TwinPulse normal shutdown' else 1)
     for s in rows['fresh']['steps']:
         if s['name']=='Main chat bounded 90 degree command, measured completion':s['evidence']['delta']=math.pi/2
@@ -50,6 +52,12 @@ def fixture():
     return rows
 
 class GateTests(unittest.TestCase):
+    def test_registration_restore_proof_missing_or_changed_is_rejected(self):
+        for role in ('fresh','cold'):
+            rows=fixture();rows[role].pop('registration_history')
+            self.assertIn('REGISTRATION_CHAT_RESTORE_NOT_PROVEN',validate(rows,'release','source'))
+        rows=fixture();rows['cold']['registration_history']['entries'].append(dict(robot_id='duplicate'))
+        self.assertIn('REGISTRATION_CHAT_RESTORE_NOT_PROVEN',validate(rows,'release','source'))
     def test_sensor_off_leftover_hits_and_detached_names_are_rejected(self):
         for overlay in (1,None):
             r=fixture();next(s for s in r['fresh']['steps'] if s['name']=='LiDAR Off pauses but retains connection; On restarts sensor')['evidence']['off']['overlay_count']=overlay

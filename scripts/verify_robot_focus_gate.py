@@ -14,6 +14,7 @@ REQUIRED={
   'Visible New chat and original robot-containing scene brief',
   'Real provider generation and current Isaac frame',
   'Register two robots through Manage form',
+  'SIM menu registrations persist once in the matching chat',
   'Two simultaneous real Isaac SIM connections and independent scan',
   'Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',
   'Held button moves selected robot; release retains both connections and scans',
@@ -49,6 +50,7 @@ REQUIRED={
  'cold':[
   'Robots menu PC preparation and connection entry while hardware stays OFF',
   'Cold restore preserves definitions but no motion authority',
+  'Saved menu registration history reopens unchanged without reconnecting',
   'Historical operation reopened and downloaded without reconnecting',
   'Explicitly display saved Twin in current Isaac; no automatic motion restore',
   'Cold new explicit SIM connection; actual backward and right pad buttons',
@@ -152,6 +154,10 @@ def validate_records(records,release,source):
             or not 0<lifecycle.get('restart_ready_wait_ms',0)<=120000):
         issues.append('NORMAL_LIFECYCLE_NOT_QUALIFIED')
     if records.get('budget',{}).get('within_approved_total') is not True:issues.append('BUDGET_UNCONFIRMED_OR_EXCEEDED')
+    registration=records.get('fresh',{}).get('registration_history')
+    if (not isinstance(registration,dict) or registration.get('project_id')!=records.get('fresh',{}).get('project')
+            or len(registration.get('entries',[]))!=2 or registration!=records.get('cold',{}).get('registration_history')):
+        issues.append('REGISTRATION_CHAT_RESTORE_NOT_PROVEN')
     issues+=validate_display(fresh)
     return issues
 
