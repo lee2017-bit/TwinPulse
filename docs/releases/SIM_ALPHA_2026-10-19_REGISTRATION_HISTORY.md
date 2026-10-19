@@ -2,6 +2,8 @@
 
 Frozen local installation `20261019T055138Z-23d3cd0036ec`,source manifest `23d3cd0036ec7c70c9523c851cf69c9d299c2db508a64cd19b0cc999eb5e6631`,1622 exact files. Existing **private** repository only;not a public launch. Current source belongs on main;small video/checksums belong in Release assets. No new installer ZIP;older ZIPs are not this build. Isaac Sim/API configuration remain separate prerequisites.
 
+Publication verified: source commit `2e72926de16e470cf49815ccffa517efc65a946b` matched remote main. The actual Release MP4(3280557bytes) and SHA256SUMS(111bytes) were re-downloaded and SHA256-exact. Reviewed synthetic poster only was added to source history;unrelated7PNGs,private photos/raws and failed videos were excluded. Follow-up documentation does not rebuild the frozen product.
+
 ## What changed
 
 - Actual Manage → Add SIM robot creates a persistent registration receipt with name,built-in model,start X/Y/yaw,request/robot/project/chat/Twin identities. The matching chat receives one explicit **Menu action** and anchored assistant reply/event. This is a factual menu receipt,not a request typed by the user or interpreted by an LLM.
@@ -43,4 +45,4 @@ Dedicated cold launch `74f691db90554987b9be3e6fe13c1e08` opens this exact demo a
 
 10new provider HTTP calls,estimatedUSD.0895623,newUNKNOWN0. Additional50campaign cumulativeUSD2.7875841;exact protected remainingUSD47.2124159. Prior20campaign14.9450973 includingUNKNOWN.4770432 stays separate/unchanged. Usage estimates,not provider billing confirmation.
 
-[One local report:all attempts/IDs/SHA/screens/videos/cost/remaining](../../outputs/robot-registration-history-20261019/requested-report.html). Publication receipt is recorded separately after actual remote source/asset verification;follow-up documentation does not rebuild the frozen product.
+[One local report:all attempts/IDs/SHA/screens/videos/cost/remaining](../../outputs/robot-registration-history-20261019/requested-report.html). The verified remote publication receipt is included in that report;follow-up documentation does not rebuild the frozen product.

@@ -1,5 +1,7 @@
 # TwinPulse progress
 
+v552 publication verified: source main `2e72926de16e470cf49815ccffa517efc65a946b` remote exact;existing private [slow-add full demo Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-19-registration-history) MP4 3280557B/SHA6f2ba06e…339450 and SUMS111B re-downloaded/hash-exact. README top directly links the Release/video,not a nonexistent main-tree MP4. No newZIP/visibility change/private photo or sensor raw/failure video upload. This receipt documents the same frozen23d installation,not a rebuild.
+
 ## 2026-10-19 — v552 persistent menu registration and slow full demo
 
 Frozen installed `20261019T055138Z-23d3cd0036ec` /source `23d3cd0036ec7c70c9523c851cf69c9d299c2db508a64cd19b0cc999eb5e6631` /1622 exact files. New actual SIM registration receipts persist in the definitions outbox and are consumed once by the same project/chat observation path, not the held-drive/Stop/telemetry path. Menu action + anchored reply + event preserve name, built-in Burger model, starting pose and robot/request/chat/Twin identities. No old history invented, no connection/movement claim or automatic authority restore. A model caption makes clear that the name is only a label.
