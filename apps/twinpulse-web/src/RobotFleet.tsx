@@ -3,6 +3,8 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import {useEffect,useMemo,useRef,useState} from 'react';
 import type {TwinPulseApi} from './api';
+import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
+import {downloadBlob} from './download-blob';
 import {RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
@@ -135,6 +137,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const [error,setError]=useState<string|null>(null),[busy,setBusy]=useState(false);
   const [label,setLabel]=useState('SIM robot'),[x,setX]=useState('0'),[y,setY]=useState('0'),[yaw,setYaw]=useState('0');
   const [text,setText]=useState(''),[held,setHeld]=useState<FleetDirection|null>(null);
+  const commandDraftVersion=useRef(0);
   const [submitted,setSubmitted]=useState<{request_id:string;text:string;state:string;prior_command_id?:string}|null>(null);
   const [operation,setOperation]=useState<RobotFleetOperation|null>(null),[logBusy,setLogBusy]=useState(false);
   const [showRegister,setShowRegister]=useState(false);
@@ -225,9 +228,10 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     const tick=()=>{
       if(token.current!==gesture)return;
       const now=Date.now(),active=hold.current;
-      if(owner.current.api!==api||owner.current.context!==context||api.context!==context||current.current.state?.focused_robot_id!==captured.robot_id||!current.current.available||document.hidden||active&&now-active.lastTick>250){release.current();return;}
+      const expiry=captured.kind==='physical'?(captured.timing_values?.input_ttl_ms??CONTROL_INPUT_TTL_MS)
+        :Math.min(CONTROL_INPUT_TTL_MS,current.current.state?.policy.input_expiry_ms??CONTROL_INPUT_TTL_MS);
+      if(owner.current.api!==api||owner.current.context!==context||api.context!==context||current.current.state?.focused_robot_id!==captured.robot_id||!current.current.available||document.hidden||active&&now-active.lastTick>=expiry){release.current();return;}
       if(active)active.lastTick=now;
-      const expiry=Math.min(250,current.current.state?.policy.input_expiry_ms??250);
       // One current packet, never a queue of held renewals. Concurrent HTTP
       // handlers can otherwise admit seq N+1 before N and cancel a valid hold.
       // Stop still uses its independent channel and never waits for this reply.
@@ -237,7 +241,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         if(token.current===gesture){reportError(caught);release.current();}
       }).finally(()=>{inFlight=false;});
     };
-    hold.current={robot:captured,direction,lastTick:Date.now(),token:gesture,timer:setInterval(tick,100)};
+    hold.current={robot:captured,direction,lastTick:Date.now(),token:gesture,timer:setInterval(tick,captured.kind==='physical'?(captured.timing_values?.input_renewal_ms??100):100)};
     setHeld(direction);tick();
   }
   async function action(body:RobotFleetAction){
@@ -274,12 +278,11 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   }
   function downloadProfileTemplate(){
     if(!robot?.setup?.binding_sha256)return;
-    const url=URL.createObjectURL(new Blob([JSON.stringify(blankMeasuredProfile(robot),null,2)],{type:'application/json'}));
-    const link=document.createElement('a');link.href=url;link.download=`physical-profile-${robot.robot_id}-unmeasured.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
+    downloadBlob(new Blob([JSON.stringify(blankMeasuredProfile(robot),null,2)],{type:'application/json'}),`physical-profile-${robot.robot_id}-unmeasured.json`);
   }
   const download=()=>{
-    if(!operation||logBusy)return;const url=URL.createObjectURL(new Blob([JSON.stringify(operation)],{type:'application/json'}));
-    const link=document.createElement('a');link.href=url;link.download=`robot-operation-${operation.operation_id}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
+    if(!operation||logBusy)return;
+    downloadBlob(new Blob([JSON.stringify(operation)],{type:'application/json'}),`robot-operation-${operation.operation_id}.json`);
   };
   async function downloadEvidence(file:string){
     if(!operation||!evidenceName(file)||evidenceBusy)return;
@@ -288,7 +291,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       const bytes=await api.robotFleetEvidence(operationId,file);
       if(owner.current.api!==api||owner.current.context!==context||owner.current.selectedId!==id||
         (selected.current?.operation_id??selected.current?.last_operation_id)!==operationId)return;
-      const url=URL.createObjectURL(bytes),link=document.createElement('a');link.href=url;link.download=`physical-${operationId}-${file}`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
+      downloadBlob(bytes,`physical-${operationId}-${file}`);
     }catch(caught){if(owner.current.selectedId===id&&(selected.current?.operation_id??selected.current?.last_operation_id)===operationId)reportError(caught);}
     finally{setEvidenceBusy(null);}
   }
@@ -329,12 +332,13 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       <div className="robot-fleet-notices" aria-label="Robot control readiness">
       {error&&<p role="alert">{error}</p>}
       {pollError&&<p role="status">{pollError}</p>}
-      {robot.reason&&<p className="robot-fleet-reason" role="status">{robot.reason}</p>}
+      {(robot.setup?.maintenance_phase||robot.reason)&&<p className="robot-fleet-reason" role="status" title={robot.setup?.maintenance_phase?`Prepare: ${robot.setup.maintenance_phase} · ${robot.reason??'No motion during build/check'}`:robot.reason??undefined}>
+        {robot.setup?.maintenance_phase?({BUILDING_OUTPUT_GUARD:'Building output guard…',CHECKING_OUTPUT_GUARD:'Checking output guard…',VERIFYING_OUTPUT_GUARD_READBACK:'Verifying applied settings…'} as Record<string,string>)[robot.setup.maintenance_phase]??robot.setup.maintenance_phase:robot.reason}</p>}
       {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&
         <p role="status">{physical?'Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.':robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
       {!focusConfirmed&&!selectionPending&&<p role="status">Control focus differs from this drawer. Select this robot again before driving or sending a command.</p>}
       {!adapterAvailable&&<p className="robot-fleet-reason" role="status">Physical control unavailable in this build. This robot is not replaced with a SIM robot.</p>}
-      {state?.last_command?.robot_id===robot.robot_id&&<p className="robot-fleet-command-result" role="status">{state.last_command.status} · {state.last_command.message}</p>}
+      {state?.last_command?.robot_id===robot.robot_id&&<p className="robot-fleet-command-result" role="status" title={state.last_command.message}>{state.last_command.status} · {physical?'Check robot telemetry':'Check engine telemetry'}</p>}
       </div>
       <div className="robot-fleet-actions">
         <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||(physical?physicalSessionActive:!['DISCONNECTED','DEGRADED'].includes(robot.connection_state))} onClick={()=>void action(envelope('connect',robot))}>{physicalSessionActive?(robot.connection_state==='CONNECTED'?'Connected':robot.connection_state==='CONNECTING'?'Connecting…':'Disconnect to reconnect'):'Connect'}</button>
@@ -342,7 +346,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           release.current();setPrepareConfirmed(false);void action(envelope('prepare',robot,physical?{confirmed:true}:{}));}}>Prepare</button>
         <button type="button" disabled={busy||selectionPending||!available||robot.connection_state==='DISCONNECTED'&&!robot.connection_epoch} onClick={()=>{release.current();void action(envelope('disconnect',robot));}}>Disconnect</button>
         <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||!robot.capabilities.lidar||!fleetRobotFresh(robot)} aria-pressed={available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)} onClick={()=>{
-          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}}>Turn LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}</button>
+          release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}} aria-label={`Turn LiDAR ${available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}`} title="Change sensor state; visualization hiding is separate">LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}</button>
       </div>
       <div className="robot-fleet-control-primary">
         <div className="robot-fleet-pad" role="group" aria-label="Hold to drive" tabIndex={0}
@@ -356,35 +360,41 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
             {{forward:'↑',backward:'↓',left:'↶',right:'↷'}[direction]} <span>{direction}</span></button>)}
         </div>
         <form className="robot-fleet-command" onSubmit={event=>{event.preventDefault();if(canCommand){
-          release.current();const commandText=text.trim(),body=envelope('command',robot,{text:commandText}),captured=owner.current;
+          release.current();const commandText=text.trim(),draftVersion=commandDraftVersion.current,body=envelope('command',robot,{text:commandText}),captured=owner.current;
           const prior_command_id=robot?.command?.request_id;
           setSubmitted({request_id:body.request_id,text:text.trim(),state:'SENDING',prior_command_id});
           const dispatch=async()=>{
             if(!commandIsStop)setBusy(true);setError(null);
-            try{await send(body);if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId)
-              setSubmitted({request_id:body.request_id,text:commandText,state:'ACCEPTED',prior_command_id});}
+            try{await send(body);if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId){
+              setSubmitted({request_id:body.request_id,text:commandText,state:'ACCEPTED',prior_command_id});
+              // Only clear the acknowledged draft. A late reply must not erase
+              // newer typing, even when the user has typed the same text again.
+              if(commandDraftVersion.current===draftVersion)setText('');}}
             catch(caught){reportError(caught);if(owner.current===captured||owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId)
               setSubmitted({request_id:body.request_id,text:commandText,state:'FAILED',prior_command_id});}
             finally{if(owner.current.api===captured.api&&owner.current.context===captured.context)setBusy(false);}
           };void dispatch();
         }}}>
-          <label>Robot command<input value={text} maxLength={1000} placeholder="Go to the nearest bed, go to the nearest chair, or stop" onChange={event=>setText(event.target.value)}/></label>
-          <button disabled={!canCommand}>Send command</button>
-          <output className="robot-command-receipt" aria-label="Robot command progress" aria-live="polite">
+          <label>Robot command<input value={text} maxLength={1000} placeholder="Type a new command…" onChange={event=>{commandDraftVersion.current++;setText(event.target.value);}}/></label>
+          <button disabled={!canCommand} aria-label="Send command">Send</button>
+          <output className="robot-command-receipt" aria-label="Robot command progress" aria-live="polite" title={`Request ${robot.command?.request_id??submitted?.request_id??'not submitted'}`}>
             {robot.command&&(!submitted||submitted.request_id===robot.command.request_id||robot.command.request_id!==submitted.prior_command_id)?<>
               <strong>{robot.command.state}{robot.command.target_label?` · ${robot.command.target_label}`:''}</strong>
               <span>{robot.command.text}{typeof robot.command.remaining_m==='number'?` · ${robot.command.remaining_m.toFixed(2)} m remaining`:''}{robot.command.reason?` · ${robot.command.reason}`:''}</span>
-              <small>Request {robot.command.request_id}</small>
-            </>:submitted?<><strong>{submitted.state}</strong><span>{submitted.text}</span><small>Request {submitted.request_id}</small></>:<span>Choose a SIM scene destination. Arrival is reported by Isaac, not by request acceptance.</span>}
+            </>:submitted?<><strong>{submitted.state}</strong><span>{submitted.text}</span></>:<span>{physical?'Review anchor and LiDAR tracking before a destination.':'Enter a scene destination · arrival needs engine confirmation.'}</span>}
           </output>
           <small>Hold arrows / WASD. Release or Space stops. You can also use the main chat.</small>
         </form>
       </div>
-      <div className="robot-fleet-detail-tools"><details className="robot-fleet-diagnostics" open={diagnosticsOpen} onToggle={event=>{setDiagnosticsOpen(event.currentTarget.open);release.current();}}><summary>Setup, sensor details and logs</summary>
+      <div className="robot-fleet-detail-tools"><details className="robot-fleet-diagnostics" open={diagnosticsOpen} onToggle={event=>{setDiagnosticsOpen(event.currentTarget.open);release.current();}}><summary title="Setup, sensor details and logs">Details</summary>
+      {state?.last_command?.robot_id===robot.robot_id&&<p>Last request: {state.last_command.status} · {state.last_command.message}</p>}
+      {(robot.command||submitted)&&<p>Command request: <code>{robot.command?.request_id??submitted?.request_id}</code> · {robot.command?.text??submitted?.text}</p>}
       <p>{robot.pose?.aligned?'Pose aligned':'Pose unaligned / unavailable'} · Recording {available&&fresh?'':'last reported '}{robot.recording_state}</p>
       <small>Hold a direction or focus the pad and use arrows / WASD. Release, Space or leaving the window stops movement and retains the connection.</small>
-      <p className="robot-fleet-policy">{physical&&robot.field?.config?'Supervised field policy: 0.03 m/s · 0.20 rad/s':`${state?.policy.linear_m_s} m/s · ${state?.policy.angular_rad_s} rad/s`} · input expiry {state?.policy.input_expiry_ms} ms</p>
-      <small>{physical?'Object destinations require verified physical world navigation and are currently SIM-only. Use finite movement, status, battery, logs or Stop under the physical setup.':'SIM supports a nearby scene destination, finite distance/angle, status, logs and Stop.'}</small>
+      <p className="robot-fleet-policy">{physical&&robot.field?.config?'Supervised field policy: 0.03 m/s · 0.20 rad/s':`${state?.policy.linear_m_s} m/s · ${state?.policy.angular_rad_s} rad/s`} · input expiry {physical?(robot.timing_values?.input_ttl_ms??state?.policy.input_expiry_ms):state?.policy.input_expiry_ms} ms</p>
+      {physical&&robot.timing_values&&<p className="robot-fleet-policy">Session timing: sensor source {robot.timing_values.sensor_source_ms} ms · receipt {robot.timing_values.sensor_receipt_ms} ms · odometry {robot.timing_values.odom_interval_ms} ms · output {robot.output_timing?.output_timeout_ms??'readback not confirmed'} ms. Edit next-connection values in Robots → Timing settings.</p>}
+      {physical&&robot.odom_interval&&<p className="robot-fleet-policy">Odometry sample interval: {(robot.odom_interval.interval_s*1000).toFixed(1)} ms / {(robot.odom_interval.limit_s*1000).toFixed(0)} ms · {robot.odom_interval.reason}</p>}
+      <small>{physical?'Object destinations use an operator-reviewed Twin anchor and current relative LiDAR tracking under the supervised field setup. The robot-local guard checks each low-speed output. An estimated destination is not verified furniture arrival; lost tracking, a new obstacle or a changed Twin stops the route.':'SIM supports a nearby scene destination, finite distance/angle, status, logs and Stop.'}</small>
       <button type="button" onClick={()=>{release.current();setLidarReviewOpen(true);}}>Review LiDAR scans</button>
       {physical&&<>
         <dl className="robot-physical-status" aria-label="Physical connection and readiness">
@@ -403,7 +413,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       </>}
       {physical&&<details className="robot-estimated-marker">
         <summary>Estimated Twin marker</summary>
-        <p>Visualization estimate only; not sensor/world alignment or driving permission.</p>
+        <p>Review the robot position and yaw in this Twin. This estimate anchors relative LiDAR tracking for display and explicitly requested destinations; it never grants driving permission or claims measured world alignment.</p>
           {robot.display_pose&&<p className="robot-fleet-policy">Static visualization estimate [{robot.display_pose.position_m.map(value=>scalar(value)).join(', ')}] · revision {scalar(robot.display_pose.scene_revision)} · {robot.display_pose.source}. This is the initial operator anchor, not localization. A valid same-epoch native relative tracker updates the displayed robot from this anchor; lost tracking keeps the last estimate and requires a new anchor. Accuracy remains unqualified.</p>}
         <form onSubmit={event=>{
           event.preventDefault();if(!available||busy||selectionPending)return;

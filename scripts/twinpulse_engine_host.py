@@ -226,6 +226,8 @@ def main() -> int:
     last_mission_visual_identity = None
     maximum_movement = 0.0
     live_viewport = None
+    from twinpulse_update_probe import UpdateProbe
+    update_probe=UpdateProbe()
 
     def capture_report(current: dict[str, object], *, final_path: Path | None = None) -> dict[str, object]:
         report = dict(current)
@@ -367,14 +369,23 @@ def main() -> int:
                 break
             if time.monotonic() - started > ARGS.maximum_runtime_s:
                 raise TimeoutError("Owned Isaac host exceeded its finite maximum runtime")
+            update_probe.begin();app_update_started=time.monotonic()
             APP.update()
+            app_update_elapsed=time.monotonic()-app_update_started
+            update_diagnostic=update_probe.finish(app_update_elapsed)
             frame += 1
+            viewport_started=time.monotonic()
             try:
                 # Planned-but-not-yet-scheduled initial capture is pending too.
                 live_viewport.fleet_runtime.snapshot_capture_pending=bool(ARGS.viewport_capture) and not capture_finished
+                prior_host=live_viewport.fleet_runtime.host_timing
+                live_viewport.fleet_runtime.host_timing=dict(app_update_s=app_update_elapsed,
+                    previous_viewport_s=prior_host.get('_viewport_s',0.),previous_tail_s=prior_host.get('_tail_s',0.),**update_diagnostic)
                 live_viewport.update(bridge.adapter.snapshot())
             except Exception as error:
                 live_viewport.last_error = "viewport_update_" + type(error).__name__[:60]
+            viewport_elapsed=time.monotonic()-viewport_started
+            tail_started=time.monotonic()
             state = extension.runtime.state
             observed_states.add(state)
             # Inspect only owned visual content. It is not robot telemetry and
@@ -426,17 +437,20 @@ def main() -> int:
             if start_position is not None and position is not None:
                 movement = math.hypot(position[0] - start_position[0], position[1] - start_position[1])
                 maximum_movement = max(maximum_movement, movement)
-            if frame % 10 == 0 and len(trajectory) < 2_000:
+            if frame % 10 == 0:
                 snapshot = bridge.adapter.snapshot()
                 latest_snapshot = snapshot
-                trajectory.append({
-                    "sequence": snapshot.sequence, "runtime_state": snapshot.runtime_state,
-                    "sim_time_s": snapshot.sim_time_s,
-                    "position_m": list(position) if position is not None else None,
-                    "distance_to_goal_m": snapshot.distance_to_goal_m,
-                    "cross_track_error_m": snapshot.cross_track_error_m,
-                    "applied_revision": snapshot.applied_revision,
-                })
+                # Bounded diagnostic history must not disable capture lifecycle
+                # or leave every later robot permanently waiting for warmup.
+                if len(trajectory) < 2_000:
+                    trajectory.append({
+                        "sequence": snapshot.sequence, "runtime_state": snapshot.runtime_state,
+                        "sim_time_s": snapshot.sim_time_s,
+                        "position_m": list(position) if position is not None else None,
+                        "distance_to_goal_m": snapshot.distance_to_goal_m,
+                        "cross_track_error_m": snapshot.cross_track_error_m,
+                        "applied_revision": snapshot.applied_revision,
+                    })
                 if (
                     snapshot.applied_revision is not None and capture_attempt is None
                     and not capture_finished and not stop_requested
@@ -454,6 +468,7 @@ def main() -> int:
             if capture_attempt is not None and latest_snapshot is not None:
                 update_capture(latest_snapshot, allow_retry=not stop_requested)
             time.sleep(0.005)
+            live_viewport.fleet_runtime.host_timing.update(_viewport_s=viewport_elapsed,_tail_s=time.monotonic()-tail_started)
 
         for _ in range(10):
             APP.update()
@@ -481,6 +496,7 @@ def main() -> int:
         result["error"] = f"{type(error).__name__}: {error}"
         result["traceback"] = traceback.format_exc()
     finally:
+        update_probe.close()
         if live_viewport is not None:
             live_viewport.stop()
             result['live_viewport'] = {'sent':live_viewport.sent,'dropped':live_viewport.dropped,

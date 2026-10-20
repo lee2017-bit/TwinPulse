@@ -7,6 +7,7 @@ No boot service and no automatic deployment. Never called during PC-only tests.
 Stdout is a bounded JSON-line protocol; logs/receipts stay in this run's directory.
 """
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -18,6 +19,7 @@ import time
 import uuid
 
 from teleop_contract import InputGate, MotionPaused, DIRECTIONS, MANUAL_DIRECTIONS, settling_details, TERMINAL_STOPS, finish_segment
+from control_timing import INPUT_TTL_S
 from stop_policy import assess_stop, POLICY, POLICY_SHA256, MM_PER_TICK, OBSERVE_S
 
 
@@ -277,7 +279,7 @@ def control(link, incoming, output, mode, gate=None, clock=time.monotonic, befor
                     # An already-in-flight pre-arm challenge can arrive after
                     # enable. Consume it without output; never restamp it.
                     if armed_at is not None and source_created is not None and source_created > armed_at:
-                        if total_age>=.25:
+                        if total_age>=INPUT_TTL_S:
                             if persistent:
                                 link.release();gate.pause('INPUT_DEADLINE_EXPIRED');armed_at=last_output_s=None
                                 record('motion_paused',reason='INPUT_DEADLINE_EXPIRED',motion_generation=gate.generation)
@@ -304,18 +306,51 @@ def control(link, incoming, output, mode, gate=None, clock=time.monotonic, befor
         link.fresh()
 
 
-def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervised_field_speed=None):
+def wait_for_post_arm_watch(link, incoming, output, gate, clock, *, safety=lambda:None):
+    """No output from a pre-arm lease; require a new current-generation watch.
+
+    The same configured input lifetime applies. Motor enable can consume that
+    lifetime, so it is preparation, not a refreshed movement authorization.
+    Stop and missing/stale input still abort before the first publication.
+    """
+    end = clock() + INPUT_TTL_S
+    last_emit=-math.inf
+    while clock() < end:
+        safety()
+        if clock()-last_emit>=.05:
+            output({'state':'TESTING','challenge':gate.challenge(),'mode':'qualify_post_arm'})
+            last_emit=clock()
+        packet = incoming.receive()
+        if packet is not None:
+            try:
+                action, _ = gate.accept(packet)
+            except ValueError as exc:
+                if packet.get('action') == 'watch' and str(exc) in {'INPUT_EXPIRED','INPUT_CHALLENGE'}:
+                    continue
+                raise
+            if action != 'watch':raise ValueError('TRIAL_INTERRUPTED_BEFORE_PUBLICATION')
+            gate.check();safety();return
+        link.spin(.005);link.fresh()
+    raise ValueError('FRESH_POST_ARM_INPUT_REQUIRED')
+
+
+def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervised_field_speed=None, post_arm_watch=False, diagnostic=lambda _:None):
     """Fixed 0.05m/s / 600ms expiry test; versioned supervised stop metrics."""
     if supervised_field_speed not in (None, .03):raise ValueError('QUALIFICATION_SPEED_NOT_REVIEWED')
     trial_speed = .05 if supervised_field_speed is None else .03
     origin = [link.sensor.left_encoder, link.sensor.right_encoder]
-    link.enable()
+    if post_arm_watch:gate.suspend_for_arm()
+    diagnostic('ENABLE_BEGIN');link.enable();diagnostic('ENABLE_END')
+    if post_arm_watch:
+        wait_for_post_arm_watch(link,incoming,output,gate,clock,safety=safety)
+        diagnostic('POST_ARM_ACCEPTED')
     # New robot-local diagnostic commands, not re-stamped remote direction inputs.
     started = clock(); last_send = started; timeout_seen = None
     gate.hold_end = started+4
     last_emit = -1.
     timeout_encoders = None
     while clock()-started < 3.:
+        diagnostic('LOOP_CHECK')
         gate.check()
         if clock()-last_emit >= .05:
             output({'state': 'TESTING', 'challenge': gate.challenge(), 'mode': 'qualify'})
@@ -325,14 +360,15 @@ def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervis
             action, _ = gate.accept(packet)
             if action=='force_stop':return {'status':'FORCE_STOPPED'}
             if action != 'watch': raise ValueError('TRIAL_INTERRUPTED')
-        link.spin(.005); link.fresh(); safety()
+        diagnostic('INPUT_PROCESSED')
+        link.spin(.005);diagnostic('ROS_SPIN_END');link.fresh();safety();diagnostic('SAFETY_END')
         current = [link.sensor.left_encoder,link.sensor.right_encoder]
         dl, dr = [b-a for a,b in zip(origin,current)]
         if min(dl,dr)<-40 or max(dl,dr)>=1300 or abs(dl-dr)>=350: raise ValueError('TRIAL_ENCODER_BOUND')
         if not link.sensor.torque: raise ValueError('TRIAL_TORQUE_LOST')
         if clock()-started < .6:
             if clock()-last_send >= .05:
-                link.publish(trial_speed,0.,0.); last_send = clock()
+                diagnostic('PUBLISH_BEGIN');link.publish(trial_speed,0.,0.);last_send=clock();diagnostic('PUBLISH_END')
         elif timeout_seen is None:
             if link.reason == 'command_timeout':
                 timeout_seen = clock()
@@ -390,7 +426,7 @@ def wait_for_same_window_inputs(link, incoming, output, gate, clock, driver):
             if action != 'watch':
                 raise ValueError('TRIAL_PREP_UNEXPECTED_INPUT')
             # A watch received before the scan is ready cannot arm a later
-            # motor command. Discard its 250 ms lease while wheels are OFF,
+            # motor command. Discard its input lease while wheels are OFF,
             # then require a new challenge/watch after sensor readiness.
             counts = link.received_counts
             if counts['scan'] < 3 or counts['odom'] < 3:

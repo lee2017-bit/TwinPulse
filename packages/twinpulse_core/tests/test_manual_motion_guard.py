@@ -159,7 +159,7 @@ class NativeDirectionalGuardTests(unittest.TestCase):
         self.assertEqual(self.frame.oldest_sample_s, .95)
         self.assertEqual(self.intent.created_s, .9)
 
-    def test_no_relaxation_of_10cm_250ms_200ms_or_declared_stop_model(self):
+    def test_no_relaxation_of_10cm_350ms_cap_200ms_or_declared_stop_model(self):
         for policy in (None, replace(self.stop, body_clearance_m=.099), replace(self.stop, maximum_input_age_s=.5),
                        replace(self.stop, maximum_scan_age_s=.3), replace(self.stop, minimum_linear_deceleration_m_s2=0),
                        replace(self.stop, stopping_measurement_sha256='')):

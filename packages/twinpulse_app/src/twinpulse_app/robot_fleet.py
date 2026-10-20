@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from .command_broker import BrokerError
 from twinpulse_core.robot_lineage import twin_context, context_relation
+from twinpulse_core.robot_control_timing import INPUT_TTL_MS
 
 
 def _id(value):
@@ -91,6 +92,8 @@ class RobotFleet:
         self.close_done=Event();self.persistence_receipt=None
         self.physical_display_poses={}
         self.physical_tracking_anchors={}
+        self.navigation_scene=None
+        self.physical_navigation_reviews={} # Session-only; saved estimates never restore route authority.
         from .fleet_recorder import FleetSnapshotWriter
         self.snapshot_writer=FleetSnapshotWriter()
         self.definitions=self.root/'robot-fleet.json'
@@ -298,7 +301,7 @@ class RobotFleet:
             values.append(public)
         return dict(schema_version='robot-fleet-1.0',revision=self.revision,focused_robot_id=self.focused,
             robots=values,last_command=deepcopy(self.last_command),capabilities=dict(sim=True,physical=self.physical is not None),
-            policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=250))
+            policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=INPUT_TTL_MS))
 
     def action(self,body,owner):
         keys={'action','request_id','robot_id','connection_epoch','motion_epoch','payload'}
@@ -319,6 +322,7 @@ class RobotFleet:
                 named=[row for row in self.robots.values() if row['label'].casefold() in body['payload']['text'].casefold()]
                 if len(named)==1:target=named[0]
             sim_only=(body['action']=='register_sim' or target is not None and target['kind']=='sim')
+            ingress=(target['robot_id'],target.get('connection_epoch'),target.get('motion_epoch')) if target and target['kind']=='physical' else None
         effects=[]
         try:
             if sim_only and body['action'] in {'connect','prepare','drive','command'} and callable(getattr(self.devices,'snapshot',None)):
@@ -329,7 +333,7 @@ class RobotFleet:
                     if active:
                         raise BrokerError('fleet_physical_active','Stop the active physical operation before a SIM control action.',status=409)
             physical=([],[]) if sim_only else self._physical_values()
-            self._action(body,owner,encoded,physical,effects)
+            self._action(body,owner,encoded,physical,effects,ingress=ingress)
             for effect in effects:effect() # Disconnect/close/SSH service work cannot hold the SIM/Stop lock.
             return self.snapshot(refresh_physical=not sim_only)
         except Exception:
@@ -342,7 +346,7 @@ class RobotFleet:
         finally:
             with self.lock:self.pending_requests.discard(request)
 
-    def _action(self,body,owner,encoded,physical,effects):
+    def _action(self,body,owner,encoded,physical,effects,*,ingress=None):
         with self.lock:
             request=body['request_id'];known=self.requests.get(request)
             if body['action']=='register_sim':
@@ -393,8 +397,6 @@ class RobotFleet:
                 self._physical_rows(physical)
                 if identity not in self.robots:raise BrokerError('fleet_selection_required','Select the robot to control.',status=409)
                 row=self.robots[identity]
-                if action=='navigate' and row['kind']!='sim':
-                    raise BrokerError('physical_target_navigation_unavailable','Object destinations are currently SIM-only. Physical navigation needs a verified world binding and robot navigation adapter; no motion was sent.',status=409)
                 if action=='focus':
                     if self.focused in self.robots and self.focused!=identity:
                         previous=self.robots[self.focused]
@@ -419,16 +421,35 @@ class RobotFleet:
                     engine=self.broker.supervisor_state();scene=(engine.get('snapshot') or {}).get('applied_revision')
                     if not engine.get('engine_connected') or not scene:
                         raise BrokerError('fleet_scene_required','Display a current Twin before placing an estimated marker.',status=409)
+                    if row['control_state'] in {'DRIVING','ARMING'}:
+                        raise BrokerError('physical_anchor_requires_stop','Stop the robot before changing its estimated Twin anchor.',status=409)
                     row['display_pose']=dict(position_m=list(pose),source='operator_estimate_not_localized',
                         scene_revision=scene,frame_id='isaac_world',aligned=False,visual_epoch=uuid4().hex)
                     self.physical_display_poses[identity]=deepcopy(row['display_pose']);self._persist()
                     self.physical_tracking_anchors.pop(identity,None)
+                    self.physical_navigation_reviews.pop(identity,None)
+                    tracking=(row.get('field') or {}).get('tracking') or {};native_pose=tracking.get('pose')
+                    if (row.get('connection_epoch') and row.get('live_heartbeat') is True and tracking.get('status')=='ESTIMATED'
+                            and isinstance(native_pose,list) and len(native_pose)==3
+                            and all(type(v) in (int,float) and math.isfinite(v) for v in native_pose)):
+                        binding=(engine['engine_session_id'],engine['stage_epoch'],scene)
+                        self.physical_navigation_reviews[identity]=(row['connection_epoch'],row['display_pose']['visual_epoch'],tracking.get('epoch'))
+                        self.physical_tracking_anchors[identity]=dict(key=(row.get('operation_id'),row['connection_epoch'],
+                            tracking.get('epoch'),row['display_pose']['visual_epoch'],binding),origin=list(native_pose),position=list(pose))
                 elif row['kind']=='physical':
                     if self.physical is None:raise BrokerError('fleet_physical_unavailable','Physical adapter is unavailable. No SIM command was sent.',status=409)
                     operation=(row.get('operation_id') if row['connection_state']!='DISCONNECTED' else None) or uuid4().hex
                     if action not in {'connect','disconnect','profile','field_setup'} and row.get('project_id')!=self.broker.project_id:
                         raise BrokerError('physical_project_changed','Return to the connection project, or Disconnect and reconnect in this conversation.',status=409)
                     requested=self._twin_context(row)
+                    # Preserve the ingress intent, not the later pool snapshot.
+                    # In particular a delayed chat command must not acquire the
+                    # new epoch created by a concurrently completed Stop.
+                    admitted=ingress if ingress and ingress[0]==identity else (identity,None,None)
+                    connection=body['connection_epoch'] or admitted[1]
+                    motion=body['motion_epoch'] or admitted[2]
+                    if action in {'drive','task','navigate','prepare','qualify','lidar','field_arm','field_test'} and (not connection or not motion):
+                        raise BrokerError('fleet_intent_binding_required','Refresh the selected connection before a new control request.',status=409)
                     if action=='connect':effects.append(lambda requested=requested:self.physical.check_connection(identity,owner,request_id=request,operation_id=operation,project_id=requested['project_id'],source_twin_context=requested))
                     elif action=='disconnect':effects.append(lambda requested=requested:self.physical.disconnect(identity,owner,request_id=request,request_twin_context=requested))
                     elif action=='profile':
@@ -443,11 +464,17 @@ class RobotFleet:
                             request_id=request,connection_epoch=body['connection_epoch'],motion_epoch=body['motion_epoch'],request_twin_context=requested))
                     elif action in {'prepare','qualify'}:
                         callback=self.physical.prepare_control if action=='prepare' else self.physical.qualify
-                        effects.append(lambda:callback(identity,owner,payload=deepcopy(payload),request_id=request,
-                            connection_epoch=body['connection_epoch'],request_twin_context=requested))
+                        effects.append(lambda connection=connection,motion=motion:callback(identity,owner,payload=deepcopy(payload),request_id=request,
+                            connection_epoch=connection,motion_epoch=motion,request_twin_context=requested))
                     elif action=='lidar':
                         if set(payload)!={'enabled'} or type(payload['enabled']) is not bool:raise BrokerError('fleet_shape','Expected sensor enabled boolean.',status=400)
-                        effects.append(lambda:self.physical.lidar(identity,owner,enabled=payload['enabled'],request_id=request,connection_epoch=body['connection_epoch'],request_twin_context=requested))
+                        effects.append(lambda connection=connection,motion=motion:self.physical.lidar(identity,owner,enabled=payload['enabled'],request_id=request,connection_epoch=connection,motion_epoch=motion,request_twin_context=requested))
+                    elif action=='navigate':
+                        if self.focused!=identity:raise BrokerError('fleet_focus_changed','Select this robot before moving.',status=409)
+                        geometry=deepcopy(self.navigation_scene);anchor=deepcopy(self.physical_tracking_anchors.get(identity))
+                        estimate=deepcopy(row.get('display_pose'));tracking=deepcopy((row.get('field') or {}).get('tracking'))
+                        effects.append(lambda:self._physical_destination(identity,owner,request,payload['target_kind'],
+                            body['payload']['text'],requested,geometry,anchor,estimate,tracking,connection,motion))
                     elif action in {'drive','task'}:
                         if self.focused!=identity:raise BrokerError('fleet_focus_changed','Select this robot before moving.',status=409)
                         if payload.get('direction') not in {'forward','backward','left','right'}:
@@ -456,13 +483,14 @@ class RobotFleet:
                             if set(payload)!={'direction','sequence','expires_at_ms'} or type(payload['sequence']) is not int or payload['sequence']<=row['_sequence']:
                                 raise BrokerError('fleet_sequence','Old or invalid movement input.',status=409)
                             expires=payload['expires_at_ms']
-                            if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=300:
+                            ttl=(row.get('timing_values') or {}).get('input_ttl_ms',INPUT_TTL_MS)
+                            if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=ttl:
                                 raise BrokerError('fleet_input_expired','Movement input expired; robot paused.',status=409)
                             row['_sequence']=payload['sequence']
                         elif body['action']!='command':raise BrokerError('fleet_task_text_required','Use a finite chat movement instruction.',status=400)
-                        connection=body['connection_epoch'] if body['action']!='command' else row['connection_epoch']
-                        motion=body['motion_epoch'] if body['action']!='command' else row['motion_epoch']
-                        effects.append(lambda connection=connection,motion=motion:self.physical.drive(identity,owner,action=action,payload=deepcopy(payload),
+                        physical_payload=deepcopy(payload)
+                        if action=='task':physical_payload['text']=body['payload']['text']
+                        effects.append(lambda connection=connection,motion=motion,physical_payload=physical_payload:self.physical.drive(identity,owner,action=action,payload=physical_payload,
                             request_id=request,connection_epoch=connection,motion_epoch=motion,request_twin_context=requested))
                     else:raise BrokerError('fleet_action_unknown','Unknown robot action.',status=400)
                 elif action=='connect':
@@ -500,7 +528,7 @@ class RobotFleet:
                         if set(payload)!={'direction','sequence','expires_at_ms'} or type(payload['sequence']) is not int or payload['sequence']<=row['_sequence']:
                             raise BrokerError('fleet_sequence','Old or invalid movement input.',status=409)
                         expires=payload['expires_at_ms']
-                        if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=300:
+                        if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=INPUT_TTL_MS:
                             self._pause(row,'INPUT_STALE');raise BrokerError('fleet_input_expired','Movement input expired; robot paused.',status=409)
                         row['_sequence']=payload['sequence'];row['_task']=None
                         if row.get('command') and row['command']['state'] in {'ACCEPTED','PLANNING','RUNNING'}:
@@ -530,6 +558,36 @@ class RobotFleet:
                 message='Physical request queued; follow robot-local ACK, live telemetry and cleanup evidence. Acceptance is not proof of completed motion.' if row.get('kind')=='physical' else 'Robot request accepted; actual motion is confirmed by engine telemetry.')
             # action() publishes one final snapshot after effects complete.
             # Do not copy every scan twice while holding the engine/Stop lock.
+
+    def _physical_destination(self,identity,owner,request,kind,text,requested,scene,anchor,estimate,tracking,connection,motion):
+        # Bounded pure planning must not own the fleet/Stop lock.
+        from twinpulse_core.physical_object_navigation import route_from_plan,transform_pose
+        from twinpulse_core.sim_fleet_navigation import approach_plan
+        if not scene or not 0<=self.clock()-scene['produced_at']<.5:
+            raise BrokerError('physical_navigation_scene_stale','Display the current Twin before requesting a destination.',status=409)
+        binding=scene['binding'];geometry=scene['geometry']
+        if (not connection or not estimate or not tracking or self.physical_navigation_reviews.get(identity)!=(connection,estimate['visual_epoch'],tracking.get('epoch'))
+                or estimate['scene_revision']!=binding[2] or not anchor
+                or anchor['key']!=(self.robots[identity].get('operation_id'),connection,tracking.get('epoch'),estimate['visual_epoch'],binding)):
+            raise BrokerError('physical_navigation_anchor_required','Stop, review Estimated Twin marker X/Y/yaw and place a fresh anchor with current LiDAR tracking.',status=409)
+        try:
+            start=transform_pose(tracking['pose'],anchor['origin'],estimate['position_m'])
+            plan=approach_plan(start,kind,geometry['targets'],geometry['bounds'],geometry['obstacles'])
+            route=route_from_plan(plan,dict(origin=anchor['origin'],world=estimate['position_m']),tracking,
+                requested['context_id'],estimate['visual_epoch'])
+        except (ValueError,KeyError,TypeError) as exc:
+            raise BrokerError('physical_navigation_plan_rejected',str(exc)[:160],status=409) from None
+        def current():
+            latest=self.navigation_scene;row=self.robots.get(identity)
+            # A frozen route is tied to a scene VERSION, not a GPU frame lease.
+            # Physical collision/pose/input guards run on the robot. An Isaac
+            # rendering hitch must not itself renew or revoke those controls.
+            return bool(not self.closed and latest and latest['binding']==binding
+                and latest['geometry']['epoch']==geometry['epoch']
+                and row and (row.get('display_pose') or {}).get('visual_epoch')==estimate['visual_epoch'])
+        if not current():raise BrokerError('physical_navigation_scene_changed','The Twin or anchor changed while planning. Submit a new command.',status=409)
+        self.physical.navigate(identity,owner,payload=dict(kind='estimated_object_route',route=route,text=text),
+            guard=current,request_id=request,connection_epoch=connection,motion_epoch=motion,request_twin_context=requested)
 
     def _physical_stop_all(self,owner,*,request_id=None,request_twin_context=None):
         errors=[]
@@ -564,7 +622,7 @@ class RobotFleet:
                 or (body['engine_session_id'],body['stage_epoch'])!=binding[:2]):
             raise BrokerError('fleet_engine_stale','Fleet engine identity is not current.',status=409)
         report=body['report']
-        if not isinstance(report,dict) or set(report)!={'applied_revision','robots'} or report['applied_revision']!=binding[2] or not isinstance(report['robots'],list) or len(report['robots'])>16:
+        if not isinstance(report,dict) or not {'applied_revision','robots'}<=set(report) or set(report)-{'applied_revision','robots','scene_geometry','produced_monotonic_s'} or report['applied_revision']!=binding[2] or not isinstance(report['robots'],list) or len(report['robots'])>16:
             raise BrokerError('fleet_report_shape','Invalid bounded engine report.',status=400)
         observed_context=self._twin_context(dict(kind='sim'),state)
         with self.lock:
@@ -578,6 +636,11 @@ class RobotFleet:
                         row['connection_epoch']=uuid4().hex;row['connection_state']='CONNECTING';row['scan']=None
                         if row['lidar_state']=='STREAMING':row['lidar_state']='STARTING'
             self._engine=binding;self._engine_at=self.clock()
+            from twinpulse_core.sim_fleet_navigation import checked_scene_geometry
+            geometry=checked_scene_geometry(report.get('scene_geometry'))
+            produced=report.get('produced_monotonic_s')
+            self.navigation_scene=dict(binding=binding,geometry=geometry,produced_at=produced) if (geometry and
+                type(produced) in (float,int) and math.isfinite(produced) and 0<=produced<=self.clock()) else None
             for value in report['robots']:
                 if not isinstance(value,dict):continue
                 row=self.robots.get(value.get('robot_id'))
@@ -624,8 +687,10 @@ class RobotFleet:
                     and all(type(timing[k]) in (int,float) and math.isfinite(timing[k]) and 0<=timing[k]<=86400 for k in ('elapsed_s','integrated_s'))
                     and type(timing['substeps']) is int and 0<=timing['substeps']<=10) else None
                 work=value.get('runtime_work')
-                work=deepcopy(work) if isinstance(work,dict) and set(work)=={'bounds_s','model_authoring_s','bounds_rebuilds'} and all(
-                    type(work[k]) in (int,float) and math.isfinite(work[k]) and 0<=work[k]<=86400 for k in ('bounds_s','model_authoring_s')) and type(work['bounds_rebuilds']) is int and work['bounds_rebuilds']>=0 else None
+                from twinpulse_core.fleet_diagnostics import checked_work,checked_fault
+                work=checked_work(work)
+                fault=checked_fault(value.get('runtime_fault'))
+                if fault and fault['motion_epoch']!=value.get('motion_epoch'):fault=None
                 intent=row['_intent'];reported_input=value.get('intent_sequence')
                 superseded=(reason=='INPUT_STALE' and timing is not None and timing['elapsed_s']<.5 and value.get('motion_epoch')==row['motion_epoch']
                     and intent is not None and type(reported_input) is int and reported_input>0
@@ -635,11 +700,11 @@ class RobotFleet:
                         current_input_sequence=intent['sequence'],observed_twin_context=observed_context)
                 if not superseded and (reason in {'OBSTACLE_STOP','INPUT_STALE','ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE','TASK_COMPLETED','TASK_TIMEOUT','MOVEMENT_STALLED','NAVIGATION_ARRIVED'} or isinstance(reason,str) and reason.startswith('NAVIGATION_')) and value.get('motion_epoch')==row['motion_epoch']:
                     self._event(row,'motion_result',reason=reason,position_m=pose,command_id=value.get('task_id'),
-                        runtime_timing=timing,observed_twin_context=observed_context,request_twin_context=deepcopy(self.command_contexts.get(value.get('task_id'))))
+                        runtime_timing=timing,runtime_work=work,runtime_fault=fault,observed_twin_context=observed_context,request_twin_context=deepcopy(self.command_contexts.get(value.get('task_id'))))
                     self._pause(row,reason);self._save_operation(row)
                 if self.clock()-row['_recorded_at']>=.5:
                     self._event(row,'engine_observation',position_m=pose,source='isaac_usd_kinematic',reason=reason,
-                        scan=deepcopy(row['scan']),runtime_timing=timing,runtime_startup=deepcopy(row['sim_readiness']),runtime_work=work,telemetry_sequence=sequence,applied_motion_epoch=value.get('motion_epoch'),observed_twin_context=observed_context)
+                        scan=deepcopy(row['scan']),runtime_timing=timing,runtime_startup=deepcopy(row['sim_readiness']),runtime_work=work,runtime_fault=fault,telemetry_sequence=sequence,applied_motion_epoch=value.get('motion_epoch'),observed_twin_context=observed_context)
                     row['_recorded_at']=self.clock()
                 self.operations[row['operation_id']]['manifest']['last_engine_binding']=dict(engine_session_id=engine_id,
                     stage_epoch=stage_epoch,scene_revision=binding[2],telemetry_sequence=sequence)
@@ -682,8 +747,9 @@ class RobotFleet:
     def operation(self,identity,owner=None):
         if not _id(identity):raise BrokerError('fleet_operation_invalid','Invalid operation ID.',status=400)
         with self.lock:
-            row=next((r for r in self.robots.values() if r.get('operation_id')==identity),None)
-            if row:self._save_operation(row)
+            # Reading/exporting a log must not enqueue another full disk
+            # snapshot. Append-only events and explicit lifecycle saves own
+            # persistence; the returned capture is independently hashed below.
             captured=self._capture_operation(identity) if identity in self.operations else None
         if captured is not None:
             from .fleet_recorder import materialize_operation

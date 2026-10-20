@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'twinpulse_core/src'))
+from control_timing import INPUT_TTL_S, INPUT_TTL_MS
 from teleop_contract import InputGate
 from teleop_worker import control
 
@@ -81,7 +83,7 @@ class ContinuousWorkerRecoveryTests(unittest.TestCase):
                     if fault == 'INPUT_EXPIRED':
                         # A genuinely expired, robot-issued post-arm nonce:
                         # retain its original timestamp and do not restamp it.
-                        clock.now += .251
+                        clock.now += INPUT_TTL_S+.001
                         nonce = last
                     else:
                         nonce = pre_arm
@@ -143,7 +145,7 @@ class ContinuousWorkerRecoveryTests(unittest.TestCase):
         if fault == 'INPUT_CHALLENGE':
             self.assertEqual(stale_packets[0]['challenge'], pre_arm)
         self.assertGreaterEqual(link.published[0][2], 0.)
-        self.assertLess(link.published[0][2], .25)
+        self.assertLess(link.published[0][2], INPUT_TTL_S)
 
     def test_late_pre_arm_challenge_pauses_without_worker_or_sensor_close(self):
         for mode in ('control', 'control_scan'):
@@ -165,7 +167,7 @@ class ContinuousWorkerRecoveryTests(unittest.TestCase):
             gate.accept(dict(sequence=1, action='forward', challenge=gate.challenge(), age_ms=0.))
         packet = dict(sequence=2, action='forward', challenge='never-issued', age_ms=0.)
         if fault == 'INPUT_AGE':
-            packet.update(challenge=gate.challenge(), age_ms=250.)
+            packet.update(challenge=gate.challenge(), age_ms=INPUT_TTL_MS)
         elif fault == 'INPUT_SEQUENCE':
             packet.update(sequence=0)
         incoming = SimpleNamespace(receive=lambda: packet)

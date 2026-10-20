@@ -17,6 +17,8 @@ def fixture():
     normal=[n for n in required['fresh'] if not n.startswith('FAULT') and n!='Visible Exit TwinPulse normal shutdown']
     rows['fresh'].update(normal_steps_before_fault_window=normal,fault_window_held_until_exit=True)
     rows['fresh']['registration_history']=dict(project_id='p',session_id='session',entries=[dict(robot_id=n) for n in ('Alpha','Beta')])
+    next(s for s in rows['fresh']['steps'] if s['name']=='Physical setup shown while robot remains off; no Connect or movement')['evidence'].update(
+        destination_policy_visible=True,off_destination_send_disabled=True,physical_destination_commands_sent=0)
     rows['cold']['registration_history']=deepcopy(rows['fresh']['registration_history'])
     rows['fresh']['steps'].sort(key=lambda s:0 if s['name'] in normal else 2 if s['name']=='Visible Exit TwinPulse normal shutdown' else 1)
     for s in rows['fresh']['steps']:
@@ -65,6 +67,10 @@ class GateTests(unittest.TestCase):
         for change in (dict(origin_marker_count=1),dict(label_under_body_error_px=20),dict(label_horizontal_error_px=20)):
             r=fixture();r['fresh']['display_samples'][0].update(change)
             self.assertIn('ROBOT_LABEL_NOT_ATTACHED_TO_BODY',validate(r,'release','source'))
+    def test_missing_physical_goal_entry_or_unauthorized_off_send_is_not_ready(self):
+        for change in ({'destination_policy_visible':False},{'off_destination_send_disabled':False},{'physical_destination_commands_sent':1}):
+            r=fixture();next(s for s in r['fresh']['steps'] if s['name']=='Physical setup shown while robot remains off; no Connect or movement')['evidence'].update(change)
+            self.assertIn('PHYSICAL_DESTINATION_OFF_ENTRY_NOT_PROVEN',validate(r,'release','source'))
     def test_actual_shared_sensor_import_is_required_not_an_unclassified_normal_step(self):
         r=fixture();name='Actual saved native scan imported via UI and shown by the shared renderer without world alignment'
         r['fresh']['steps']=[s for s in r['fresh']['steps'] if s['name']!=name]

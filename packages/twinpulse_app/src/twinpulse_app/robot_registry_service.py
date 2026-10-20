@@ -83,6 +83,10 @@ class RobotRegistryService:
     def snapshot(self,owner):
         value=self.registry.snapshot()
         value['battery_display_presets']={mode:battery_display_config(mode) for mode in ('voltage_only','robotis_opencr')}
+        value['timing_fields']=self.registry.timing_store.fields()
+        pool=getattr(self.devices,'physical_fleet',None)
+        if pool is not None and hasattr(pool,'timing_for_view'):
+            for row in value['robots']:row['timing_runtime']=pool.timing_for_view(row['id'])
         value['adapters']=deepcopy(list(ADAPTERS))
         value['discovery']=self._discovery_snapshot(value['robots'])
         value['guide']={'discovery_is_connectivity':False,'registration_is_connectivity':False,
@@ -159,6 +163,10 @@ class RobotRegistryService:
             operation=body.get('action')
             allowed={'register':{'action','expected_revision','label','adapter_id','endpoint'},
                      'set_battery_display':{'action','expected_revision','id','config','expected_display_sha256'},
+                     'set_timing_profile':{'action','expected_revision','id','values','mode','expected_timing_sha256'},
+                     'import_timing_measurement':{'action','expected_revision','id','report','expected_timing_sha256'},
+                     'recalculate_timing_profile':{'action','expected_revision','id','expected_timing_sha256'},
+                     'apply_timing_recommendation':{'action','expected_revision','id','expected_timing_sha256','expected_recommendation_sha256'},
                      'select':{'action','expected_revision','id'},'discover':{'action','expected_revision'},
                      'connect':{'action','expected_revision'},'prepare':{'action','expected_revision'}}
             if not isinstance(operation,str) or operation not in allowed or set(body)!=allowed[operation]:
@@ -180,6 +188,27 @@ class RobotRegistryService:
                     # connection, deployment or motion authority is changed.
                     self.registry.set_battery_display(body['id'],body['config'],expected_revision=expected,
                         expected_display_sha256=body['expected_display_sha256'])
+                elif operation=='set_timing_profile':
+                    if body['mode']!='custom':raise ValueError('TIMING_MODE')
+                    self.registry.timing_action(body['id'],expected_revision=expected,expected_sha256=body['expected_timing_sha256'],
+                        values=body['values'],mode=body['mode'])
+                elif operation=='recalculate_timing_profile':
+                    self.registry.timing_action(body['id'],expected_revision=expected,expected_sha256=body['expected_timing_sha256'],recalculate=True)
+                elif operation=='apply_timing_recommendation':
+                    self.registry.timing_action(body['id'],expected_revision=expected,expected_sha256=body['expected_timing_sha256'],
+                        mode='measured_default',expected_recommendation_sha256=body['expected_recommendation_sha256'])
+                elif operation=='import_timing_measurement':
+                    from twinpulse_core.robot_timing_profile import digest
+                    report=body['report']
+                    if (not isinstance(report,dict) or set(report)!={'schema_version','robot_id','binding_sha256','operation_id','measurement','measurement_sha256','origin'}
+                            or report['schema_version']!='robot-timing-import-1.0' or report['robot_id']!=body['id']
+                            or digest(report['measurement'])!=report['measurement_sha256']
+                            or report['origin']!='IMPORTED_RECORDED_TIMING_NOT_LIVE_AUTHENTICATION'):
+                        raise ValueError('TIMING_IMPORT_SHAPE')
+                    row=next((r for r in self.registry.snapshot()['robots'] if r['id']==body['id']),None)
+                    if row is None or instance_binding(row)['sha256']!=report['binding_sha256']:raise ValueError('TIMING_BINDING_CHANGED')
+                    self.registry.timing_action(body['id'],expected_revision=expected,expected_sha256=body['expected_timing_sha256'],
+                        measurement=report['measurement'],operation_id=report['operation_id'],origin=report['origin'])
                 elif operation=='select':
                     self._admission()
                     if self.thread and self.thread.is_alive():raise BrokerError('robot_discovery_busy','Wait for discovery to finish.',status=409)

@@ -436,7 +436,9 @@ class LocalApiServer:
                 if request.command == "POST" and (parsed.path in stop_actions or parsed.path=='/v1/product/robots'):
                     gated_body = self._read_json(request)
                 stop_action = gated_body.get("action") if gated_body is not None else None
-                battery_display_only=parsed.path=='/v1/product/robots' and stop_action=='set_battery_display'
+                local_robot_settings_only=parsed.path=='/v1/product/robots' and isinstance(stop_action,str) and stop_action in {
+                    'set_battery_display','set_timing_profile','import_timing_measurement',
+                    'recalculate_timing_profile','apply_timing_recommendation'}
                 stopping = (isinstance(stop_action, str) and stop_action in stop_actions.get(parsed.path, ())) or parsed.path in {'/v1/product/automatic-demo/mission-stop','/v1/product/conversation/robot/stop'}
                 if (request.command != "GET"
                         and (self._launcher_project_switch_file is not None and self._launcher_project_switch_file.exists()
@@ -454,7 +456,7 @@ class LocalApiServer:
                 # This is a mutation/startup check, not shutdown admission.
                 # GETs never use it. In particular status/lease renewal must
                 # not wait for a scene edit's shared robot/admission mutex.
-                runtime_status = None if request.command=='GET' or stopping or battery_display_only else self._supervisor_status(inspect_shutdown=False).get("status")
+                runtime_status = None if request.command=='GET' or stopping or local_robot_settings_only else self._supervisor_status(inspect_shutdown=False).get("status")
                 if (request.command != "GET" and parsed.path not in {
                         "/v1/product/runtime/retry", "/v1/product/runtime/cancel", '/v1/product/runtime/shutdown',
                         "/v1/product/conversation",
@@ -469,7 +471,7 @@ class LocalApiServer:
                         '/v1/product/automatic-demo/comparison-start', '/v1/product/automatic-demo/comparison-stop',
                         '/v1/product/automatic-demo/comparison-reopen',
                     }
-                        and not stopping and not battery_display_only and runtime_status in {"starting", "error"}):
+                        and not stopping and not local_robot_settings_only and runtime_status in {"starting", "error"}):
                     code = "runtime_start_failed" if runtime_status == "error" else "runtime_not_ready"
                     raise BrokerError(code, "Launcher is not ready; review runtime status before editing or running", status=409)
                 if request.command == "GET" and parsed.path == "/v1/product/session":
@@ -2321,7 +2323,11 @@ class LocalApiServer:
         if not isinstance(context,str):context=None
         if context and getattr(request,'path',None)=='/v1/product/conversation':
             value={'context_id':context,**value}
-        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if isinstance(value,dict) and value.get('schema_version')=='robot-operation-1.0':
+            from .fleet_recorder import operation_json_bytes
+            payload=operation_json_bytes(value,separators=(',',':'))
+        else:
+            payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         try:
             request.send_response(status)
             request.send_header("Content-Type", "application/json; charset=utf-8")

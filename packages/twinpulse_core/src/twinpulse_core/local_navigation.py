@@ -10,6 +10,7 @@ glass, slip and obstacles between rays remain outside this 2D software check.
 """
 from dataclasses import dataclass
 import math
+from twinpulse_core.robot_control_timing import INPUT_TTL_S
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ def finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
-def checked_command(v, w, source_age_s, scan, now, *, require_scan=True, provenance=None, supervised_manual=False):
+def checked_command(v, w, source_age_s, scan, now, *, require_scan=True, provenance=None, supervised_manual=False, input_ttl_s=INPUT_TTL_S):
     """Shared output boundary. Supervised legacy mode is NOT collision protection.
 
     Caller retains original command age; this function never grants arm/lease.
@@ -44,7 +45,8 @@ def checked_command(v, w, source_age_s, scan, now, *, require_scan=True, provena
     """
     def deny(reason):
         return {'allowed':False,'reason':reason,'linear_m_s':0.,'angular_rad_s':0.,'physical_authority':False}
-    if not finite(source_age_s) or not 0<=source_age_s<.25:return deny('SOURCE_EXPIRED_DURING_ENABLE')
+    if not finite(input_ttl_s) or not .1<=input_ttl_s<=1.:return deny('INPUT_TIMING_INVALID')
+    if not finite(source_age_s) or not 0<=source_age_s<input_ttl_s:return deny('SOURCE_EXPIRED_DURING_ENABLE')
     # Explicit supervised manual mode only; autonomous/scan envelopes stay unchanged.
     if supervised_manual and require_scan:return deny('COMMAND_INVALID')
     linear,angular=(.05,.3) if supervised_manual is True else (.03,.2)

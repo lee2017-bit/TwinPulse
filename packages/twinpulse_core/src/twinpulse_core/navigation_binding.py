@@ -44,7 +44,7 @@ class PlanarBinding:
                 and re.fullmatch('[0-9a-f]{64}',self.evidence_sha256) is not None)
 
 
-def navigation_inputs(snapshot, binding, now):
+def navigation_inputs(snapshot, binding, now, *, timing_values=None):
     """Reject missing/stale/misaligned evidence; preserve raw input unchanged.
 
     Uniform full-circle rays remain in their source frame. Translate a scalar
@@ -54,14 +54,15 @@ def navigation_inputs(snapshot, binding, now):
     """
     if not isinstance(binding,PlanarBinding) or not binding.valid():
         raise ValueError('NAVIGATION_BINDING_REQUIRED')
-    if not valid_snapshot(snapshot):raise ValueError('NAVIGATION_SNAPSHOT_INVALID')
-    if not finite(now) or not snapshot['t']<=now<snapshot['t']+.2:
+    timing=timing_values or dict(odom_source_ms=200,scan_source_ms=200,navigation_snapshot_ms=200,odom_scan_skew_ms=50)
+    if not valid_snapshot(snapshot,odom_age_s=timing['odom_source_ms']/1000,scan_age_s=timing['scan_source_ms']/1000):raise ValueError('NAVIGATION_SNAPSHOT_INVALID')
+    if not finite(now) or not snapshot['t']<=now<snapshot['t']+timing['navigation_snapshot_ms']/1000:
         raise ValueError('NAVIGATION_SNAPSHOT_STALE')
     odom,scan=snapshot['odom'],snapshot['scan']
     if odom is None or scan is None:raise ValueError('NAVIGATION_OBSERVATION_MISSING')
-    if any(not 0<=now-item['sample_s']<.2 for item in (odom,scan)):
+    if not (0<=now-odom['sample_s']<timing['odom_source_ms']/1000 and 0<=now-scan['sample_s']<timing['scan_source_ms']/1000):
         raise ValueError('NAVIGATION_OBSERVATION_STALE')
-    if abs(odom['sample_s']-scan['sample_s'])>.05:
+    if abs(odom['sample_s']-scan['sample_s'])>timing['odom_scan_skew_ms']/1000:
         raise ValueError('NAVIGATION_TIME_SKEW')
     if (odom['frame_id']!='odom' or odom['child_frame_id']!=binding.odom_child_frame
             or scan['frame_id']!=binding.scan_frame):raise ValueError('NAVIGATION_FRAME_MISMATCH')

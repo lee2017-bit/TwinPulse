@@ -34,13 +34,15 @@ class FleetDiagnosticIsolationTests(unittest.TestCase):
         self.assertEqual(publisher.fleet_diag_write_errors,1)
     def test_same_sequence_early_return_does_not_retimestamp_produced_report(self):
         import sys
-        publisher=self.publisher();publisher.fleet_runtime=SimpleNamespace(report=[dict(robot_id='r',sequence=1)],update=lambda _:None)
+        publisher=self.publisher();publisher.fleet_runtime=SimpleNamespace(report=[dict(robot_id='r',sequence=1)],update=lambda _:None,
+            navigation_scene=None,scene_produced_at=100.)
         snapshot=SimpleNamespace(engine_session_id='engine',stage_epoch='stage',applied_revision='revision')
         utility=SimpleNamespace(capture_viewport_to_buffer=lambda *args:None,get_active_viewport=lambda:None)
         with patch.dict(sys.modules,{'omni.kit.viewport.utility':utility}):
             with patch('scripts.twinpulse_live_viewport.time.monotonic',return_value=100.):publisher.update(snapshot)
             with patch('scripts.twinpulse_live_viewport.time.monotonic',return_value=130.):publisher.update(snapshot)
             self.assertEqual(publisher.fleet_produced_at,100.);self.assertEqual(publisher.fleet_attempt_at,130.)
+            self.assertEqual(publisher.fleet_report['produced_monotonic_s'],100.)
             publisher.fleet_runtime.report=[dict(robot_id='r',sequence=2)]
             with patch('scripts.twinpulse_live_viewport.time.monotonic',return_value=160.):publisher.update(snapshot)
             self.assertEqual(publisher.fleet_produced_at,160.)

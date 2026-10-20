@@ -35,14 +35,14 @@ def main():
     env={**os.environ,'PYTHONPATH':os.pathsep.join(str(ROOT/'packages'/p/'src') for p in ('twinpulse_app','twinpulse_core','twinpulse_provider'))+os.pathsep+str(ROOT/'packages/twinpulse_robot_safety')+os.pathsep+str(ROOT/'packages/twinpulse_robot_safety/tests')}
     node=shutil.which('node')
     groups=[('lineage-and-pc',ROOT,[sys.executable,'-m','unittest','tests.integration.test_engine_loss_probe','tests.integration.test_r6_process_manager','tests.integration.test_backend_status_storage','tests.integration.test_robot_twin_lineage',
-        'tests.integration.test_fleet_elapsed_motion','tests.integration.test_sim_fleet_navigation','tests.integration.test_bootstrap_integrity_current','tests.integration.test_robot_focus_gate',
+        'tests.integration.test_fleet_elapsed_motion','tests.integration.test_sim_fleet_navigation','tests.integration.test_fleet_diagnostics','tests.integration.test_physical_object_navigation','tests.integration.test_bootstrap_integrity_current','tests.integration.test_robot_focus_gate',
         'tests.integration.test_physical_live_session','tests.integration.test_physical_fleet_adapter','tests.integration.test_robot_fleet','tests.integration.test_fleet_registration_history',
         'tests.integration.test_field_app_readiness','tests.integration.test_http_mutation_lifecycle','tests.integration.test_http_reuse','tests.integration.test_bridge_robot_channel','tests.integration.test_bridge_lease_rotation','tests.integration.test_live_viewport','tests.integration.test_fleet_diagnostic_isolation','tests.integration.test_residual_status_admission','tests.integration.test_workspace_devices',
         'tests.integration.test_conversation_save_rename','tests.integration.test_conversation_preservation','tests.integration.test_project_sim_retirement',
         'tests.integration.test_robot_source_identity','tests.integration.test_windows_exe_contract','tests.integration.test_windows_install','-v']),
         ('native-worker',ROOT,[sys.executable,'-m','unittest','discover','-s','packages/twinpulse_robot_safety/tests','-p','test_fleet_native.py','-v']),
-        ('field',ROOT,[sys.executable,'-m','unittest','test_field_tests','test_control_recovery','test_native_parser_quality','test_control_observation','-v']),
-        ('ui',ROOT/'apps/twinpulse-web',[node,'node_modules/vitest/vitest.mjs','run','src/App.test.tsx','src/RobotFleet.test.tsx','src/RobotFieldTests.test.tsx','src/RobotRegistry.test.tsx','src/IsaacConnectionStatus.test.tsx','src/api.test.ts','src/TwinViewport.test.tsx','src/ChatWorkspace.test.tsx','--maxWorkers=1','--no-file-parallelism']),
+        ('field',ROOT,[sys.executable,'-m','unittest','test_field_tests','test_control_recovery','test_native_parser_quality','test_control_observation','test_object_navigation','-v']),
+        ('ui',ROOT/'apps/twinpulse-web',[node,'node_modules/vitest/vitest.mjs','run','src/App.test.tsx','src/RobotFleet.test.tsx','src/RobotFieldTests.test.tsx','src/RobotRegistry.test.tsx','src/IsaacConnectionStatus.test.tsx','src/api.test.ts','src/TwinViewport.test.tsx','src/ChatWorkspace.test.tsx','src/ChatWorkspace.fleet-display.test.tsx','--maxWorkers=1','--no-file-parallelism']),
         ('web-build',ROOT/'apps/twinpulse-web',[node,'node_modules/typescript/bin/tsc','-b'])]
     if args.group:
         groups=[g for g in groups if g[0]==args.group]

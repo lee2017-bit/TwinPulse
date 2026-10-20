@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 
 namespace twinpulse_robot_safety {
 // Single-thread-owned final-output gate. Times are milliseconds; no hardware dependency.
@@ -15,8 +16,12 @@ class CommandGuard {
   using HeartbeatWriter = std::function<bool(uint8_t)>;
   static constexpr int64_t timeout_ms = 400;
   static constexpr double max_linear = 0.05, max_angular = 0.30;
-  CommandGuard(VelocityWriter velocity, HeartbeatWriter heartbeat)
-      : velocity_(velocity), heartbeat_(heartbeat) {}
+  CommandGuard(VelocityWriter velocity, HeartbeatWriter heartbeat, int64_t configured_timeout_ms = timeout_ms)
+      : velocity_(velocity), heartbeat_(heartbeat), configured_timeout_ms_(configured_timeout_ms) {
+    if (configured_timeout_ms < 150 || configured_timeout_ms > 2000)
+      throw std::invalid_argument("output timeout outside reviewed configuration bounds");
+  }
+  int64_t configured_timeout_ms() const { return configured_timeout_ms_; }
   bool armed() const { return armed_; }
   bool io_fault() const { return io_fault_; }
   const char* reason() const { return reason_; }
@@ -27,7 +32,7 @@ class CommandGuard {
     armed_ = true;
     reason_ = "armed_waiting_for_command";
     arm_ros_ms_ = last_stamp_ms_ = last_ros_ms_ = ros_ms;
-    deadline_ms_ = steady_ms + timeout_ms;
+    deadline_ms_ = steady_ms + configured_timeout_ms_;
     return true;
   }
   void latch(const char* reason) {
@@ -45,13 +50,13 @@ class CommandGuard {
     }
     if (ros_ms < last_ros_ms_ || stamp_ms <= arm_ros_ms_ ||
         stamp_ms <= last_stamp_ms_ || stamp_ms > ros_ms ||
-        ros_ms - stamp_ms >= timeout_ms) {
+        ros_ms - stamp_ms >= configured_timeout_ms_) {
       latch("stale_replayed_or_invalid_stamp"); return false;
     }
     last_ros_ms_ = ros_ms;
     last_stamp_ms_ = stamp_ms;
     // Source age reduces remaining lifetime; network delay cannot extend it.
-    deadline_ms_ = steady_ms + timeout_ms - (ros_ms - stamp_ms);
+    deadline_ms_ = steady_ms + configured_timeout_ms_ - (ros_ms - stamp_ms);
     linear_ = static_cast<int32_t>(linear * 100.0);
     angular_ = static_cast<int32_t>(angular * 100.0);
     reason_ = "active";
@@ -82,6 +87,7 @@ class CommandGuard {
   }
   VelocityWriter velocity_;
   HeartbeatWriter heartbeat_;
+  const int64_t configured_timeout_ms_;
   bool armed_ = false, io_fault_ = false, heartbeat_started_ = false;
   const char* reason_ = "startup_disarmed";
   int32_t linear_ = 0, angular_ = 0;

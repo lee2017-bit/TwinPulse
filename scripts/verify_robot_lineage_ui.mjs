@@ -8,6 +8,9 @@ import {createHash} from 'node:crypto';
 const args=process.argv.slice(2),arg=n=>{const index=args.indexOf(n);return index<0?undefined:args[index+1];};
 const endpoint=arg('--cdp'),out=arg('--output'),project=arg('--project'),phase=arg('--phase')??'run';
 if(!out||!project||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit cdp/output/project required');
+if(phase==='cold'&&args.includes('--focused-acceptance')&&
+  ['--prior','--operation','--physical-history','--physical-project','--physical-prior'].some(n=>!arg(n)))
+  throw Error('Focused cold acceptance requires the original closed SIM export and immutable powered-failure fixture before any UI action');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',started_at:new Date().toISOString(),classification:'INSTALLED_ELECTRON_ISAAC_SAVED_SCENE_TRACEABILITY',
  project,steps:[],screenshots:[],http_errors:[],page_errors:[],request_failed:[],posts:[],physical:'NOT_RUN_OFF',provider_calls:0,

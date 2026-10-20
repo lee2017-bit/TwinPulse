@@ -17,10 +17,90 @@ sys.path.insert(0,str(ROOT/'packages/twinpulse_core/src'))
 from fleet_control import RobotControl,RosRecordDelivery
 from field_tests import NativeTracker,frame_points,register_pair
 from test_field_tests import config,ring,persist
-from teleop_ros import RosLink
+from teleop_ros import RosLink,latest_control_sensor_qos
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_same_original_input_is_not_republished_or_restamped(self):
+        now=[1.];published=[]
+        owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:now[0])
+        owner._safety=lambda:None;owner.gate.check=lambda:None;owner._pose=lambda:None
+        owner.link=SimpleNamespace(spin=lambda _:None,sensor=None,fresh=lambda:None,
+            publish=lambda *a,**kw:published.append(a) or {})
+        guarded=[]
+        def guard(*args):guarded.append(args)
+        guard.last_result=None;guard.progress={};owner.guard=guard
+        owner._velocity=lambda _:(.03,0.);owner.direction='forward'
+        owner.drive_command=dict(action='drive',motion_epoch='current',request_id='original')
+        owner.gate.source_created=.95;owner._tick()
+        now[0]=1.06;owner._tick()
+        self.assertEqual(len(published),1);self.assertEqual(owner.last_publication_source,.95)
+        self.assertEqual(len(guarded),1)
+        owner.gate.source_created=1.05;owner._tick()
+        self.assertEqual(len(published),2);self.assertEqual(owner.last_publication_source,1.05)
+        now[0]=1.12
+        def obstacle(*_):raise ValueError('FIELD_PROXIMITY_10CM')
+        owner.guard=obstacle
+        with self.assertRaisesRegex(ValueError,'FIELD_PROXIMITY_10CM'):owner._tick()
+        self.assertEqual(len(published),2)
+        owner.guard=guard
+        def expired():raise ValueError('INPUT_DEADLINE_EXPIRED')
+        owner.gate.check=expired
+        with self.assertRaisesRegex(ValueError,'INPUT_DEADLINE_EXPIRED'):owner._tick()
+        owner.gate.check=lambda:None;owner._safety=lambda:(_ for _ in ()).throw(ValueError('OPERATOR_STOP'))
+        with self.assertRaisesRegex(ValueError,'OPERATOR_STOP'):owner._tick()
+        self.assertEqual(len(published),2)
+    def test_command_batch_drains_watch_before_task_without_intervening_cycle_and_is_bounded(self):
+        owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:1.)
+        seen=[];owner._command=lambda c:seen.append(c['request_id'])
+        for i in range(1,12):owner.queue.put(dict(action='watch',request_id=str(i)))
+        count=owner._drain_commands(dict(action='task',request_id='0'))
+        self.assertEqual(count,8);self.assertEqual(seen,list(map(str,range(8))))
+        self.assertEqual(owner.queue.qsize(),4)
+        owner.stop_requested.set()
+        self.assertEqual(owner._drain_commands(dict(action='task',request_id='late')),0)
+        self.assertEqual(len(seen),8)
+
+    def test_command_batch_time_budget_yields_and_keeps_pending_command(self):
+        now=[1.];owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:now[0])
+        def slow(_):now[0]+=.011
+        owner._command=slow;owner.queue.put(dict(action='task',request_id='later'))
+        self.assertEqual(owner._drain_commands(dict(action='watch',request_id='first')),1)
+        self.assertEqual(owner.queue.qsize(),1)
+
+    def test_expired_watch_releases_before_batch_can_process_later_motion(self):
+        owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:1.)
+        released=[];owner.link=SimpleNamespace(enabled=True,sensor=None,release=lambda:released.append('ZERO_OFF'))
+        def expired(_):raise ValueError('INPUT_DEADLINE_EXPIRED')
+        owner._command=expired;owner.queue.put(dict(action='drive',request_id='later'))
+        self.assertEqual(owner._drain_commands(dict(action='watch',request_id='expired')),1)
+        self.assertEqual(released,['ZERO_OFF']);self.assertEqual(owner.queue.qsize(),1)
+    def test_obsolete_queued_drive_does_not_revoke_new_arm_generation_or_gain_authority(self):
+        events=[];owner=RobotControl({},'.',lambda *v:events.append(v),SimpleNamespace(),clock=lambda:1.)
+        owner.gate.suspend_for_arm();generation=owner.gate.generation
+        owner._update(control_state='ARMED_AWAITING_FRESH_INPUT')
+        nonce=owner.gate.challenge()
+        for action in ('drive','task','watch'):
+            owner._reject_command(dict(action=action,request_id=action),'MOTION_GENERATION_CHANGED')
+            self.assertEqual(owner.gate.generation,generation)
+            self.assertEqual(owner.state['control_state'],'ARMED_AWAITING_FRESH_INPUT')
+            self.assertFalse(owner.gate.active);self.assertIn(nonce,owner.gate.challenges)
+        self.assertTrue(all(e[1]['status']=='REJECTED' for e in events))
+        self.assertIsNone(owner.direction);self.assertIsNone(owner.task)
+        owner.task=dict(kind='estimated_object_route',status='RUNNING')
+        for action in ('drive','task'):
+            with self.assertRaisesRegex(ValueError,'MOTION_GENERATION_CHANGED'):
+                owner._command(dict(action=action,payload=dict(motion_generation=generation-1)))
+        self.assertEqual(owner.task['status'],'RUNNING')
+        owner._reject_command(dict(action='drive',request_id='invalid'),'INPUT_EXPIRED')
+        self.assertEqual(owner.state['control_state'],'UNPREPARED')
+    def test_control_sensor_qos_keeps_latest_without_changing_shared_sensor_policy(self):
+        original=SimpleNamespace(depth=5,history='KEEP_LAST',reliability='BEST_EFFORT',durability='VOLATILE')
+        selected=latest_control_sensor_qos(original)
+        self.assertIsNot(selected,original);self.assertEqual(original.depth,5)
+        self.assertEqual(selected.depth,1)
+        self.assertEqual((selected.history,selected.reliability,selected.durability),
+                         (original.history,original.reliability,original.durability))
     def test_snapshot_never_relabels_a_frozen_diagnostic_as_current(self):
         now=[1.];owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:now[0])
         original=dict(reason='CURRENT',checked_monotonic_s=1.,source_age_s=.034,
@@ -160,7 +240,7 @@ class RecoveryTests(unittest.TestCase):
                     owner._finish_field('PASS','ZERO_MOTION_NATIVE_COLLECTION')
                     self.assertTrue(entered.wait(1.));self.assertEqual(owner.field_trial['status'],'PENDING_PERSISTENCE')
                     self.assertIsNone(owner.field_receipt)
-                    now[0]=1.6
+                    now[0]=3.1
                     for _ in range(4):owner._cycle()
                     self.assertEqual(len(ticks),4);self.assertEqual(owner.field_trial['status'],'INCONCLUSIVE')
                     self.assertEqual(owner.field_trial['reason'],'FIELD_EVIDENCE_STALLED')
@@ -277,9 +357,27 @@ class RecoveryTests(unittest.TestCase):
             try:
                 with patch('os.fsync',side_effect=blocked):
                     token=writer.append('field-config.json',dict(original=True));self.assertTrue(entered.wait(1.))
-                    now[0]=1.6;unblock.set();closed=writer.close()
+                    now[0]=3.1;unblock.set();closed=writer.close()
                 self.assertFalse(closed['complete']);self.assertEqual(closed['error'],'FIELD_EVIDENCE_STALLED')
                 with self.assertRaisesRegex(ValueError,'FIELD_EVIDENCE_STALLED'):writer.receipt(token)
+            finally:unblock.set();writer.close()
+
+    def test_storage_buffering_waits_for_exact_durable_ack_without_false_failure(self):
+        from field_tests import FieldEvidenceWriter
+        entered,unblock=threading.Event(),threading.Event();now=[1.];real_fsync=os.fsync
+        with tempfile.TemporaryDirectory() as tmp:
+            writer=FieldEvidenceWriter(tmp,clock=lambda:now[0])
+            def delayed(fd):entered.set();unblock.wait(1.);real_fsync(fd)
+            try:
+                with patch('os.fsync',side_effect=delayed):
+                    token=writer.append('field-config.json',dict(original=True))
+                    self.assertTrue(entered.wait(1.));now[0]=1.51
+                    writer.check();self.assertTrue(writer.status()['buffering'])
+                    self.assertIsNone(writer.receipt(token))
+                    unblock.set();closed=writer.close()
+                self.assertTrue(closed['complete']);self.assertIsNone(closed['error'])
+                self.assertEqual(writer.receipt(token)['sha256'],token['sha256'])
+                self.assertEqual(closed['commit_deadline_s'],2.)
             finally:unblock.set();writer.close()
 
     def test_exported_trial_resolves_only_with_exact_ack_and_complete_writer(self):

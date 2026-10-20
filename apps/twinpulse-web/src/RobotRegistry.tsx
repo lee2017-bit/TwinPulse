@@ -5,6 +5,7 @@ import {useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {ApiError,type TwinPulseApi} from './api';
 import './api-key-settings.css';
 import {RobotBatterySettings,type BatteryDisplayConfig,type BatteryPresets} from './RobotBatterySettings';
+import {RobotTimingSettings,type TimingSettings,type TimingFields} from './RobotTimingSettings';
 
 export type RobotEndpoint={host:string;user:string;port:number;ros_domain_id:number};
 type DiscoveryCandidate={candidate_id:string;transport:'network'|'serial'|'bluetooth';address:string;label:string;identity_verified:false;
@@ -13,7 +14,9 @@ type DiscoveryCandidate={candidate_id:string;transport:'network'|'serial'|'bluet
 export type RobotRegistryState={schema_version:'robot-registry-1.0';revision:number;active_id:string|null;
   robots:{id:string;label:string;adapter_id:string;adapter_version?:string;endpoint:RobotEndpoint;
     discovery_presence?:{state:'recent_address_response'|'not_seen'|'unknown';observed_at_utc?:string;remaining_seconds:number;identity_verified:false};
-    connection_state:'unverified'|'verified_observation';motion_authorized:false;battery_display?:BatteryDisplayConfig;battery_display_sha256?:string}[];
+    connection_state:'unverified'|'verified_observation';motion_authorized:false;battery_display?:BatteryDisplayConfig;battery_display_sha256?:string;timing_settings?:TimingSettings;
+    timing_runtime?:{state:string;profile_sha256:string|null;values:Record<string,number>|null;output_guard:{output_timeout_ms:number}|null}}[];
+  timing_fields?:TimingFields;
   battery_display_presets?:BatteryPresets;
   adapters:{id:string;label:string;supported:boolean}[];
   discovery:{state:'idle'|'running'|'completed'|'failed';run_id?:string;candidates:DiscoveryCandidate[];known_devices?:DiscoveryCandidate[];
@@ -61,7 +64,7 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
     void poll();return()=>{closed=true;active.current=false;++sequence.current;clearTimeout(timer);clearInterval(tick);previous?.focus();};
   },[api]);
   const action=async(body:object,message:string)=>{
-    if(pending.current||!state||!runtimeReady&&(!('action' in body)||body.action!=='set_battery_display'))return false;
+    if(pending.current||!state||!runtimeReady&&(!('action' in body)||!['set_battery_display','set_timing_profile','import_timing_measurement','recalculate_timing_profile','apply_timing_recommendation'].includes(String(body.action))))return false;
     pending.current=true;++sequence.current;setBusy(true);setError(null);setNotice('');
     const requestedAt=performance.now();
     try{const next=await api.updateRobotRegistry({...body,expected_revision:state.revision});
@@ -182,6 +185,11 @@ export function RobotRegistry({api,close,runtimeReady}:{api:TwinPulseApi;close:(
           <p>Adapter: {selected.adapter_id}</p><p>{selected.connection_state==='verified_observation'?'Read-only observation recorded · not a live connection guarantee':'Connection unverified'} · Motion not authorized</p>
           <RobotBatterySettings key={selected.id} config={selected.battery_display} presets={state.battery_display_presets} busy={busy}
             onSave={config=>action({action:'set_battery_display',id:selected.id,config,expected_display_sha256:selected.battery_display_sha256},'Battery display saved. Connection and driving protection are unchanged.')}/>
+          <RobotTimingSettings key={'timing-'+selected.id} settings={selected.timing_settings} fields={state.timing_fields} runtime={selected.timing_runtime} busy={busy}
+            onSave={(values,mode)=>action({action:'set_timing_profile',id:selected.id,values,mode,expected_timing_sha256:selected.timing_settings?.profile_sha256},'Timing settings saved for the next explicit connection. The active session is unchanged.')}
+            onRecalculate={()=>action({action:'recalculate_timing_profile',id:selected.id,expected_timing_sha256:selected.timing_settings?.profile_sha256},'Recommendation recalculated. Registered values and the active session are unchanged.')}
+            onApply={recommendationSha256=>action({action:'apply_timing_recommendation',id:selected.id,expected_timing_sha256:selected.timing_settings?.profile_sha256,expected_recommendation_sha256:recommendationSha256},'Recommended values registered for the next explicit connection. The active session is unchanged.')}
+            onImport={report=>action({action:'import_timing_measurement',id:selected.id,report,expected_timing_sha256:selected.timing_settings?.profile_sha256},'Recorded measurements imported locally. After initialization, registered values and recommendations stay unchanged until explicitly updated.')}/>
           <button disabled={busy||!runtimeReady||state.capabilities?.selected_preparation_available===false||state.discovery.state==='running'||state.connection?.state==='running'} onClick={()=>void action({action:'prepare'},'PC preparation checked. Review each result below; no robot connection was opened.')}>Check PC preparation</button>
           <button disabled={busy||!runtimeReady||!supported||state.capabilities?.selected_preparation_available===false||!connectionAvailable||state.connection?.state==='running'} onClick={()=>void action({action:'connect'},'Read-only connection check requested. Wait for the observation result.')}>Check connection (read-only)</button>
         </article>}

@@ -13,6 +13,7 @@ from threading import Event, RLock, Thread
 import time
 
 from .command_broker import BrokerError
+from twinpulse_core.robot_control_timing import INPUT_TTL_MS
 
 
 class ManualController:
@@ -125,7 +126,7 @@ class ManualController:
                 if action == 'close': self._session = None
                 return self.snapshot(owner)
             if (type(expires_at_ms) not in (int, float) or not math.isfinite(expires_at_ms)
-                    or not 0 < expires_at_ms - self.wall() <= 300):
+                    or not 0 < expires_at_ms - self.wall() <= INPUT_TTL_MS):
                 self._stop('STALE_INPUT', latch=True, all_outputs=True)
                 raise BrokerError('controller_stale_input', 'Input expired.', status=409)
             if not self._armed: raise BrokerError('controller_disarmed', 'Re-enable rehearsal explicitly.', status=409)

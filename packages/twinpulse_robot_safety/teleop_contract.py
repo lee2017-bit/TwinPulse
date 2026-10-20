@@ -10,6 +10,7 @@ import math
 import secrets
 import time
 from control_timing import INPUT_TTL_S,OPERATOR_PRESENCE_S
+from twinpulse_core.robot_timing_profile import values_of
 
 DIRECTIONS = {'forward': (.03, 0.), 'backward': (-.03, 0.),
               'left': (0., .20), 'right': (0., -.20)}
@@ -62,7 +63,10 @@ def finish_segment(link, incoming, gate, last_output_s, segment_s, *, record, cl
 
 
 class InputGate:
-    def __init__(self, clock=time.monotonic, *, continuous=False, persistent=False, recoverable=False):
+    def __init__(self, clock=time.monotonic, *, continuous=False, persistent=False, recoverable=False, timing_values=None):
+        self.timing_values=values_of(timing_values)
+        self.input_ttl_s=self.timing_values['input_ttl_ms']/1000
+        self.presence_s=self.timing_values['operator_presence_ms']/1000
         self.clock = clock
         self.started = clock()
         self.sequence = 0
@@ -76,6 +80,15 @@ class InputGate:
         self.presence_at = None
         self.recoverable = recoverable is True and self.persistent
         self.generation=0;self.source_created=None;self.pause_reason=None
+        self.last_admission=None;self.first_fault=None
+
+    def timing(self):
+        """Robot-clock diagnostics only; never expose a usable nonce."""
+        now=self.clock()
+        return dict(checked_s=now,generation=self.generation,sequence=self.sequence,
+            active=self.active,source_created_s=self.source_created,deadline_s=self.deadline,
+            remaining_s=self.deadline-now if self.active else None,
+            last_admission=dict(self.last_admission) if self.last_admission else None)
 
     def pause(self,reason=None,*,repeated_observation=False):
         # A repeated automatic observation of the same fault is not a new
@@ -97,7 +110,7 @@ class InputGate:
 
     def challenge(self):
         now = self.clock()
-        self.challenges = {k: v for k, v in self.challenges.items() if now - v < .25}
+        self.challenges = {k: v for k, v in self.challenges.items() if now - v < self.input_ttl_s}
         nonce = secrets.token_hex(12)
         self.challenges[nonce] = now
         return nonce
@@ -130,7 +143,7 @@ class InputGate:
         """Validated idle presence is not a wheel-command lease.
 
         Caller must have observed outputs disabled. Keep nonce freshness and
-        session lifetime, but do not start the 250ms motion deadline while idle.
+        session lifetime, but do not start the input motion deadline while idle.
         A direction still requires its own fresh nonce and post-arm input.
         """
         if self.closed or not self.active or self.last_action != 'watch':
@@ -160,20 +173,25 @@ class InputGate:
         if not isinstance(challenge, str) or challenge not in self.challenges:
             raise ValueError('INPUT_CHALLENGE')
         extra = packet['age_ms']
-        if type(extra) not in (int,float) or not math.isfinite(extra) or not 0<=extra<INPUT_TTL_S*1000:
+        if type(extra) not in (int,float) or not math.isfinite(extra) or not 0<=extra<self.input_ttl_s*1000:
             raise ValueError('INPUT_AGE')
         # Conservative sum: time already spent before relay plus the robot nonce
-        # round trip. A queued PC request cannot receive a new 250ms lifetime.
-        created=self.challenges[challenge]-extra/1000
+        # round trip. A queued PC request cannot receive a new input lifetime.
+        issued=self.challenges[challenge]
+        created=issued-extra/1000
         age = self.clock()-created
-        if not 0 <= age < INPUT_TTL_S: raise ValueError('INPUT_EXPIRED')
+        if not 0 <= age < self.input_ttl_s: raise ValueError('INPUT_EXPIRED')
         self.challenges.pop(challenge);self.sequence=seq;self.source_created=created;self.pause_reason=None
         self.presence_at = self.clock()
         if not self.active or (self.last_action == 'watch' and action != 'watch') or (self.continuous and action in DIRECTIONS):
             self.hold_end = self.clock() + (60. if action == 'watch' else 2.)
         self.last_action = action
         self.active = True
-        self.deadline = created+INPUT_TTL_S
+        self.deadline = created+self.input_ttl_s
+        self.last_admission=dict(sequence=seq,action=action,generation=self.generation,
+            issued_s=issued,accepted_s=self.clock(),source_created_s=created,
+            source_age_s=age,relay_age_ms=extra,deadline_s=self.deadline,
+            remaining_s=self.deadline-self.clock())
         return action, age
 
     def check(self):
@@ -181,8 +199,9 @@ class InputGate:
         reason = ('SESSION_EXPIRED' if not self.persistent and now-self.started >= 60 else
                   'INPUT_DEADLINE_EXPIRED' if self.active and now >= self.deadline else
                   'HOLD_LIMIT_EXCEEDED' if self.active and now >= self.hold_end else
-                  'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=OPERATOR_PRESENCE_S else None)
+                  'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=self.presence_s else None)
         if reason:
+            if self.first_fault is None:self.first_fault=dict(reason=reason,**self.timing())
             if self.recoverable and reason in {'INPUT_DEADLINE_EXPIRED','OPERATOR_PRESENCE_EXPIRED','HOLD_LIMIT_EXCEEDED'}:
                 self.pause(reason)
                 raise MotionPaused(reason)

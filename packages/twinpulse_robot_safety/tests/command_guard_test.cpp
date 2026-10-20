@@ -21,6 +21,12 @@ struct Fixture {
   void start() { CHECK(gate.arm(0,10000)); CHECK(gate.receive(.03,.1,10001,10001,1)); }
 };
 int main() {
+  { int32_t v=0; CommandGuard gate([&](int32_t a,int32_t){v=a;return true;},[](uint8_t){return true;},450);
+    CHECK(gate.configured_timeout_ms()==450); CHECK(gate.arm(0,10000));
+    CHECK(gate.receive(.03,0,10001,10350,350)); // original age349ms, NOT a new450ms lease
+    gate.tick(450);CHECK(v==3);gate.tick(451);CHECK(v==0 && !gate.armed()); }
+  { bool rejected=false; try { CommandGuard gate([](int32_t,int32_t){return true;},[](uint8_t){return true;},2001); }
+    catch(const std::invalid_argument&){rejected=true;} CHECK(rejected); }
   { Fixture f; f.gate.tick(0); CHECK(!f.gate.armed()); CHECK(f.v==0 && f.w==0);
     CHECK(!f.gate.receive(.03,0,10001,10001,1)); CHECK(f.events[0]=="velocity"); CHECK(f.events[1]=="heartbeat"); }
   { Fixture f; f.start(); f.gate.tick(400); CHECK(f.v==3 && f.w==10); f.gate.tick(401);

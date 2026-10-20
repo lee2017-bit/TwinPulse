@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+from control_timing import INPUT_TTL_S
 
 try:
     from twinpulse_core.manual_motion_guard import NativeGeometry, SamplingModel, StopModel, ProgressThresholds
@@ -83,7 +84,7 @@ def checked_profile(value, *, robot_id=None, binding_sha256=None):
               'minimum_linear_deceleration_m_s2': (.000001, 100), 'minimum_angular_deceleration_rad_s2': (.000001, 100),
               'linear_velocity_uncertainty_m_s': (0, 1), 'angular_velocity_uncertainty_rad_s': (0, 2),
               'position_uncertainty_m': (0, 1), 'maximum_scan_age_s': (.000001, .2),
-              'maximum_input_age_s': (.000001, .25), 'maximum_linear_speed_m_s': (.000001, .05),
+              'maximum_input_age_s': (.000001, INPUT_TTL_S), 'maximum_linear_speed_m_s': (.000001, .05),
               'maximum_angular_speed_rad_s': (.000001, .30)}
     if any(not _number(p[k], *bounds) for k, bounds in limits.items()) or not _hash(p['stopping_measurement_sha256']):
         raise ValueError('PROFILE_MEASURED_STOP_MODEL_REQUIRED')

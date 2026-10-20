@@ -27,6 +27,7 @@ from .robot_registry import RobotEndpoint
 from twinpulse_core.ros_observations import valid_snapshot, valid_scan_preview
 from twinpulse_core.mission_contract import scope_document, document_hash, bootstrap_packet
 from twinpulse_core.demo_contract import operation_for_action
+from twinpulse_core.robot_control_timing import INPUT_TTL_S, INPUT_TTL_MS
 
 REMOTE = '/home/twinpulse/.local/share/twinpulse/robot/current/teleop.sh'
 MODES = {'prepare','off','lidar','scan','qualify','qualify_scan','control','control_scan','mission','localize'}
@@ -48,7 +49,7 @@ def valid_mission_decision(value, event_t, *, adaptive=False):
             or abs(value['linear_m_s'])>.03 or abs(value['angular_rad_s'])>.2):return False
     moving=bool(value['linear_m_s'] or value['angular_rad_s'])
     if moving!=(value['reason']=='CLEAR_IN_SCAN_ENVELOPE'):return False
-    if moving and (not finite(value.get('published_source_age_s')) or not 0<=value['published_source_age_s']<.25):return False
+    if moving and (not finite(value.get('published_source_age_s')) or not 0<=value['published_source_age_s']<INPUT_TTL_S):return False
     if not moving and 'published_source_age_s' in value:return False
     if moving and (not {'clear_radius_m','required_radius_m'}<=set(value)
                    or not all(finite(value[k]) for k in ('clear_radius_m','required_radius_m'))
@@ -417,7 +418,7 @@ class PhysicalController:
             self._record('input_received', sequence=sequence, action=action,
                          **({'operation_id':operation_id} if operation_id else {}))
             if action not in {'stop','close','finish_stop','force_stop'}:
-                if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()<=300:
+                if type(expires) not in (int,float) or not math.isfinite(expires) or not 0<expires-self.wall()<=INPUT_TTL_MS:
                     if self.mode in {'control','control_scan'}:self._pause_manual('INPUT_STALE')
                     else:self._cancel()
                     raise BrokerError('physical_expired','Expired input: stop requested',status=409)
@@ -505,7 +506,7 @@ class PhysicalController:
             self.challenge=None
             return  # Wait for a new robot challenge; retain original input expiry.
         self._send({'sequence':sequence,'action':action,'challenge':self.challenge,
-                    'age_ms':max(0.,250-remaining*1000)})
+                    'age_ms':max(0.,INPUT_TTL_MS-remaining*1000)})
         self.pending_input=None;self.challenge=None
 
     def query_localization(self,owner,job,query_id):

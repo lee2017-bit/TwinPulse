@@ -19,7 +19,7 @@ export function DesktopTesting(){
   useEffect(()=>{if(open)panel.current?.focus();},[open]);
   if(!host?.automationStatus)return null;
   return <span className="desktop-tests"><button type="button" onClick={()=>setOpen(true)}>Tests</button>
-    {status?.enabled&&<span role="status" className="desktop-test-badge">TEST MODE · local automation enabled · {status.state}</span>}
+    {status?.enabled&&<span role="status" className="desktop-test-badge" title="Local automation is enabled for this launch. Open Tests for scope and details.">TEST MODE · {status.state}</span>}
     {open&&createPortal(<div className="key-settings-backdrop"><div ref={panel} tabIndex={-1} className="key-settings-panel" role="dialog" aria-modal="true" aria-label="Automation tests"
       onKeyDown={event=>{if(event.key==='Escape')setOpen(false);}}>
       <header><h2>Automation tests</h2><button onClick={()=>setOpen(false)}>Close tests</button></header>

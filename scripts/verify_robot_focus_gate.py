@@ -131,6 +131,10 @@ def validate_records(records,release,source):
         delta=steps.get(name,{}).get('evidence',{}).get('delta')
         if type(delta) not in (int,float) or not math.isfinite(delta) or abs(delta-angle)>.01:issues.append('ORIGINAL_ANGLE_NOT_PROVEN:'+name)
     if records.get('lineage',{}).get('requested_command')!='left 90 degrees':issues.append('ORIGINAL_LINEAGE_90_NOT_RUN')
+    destination=steps.get('Physical setup shown while robot remains off; no Connect or movement',{}).get('evidence',{})
+    if (destination.get('destination_policy_visible') is not True or destination.get('off_destination_send_disabled') is not True
+            or destination.get('physical_destination_commands_sent')!=0):
+        issues.append('PHYSICAL_DESTINATION_OFF_ENTRY_NOT_PROVEN')
     normal=records.get('normal',{})
     if (normal.get('status')!='PASS_NORMAL_START_REUSE_DEBUG_OFF' or normal.get('release_id')!=release
             or normal.get('source_sha256')!=source or type(normal.get('ready_wait_ms')) not in (int,float)

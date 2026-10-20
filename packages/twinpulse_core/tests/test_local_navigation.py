@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from twinpulse_core.local_navigation import LocalScan, LocalPose, CheckedMission, WaypointMission, guarded_velocity, checked_command
+from twinpulse_core.robot_control_timing import INPUT_TTL_S
 
 
 class LocalNavigationTests(unittest.TestCase):
@@ -14,7 +15,7 @@ class LocalNavigationTests(unittest.TestCase):
         plain=WaypointMission(((-.3,0.),),0.)
         self.assertEqual(plain.tick((0.,0.,0.),0.),(0.,.2))
         for radius,age,reason in ((2.,0.,'CLEAR_IN_SCAN_ENVELOPE'),(.2,0.,'OBSTACLE_IN_SWEPT_ENVELOPE'),
-                                  (2.,.25,'SOURCE_EXPIRED_DURING_ENABLE')):
+                                  (2.,INPUT_TTL_S,'SOURCE_EXPIRED_DURING_ENABLE')):
             mission=CheckedMission(((-.3,0.),),0.,provenance='synthetic_raycast',frame_id='synthetic_room',allow_reverse=True)
             result=mission.step(LocalPose((0.,0.,0.),1.,'synthetic_room','synthetic_model','synthetic_raycast'),
                 self.scan(radius),1.,command_created_s=1.-age)
@@ -22,7 +23,7 @@ class LocalNavigationTests(unittest.TestCase):
             self.assertEqual(result['linear_m_s'],-.03 if age==0. and radius==2. else 0.)
         with self.assertRaises(ValueError):WaypointMission(((-.3,0.),),0.,allow_reverse='yes')
     def test_shared_output_command_bounds_and_supervised_is_not_scan_clear(self):
-        for age in (-.01,.25,float('nan'),True):
+        for age in (-.01,INPUT_TTL_S,float('nan'),True):
             self.assertFalse(checked_command(.03,0.,age,None,1.,require_scan=False)['allowed'])
         value=checked_command(.03,0.,.1,None,1.,require_scan=False)
         self.assertTrue(value['allowed']);self.assertFalse(value['physical_authority'])
@@ -37,7 +38,7 @@ class LocalNavigationTests(unittest.TestCase):
                (LocalPose(pose.xy_yaw,1.1,'odom','measured_odometry','live_sensor'),scan,1.,'POSE_STALE'),
                (LocalPose(pose.xy_yaw,1.,'odom','photo_hypothesis','live_sensor'),scan,1.,'POSE_FRAME_UNVERIFIED'),
                (pose,self.scan(),1.,'SCAN_SOURCE_MISMATCH'),
-               (pose,scan,.7,'SOURCE_EXPIRED_DURING_ENABLE'),
+               (pose,scan,1.-INPUT_TTL_S-.01,'SOURCE_EXPIRED_DURING_ENABLE'),
                (pose,self.scan(stamp=.79,kind='live_sensor',basis='measured_sensor_extrinsic'),1.,'SCAN_STALE')]
         for p,s,created,reason in cases:
             m=CheckedMission(((1.,0.),),0.,provenance='live_sensor',frame_id='odom')

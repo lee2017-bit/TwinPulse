@@ -26,6 +26,8 @@ from uuid import uuid4
 from .command_broker import BrokerError
 from .robot_adapters import checked_binding, require_adapter
 from twinpulse_core.robot_lineage import checked_twin_context
+from twinpulse_core.robot_control_timing import INPUT_TTL_S, INPUT_TTL_MS
+from twinpulse_core.robot_timing_profile import values_of,checked_profile as checked_timing_profile,digest as timing_digest,TimingAccumulator
 
 SCHEMA = 'physical-live-event-1.0'
 MAX_LINE = 256 * 1024
@@ -73,8 +75,15 @@ def reviewed_bundle(root):
     names = ('fleet_worker.py', 'fleet_control.py', 'native_stream.py', 'physical_profile.py', 'field_tests.py',
              'teleop_ros.py', 'teleop_contract.py', 'teleop_worker.py', 'stop_policy.py',
              'lidar_capture.py', 'robot_journal.py', 'raw_ros_record.py', 'robot_session.py',
-             'runtime.py', 'stationary.py', 'owned_exec.py','cleanup_notes.py','control_timing.py','field_config.py')
+             'runtime.py', 'stationary.py', 'owned_exec.py','cleanup_notes.py','control_timing.py','field_config.py','guard_runtime.py')
     files = {}
+    guard_paths=[*sorted((package/'guard_base').rglob('*')),
+        *sorted((package/'include').rglob('*.hpp')),package/'CMakeLists.txt',
+        package/'tests/command_guard_test.cpp',package/'tests/torque_off_test.cpp',package/'tests/ros_guard_test.cpp',
+        package/'tests/fake_include/turtlebot3_node/dynamixel_sdk_wrapper.hpp']
+    for path in guard_paths:
+        if path.is_symlink():raise ValueError('LIVE_GUARD_SOURCE_SYMLINK')
+        if path.is_file():files[path.relative_to(package).as_posix()]=path.read_bytes()
     for name,target in (('LICENSE','LICENSE.txt'),('NOTICE','NOTICE.txt'),('THIRD_PARTY_NOTICES.md','THIRD_PARTY_NOTICES.txt')):
         path=root/name
         if path.is_symlink() or not path.is_file():raise ValueError('LIVE_SOURCE_NOTICE_MISSING')
@@ -92,7 +101,7 @@ def reviewed_bundle(root):
     health = root / 'scripts/robot_health.py'
     if health.is_file(): files['robot_health.py'] = health.read_bytes()
     core = root / 'packages/twinpulse_core/src/twinpulse_core'
-    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage','field_persistence']
+    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage','field_persistence','physical_object_navigation','robot_control_timing','robot_timing_profile']
     import ast
     files['twinpulse_core/__init__.py'] = b'"""Pure shipped contracts; no device initialization."""\n'
     seen = set()
@@ -210,16 +219,23 @@ class StreamEvidence:
 
 class PhysicalLiveSession:
     def __init__(self, source_root, archive_root, *, identity, known_hosts,
-                 process_factory=subprocess.Popen, clock=time.monotonic, wall=time.time):
+                 process_factory=subprocess.Popen, clock=time.monotonic, wall=time.time,on_timing_measurement=None):
         self.source_root, self.archive_root = Path(source_root), Path(archive_root)
         self.identity, self.known_hosts = Path(identity), Path(known_hosts)
         self.factory, self.clock, self.wall = process_factory, clock, wall
+        self.timing_values=values_of();self.on_timing_measurement=on_timing_measurement
+        self.pc_timing_measurements=TimingAccumulator()
         self.lock = threading.RLock(); self.binding = self.context = None
         self.thread = self.process = self.evidence = None
         self.writes = queue.Queue(maxsize=16)
+        self.navigation_guard=None
         self.last = {}; self.scan = None; self.scan_at = None; self.at = self.battery_at = None
         self.motion_epoch=None
         self.watch_ack_at=None;self.watches={}
+        self.input_window=None;self.input_window_at=None;self.queued_at={}
+        self.used_input_challenges={};self.pending_drive=None
+        self.last_pause_id=None;self.last_robot_pause=None
+        self.authority_requested=False
         self.pending_profile=None
         self.pending_field_setup=None
         self.presence_gap_until=0.;self.presence_gap_trial_id=None
@@ -251,6 +267,10 @@ class PhysicalLiveSession:
             if context.get('source_twin_context') is not None:
                 self.context.update(schema='physical-live-start-2.0',
                     source_twin_context=checked_twin_context(context['source_twin_context'],project_id=context['project_id']))
+            if context.get('timing_profile') is not None:
+                configured=checked_timing_profile(context['timing_profile'],robot_id=context['robot_id'],binding_sha256=self.binding['sha256'])
+                self.timing_values=values_of(configured)
+                self.context.update(timing_profile=configured,timing_profile_sha256=timing_digest(configured))
             self.sources = digests
             self.evidence = StreamEvidence(self.archive_root / self.context['operation_id'])
             # Persist the reference before transport. Raw event ID joins do not
@@ -314,7 +334,10 @@ class PhysicalLiveSession:
                                 # Enqueue at the tail to preserve command sequence,
                                 # while Stop/Close retain replacement admission.
                                 with self.lock:
-                                    current=(not self.closing and now>=self.presence_gap_until and self.at is not None and 0<=now-self.at<.25
+                                    if self.navigation_guard is not None and not self.navigation_guard():
+                                        self.navigation_guard=None
+                                        self.command('stop',{},motion_epoch=uuid4().hex,request_id=uuid4().hex)
+                                    current=(self.input_window is None and not self.closing and now>=self.presence_gap_until and self.at is not None and 0<=now-self.at<self.timing_values['input_ttl_ms']/1000
                                              and self.last.get('watch_challenge',self.last.get('challenge')) is not None)
                                     if current:
                                         try:self.command('watch',{},motion_epoch=self.motion_epoch,request_id=uuid4().hex)
@@ -332,6 +355,8 @@ class PhysicalLiveSession:
                                     if len(self.watches)>64:self.watches.pop(next(iter(self.watches)))
                             self.process.stdin.write((json.dumps(item, separators=(',', ':'))+'\n').encode()); self.process.stdin.flush()
                             recorded=deepcopy(item);recorded['payload'].pop('challenge',None);recorded['payload'].pop('watch_challenge',None)
+                            queued=self.queued_at.pop(item['request_id'],None)
+                            recorded['pc_queue_age_s']=self.clock()-queued if queued is not None else None
                             recorded.update(schema='physical-live-pc-command-2.0' if item['schema']=='physical-live-command-2.0' else 'physical-live-pc-command-1.0',pc_sent_monotonic_s=self.clock(),
                                             execution_confirmed=False)
                             if not self.evidence.append((json.dumps(recorded,separators=(',',':'),allow_nan=False)+'\n').encode()) and not getattr(self,'recording_pause_sent',False):
@@ -375,6 +400,21 @@ class PhysicalLiveSession:
                     except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=3)
             if writer: writer.join(timeout=1)
             self.evidence.close(cleanup_confirmed=self.cleanup_confirmed)
+            measurement=self.last.get('timing_measurement')
+            pc_measurement=self.pc_timing_measurements.snapshot()
+            if pc_measurement['metrics']:
+                measurement=dict(measurement or pc_measurement)
+                measurement['metrics']=dict(measurement['metrics'],**pc_measurement['metrics'])
+                measurement['duration_s']=max(measurement['duration_s'],pc_measurement['duration_s'])
+                measurement['clock_domains']='Per-metric robot clocks or PC monotonic RTT; no PC-minus-robot subtraction'
+            if self.on_timing_measurement is not None and measurement is not None:
+                for attempt in range(3):
+                    try:
+                        self.on_timing_measurement(self.context,deepcopy(measurement));break
+                    except (ValueError,OSError,KeyError) as exc:
+                        if str(exc)=='ROBOT_REGISTRY_BUSY' and attempt<2:
+                            time.sleep(.05);continue
+                        self.timing_save_error=type(exc).__name__+':'+str(exc)[:100];break
             with self.lock: self.closed = True
 
     def _classify_remote_exit(self, code):
@@ -405,6 +445,8 @@ class PhysicalLiveSession:
             if event['kind'] == 'heartbeat':
                 if data.get('worker_sha256')!=self.context.get('worker_sha256') or not isinstance(data.get('worker_sha256'),str):
                     raise ValueError('SESSION_WORKER_SOURCE_MISMATCH')
+                if self.context.get('timing_profile_sha256') is not None and data.get('timing_profile_sha256')!=self.context['timing_profile_sha256']:
+                    raise ValueError('SESSION_TIMING_PROFILE_MISMATCH')
                 boot,release=data.get('boot_id'),data.get('release_id')
                 if not isinstance(boot,str) or not re.fullmatch('[a-f0-9-]{32,36}',boot) or not isinstance(release,str) or not re.fullmatch('[a-f0-9]{64}',release):
                     raise ValueError('SESSION_DEVICE_SOURCE_REQUIRED')
@@ -416,6 +458,8 @@ class PhysicalLiveSession:
                     or not math.isfinite(battery['voltage_v']) or not 0<=battery['voltage_v']<=50)):
                     raise ValueError('SESSION_BATTERY_SHAPE')
                 self.last = data; self.at = self.clock()
+                if data.get('control_state')=='PREPARING' or data.get('maintenance_phase')=='CLEANUP':
+                    self.input_window=None;self.input_window_at=None
                 trial=(data.get('field') or {}).get('active_trial') or {}
                 if (trial.get('case')=='presence_gap' and trial.get('status')=='RUNNING'
                         and trial.get('publications',0)>0 and trial.get('trial_id')!=self.presence_gap_trial_id):
@@ -452,8 +496,50 @@ class PhysicalLiveSession:
                     self.cleanup_confirmed=data.get('confirmed') is True
                 if data.get('subsystem')=='session' and data.get('recording_complete') is False and self.evidence is not None:
                     self.evidence.error=self.evidence.error or 'ROBOT_RECORDING_INCOMPLETE'
+            elif event['kind']=='control_pause':
+                pause_id=data.get('pause_id');reason=data.get('reason')
+                if not isinstance(pause_id,str) or not isinstance(reason,str):raise ValueError('CONTROL_PAUSE_SHAPE')
+                if pause_id!=self.last_pause_id:
+                    self.last_pause_id=pause_id;self.last_robot_pause=deepcopy(data)
+                    if reason!='OPERATOR_STOP' and not self.closing and (self.authority_requested or self.pending_drive is not None):
+                        # A robot-side expiry/fault is an intent fence too.
+                        # Never let a still-held old HTTP gesture attach to the
+                        # fresh robot nonce generation and resume on its own.
+                        request=uuid4().hex
+                        self.command('stop',{},motion_epoch=uuid4().hex,request_id=request)
+                        self._input_disposition(request,'ROBOT_PAUSE_STOP_FENCE')
+            elif event['kind']=='command' and data.get('action')=='input_window':
+                issued=data.get('issued_s');generation=data.get('motion_generation')
+                if (data.get('schema')!='robot-input-window-1.0'
+                        or not isinstance(data.get('challenge'),str) or not re.fullmatch('[a-f0-9]{24}',data['challenge'])
+                        or not isinstance(data.get('watch_challenge'),str) or not re.fullmatch('[a-f0-9]{24}',data['watch_challenge'])
+                        or type(generation) is not int or generation<0
+                        or type(issued) not in (int,float) or not math.isfinite(issued)
+                        or not 0<=event['robot_monotonic_s']-issued<self.timing_values['input_ttl_ms']/1000):
+                    raise ValueError('INPUT_WINDOW_SHAPE_OR_AGE')
+                self.input_window=data;self.input_window_at=self.clock()
+                pending=self.pending_drive
+                if pending is not None:
+                    self.pending_drive=None
+                    valid=(not self.closing and pending['motion_epoch']==self.motion_epoch
+                        and pending['generation']==data['motion_generation']
+                        and pending['payload']['expires_at_ms']>self.wall()*1000)
+                    if valid:
+                        self.command('drive',pending['payload'],motion_epoch=pending['motion_epoch'],
+                            request_id=pending['request_id'],request_twin_context=pending['request_twin_context'])
+                    else:self._input_disposition(pending['request_id'],'DISCARDED_EXPIRED_OR_FENCED')
+                # Relay the actual current nonce immediately. Full display/scan
+                # updates and the old periodic PC timer do not pace this reply.
+                if (not self.closing and self.clock()>=self.presence_gap_until
+                        and self.at is not None and 0<=self.clock()-self.at<self.timing_values['input_ttl_ms']/1000):
+                    try:self.command('watch',{},motion_epoch=self.motion_epoch,request_id=uuid4().hex)
+                    except BrokerError as error:
+                        if error.code!='physical_command_buffer':raise
             elif event['kind']=='command' and data.get('action')=='watch':
                 sent=self.watches.pop(data.get('request_id'),None)
+                if sent is not None:
+                    load='tracking_recording' if ((self.last.get('field') or {}).get('tracking') or {}).get('status')=='ESTIMATED' else 'lidar' if self.last.get('lidar_state')=='STREAMING' else 'base'
+                    self.pc_timing_measurements.observe('watch_roundtrip_ms',(self.clock()-sent)*1000,self.clock(),load)
                 if sent is not None and data.get('status')=='COMPLETED' and 0<=self.clock()-sent<=.5:
                     self.watch_ack_at=self.clock()
             elif event['kind']=='raw_source' and data.get('kind')=='manifest':
@@ -462,6 +548,14 @@ class PhysicalLiveSession:
                 archived=deepcopy(event);archived['data'].pop('challenge',None);archived['data'].pop('watch_challenge',None)
                 self.events.append(archived)
                 if len(self.events) > 100: del self.events[:-100]
+
+    def _input_disposition(self,request_id,disposition):
+        if self.evidence is not None:
+            value=dict(schema='physical-live-pc-input-disposition-1.0',
+                **{k:self.context[k] for k in ('operation_id','robot_id','project_id','connection_epoch')},
+                request_id=request_id,disposition=disposition,execution_confirmed=False,
+                pc_monotonic_s=self.clock())
+            self.evidence.append((json.dumps(value,separators=(',',':'))+'\n').encode())
 
     def command(self, action, payload, *, motion_epoch, request_id, request_twin_context=None):
         if action not in {'lidar','prepare','qualify','drive','task','stop','close','profile','watch',
@@ -489,18 +583,44 @@ class PhysicalLiveSession:
                 return result
             if action not in {'stop','close'} and (self.at is None or not 0<=self.clock()-self.at<=2.5):
                 raise BrokerError('physical_heartbeat_stale', 'The authenticated robot heartbeat is not current.', status=409)
+            if (action in {'drive','task','prepare','qualify','field_arm','field_test'}
+                    and motion_epoch!=(self.motion_epoch or self.context.get('motion_epoch'))):
+                raise BrokerError('fleet_motion_epoch_changed','The movement generation changed; use a new explicit input.',status=409)
             payload = deepcopy(payload)
+            window=(self.input_window if self.input_window_at is not None
+                    and 0<=self.clock()-self.input_window_at<self.timing_values['input_ttl_ms']/1000 else None)
             if action in {'drive','task','prepare','qualify','field_arm','field_test'} and self.evidence is not None and self.evidence.error:
                 raise BrokerError('physical_recording_incomplete','Recording is incomplete; reconnect after resolving its storage error.',status=409)
             if action == 'drive':
                 expires = payload.get('expires_at_ms')
-                if type(expires) not in (float,int) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=300:
+                if type(expires) not in (float,int) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=self.timing_values['input_ttl_ms']:
                     raise BrokerError('fleet_input_expired', 'Movement input expired; press again.', status=409)
-                payload.update(challenge=self.last.get('challenge'), motion_generation=self.last.get('motion_generation'),
-                               source_age_ms=max(0,250-(expires-self.wall()*1000)))
+                source=window or self.last
+                payload.update(challenge=source.get('challenge'), motion_generation=source.get('motion_generation'),
+                               source_age_ms=max(0,self.timing_values['input_ttl_ms']-(expires-self.wall()*1000)))
             elif action in {'watch','task','qualify','prepare','field_arm','field_test'}:
-                payload.update(challenge=self.last.get('watch_challenge',self.last.get('challenge')) if action=='watch' else self.last.get('challenge'),
-                    motion_generation=self.last.get('motion_generation'),source_age_ms=0)
+                source=window or self.last
+                payload.update(challenge=source.get('watch_challenge',source.get('challenge')) if action=='watch' else source.get('challenge'),
+                    motion_generation=source.get('motion_generation'),source_age_ms=0)
+            token=payload.get('challenge')
+            now=self.clock()
+            self.used_input_challenges={key:at for key,at in self.used_input_challenges.items() if now-at<2.5}
+            if token is not None and token in self.used_input_challenges:
+                if action=='drive':
+                    if self.pending_drive:self._input_disposition(self.pending_drive['request_id'],'SUPERSEDED_BEFORE_SEND')
+                    # At most one held renewal. Wait only within its ORIGINAL
+                    # UI expiry and generation; never replay it after Stop/arm.
+                    self.pending_drive=dict(payload=payload,motion_epoch=motion_epoch,request_id=request_id,
+                        request_twin_context=deepcopy(request_twin_context),generation=payload['motion_generation'])
+                    self._input_disposition(request_id,'WAITING_UNUSED_INPUT_WINDOW')
+                    return dict(status='pending_input_window',request_id=request_id,operation_id=self.context['operation_id'],execution_confirmed=False)
+                if action=='watch':
+                    return dict(status='not_sent',request_id=request_id,operation_id=self.context['operation_id'],execution_confirmed=False)
+                raise BrokerError('physical_input_window_pending','Wait for a fresh robot input window, then try again.',status=409)
+            if action in {'drive','stop','close'} and self.pending_drive is not None:
+                self._input_disposition(self.pending_drive['request_id'],'SUPERSEDED_BEFORE_SEND' if action=='drive' else 'DISCARDED_BY_STOP')
+                self.pending_drive=None
+            if action in {'stop','close'}:self.authority_requested=False
             self.command_sequence += 1
             self.motion_epoch=motion_epoch
             packet = dict(schema='physical-live-command-1.0',
@@ -519,6 +639,10 @@ class PhysicalLiveSession:
             try: self.writes.put_nowait(packet)
             except queue.Full:
                 raise BrokerError('physical_command_buffer', 'Command channel is congested; no movement was queued.', status=409) from None
+            if token is not None:self.used_input_challenges[token]=now
+            if action in {'drive','task','qualify','field_test'}:self.authority_requested=True
+            self.queued_at[request_id]=self.clock()
+            if len(self.queued_at)>64:self.queued_at.pop(next(iter(self.queued_at)))
             return dict(status='accepted', request_id=request_id, operation_id=self.context['operation_id'])
 
     def snapshot(self):
@@ -552,6 +676,8 @@ class PhysicalLiveSession:
                          cleanup_confirmed=self.cleanup_confirmed, transport_error=self.error,
                          terminal_cleanup_received=self.terminal_cleanup is not None,
                          terminal_cleanup=deepcopy(self.terminal_cleanup),remote_exit_code=self.remote_exit_code,
+                         timing_measurement_save_error=getattr(self,'timing_save_error',None),
+                         pc_motion_epoch=self.motion_epoch,last_robot_pause=deepcopy(self.last_robot_pause),
                          recording=self.evidence.snapshot() if self.evidence else None,
                          expected_worker_sha256=self.context.get('worker_sha256') if self.context else None)
             return value

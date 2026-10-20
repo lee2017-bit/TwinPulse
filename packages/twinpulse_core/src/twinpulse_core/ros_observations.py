@@ -70,7 +70,7 @@ def scan_preview(msg,ros_now_ns,receipt_s,*,diagnostic=None):
     except (AttributeError,TypeError,ValueError,OverflowError):return fail('MESSAGE_SHAPE')
 
 
-def valid_snapshot(value):
+def valid_snapshot(value, *, odom_age_s=.2, scan_age_s=.2):
     """Same bounded contract on robot output and PC journal input."""
     if not isinstance(value, dict) or set(value) != {'schema','t','odom','scan','faults','alignment_verified','motion_authorized'}:
         return False
@@ -95,7 +95,7 @@ def valid_snapshot(value):
         if not isinstance(item,dict) or set(item)!=common|extra or faults[kind]!='NONE':return False
         if (not all(finite(item[k]) for k in ('sample_s','receipt_s'))
                 or not 0<=item['sample_s']<=item['receipt_s']<=value['t']
-                or not 0<=value['t']-item['sample_s']<.2
+                or not 0<=value['t']-item['sample_s']<(odom_age_s if kind=='odom' else scan_age_s)
                 or type(item['source_stamp_ns']) is not int or not 0<item['source_stamp_ns']<2**63
                 or not frame(item['frame_id'])):return False
         if kind=='odom':
@@ -144,11 +144,15 @@ def _payload_fault(kind,item):
 
 
 class RosObservations:
-    def __init__(self):
+    def __init__(self, *, timing_values=None):
+        self.timing_values=timing_values
         self.values={'odom':None,'scan':None}
         self.faults={'odom':'NOT_RECEIVED','scan':'NOT_RECEIVED'}
         self.stamps={'odom':0,'scan':0}
         self.offset=None;self.last=-1.;self.clock_fault=False
+
+    def age_limit(self,kind):
+        return .2 if self.timing_values is None else self.timing_values['odom_source_ms' if kind=='odom' else 'scan_source_ms']/1000
 
     def receive(self,kind,msg,ros_now_ns,receipt_s,publishers):
         if kind not in self.values:raise ValueError('UNKNOWN_OBSERVATION')
@@ -172,7 +176,7 @@ class RosObservations:
                 self.faults[kind]='STAMP_FORMAT';return
             ns=stamp.sec*10**9+stamp.nanosec
             age=(ros_now_ns-ns)/1e9
-            if ns<=self.stamps[kind] or not 0<=age<.2:
+            if ns<=self.stamps[kind] or not 0<=age<self.age_limit(kind):
                 self.faults[kind]='SOURCE_TIME';return
             item={'sample_s':receipt_s-age,'receipt_s':receipt_s,'source_stamp_ns':ns,'frame_id':msg.header.frame_id}
             if kind=='odom':
@@ -190,7 +194,7 @@ class RosObservations:
                        'faults':{'odom':'NOT_RECEIVED','scan':'NOT_RECEIVED'},
                        'alignment_verified':False,'motion_authorized':False}
             candidate[kind]=item;candidate['faults'][kind]='NONE'
-            if not valid_snapshot(candidate):
+            if not valid_snapshot(candidate,odom_age_s=self.age_limit('odom'),scan_age_s=self.age_limit('scan')):
                 self.faults[kind]=_payload_fault(kind,item)
                 return
             self.values[kind]=item;self.faults[kind]='NONE';self.stamps[kind]=ns
@@ -210,7 +214,7 @@ class RosObservations:
         self.last=now
         values=copy.deepcopy(self.values);faults=dict(self.faults)
         for kind,item in values.items():
-            if item is not None and not 0<=now-item['sample_s']<.2:
+            if item is not None and not 0<=now-item['sample_s']<self.age_limit(kind):
                 values[kind]=None;faults[kind]='STALE'
         return {'schema':'passive-ros-observation-1.0','t':now,**values,'faults':faults,
                 'alignment_verified':False,'motion_authorized':False}

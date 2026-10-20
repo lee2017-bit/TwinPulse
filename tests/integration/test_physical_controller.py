@@ -74,7 +74,7 @@ class ProtocolTests(unittest.TestCase):
             for sequence in range(1,1501):
                 c.t=(sequence-1)*.1;g.accept(self.packet(g,sequence,'watch' if idle else 'left'))
                 if idle:g.discard_idle_watch()
-            c.t+=.5 if idle else .25
+            c.t+=.5 if idle else .351
             with self.assertRaisesRegex(ValueError,'OPERATOR_PRESENCE_EXPIRED' if idle else 'INPUT_DEADLINE_EXPIRED'):
                 g.accept(self.packet(g,1501,'forward'))
             self.assertTrue(g.closed)
@@ -86,7 +86,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertFalse(checked_command(v,w,0.,None,1.,require_scan=False,supervised_manual=True)['allowed'])
         self.assertFalse(checked_command(.05,0.,0.,None,1.,require_scan=False)['allowed'])
         self.assertFalse(checked_command(.05,0.,0.,None,1.,supervised_manual=True)['allowed'])
-        self.assertFalse(checked_command(.05,0.,.25,None,1.,require_scan=False,supervised_manual=True)['allowed'])
+        self.assertFalse(checked_command(.05,0.,.35,None,1.,require_scan=False,supervised_manual=True)['allowed'])
 
     def test_production_manual_worker_renews_fresh_hold_without_periodic_release(self):
         from types import SimpleNamespace as NS
@@ -119,14 +119,14 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(action,'forward');self.assertEqual(age,0.)
             g.check()
         self.assertGreater(c.t,2.);self.assertFalse(g.closed)
-        c.t+=.25
+        c.t+=.351
         with self.assertRaisesRegex(ValueError,'INPUT_DEADLINE_EXPIRED'):
             g.accept(self.packet(g,51,'forward'))
         self.assertTrue(g.closed)
 
     def test_continuous_policy_preserves_session_end_and_expired_nonce(self):
         c=Clock();g=InputGate(c,continuous=True)
-        late=self.packet(g,1,'forward');c.t=.251
+        late=self.packet(g,1,'forward');c.t=.351
         with self.assertRaisesRegex(ValueError,'INPUT_EXPIRED'):g.accept(late)
         c=Clock();g=InputGate(c,continuous=True)
         for sequence in range(1,600):
@@ -206,10 +206,10 @@ class ProtocolTests(unittest.TestCase):
         c=Clock();g=InputGate(c)
         g.accept(self.packet(g,1,'watch'));g.discard_idle_watch()
         c.t=.4;g.check();self.assertFalse(g.active)
-        packet=self.packet(g,2,'forward');c.t+=.251
+        packet=self.packet(g,2,'forward');c.t+=.351
         with self.assertRaisesRegex(ValueError,'INPUT_EXPIRED'):g.accept(packet)
         c=Clock();g=InputGate(c);g.accept(self.packet(g,1,'watch'));g.discard_idle_watch()
-        g.accept(self.packet(g,2,'forward'));c.t=.25
+        g.accept(self.packet(g,2,'forward'));c.t=.35
         with self.assertRaisesRegex(ValueError,'INPUT_DEADLINE_EXPIRED'):g.check()
         c=Clock();g=InputGate(c);g.accept(self.packet(g,1,'watch'));g.discard_idle_watch();c.t=60.
         with self.assertRaisesRegex(ValueError,'SESSION_EXPIRED'):g.check()
@@ -355,7 +355,7 @@ class ProtocolTests(unittest.TestCase):
             gate=InputGate(clock)
             gate.accept({'sequence':1,'action':'watch','challenge':gate.challenge(),'age_ms':0.})
             def step(*args,**kwargs):
-                result=original_step(*args,**kwargs);clock.t+=.251 if cause=='expired' else .01;return result
+                result=original_step(*args,**kwargs);clock.t+=.351 if cause=='expired' else .01;return result
             mission.step=step
             def pump():
                 gate.check()
@@ -376,14 +376,14 @@ class ProtocolTests(unittest.TestCase):
             original=link.enable
             def enable():
                 original()
-                if cause=='stale':clock.t+=.3
+                if cause=='stale':clock.t+=.36
                 if cause=='obstacle':link.navigation.values['scan']['ranges_m']=[.2]*72
                 if cause=='old_command':clock.t+=.04
             link.enable=enable
             def reject(now):raise ValueError('GOAL_PREVIEW_START_MAP_OR_SOURCE_CHANGED')
             mission.validate_first_output=reject if cause=='first_output_review' else lambda now:None
             with patch('teleop_ros.time.monotonic',clock),self.assertRaises(ValueError):
-                link.navigation_step(mission,binding,19.78 if cause=='old_command' else 20.)
+                link.navigation_step(mission,binding,19.68 if cause=='old_command' else 20.)
                 if cause=='next_tick_obstacle':link.navigation.values['scan']['ranges_m']=[.2]*72
                 link.navigation_step(mission,binding,clock.t)
             self.assertEqual(calls['sent'],[]);self.assertEqual(calls['halted'],1)
@@ -406,11 +406,11 @@ class ProtocolTests(unittest.TestCase):
                 calls['armed']+=1
                 if cause=='partial_arm_failure':raise ValueError('SERVICE_FAILED')
                 link.enabled=True
-                if cause=='stale':clock.t+=.3
+                if cause=='stale':clock.t+=.36
                 if cause=='obstacle':link.navigation.values['scan']['ranges_m']=[.2]*72
                 if cause=='old_command':clock.t+=.04
             link.enable=enable
-            created=19.78 if cause=='old_command' else 20.
+            created=19.68 if cause=='old_command' else 20.
             with patch('teleop_ros.time.monotonic',clock),self.assertRaises(ValueError):
                 link.navigation_step(mission,binding,created)
             self.assertEqual(calls['halted'],1);self.assertEqual(calls['sent'],[])
@@ -451,13 +451,13 @@ class ProtocolTests(unittest.TestCase):
     def test_challenge_age_and_replay(self):
         c=Clock();g=InputGate(c);n=g.challenge();c.t=.2
         self.assertAlmostEqual(g.accept(self.packet(g,challenge=n))[1],.2)
-        self.assertAlmostEqual(g.deadline,.25)
+        self.assertAlmostEqual(g.deadline,.35)
         with self.assertRaises(ValueError):g.accept(self.packet(g,2,challenge=n))
-        c.t=.251
+        c.t=.351
         with self.assertRaises(ValueError):g.check()
 
     def test_pc_queue_age_cannot_be_refreshed_by_new_robot_nonce(self):
-        c=Clock();g=InputGate(c);packet=self.packet(g);packet['age_ms']=200
+        c=Clock();g=InputGate(c);packet=self.packet(g);packet['age_ms']=300
         c.t=.06
         with self.assertRaises(ValueError):g.accept(packet)
         g=InputGate(c);packet=self.packet(g);packet['age_ms']=float('nan')
@@ -479,7 +479,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):g.check()
 
     def test_stale_nonce_future_and_session_limits(self):
-        c=Clock();g=InputGate(c);n=g.challenge();c.t=.251
+        c=Clock();g=InputGate(c);n=g.challenge();c.t=.351
         with self.assertRaises(ValueError):g.accept(self.packet(g,challenge=n))
         c.t=61
         with self.assertRaises(ValueError):g.check()
@@ -614,7 +614,7 @@ class ProtocolTests(unittest.TestCase):
         link.publish(.03,0.,.15)
         self.assertEqual(sent[0].header.stamp.sec,9)
         self.assertEqual(sent[0].header.stamp.nanosec,850000000)
-        with self.assertRaises(ValueError):link.publish(.03,0.,.251)
+        with self.assertRaises(ValueError):link.publish(.03,0.,.351)
         for v,w,age in [(float('nan'),0.,0.),(.031,0.,0.),(0.,.201,0.),(.03,0.,float('inf'))]:
             with self.assertRaises(ValueError):link.publish(v,w,age)
         self.assertEqual(len(sent),1)
@@ -653,7 +653,7 @@ class ProtocolTests(unittest.TestCase):
                 create_subscription=lambda _type,name,callback,_q:subscriptions.update({name:callback}),
                 count_publishers=lambda _:1,get_clock=lambda:NS(now=lambda:NS(nanoseconds=10**10)))
         modules={'rclpy':NS(init=lambda:calls.append('init'),create_node=lambda *a,**k:node),
-                 'rclpy.qos':NS(qos_profile_sensor_data='fake',QoSProfile=lambda **_:NS(),
+                 'rclpy.qos':NS(qos_profile_sensor_data=NS(depth=5),QoSProfile=lambda **_:NS(),
                                 DurabilityPolicy=NS(TRANSIENT_LOCAL=1)),
                  'geometry_msgs.msg':NS(TwistStamped=object),'std_msgs.msg':NS(String=object),
                  'std_srvs.srv':NS(Trigger=object,SetBool=object),'turtlebot3_msgs.msg':NS(SensorState=object),

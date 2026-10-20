@@ -70,6 +70,20 @@ class FleetNavigationTests(unittest.TestCase):
 
 
 class RuntimeNavigationTests(unittest.TestCase):
+    def test_new_goal_uses_current_cache_without_usd_retraversal(self):
+        from unittest.mock import patch
+        runtime=FleetRuntime();runtime.identity=('e','s','r');runtime.navigation_scene_epoch=(runtime.identity,0)
+        runtime.navigation_scene=dict(targets=[],bounds=[-3,-3,3,3],obstacles=[])
+        with patch.object(runtime,'_navigation_scene',side_effect=AssertionError('USD traversal on goal')):
+            result=runtime._navigate(dict(pose=[0,0,0]),dict(task_id='missing',target_kind='wardrobe'),None,'robot')
+        self.assertEqual(result[2],'NAVIGATION_TARGET_MISSING')
+
+    def test_unvalidated_cache_cannot_authorize_a_goal(self):
+        runtime=FleetRuntime();runtime.identity=('e','s','r');runtime.navigation_scene_epoch=(runtime.identity,0)
+        runtime.navigation_scene=dict(targets=[dict(kind='bed')],bounds=[-3,-3,3,3],obstacles=[])
+        runtime.navigation_geometry_epoch=1
+        result=runtime._navigate(dict(pose=[0,0,0]),dict(task_id='old',target_kind='bed'),None,'robot')
+        self.assertEqual(result[2],'NAVIGATION_SCENE_GEOMETRY_UNAVAILABLE')
     def test_environment_revision_rejects_old_worker_result(self):
         runtime=FleetRuntime();future=Future()
         robot=dict(pose=[0,0,0],navigation=dict(request_id='old',state='PLANNING'),navigation_geometry_epoch=0,navigation_future=future)

@@ -12,13 +12,13 @@ from .windows_package import verify_package
 from .release_contract import MaintenanceLock, DATA_CONTRACT, check_data_epoch, atomic_json
 
 
-def install_package(source: Path, destination: Path):
+def install_package(source: Path, destination: Path, *, reuse_desktop_from: Path | None = None):
     state = Path(os.environ.get('LOCALAPPDATA', Path(destination).parent)) / 'TwinPulse/runtime'
     with MaintenanceLock(state):
-        return _install_package(source, destination, state)
+        return _install_package(source, destination, state,reuse_desktop_from=reuse_desktop_from)
 
 
-def _install_package(source: Path, destination: Path, state: Path):
+def _install_package(source: Path, destination: Path, state: Path, *, reuse_desktop_from: Path | None = None):
     source, destination = source.resolve(), destination.resolve()
     checked = verify_package(source)
     identity = checked['build_id']
@@ -48,9 +48,26 @@ def _install_package(source: Path, destination: Path, state: Path):
     releases = destination / 'releases'
     releases.mkdir(parents=True, exist_ok=True)
     target = releases / identity
+    desktop_links=0
     if not target.exists():
         stage = releases / ('.stage-' + uuid4().hex)
-        shutil.copytree(source, stage)
+        previous=None;old_files={};new_files={}
+        if reuse_desktop_from is not None:
+            previous=Path(reuse_desktop_from).resolve()
+            if previous.parent!=releases:raise ValueError('INSTALL_DESKTOP_REUSE_OUTSIDE_RELEASE_STORE')
+            verify_package(previous)
+            old_files={x['path']:x for x in json.loads((previous/'windows-release-manifest.json').read_text())['files']}
+            new_files={x['path']:x for x in json.loads((source/'windows-release-manifest.json').read_text())['files']}
+        def copy_file(src,dst):
+            nonlocal desktop_links
+            name=Path(src).relative_to(source).as_posix()
+            # Only identical, verified immutable desktop bytes share storage.
+            # Changed files, Python/service code and all user data are copied.
+            if previous is not None and name.startswith('desktop/') and old_files.get(name)==new_files.get(name) and name in new_files:
+                try:os.link(previous/name,dst);desktop_links+=1;return dst
+                except OSError:pass  # Cross-volume/non-NTFS: ordinary copy.
+            return shutil.copy2(src,dst)
+        shutil.copytree(source, stage,copy_function=copy_file)
         verify_package(stage)
         stage.rename(target)
     elif verify_package(target)['source_manifest_sha256'] != checked['source_manifest_sha256']:
@@ -94,6 +111,7 @@ def _install_package(source: Path, destination: Path, state: Path):
     transaction['phase'] = 'completed'
     atomic_json(journal, transaction)
     return {'status': 'installed', 'build_id': identity, 'exe': str(target / 'TwinPulse.exe'),
+            'verified_desktop_hardlinks':desktop_links,
             'start': str(destination / 'Start-TwinPulse.cmd'), 'user_data': 'preserved',
             'test_start': str(destination / 'Start-TwinPulse-Test.cmd'),
             'data_epoch': epoch, 'rollback': 'same declared epoch only; original formats preserved'}

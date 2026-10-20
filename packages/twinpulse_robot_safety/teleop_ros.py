@@ -4,7 +4,10 @@
 """Real ROS Humble transport. Only imported by explicitly launched robot worker."""
 import time
 import math
-from control_timing import ROS_RECEIPT_S,ROS_SOURCE_S,ROS_SERVICE_S
+import json
+from copy import copy
+from twinpulse_core.robot_timing_profile import values_of, TimingAccumulator
+from control_timing import ROS_RECEIPT_S,ROS_SOURCE_S,ROS_SERVICE_S,INPUT_TTL_S
 try:
     from observation_stream import ObservationWindow, from_ros_message
 except ModuleNotFoundError as exc:
@@ -12,6 +15,18 @@ except ModuleNotFoundError as exc:
     from twinpulse_core.observation_stream import ObservationWindow, from_ros_message
 from teleop_contract import RequestedStop
 from stop_policy import OBSERVE_S, POLICY, MM_PER_TICK
+
+
+def latest_control_sensor_qos(sensor_profile):
+    """Keep the newest control sample, not five old samples under load.
+
+    Preserve ROS sensor-data reliability/durability/history. This intentionally
+    drops superseded, not-yet-delivered samples; raw logs cover received bytes,
+    never every publisher sample. It does not restamp or relax fresh().
+    """
+    profile=copy(sensor_profile)
+    profile.depth=1
+    return profile
 try:
     from twinpulse_core.local_navigation import checked_command
 except ModuleNotFoundError as exc:
@@ -30,9 +45,13 @@ except ModuleNotFoundError as exc:
 
 
 class RosLink:
-    def __init__(self, base, raw_path=None):
+    def __init__(self, base, raw_path=None, *, timing_values=None):
+        self.timing_values=values_of(timing_values)
+        self.require_timing_readback=timing_values is not None
+        self.timing_measurements=TimingAccumulator()
+        self.output_timing=None
         import rclpy
-        from rclpy.qos import qos_profile_sensor_data
+        from rclpy.qos import qos_profile_sensor_data,QoSProfile,DurabilityPolicy
         from geometry_msgs.msg import TwistStamped
         from std_msgs.msg import String
         from std_srvs.srv import Trigger, SetBool
@@ -59,10 +78,13 @@ class RosLink:
         self.arm = self.node.create_client(Trigger, 'motion_guard/arm')
         self.stop = self.node.create_client(Trigger, 'motion_guard/stop')
         self.power = self.node.create_client(SetBool, 'motor_power')
-        self.node.create_subscription(SensorState, 'sensor_state', self._sensor, qos_profile_sensor_data)
+        self.control_sensor_qos=latest_control_sensor_qos(qos_profile_sensor_data)
+        self.node.create_subscription(SensorState, 'sensor_state', self._sensor, self.control_sensor_qos)
         self.node.create_subscription(String, 'motion_guard/status', self._guard, 1)
+        self.node.create_subscription(String, 'motion_guard/timing', self._output_timing,
+            QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.enabled = False
-        self.navigation = RosObservations()
+        self.navigation = RosObservations(timing_values=self.timing_values)
         self.observation_window = ObservationWindow({'project_id':'default','session_id':'UNBOUND',
             'boot_id':'UNBOUND','release_id':'UNBOUND','source_revision':'UNBOUND','origin':'live_ros'})
         self.observation_sequence = 0
@@ -71,7 +93,8 @@ class RosLink:
         self.last_scan_t = 0.
         self.require_scan_fresh = False
         # Passive subscriptions only. No lidar startup, TF assumption or motion gate.
-        self.node.create_subscription(Odometry, 'odom', self._odom, qos_profile_sensor_data)
+        self.control_odom_qos=latest_control_sensor_qos(qos_profile_sensor_data)
+        self.node.create_subscription(Odometry, 'odom', self._odom, self.control_odom_qos)
         # The isolated COIN candidate publishes /scan at the root namespace.
         self.node.create_subscription(LaserScan, '/scan', self._scan, qos_profile_sensor_data)
         from rclpy.qos import QoSProfile, DurabilityPolicy
@@ -79,7 +102,7 @@ class RosLink:
         self.node.create_subscription(TFMessage, '/tf',
                                       lambda msg: self._tf('/tf',msg), qos_profile_sensor_data)
         static_qos=QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.observation_qos={'odom':qos_profile_sensor_data,'scan':qos_profile_sensor_data,
+        self.observation_qos={'odom':self.control_odom_qos,'scan':qos_profile_sensor_data,
                              '/tf':qos_profile_sensor_data,'/tf_static':static_qos}
         self.node.create_subscription(TFMessage, '/tf_static',
                                       lambda msg: self._tf('/tf_static',msg),
@@ -150,6 +173,12 @@ class RosLink:
 
     def _odom(self,msg):
         metadata = self._record('odom',msg)
+        if hasattr(self,'timing_measurements'):
+            source=metadata.get('source_stamp_ns')
+            prior=getattr(self,'timing_odom_stamp',None)
+            if type(source) is int and prior is not None:
+                self.timing_measurements.observe('odom_interval_ms',(source-prior)/1e6,metadata['receipt_monotonic_ns']/1e9,getattr(self,'timing_load','base'))
+            self.timing_odom_stamp=source
         self._common_observation('odom',msg,metadata)
         self._navigation('odom',msg)
 
@@ -189,7 +218,7 @@ class RosLink:
                 raise ValueError('NAVIGATION_ENDPOINT_OWNERSHIP')
             snapshot=self.navigation_snapshot()
             now=time.monotonic()
-            pose,scan=navigation_inputs(snapshot,binding,now)
+            pose,scan=navigation_inputs(snapshot,binding,now,timing_values=getattr(self,'timing_values',None))
             self.current_navigation_snapshot=snapshot
             result=mission.step(pose,scan,now,command_created_s=command_created_s)
             return {**result,'navigation':self.navigation_evidence(snapshot,pose,scan,binding)}
@@ -271,8 +300,8 @@ class RosLink:
         self.fresh()
         if self.node.count_publishers('odom')!=1 or self.node.count_publishers('/scan')!=1:
             raise ValueError('NAVIGATION_ENDPOINT_OWNERSHIP')
-        _,scan=navigation_inputs(self.navigation_snapshot(),binding,time.monotonic())
-        result=checked_command(v,w,age,scan,time.monotonic(),require_scan=True,provenance='live_sensor')
+        _,scan=navigation_inputs(self.navigation_snapshot(),binding,time.monotonic(),timing_values=getattr(self,'timing_values',None))
+        result=checked_command(v,w,age,scan,time.monotonic(),require_scan=True,provenance='live_sensor',input_ttl_s=getattr(self,'timing_values',values_of())['input_ttl_ms']/1000)
         if not result['allowed']:raise ValueError(result['reason'])
 
     @staticmethod
@@ -286,6 +315,7 @@ class RosLink:
 
     def _sensor(self, msg):
         receipt=time.monotonic_ns()
+        previous_receipt=self.sensor_t
         # Publish the original latest sample before the archive path. ROS owns
         # the callback serially; recording failure still aborts its next output.
         self.sensor,self.sensor_t=msg,receipt/1e9
@@ -300,6 +330,10 @@ class RosLink:
         self.sensor_receipt_timing={key:metadata[key] for key in
             ('receipt_ros_now_ns','source_stamp_ns','source_age_at_receipt_s','recording_elapsed_s') if key in metadata}
         age = (self.node.get_clock().now().nanoseconds - msg.header.stamp.sec*10**9 - msg.header.stamp.nanosec)/1e9
+        if hasattr(self,'timing_measurements'):
+            load=getattr(self,'timing_load','base')
+            self.timing_measurements.observe('sensor_source_ms',age*1000,now,load)
+            if previous_receipt>0:self.timing_measurements.observe('wheel_interval_ms',(now-previous_receipt)*1000,now,load)
         self.rows.append({'t': now, 'encoders': pair, 'torque': bool(msg.torque),
                           'voltage_v': float(msg.battery) if math.isfinite(msg.battery) else None,
                           'source_age_s': age})
@@ -325,21 +359,22 @@ class RosLink:
 
     def fresh(self):
         now = time.monotonic()
+        timing=getattr(self,'timing_values',values_of())
         self.fresh_diagnostic=dict(sensor_receipt_age_s=now-self.sensor_t,
             guard_receipt_age_s=now-self.guard_t,reason='CHECKING',source_age_s=None,
             callback_timing=dict(getattr(self,'sensor_receipt_timing',{})))
         def fail(code,detail):
             self.fresh_diagnostic.update(reason=detail,error=code)
             raise ValueError(code)
-        if not self.sensor or now-self.sensor_t >= ROS_RECEIPT_S or now-self.guard_t >= ROS_RECEIPT_S:
+        if not self.sensor or now-self.sensor_t >= timing['sensor_receipt_ms']/1000 or now-self.guard_t >= timing['guard_receipt_ms']/1000:
             fail('TELEMETRY_STALE','SENSOR_NOT_RECEIVED' if not self.sensor else
-                 'SENSOR_RECEIPT_STALE' if now-self.sensor_t>=ROS_RECEIPT_S else 'GUARD_RECEIPT_STALE')
+                  'SENSOR_RECEIPT_STALE' if now-self.sensor_t>=timing['sensor_receipt_ms']/1000 else 'GUARD_RECEIPT_STALE')
         s = self.sensor
         age = (self.node.get_clock().now().nanoseconds - s.header.stamp.sec*10**9-s.header.stamp.nanosec)/1e9
         self.fresh_diagnostic.update(source_age_s=age,voltage_v=float(s.battery) if math.isfinite(s.battery) else None,
             button=s.button)
-        if (not 0 <= age < ROS_SOURCE_S or not math.isfinite(s.battery) or s.battery <= 11.1 or s.button):
-            fail('BATTERY_BUTTON_OR_SOURCE_AGE','SENSOR_SOURCE_AGE' if not 0<=age<ROS_SOURCE_S else
+        if (not 0 <= age < timing['sensor_source_ms']/1000 or not math.isfinite(s.battery) or s.battery <= 11.1 or s.button):
+            fail('BATTERY_BUTTON_OR_SOURCE_AGE','SENSOR_SOURCE_AGE' if not 0<=age<timing['sensor_source_ms']/1000 else
                  'BATTERY_UNKNOWN' if not math.isfinite(s.battery) else 'BATTERY_LOW' if s.battery<=11.1 else 'BUTTON_ACTIVE')
         if (self.node.count_publishers('guarded_cmd_vel') != 1 or self.pub.get_subscription_count() != 1
                 or self.node.count_publishers('cmd_vel') != 0
@@ -351,10 +386,19 @@ class RosLink:
     def call(self, client, request):
         if not client.service_is_ready(): raise ValueError('SERVICE_UNAVAILABLE')
         future = client.call_async(request)
-        end = time.monotonic() + ROS_SERVICE_S
+        began=time.monotonic()
+        end = began + getattr(self,'timing_values',values_of())['ros_service_ms']/1000
         while not future.done() and time.monotonic() < end: self.spin(.005)
         if not future.done() or future.exception() or not future.result().success:
             raise ValueError('SERVICE_FAILED')
+        if hasattr(self,'timing_measurements'):self.timing_measurements.observe('ros_service_ms',(time.monotonic()-began)*1000,began)
+
+    def _output_timing(self,msg):
+        try:
+            value=json.loads(msg.data)
+            if set(value)!={'schema','output_timeout_ms'} or value['schema']!='robot-output-timing-1.0' or type(value['output_timeout_ms']) is not int:return
+            self.output_timing=value
+        except (ValueError,TypeError):return
 
     def task_resources(self):
         self.fresh()
@@ -373,9 +417,14 @@ class RosLink:
             safety=getattr(self,'preflight_safety',None)
             if safety is not None:safety()
             self.spin(.02)
-            if (len(self.rows) >= 10 and self.arm.service_is_ready() and self.stop.service_is_ready()
+            if (len(self.rows) >= 10 and (not self.require_timing_readback or self.output_timing is not None) and self.arm.service_is_ready() and self.stop.service_is_ready()
                     and self.power.service_is_ready() and self.pub.get_subscription_count() == 1): break
         self.spin(.25); self.fresh()
+        # An older binary must never be presented as applying a new setting.
+        configured=getattr(self,'timing_values',values_of())['output_timeout_ms']
+        if getattr(self,'require_timing_readback',False) and (not self.output_timing or self.output_timing['output_timeout_ms']!=configured
+                or self.node.count_publishers('motion_guard/timing')!=1):
+            raise ValueError('OUTPUT_TIMING_READBACK_REQUIRED_UPDATE_ROBOT_RUNTIME')
         if self.sensor.torque or self.reason != 'explicit_stop' or time.monotonic()-self.changed < .2:
             raise ValueError('INITIAL_IDLE_UNCONFIRMED')
 
@@ -407,14 +456,15 @@ class RosLink:
             if self.node.count_publishers('odom')!=1 or self.node.count_publishers('/scan')!=1:
                 raise ValueError('NAVIGATION_ENDPOINT_OWNERSHIP')
             snapshot=self.navigation_snapshot()
-            pose,scan=navigation_inputs(snapshot,navigation_binding,time.monotonic())
+            pose,scan=navigation_inputs(snapshot,navigation_binding,time.monotonic(),timing_values=getattr(self,'timing_values',None))
             navigation=self.navigation_evidence(snapshot,pose,scan,navigation_binding)
         # Account for work in this final output boundary, not only the caller's age.
         if source_created is not None:
             source_age=time.monotonic()-source_created
         decision=checked_command(v,w,source_age,scan,time.monotonic(),
                                  require_scan=navigation_binding is not None,provenance='live_sensor',
-                                 supervised_manual=getattr(self,'manual_speed_profile',False) is True and navigation_binding is None)
+                                  supervised_manual=getattr(self,'manual_speed_profile',False) is True and navigation_binding is None,
+                                  input_ttl_s=getattr(self,'timing_values',values_of())['input_ttl_ms']/1000)
         if not decision['allowed']:raise ValueError(decision['reason'])
         msg = self.Twist(); msg.header.frame_id = 'base_link'
         stamp = self.node.get_clock().now().nanoseconds - int(source_age*10**9)
@@ -422,7 +472,7 @@ class RosLink:
         msg.twist.linear.x, msg.twist.angular.z = float(v), float(w)
         RosLink._record(self,'guarded_cmd_vel',msg)
         # Recording/enqueue is part of the original input age, never a fresh lease.
-        if source_created is not None and time.monotonic()-source_created>=.25:
+        if source_created is not None and time.monotonic()-source_created>=getattr(self,'timing_values',values_of())['input_ttl_ms']/1000:
             raise ValueError('INPUT_DEADLINE_EXPIRED')
         # The fleet owner installs this measured native guard. It runs at the
         # actual publisher boundary, after recording and arming work. Legacy
@@ -436,7 +486,7 @@ class RosLink:
         if sink is not None and hasattr(sink,'check'):sink.check()
         if before_publish is not None:before_publish()
         self.fresh()
-        if source_created is not None and time.monotonic()-source_created>=.25:
+        if source_created is not None and time.monotonic()-source_created>=getattr(self,'timing_values',values_of())['input_ttl_ms']/1000:
             raise ValueError('INPUT_DEADLINE_EXPIRED')
         if (v or w) and hasattr(self, 'moving_command_ns'):
             self.moving_command_ns.append(time.monotonic_ns())
@@ -446,14 +496,13 @@ class RosLink:
         return {**decision,'navigation':navigation,'published_source_age_s':source_age} if navigation is not None else decision
 
     def halt(self):
-        self.enabled = False
-        errors = []
-        for action in (lambda: self.call(self.stop,self.Trigger.Request()), lambda: self.torque(False)):
-            try: action()
-            except Exception as exc: errors.append(type(exc).__name__)
-        self.spin(.25); self.fresh()
-        if errors or self.sensor.torque or time.monotonic()-self.changed < .2:
-            raise ValueError('STOP_READBACK_UNCONFIRMED')
+        # Final cleanup observes the same bounded release policy as key-up.
+        # Stop/OFF happen immediately; the old fixed .25s wait could end before
+        # the unchanged .2s stability interval after the last moving sample.
+        try:self.release()
+        except Exception as exc:
+            self.stop_diagnostic['failure']=str(exc)
+            raise ValueError('STOP_READBACK_UNCONFIRMED') from exc
 
     def release(self):
         self.release_observing=True
@@ -470,25 +519,42 @@ class RosLink:
         """
         self.enabled = False
         start = time.monotonic()
+        self.stop_diagnostic=dict(schema='robot-stop-readback-1.0',started_s=start,
+            observation_limit_s=OBSERVE_S+POLICY['max_sample_gap_s'],required_stable_s=.2,
+            phase='STOP_OFF',services=[],confirmed=False)
         index = len(self.rows)
         previous = [self.sensor.left_encoder, self.sensor.right_encoder]
         travel = [0, 0]
         errors = []
-        for action in (lambda: self.call(self.stop, self.Trigger.Request()), lambda: self.torque(False)):
-            try: action()
-            except Exception as exc: errors.append(type(exc).__name__)
+        for name,action in (('stop',lambda:self.call(self.stop,self.Trigger.Request())),('torque_off',lambda:self.torque(False))):
+            began=time.monotonic()
+            try:
+                action();self.stop_diagnostic['services'].append(dict(name=name,ok=True,elapsed_s=time.monotonic()-began))
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+                self.stop_diagnostic['services'].append(dict(name=name,ok=False,reason=str(exc),elapsed_s=time.monotonic()-began))
         if errors: raise ValueError('RELEASE_SERVICE_UNCONFIRMED')
         end = start + OBSERVE_S + POLICY['max_sample_gap_s']
         while time.monotonic() < end:
-            self.spin(.005); self.fresh()
+            self.stop_diagnostic['phase']='SENSOR_OBSERVATION'
+            self.spin(.005)
+            self.stop_diagnostic.update(observed_s=time.monotonic(),torque=bool(self.sensor.torque),
+                guard_reason=self.reason,last_encoder_change_s=self.changed,
+                sensor_receipt_s=getattr(self,'sensor_t',None))
+            self.fresh()
             for row in self.rows[index:]:
                 for i in range(2): travel[i] += abs(row['encoders'][i]-previous[i])
                 previous = row['encoders']
             index = len(self.rows)
+            self.stop_diagnostic.update(wheel_travel_ticks=list(travel),
+                stable_s=time.monotonic()-max(self.changed,start),
+                latest_sample_s=self.rows[-1].get('t') if self.rows else None)
             if max(travel)*MM_PER_TICK > POLICY['wheel_travel_limit_mm']:
                 raise ValueError('RELEASE_TRAVEL_EXCEEDED')
             if (not self.sensor.torque and self.reason == 'explicit_stop'
-                    and time.monotonic()-max(self.changed, start) >= .2):
+                    and time.monotonic()-max(self.changed, start) >= .2
+                    and self.rows and self.rows[-1].get('t',-math.inf)>=max(self.changed,start)+.2):
+                self.stop_diagnostic.update(phase='CONFIRMED',confirmed=True,ended_s=time.monotonic())
                 return
         raise ValueError('RELEASE_IDLE_UNCONFIRMED')
 

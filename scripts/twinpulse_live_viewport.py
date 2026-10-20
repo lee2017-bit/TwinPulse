@@ -105,7 +105,8 @@ class LiveViewportPublisher:
         try:
             self.fleet_runtime.update(snapshot)
             with self.lock:
-                self.fleet_report=dict(applied_revision=snapshot.applied_revision,robots=self.fleet_runtime.report)
+                self.fleet_report=dict(applied_revision=snapshot.applied_revision,robots=self.fleet_runtime.report,
+                    scene_geometry=self.fleet_runtime.navigation_scene,produced_monotonic_s=self.fleet_runtime.scene_produced_at)
                 self.fleet_attempt_at=time.monotonic();self.fleet_production_error=None
                 key=(snapshot.applied_revision,tuple((r['robot_id'],r['sequence']) for r in self.fleet_runtime.report))
                 if key!=self._fleet_report_key:
@@ -260,6 +261,8 @@ class LiveViewportPublisher:
             produced_sequence=max((r.get('sequence',0) for r in rows),default=0),
             production_error=production_error,error_type=type(error).__name__ if error else None,
             engine_session_id=self.bridge.adapter.engine_session_id,scene_revision=(report or {}).get('applied_revision'))
+        if state=='success' and hasattr(self.bridge,'robot_channel_timing'):
+            value['http_phases']=self.bridge.robot_channel_timing()
         self.fleet_diagnostics=value
         signature=(state,value['production_error'],value['error_type'])
         abnormal=state!='success' or value['produced_age_s'] is not None and value['produced_age_s']>.4 or value['elapsed_s']>.25

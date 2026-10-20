@@ -32,7 +32,11 @@ export async function currentControlView(page,name){
    frame_age_ms:Date.now()-Number(canvas.dataset.capturedAt),live:canvas.dataset.live==='true',scene_revision:canvas.dataset.sceneRevision,
    stage_epoch:canvas.dataset.stageEpoch,canvas_visible:shown(canvas),canvas:{x:c.x,y:c.y,width:c.width,height:c.height},
    dock:{x:d.x,y:d.y,width:d.width,height:d.height},intersection_px2:intersection,stop_visible:hit(stop),pad_visible:shown(pad)&&directions.length===4&&directions.every(hit),
-   robot_badge_visible:shown(badge),robot_bounds:bounds,badge_body_overlap_px2:badgeBodyOverlap,window:{width:innerWidth,height:innerHeight,devicePixelRatio}};
+   robot_badge_visible:shown(badge),robot_bounds:bounds,badge_body_overlap_px2:badgeBodyOverlap,
+   anchor_diagnostic:{layers:document.querySelectorAll('.robot-anchor-layer').length,
+    badges:labels.map(e=>({aria:e.getAttribute('aria-label'),id:e.dataset.robotId,bounds:e.dataset.screenBounds})),
+    slot:canvas.closest('.twin-frame-slot')?.getBoundingClientRect().toJSON()},
+   window:{width:innerWidth,height:innerHeight,devicePixelRatio}};
  },name);
 }
 export function checkControlView(value,{fresh=true,robot=true}={}){

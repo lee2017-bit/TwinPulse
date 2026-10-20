@@ -26,6 +26,7 @@ from twinpulse_app.command_broker import BrokerError
 from twinpulse_app.physical_live_session import PhysicalLiveSession,StreamEvidence,SCHEMA,reviewed_bundle
 from twinpulse_app.physical_fleet_adapter import PhysicalFleetAdapter,PhysicalFleetServices
 from twinpulse_app.robot_fleet import RobotFleet
+from twinpulse_core.robot_control_timing import INPUT_TTL_S, INPUT_TTL_MS
 from tests.integration import test_physical_fleet_adapter as fixtures
 
 
@@ -101,11 +102,52 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         packet=self.session.writes.get_nowait()
         self.assertEqual(packet['payload']['direction'],'backward')
         self.assertEqual(packet['payload']['expires_at_ms'],100200)
-        self.assertEqual(packet['payload']['source_age_ms'],50)
+        self.assertEqual(packet['payload']['source_age_ms'],INPUT_TTL_MS-200)
         for key in ('robot_id','operation_id','project_id','connection_epoch','motion_epoch'):self.assertEqual(packet[key],self.context[key])
         self.assertEqual(packet['request_id'],request)
         with self.assertRaises(BrokerError):self.session.command('drive',dict(direction='forward',sequence=8,expires_at_ms=100000),
             motion_epoch=self.context['motion_epoch'],request_id=uuid4().hex)
+        self.assertTrue(self.session.writes.empty())
+
+    def test_small_current_input_window_replies_before_next_display_heartbeat(self):
+        self.heartbeat();self.session.motion_epoch=self.context['motion_epoch']
+        self.now+=.06
+        window=self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='1'*24,watch_challenge='2'*24,motion_generation=2,issued_s=self.now-.01)
+        self.session.receive(window)
+        packet=self.session.writes.get_nowait()
+        self.assertEqual(packet['action'],'watch')
+        self.assertEqual(packet['payload']['challenge'],'2'*24)
+        self.assertEqual(packet['payload']['motion_generation'],2)
+        # Late full telemetry cannot replace the newer control nonce.
+        self.heartbeat()
+        self.session.command('drive',dict(direction='forward',expires_at_ms=100250),
+            motion_epoch=self.context['motion_epoch'],request_id=uuid4().hex)
+        drive=self.session.writes.get_nowait()
+        self.assertEqual(drive['payload']['challenge'],'1'*24)
+        self.assertEqual(drive['payload']['motion_generation'],2)
+        self.assertFalse(any('challenge' in e['data'] or 'watch_challenge' in e['data'] for e in self.session.events))
+
+    def test_small_input_window_cannot_resume_after_close_or_presence_fault(self):
+        self.heartbeat();self.session.motion_epoch=self.context['motion_epoch']
+        self.session.presence_gap_until=self.now+.7
+        self.session.receive(self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='1'*24,watch_challenge='2'*24,motion_generation=2,issued_s=self.now))
+        self.assertTrue(self.session.writes.empty())
+        self.session.closing=True;self.now+=.8
+        self.session.receive(self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='3'*24,watch_challenge='4'*24,motion_generation=3,issued_s=self.now))
+        self.assertTrue(self.session.writes.empty())
+
+    def test_small_input_window_rejects_old_issue_and_wrong_session(self):
+        self.heartbeat()
+        event=self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='1'*24,watch_challenge='2'*24,motion_generation=2,issued_s=self.now-INPUT_TTL_S-.001)
+        with self.assertRaisesRegex(ValueError,'INPUT_WINDOW'):self.session.receive(event)
+        event=self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='1'*24,watch_challenge='2'*24,motion_generation=2,issued_s=self.now)
+        event['operation_id']='other'
+        with self.assertRaisesRegex(ValueError,'IDENTITY'):self.session.receive(event)
         self.assertTrue(self.session.writes.empty())
 
     def test_stop_discards_queued_drives_even_stale_heartbeat_and_watch_cannot_drive(self):
@@ -116,6 +158,72 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         self.assertEqual(self.session.writes.qsize(),1)
         self.assertEqual(self.session.writes.get_nowait()['action'],'stop')
         with self.assertRaises(BrokerError):self.session.command('task',dict(direction='left',amount=1),motion_epoch=uuid4().hex,request_id=uuid4().hex)
+
+    def test_same_nonce_is_reserved_once_and_pending_hold_keeps_original_expiry(self):
+        self.heartbeat()
+        first,second=uuid4().hex,uuid4().hex
+        payload=dict(direction='forward',expires_at_ms=100250)
+        self.session.command('drive',payload,motion_epoch=self.context['motion_epoch'],request_id=first)
+        self.session.writes.get_nowait()
+        result=self.session.command('drive',payload,motion_epoch=self.context['motion_epoch'],request_id=second)
+        self.assertEqual(result['status'],'pending_input_window');self.assertTrue(self.session.writes.empty())
+        self.now+=.05;self.wall+=.05
+        self.session.receive(self.event('command',action='input_window',schema='robot-input-window-1.0',
+            challenge='1'*24,watch_challenge='2'*24,motion_generation=1,issued_s=self.now))
+        drive=self.session.writes.get_nowait()
+        self.assertEqual(drive['request_id'],second);self.assertEqual(drive['payload']['expires_at_ms'],100250)
+        self.assertAlmostEqual(drive['payload']['source_age_ms'],INPUT_TTL_MS-200)
+        self.assertEqual(drive['payload']['challenge'],'1'*24)
+        self.assertIsNone(self.session.pending_drive)
+
+    def test_reviewed_guard_bundle_retains_vendor_build_license_and_parent_binding(self):
+        _,encoded,_=reviewed_bundle(ROOT)
+        files=json.loads(encoded)['files']
+        for name in ('guard_runtime.py','owned_exec.py','guard_base/package.xml','guard_base/LICENSE','guard_base/NOTICE',
+                     'guard_base/CMakeLists.txt','include/twinpulse_robot_safety/ros_guard.hpp','tests/ros_guard_test.cpp'):
+            self.assertTrue(name in files,name)
+        owned=base64.b64decode(files['owned_exec.py']['base64'])
+        self.assertIn(b'reviewed-base',owned)
+        self.assertIn(b'prctl',owned)
+
+    def test_pending_hold_does_not_cross_stop_expiry_or_robot_generation(self):
+        for barrier in ('stop','expiry','generation'):
+            with self.subTest(barrier=barrier):
+                # Reset only local protocol state; no hardware or saved project.
+                self.heartbeat();self.session.used_input_challenges.clear();self.session.motion_epoch=self.context['motion_epoch']
+                payload=dict(direction='forward',expires_at_ms=100250)
+                for _ in range(2):self.session.command('drive',payload,motion_epoch=self.context['motion_epoch'],request_id=uuid4().hex)
+                self.session.writes.get_nowait()
+                if barrier=='stop':
+                    self.session.command('stop',{},motion_epoch=uuid4().hex,request_id=uuid4().hex)
+                    self.session.writes.get_nowait()
+                if barrier=='expiry':self.wall=100.3
+                self.session.receive(self.event('command',action='input_window',schema='robot-input-window-1.0',
+                    challenge='3'*24,watch_challenge='4'*24,motion_generation=2 if barrier=='generation' else 1,issued_s=self.now))
+                packets=[]
+                while not self.session.writes.empty():packets.append(self.session.writes.get_nowait())
+                self.assertFalse(any(p['action']=='drive' for p in packets));self.assertIsNone(self.session.pending_drive)
+                self.session.input_window=None;self.session.input_window_at=None;self.wall=100.
+
+    def test_robot_pause_fences_old_http_gesture_before_new_nonce_and_does_not_loop_on_stop(self):
+        self.heartbeat();old=self.context['motion_epoch']
+        for _ in range(2):self.session.command('drive',dict(direction='forward',expires_at_ms=100250),motion_epoch=old,request_id=uuid4().hex)
+        self.session.receive(self.event('control_pause',pause_id='connection:1',reason='INPUT_DEADLINE_EXPIRED',motion_generation=2))
+        new=self.session.motion_epoch;self.assertNotEqual(old,new);self.assertIsNone(self.session.pending_drive)
+        self.assertEqual(self.session.writes.qsize(),1);self.assertEqual(self.session.writes.get_nowait()['action'],'stop')
+        with self.assertRaisesRegex(BrokerError,'generation changed'):
+            self.session.command('drive',dict(direction='forward',expires_at_ms=100250),motion_epoch=old,request_id=uuid4().hex)
+        self.session.receive(self.event('control_pause',pause_id='connection:2',reason='OPERATOR_STOP',motion_generation=3))
+        self.assertEqual(self.session.motion_epoch,new);self.assertTrue(self.session.writes.empty())
+        self.assertEqual(self.session.snapshot()['pc_motion_epoch'],new)
+
+    def test_idle_profile_pause_preserves_queued_field_setup_without_granting_motion(self):
+        self.heartbeat()
+        self.session.command('field_setup',{'config':{}},motion_epoch=self.context['motion_epoch'],request_id=uuid4().hex)
+        self.session.receive(self.event('control_pause',pause_id='connection:profile',reason='PROFILE_CHANGED',motion_generation=1))
+        self.assertEqual(self.session.writes.qsize(),1)
+        self.assertEqual(self.session.writes.get_nowait()['action'],'field_setup')
+        self.assertFalse(self.session.authority_requested)
 
     def test_continuous_ten_hz_writer_keeps_matching_watch_ack_and_ack_loss_degrades(self):
         """Real session threads, injected local pipes only; no SSH or robot."""
@@ -135,7 +243,8 @@ class PhysicalLiveSessionTests(unittest.TestCase):
                     self.lines.put((json.dumps(event)+'\n').encode())
             def heartbeat(self):
                 while not self.stopped.wait(.05):
-                    self.event('heartbeat',dict(challenge='motor-nonce',watch_challenge='presence-nonce',motion_generation=1,
+                    nonce=uuid4().hex
+                    self.event('heartbeat',dict(challenge='motor-'+nonce,watch_challenge='presence-'+nonce,motion_generation=1,
                         boot_id='b'*32,release_id='c'*64,worker_sha256='a'*64,lidar_state='OFF'))
             def write(self,raw):
                 value=json.loads(raw)
@@ -164,7 +273,7 @@ class PhysicalLiveSessionTests(unittest.TestCase):
             sequence=0
             while not sending.wait(.1):
                 sequence+=1
-                try:session.command('drive',dict(direction='forward',sequence=sequence,expires_at_ms=time.time()*1000+250),
+                try:session.command('drive',dict(direction='forward',sequence=sequence,expires_at_ms=time.time()*1000+INPUT_TTL_MS),
                     motion_epoch=self.context['motion_epoch'],request_id=uuid4().hex)
                 except Exception as error:producer_errors.append(error);break
         producer=threading.Thread(target=produce,daemon=True)
@@ -178,7 +287,8 @@ class PhysicalLiveSessionTests(unittest.TestCase):
             self.assertTrue(session.snapshot()['live_heartbeat'],session.snapshot())
             watches=[c for c in process.commands if c['action']=='watch']
             self.assertGreaterEqual(len(watches),20)
-            self.assertTrue(all(c['payload']['challenge']=='presence-nonce' for c in watches))
+            self.assertTrue(all(c['payload']['challenge'].startswith('presence-') for c in watches))
+            self.assertEqual(len({c['payload']['challenge'] for c in watches}),len(watches))
             process.acknowledge=False
             time.sleep(2.7)
             value=session.snapshot()
@@ -300,6 +410,9 @@ class FleetPhysicalEnvelopeTests(unittest.TestCase):
         self.trace=[];self.row=fixtures.PhysicalFleetAdapterTests.row('Actual binding under offline test','192.0.2.1')
         self.devices=SimpleNamespace(registry_service=SimpleNamespace(registry=SimpleNamespace(snapshot=lambda:dict(robots=[deepcopy(self.row)]))),
             lock=RLock(),closed=False,contexts=[],diagnostics=fixtures.Diagnostics('legacy',self.trace),readiness=fixtures.Readiness('legacy',self.trace),controller=fixtures.Controller('legacy',self.trace))
+        from twinpulse_core.robot_timing_profile import profile as timing_profile
+        from twinpulse_app.robot_adapters import instance_binding
+        self.devices.registry_service.registry.timing_store=SimpleNamespace(read=lambda rid,binding:dict(profile=timing_profile(rid,binding)))
         self.live=SimpleNamespace(bind_instance=lambda b:None,closed=False,events=[],cleanup_confirmed=False,evidence=None,error=None)
         self.live.context=None
         def start(context):self.live.context=deepcopy(context)
@@ -371,6 +484,25 @@ class FleetPhysicalEnvelopeTests(unittest.TestCase):
         old=self.fleet.snapshot()['robots'][0]['motion_epoch']
         self.action('stop')
         with self.assertRaises(BrokerError):self.action('drive',dict(direction='forward',sequence=10,expires_at_ms=100250),motion_epoch=old)
+
+    def test_late_chat_and_prepare_cannot_rebase_to_post_stop_motion_epoch(self):
+        self.action('focus');old=self.action('connect')['robots'][0]
+        self.action('stop');before=len(self.trace)
+        for action,payload in [('command',dict(text='turn right 90 degrees')),('prepare',dict(confirmed=True)),('lidar',dict(enabled=True))]:
+            with self.subTest(action=action),self.assertRaises(BrokerError):
+                self.action(action,payload,connection_epoch=old['connection_epoch'],motion_epoch=old['motion_epoch'])
+        self.assertEqual(len(self.trace),before)
+
+    def test_chat_null_epochs_bind_before_slow_physical_refresh_not_after_stop(self):
+        self.action('focus');self.action('connect')
+        refresh=self.fleet._physical_values
+        def delayed_refresh():
+            self.pool.stop(self.identity,self.owner)
+            return refresh()
+        with patch.object(self.fleet,'_physical_values',side_effect=delayed_refresh):
+            with self.assertRaises(BrokerError):
+                self.action('command',dict(text='turn right 90 degrees'),robot_id=None,connection_epoch=None,motion_epoch=None)
+        self.assertEqual(self.trace[-1][0],'stop')
 
     def test_other_project_does_not_gain_movement_from_workspace_session(self):
         self.action('focus');self.action('connect');self.broker.project_id='another'

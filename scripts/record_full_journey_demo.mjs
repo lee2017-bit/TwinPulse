@@ -14,12 +14,24 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const poll=async(fn,timeout=30000)=>{const end=Date.now()+timeout;while(Date.now()<end){if(fn())return;await sleep(100);}throw Error('Actual observed state timeout');};
 const robot=()=>s.fleet?.robots.find(r=>r.label==='TurtleBot3');
 const drawer=()=>page.getByRole('region',{name:'Control TurtleBot3',exact:true});
-const result={classification:'SEPARATE_FRESH_FIXED_SIZE_DEMO_NOT_FULL_ACCEPTANCE',status:'IN_PROGRESS',identity:s.identity,physical:'OFF_NO_CONTACT',steps:[]};
+const result={classification:'SEPARATE_FRESH_FIXED_SIZE_DEMO_NOT_FULL_ACCEPTANCE',status:'IN_PROGRESS',identity:s.identity,physical:'OFF_NO_CONTACT',steps:[],command_inputs:[]};
 let videoFinished=false;
 async function step(name,fn){await s.note(name);const start=Date.now();console.log(JSON.stringify({demo_step:name,at:start}));const evidence=await fn();result.steps.push({name,elapsed_ms:Date.now()-start,evidence});}
-async function send(text){await page.getByRole('textbox',{name:'Message TwinPulse',exact:true}).fill(text);await page.getByRole('button',{name:'Send',exact:true}).click();}
+async function readableEnter(input,text,source){
+ await input.fill(text);await input.scrollIntoViewIfNeeded();await input.focus();
+ const ready=Date.now();await s.note('Command visible before Enter',{source,text,minimum_readable_ms:3000});
+ await s.shot('command-before-enter-'+result.command_inputs.length);await sleep(3000);
+ await expect(input).toHaveValue(text);const entered=Date.now();await input.press('Enter');
+ const evidence={source,text,visible_at:ready,enter_at:entered,readable_ms:entered-ready,cleared_after_ack:false};result.command_inputs.push(evidence);
+ await expect(input).toHaveValue('',{timeout:15000});
+ evidence.cleared_after_ack=true;await s.shot('command-after-enter-'+(result.command_inputs.length-1));await sleep(600);
+}
+async function send(text){await readableEnter(page.getByRole('textbox',{name:'Message TwinPulse',exact:true}),text,'main chat');}
 try{
  await step('Home before New chat',async()=>{await expect(page.getByRole('heading',{name:'What would you like to build?',exact:true})).toBeVisible();
+  // Respect the saved layout. Use the actual toggle rather than assume a
+  // previous user's sidebar preference; never hide it by DOM/state injection.
+  if(await page.locator('.chat-sidebar-slot').isVisible())await page.getByRole('button',{name:'Toggle conversations and projects',exact:true}).click();
   await expect(page.locator('.chat-sidebar-slot')).toBeHidden();await poll(()=>s.frames.length>0);await s.shot('home');
   await expect(page.getByText('Isaac connected',{exact:true}).first()).toBeVisible({timeout:120000});await sleep(1500);return {no_scene_reuse:true};});
  await step('New chat and English input',async()=>{
@@ -80,11 +92,14 @@ try{
   await page.getByRole('combobox',{name:'LiDAR visualization',exact:true}).selectOption('points');await s.shot('full-turn-complete');return {delta};});
  for(const kind of ['bed','chair'])await step('Scene destination '+kind+' and visible arrival',async()=>{
   const before=robot().command?.request_id;const text='Go to the nearest '+kind;
-  if(kind==='bed'){await drawer().getByRole('textbox',{name:'Robot command',exact:true}).fill(text);await drawer().getByRole('button',{name:'Send command',exact:true}).click();}
+  if(kind==='bed')await readableEnter(drawer().getByRole('textbox',{name:'Robot command',exact:true}),text,'robot command panel');
   else await send('TurtleBot3 robot '+text.toLowerCase());
   await poll(()=>robot()?.command?.request_id!==before&&robot()?.command?.target_kind===kind);
   await poll(()=>['ARRIVED','FAILED','CANCELLED'].includes(robot()?.command?.state),125000);
   if(robot().command.state!=='ARRIVED')throw Error('Destination did not arrive');
+  await expect(drawer().getByRole('textbox',{name:'Robot command',exact:true})).toHaveValue('');
+  await expect(drawer().getByRole('textbox',{name:'Robot command',exact:true})).toHaveAttribute('placeholder','Type a new command…');
+  await expect(drawer().getByLabel('Robot command progress',{exact:true})).toContainText(kind);
   await expect(drawer().getByLabel('Robot command progress',{exact:true})).toContainText('ARRIVED');await s.shot(kind+'-arrived');await sleep(2000);
   return {command:robot().command,pose:robot().pose,operation_id:robot().operation_id};});
  await step('Stop and LiDAR OFF',async()=>{await page.getByRole('button',{name:'Stop all',exact:true}).click();await poll(()=>robot()?.control_state==='PAUSED');

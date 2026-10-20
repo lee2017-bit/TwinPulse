@@ -268,6 +268,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     setFleetSelectedId(id);setFleetDrawerOpen(true);
     const target=fleet?.robots.find(row=>row.robot_id===id);
     if(!target)return;
+    // A current rendered name can open the status panel while fleet status is
+    // unavailable. It must not turn that display-only selection into a focus
+    // mutation or new movement authority; the user can select again once fresh.
+    if(!fleetAvailable)return;
     const selection=++fleetSelectionSequence.current;fleetFocusPending.current=true;setFleetSelecting(true);
     void api.robotFleetAction({action:'focus',request_id:crypto.randomUUID(),robot_id:id,
       connection_epoch:target.connection_epoch,motion_epoch:target.motion_epoch,payload:{}}).then(applyFleet)
@@ -700,13 +704,13 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
 
   return <div className={`chat-workspace ${controlView?'is-control-view':''}`}>
     <header className="chat-appbar"><button className="chat-sidebar-toggle" onClick={()=>setShowProjects(!showProjects)} aria-expanded={showProjects} aria-label="Toggle conversations and projects">☰</button>
-      <strong>TwinPulse</strong><span className="chat-project-caption">{home?'Choose a conversation or start a new chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}</span>
+      <strong>TwinPulse</strong><span className="chat-project-caption" title={home?'Choose a conversation or start a new chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}>{home?'New or saved chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}</span>
       <IsaacConnectionStatus runtime={runtime} connected={engineReady} apiConnected={connected} inspect={()=>setShowChecks(!showChecks)}/>
       {runtimeExit}
       <button onClick={()=>setShowKeys(true)} aria-expanded={showKeys}>API keys</button>
       <button onClick={()=>setShowRobots(true)} aria-expanded={showRobots}>Robots</button>
       <button onClick={()=>setShowLibrary(true)} aria-expanded={showLibrary}>Library</button>
-      <button onClick={() => setShowChecks(!showChecks)} aria-expanded={showChecks}>Readiness · {engineReady ? 'Engine connected' : 'Needs attention'}</button>
+      <button onClick={() => setShowChecks(!showChecks)} aria-expanded={showChecks} aria-label={`Readiness · ${engineReady?'Engine connected':'Needs attention'}`} title={engineReady?'Engine connected · inspect readiness checks':'Needs attention · inspect readiness checks'}>Readiness</button>
       <button onClick={() => {setDiagnosticExecution(null);setShowDiagnostics(!showDiagnostics);}} aria-expanded={showDiagnostics}>Diagnostics</button>
       <button onClick={() => {if(home){setHome(false);setShowTwin(true);}else setShowTwin(!showTwin);}} aria-expanded={showTwin&&!home}>{showTwin&&!home ? 'Hide Twin' : 'Show Twin'}</button>
       <button type="button" aria-pressed={controlView} onClick={()=>{
@@ -783,9 +787,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       </section>:<>
       <section id="chat-conversation-pane" className="chat-conversation" aria-label="Conversation">
         <section className="chat-current-step" aria-label="Current step"><strong>Current step</strong><p role="status">{currentStep}</p>
-          {simulationCard&&<button type="button" aria-controls="current-twin-sim-controls" onClick={()=>{
+          {simulationCard&&<button type="button" aria-label="Current Twin and SIM controls" title="Open current Twin and SIM controls" aria-controls="current-twin-sim-controls" onClick={()=>{
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
-          }}>Current Twin and SIM controls</button>}
+          }}>Twin controls</button>}
         </section>
         <div ref={list} className="chat-message-list" onScroll={() => { const node = list.current; if (node) nearBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }}>
           {!simulationHasOrigin&&simulationCard}
@@ -830,16 +834,20 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             {turn.cards.filter(card=>card.kind!=='generation_approval').map(card => <ActionCard key={card.id} card={card}
               current={card.id===waitingCard?.id}
               busy={!sceneObservationFresh || busy || !!delivery || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}/>)}
-          {job && turn.id===generationTurn && <section className="chat-tool-progress" role="status"><strong>Scene generation · {job.state}</strong><p>{job.summary}</p>
+          {job && turn.id===generationTurn && <section className="chat-tool-progress" role="status"><strong>Scene generation · {job.state}</strong>
+            {job.state==='completed'?<details><summary>Generation summary</summary><p>{job.summary}</p></details>:<p>{job.summary}</p>}
             {job.progress&&<p>Stage: {generationActivityLabel(job)} · {job.progress.elapsed_s??0} s · Repairs: {job.progress.repair_count??0}/{job.progress.max_repairs??0}</p>}
             {retentionLabel&&<small aria-label="Partial scene retention recheck">{retentionLabel}</small>}
             {inventoryWork&&<div role="status" aria-label="Inventory work progress">
               <p>{inventoryWork.inventory_planned?`${inventoryWork.parameterized_count} of ${inventoryWork.inventory_count} objects parameterized · ${inventoryWork.pending_count} awaiting parameters`:`Observed inventory retained · ${inventoryWork.observed_instances} provisional instances · inventory not planned · 0 objects parameterized`} · batches of {inventoryWork.parameter_batch_size}</p>
+              <details className="generation-storage-details"><summary>Storage details</summary>
               {completedDraftSaved&&<p>Scene draft saved. Photo quality, simulation and physical execution require separate checks.</p>}
               {!completedDraftSaved&&inventoryCheckpointSaved(inventoryWork)&&<p>Resume checkpoint saved. Resume data is retained; this does not confirm an accepted saved scene. Continue only unfinished work. No automatic restart or robot movement.</p>}
               {!completedDraftSaved&&acceptedSavedScene&&<p>{acceptedSavedScene.partial?'Saved partial scene':'Accepted scene saved separately'}. Scene storage and the resume checkpoint have separate acceptance.</p>}
               {!inventoryWork.parameters_complete&&<p>Incomplete generation, not a verified scene. Pending objects have not been discarded.</p>}
+              </details>
             </div>}
+            <details className="generation-validation-details"><summary>Validation details · estimates only</summary>
             {(job.error?.diagnostics?.repair_decision??job.progress?.repair_decision)?.decision==='advanced_checks'&&
               <p>Correction advanced to the next checks. The scene still needs correction; it is not ready to Run.</p>}
             {(job.error?.diagnostics?.repair_decision??job.progress?.repair_decision)?.decision==='exploring'&&
@@ -867,6 +875,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
                 ? 'The current render was reviewed, but some visual checks remain uncertain. Dimensions are not measured.'
                 : 'Photo fidelity remains uncertain: support relationships, scale and the current 3D render still need review.'}</p>}
             {workflow?.mode === 'explicit_fixture' && <small>Explicit deterministic test provider — not a new photo interpretation or physical validation.</small>}
+            </details>
             <details><summary>Tool details</summary><p>Existing ProductWorkflow → configured provider → validated ToolCatalog.</p><p>Operation: {job.operation_id}</p><p>Last progress: {job.last_progress_at}</p>
               {!!(job.error?.diagnostics?.scope_decision??job.progress?.scope_decision)?.accepted.length&&
                 <p>Host-approved related objects: {(job.error?.diagnostics?.scope_decision??job.progress?.scope_decision)?.accepted.map(row=>`${row.id} (${row.reason_code})`).join(', ')}. Explicit measurements and observed identities remain protected.</p>}
@@ -957,10 +966,12 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             <details><summary>Retained inventory and revision changes</summary><pre>{JSON.stringify({parent_state:state.scene_edit_preview.parent_state_sha256,result_state:state.scene_edit_preview.result_state_sha256,inventory:state.scene_edit_preview.inventory_changes},null,2)}</pre></details>
           </section>}
           {turn.id===generationTurn&&workflow?.phase==='draft_ready'&&workflow.site_draft&&typeof api.sceneSensorContext==='function'&&
-            <SceneSensorFeedback key={`${state?.project_id}:${workflow.site_draft.input_revision}`} api={api} revision={workflow.site_draft.revision}
+            <details className="chat-question sensor-correction-panel" key={`${state?.project_id}:${workflow.site_draft.input_revision}`}><summary>Sensor correction</summary>
+            <p>Optional saved-scan review · no connection or motion starts here.</p>
+            <SceneSensorFeedback api={api} revision={workflow.site_draft.revision}
               stateSha={workflow.site_draft.scene_state_sha256??null} enabled={baseIdleFlow&&!goalBusy&&!taskLoop?.worker_active}
               fresh={sceneObservationFresh}
-              result={state?.scene_sensor_review} review={action=>void submit(action)}/>}
+              result={state?.scene_sensor_review} review={action=>void submit(action)}/></details>}
           {turn.id===transactionTurn&&editTransaction&&<section className="chat-question" aria-label="Twin update status" role="status">
             <strong>Twin update · {editTransaction.state.replaceAll('_',' ')}</strong>
               <p>Engine ACK: {editTransaction.engine_acknowledged?'confirmed':'not confirmed'} · Disk commit: {editTransaction.durable_committed?'confirmed':'not committed'} · Transaction 3D frame: {editTransaction.current_frame?'confirmed':'not currently confirmed'}</p>
@@ -1031,7 +1042,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         <header className="chat-twin-heading"><h2>Digital Twin</h2><small>{engineReady ? 'Isaac connected' : 'Waiting for Isaac'}</small></header>
         {state?.project_id ? <TwinViewport api={api} projectId={state.project_id} generation={job} appConnected={connected}
           controlView={controlView}
-          robotFleet={fleetAvailable?fleet??undefined:undefined} onRobotSelect={selectFleetRobot}
+          robotFleet={fleet??undefined} onRobotSelect={selectFleetRobot}
           savedScene={acceptedSavedScene}
           sourcePhoto={sourceAttachment?.preview_url?{url:sourceAttachment.preview_url,name:sourceAttachment.name}:null}
           report={setViewerFault} diagnose={id=>{setDiagnosticExecution(id);setShowDiagnostics(true);}}/> : <p role="status">Connecting to the App before starting viewer reception…</p>}

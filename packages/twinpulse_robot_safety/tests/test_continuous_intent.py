@@ -6,6 +6,8 @@ import threading
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'twinpulse_core/src'))
+from control_timing import INPUT_TTL_S
 from teleop_contract import InputGate, MotionPaused
 from robot_journal import RobotJournal
 from teleop_worker import InputStream, ProtocolOutbox
@@ -23,7 +25,7 @@ class ContinuousTests(unittest.TestCase):
             self.assertFalse(self.gate.active);self.assertFalse(self.gate.closed)
             self.now+=.001;self.gate.accept(self.packet(sequence=2));self.assertTrue(self.gate.active)
     def test_input_gap_pauses_and_watch_does_not_renew_direction(self):
-        for gap in (.25,.5,1.):
+        for gap in (INPUT_TTL_S,.5,1.):
             self.setUp();self.gate.accept(self.packet());self.now+=gap
             with self.assertRaises(MotionPaused):self.gate.check()
             self.assertFalse(self.gate.closed);self.assertFalse(self.gate.active)
@@ -37,11 +39,11 @@ class ContinuousTests(unittest.TestCase):
         self.gate.accept(self.packet(sequence=10));self.gate.accept(self.packet(sequence=1,action='stop'))
         self.assertFalse(self.gate.active);self.assertEqual(self.gate.sequence,10)
     def test_recording_delay_cannot_refresh_source_creation(self):
-        self.gate.accept(self.packet(age=100));created=self.gate.source_created;self.now+=.2
-        self.assertGreaterEqual(self.now-created,.25)
+        self.gate.accept(self.packet(age=100));created=self.gate.source_created;self.now+=INPUT_TTL_S
+        self.assertGreaterEqual(self.now-created,INPUT_TTL_S)
         with self.assertRaises(MotionPaused):self.gate.check()
     def test_legacy_bounded_policy_remains_terminal(self):
-        self.gate=InputGate(lambda:self.now);self.gate.accept(self.packet());self.now+=.25
+        self.gate=InputGate(lambda:self.now);self.gate.accept(self.packet());self.now+=INPUT_TTL_S
         with self.assertRaisesRegex(ValueError,'DEADLINE'):self.gate.check()
         self.assertTrue(self.gate.closed)
     def test_queued_graceful_close_is_not_overwritten_by_eof(self):

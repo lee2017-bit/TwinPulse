@@ -540,14 +540,14 @@ class R5ProductApiTests(unittest.TestCase):
                 self.assertEqual(status, 409)
                 self.assertEqual(result["error"]["code"], expected_code)
 
-    def test_only_data_only_battery_settings_can_save_before_isaac_is_ready(self):
+    def test_only_data_only_robot_settings_can_save_before_isaac_is_ready(self):
         from twinpulse_app.workspace_devices import WorkspaceDevices
         from twinpulse_app.robot_registry import RobotEndpoint
         from twinpulse_app.robot_registry_service import RobotRegistryService
         from twinpulse_core.robot_battery import battery_display_config
         devices=WorkspaceDevices();service=RobotRegistryService(devices,self.static/'battery-settings')
         devices.registry_service=service;self.server.workspace_devices=devices
-        row=service.registry.register(label='Offline settings',adapter_id='turtlebot3_burger_v1',
+        row=service.registry.register(label='Offline settings',adapter_id='turtlebot3_burger_v1',adapter_version='burger-reviewed-1.0',
             endpoint=RobotEndpoint('robot.invalid','twinpulse'),expected_revision=0)
         for phase in ('starting','error'):
             self.supervisor_status.write_text(json.dumps({'status':phase}),encoding='utf-8')
@@ -556,9 +556,41 @@ class R5ProductApiTests(unittest.TestCase):
                 expected_revision=state['revision'],expected_display_sha256=saved['battery_display_sha256'])
             status,result,_=self.request('/v1/product/robots',body,headers=self.product_headers)
             self.assertEqual(status,200);self.assertEqual(result['robots'][0]['battery_display']['mode'],'voltage_only')
+            timing=result['robots'][0]['timing_settings']
+            timing_body=dict(action='set_timing_profile',id=row['id'],values=timing['profile']['values'],mode='custom',
+                expected_revision=result['revision'],expected_timing_sha256=timing['profile_sha256'])
+            status,result,_=self.request('/v1/product/robots',timing_body,headers=self.product_headers)
+            self.assertEqual(status,200);self.assertEqual(result['robots'][0]['timing_settings']['profile']['mode'],'custom')
+            from twinpulse_core.robot_timing_profile import TimingAccumulator
+            from twinpulse_app.robot_adapters import instance_binding
+            samples=TimingAccumulator();samples.observe('odom_interval_ms',350,1,'base')
+            service.registry.record_timing_measurement(row['id'],instance_binding(row)['sha256'],'a'*32,samples.snapshot())
+            state=service.snapshot('owner');timing=state['robots'][0]['timing_settings']
+            if phase=='starting':self.assertIsNone(timing['recommendation'])
+            registered=timing['profile']
+            recalc=dict(action='recalculate_timing_profile',id=row['id'],expected_revision=state['revision'],expected_timing_sha256=timing['profile_sha256'])
+            status,result,_=self.request('/v1/product/robots',recalc,headers=self.product_headers)
+            self.assertEqual(status,200);timing=result['robots'][0]['timing_settings']
+            self.assertEqual(timing['profile'],registered);self.assertEqual(timing['recommendation_origin'],'MANUAL_RECALCULATION')
+            apply=dict(action='apply_timing_recommendation',id=row['id'],expected_revision=result['revision'],expected_timing_sha256=timing['profile_sha256'],expected_recommendation_sha256=timing['recommendation_sha256'])
+            status,_,_=self.request('/v1/product/robots',dict(apply,expected_recommendation_sha256='f'*64),headers=self.product_headers)
+            self.assertEqual(status,409)
+            status,result,_=self.request('/v1/product/robots',apply,headers=self.product_headers)
+            self.assertEqual(status,200);self.assertEqual(result['robots'][0]['timing_settings']['profile'],timing['recommendation']['profile'])
+            for metadata_action in (recalc,apply):
+                status,_,_=self.request('/v1/product/robots',dict(metadata_action,extra='connect'),headers=self.product_headers)
+                self.assertEqual(status,400)
+                status,_,_=self.request('/v1/product/robots',metadata_action,headers={'Cookie':self.cookie,'X-TwinPulse-CSRF':'invalid'})
+                self.assertEqual(status,403)
+            # Only the data-only action is exempt: credentials/shape/connection
+            # admission remain enforced, not a generic robots-route bypass.
+            status,_,_=self.request('/v1/product/robots',dict(timing_body,extra='connect'),headers=self.product_headers)
+            self.assertEqual(status,400)
             for action in ('connect','prepare','discover','select'):
                 status,_,_=self.request('/v1/product/robots',dict(action=action,expected_revision=result['revision']),headers=self.product_headers)
                 self.assertEqual(status,409)
+            status,_,_=self.request('/v1/product/robots',dict(action=['set_timing_profile']),headers=self.product_headers)
+            self.assertEqual(status,409) # no unhashable-action500 or metadata bypass
             status,_,_=self.request('/v1/product/robots',dict(body,action='set_battery_display',extra='connect'),headers=self.product_headers)
             self.assertEqual(status,400)
             status,_,_=self.request('/v1/product/robots',body,headers={'Cookie':self.cookie,'X-TwinPulse-CSRF':'invalid'})

@@ -152,7 +152,7 @@ class StartupAndBoundsTests(unittest.TestCase):
 
     def test_bounds_cache_is_invalidated_by_environment_not_robot_or_camera_changes(self):
         runtime=FleetRuntime();runtime.bounds_watch=True
-        with patch.object(runtime,'_bounds',return_value=[(1,2,3,4)]) as build:
+        with patch.object(runtime,'_navigation_scene',return_value=([],[0,0,5,5],[])),patch.object(runtime,'_bounds',return_value=[(1,2,3,4)]) as build:
             for now in (1.,1.3,2.):runtime._refresh_bounds(None,now)
             self.assertEqual(build.call_count,1)
             def change(text):return SimpleNamespace(GetResyncedPaths=lambda:[SimpleNamespace(GetPrimPath=lambda:text)],GetChangedInfoOnlyPaths=lambda:[])

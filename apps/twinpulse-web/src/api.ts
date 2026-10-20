@@ -12,6 +12,7 @@ import type { RobotDiagnosticsState } from "./RobotDiagnostics";
 import type { RobotReadinessState } from "./RobotReadiness";
 import type { ManualControllerState } from './RobotController';
 import type { PhysicalState } from './PhysicalRobotController';
+import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
 import type { SessionList, SessionReview } from './SessionHistory';
 
 const CSRF_KEY = "twinpulse.csrf";
@@ -42,10 +43,14 @@ export class TwinPulseApi {
     if(body.action==='drive')return this.fleetDrive(body);
     return this.boundedProjectAction('/v1/product/robot-fleet',body);
   }
-  private async fleetDrive(body:import('./robot-fleet-types').RobotFleetAction):Promise<import('./robot-fleet-types').RobotFleetState>{
+  private async fleetDrive(body:Extract<import('./robot-fleet-types').RobotFleetAction,{action:'drive'}>):Promise<import('./robot-fleet-types').RobotFleetState>{
+    // Per-robot policy is pinned at connection on the server. This transport
+    // ceiling does not grant a new lifetime or override that policy.
+    const remaining=Math.min(1000,body.payload.expires_at_ms-Date.now());
+    if(!Number.isFinite(remaining)||remaining<=0)throw new ApiError('fleet_input_expired','Held input expired before delivery.');
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     try{return await Promise.race([this.request<import('./robot-fleet-types').RobotFleetState>('/v1/product/robot-fleet',body,controller.signal,false),
-      new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new ApiError('fleet_input_expired','Held input delivery expired. Movement paused; release and press again.'));},250);})]);
+      new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new ApiError('fleet_input_expired','Held input delivery expired. Movement paused; release and press again.'));},remaining);})]);
     }finally{if(timer!==undefined)clearTimeout(timer);}
   }
   robotFleetOperation(id:string):Promise<import('./robot-fleet-types').RobotFleetOperation>{
@@ -744,8 +749,8 @@ export class TwinPulseApi {
     return this.physicalRequest({scope,request_id,confirmed:true,expires_at_ms:Date.now()+1500},'mission');
   }
   physicalInput(job_id:string,sequence:number,action:string):Promise<PhysicalState>{
-    return this.physicalRequest({job_id,sequence,action,expires_at_ms:Date.now()+250},'input',
-      ['forward','backward','left','right','watch'].includes(action)?250:1500);
+    return this.physicalRequest({job_id,sequence,action,expires_at_ms:Date.now()+CONTROL_INPUT_TTL_MS},'input',
+      ['forward','backward','left','right','watch'].includes(action)?CONTROL_INPUT_TTL_MS:1500);
   }
   private async controllerRequest(body: object, suffix: string): Promise<ManualControllerState> {
     const abort = new AbortController();
@@ -757,7 +762,7 @@ export class TwinPulseApi {
     return this.controllerRequest({ mode: 'rehearsal', confirmed: true }, 'session');
   }
   controllerInput(session_id: string, sequence: number, action: string): Promise<ManualControllerState> {
-    return this.controllerRequest({ session_id, sequence, action, expires_at_ms: Date.now() + 250 }, 'input');
+    return this.controllerRequest({ session_id, sequence, action, expires_at_ms: Date.now() + CONTROL_INPUT_TTL_MS }, 'input');
   }
   robotPreflight(): Promise<RobotDiagnosticsState> { return this.request("/v1/product/robot/preflight", {}); }
   startRobotCheck(start_token: string): Promise<RobotDiagnosticsState> {

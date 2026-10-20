@@ -16,19 +16,20 @@ import threading
 import time
 from pathlib import Path
 from uuid import uuid4
-from control_timing import NATIVE_RECEIPT_S,ICP_COMPUTE_S,TRACKING_RESULT_S
+from control_timing import NATIVE_RECEIPT_S,ICP_COMPUTE_S,TRACKING_RESULT_S,INPUT_TTL_S
 from field_config import SCHEMA,checked_config,digest
+from twinpulse_core.robot_timing_profile import values_of
 
 CASES = ('stationary', 'bootstrap_stop', 'forward', 'backward', 'left', 'right',
          'full_turn', 'proximity', 'stall', 'presence_gap', 'soak')
 CAP_V, CAP_W, TTL = .03, .20, 900.
 
 
-def frame_points(frame, config, now):
+def frame_points(frame, config, now, *, timing_values=None):
     """Validate full original ring; unknown returns are not free-space proof."""
     if not frame or not frame.get('complete') or frame.get('interval_fallback'):
         raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
-    return _validated_points(frame, config, now)
+    return _validated_points(frame, config, now, timing_values=timing_values)
 
 
 def control_observation(native, config, now):
@@ -41,7 +42,8 @@ def control_observation(native, config, now):
     frame,previous=native.control_frames() if hasattr(native,'control_frames') else (native.latest_frame(),None)
     if not frame or frame.get('interval_fallback'):
         raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
-    if frame.get('complete'):return frame,frame_points(frame,config,now),None,None
+    timing=getattr(native,'timing_values',None)
+    if frame.get('complete'):return frame,frame_points(frame,config,now,timing_values=timing),None,None
     else:
         q=frame.get('quality') or {};span=frame.get('source_byte_span') or {}
         gaps=q.get('unframed_spans') or []
@@ -61,17 +63,31 @@ def control_observation(native, config, now):
         if count!=q.get('unframed_bytes'):raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
         # Current partial returns cannot extend previous-ring freshness. Any
         # newer observed hazard/invalid return in the swept cone still vetoes.
-        partial_points=_validated_points(frame,config,now)
+        partial_points=_validated_points(frame,config,now,timing_values=timing)
         if (not previous or not frame.get('stream_id') or previous.get('stream_id')!=frame['stream_id']
                 or previous['frame_sequence']>=frame['frame_sequence']
                 or previous['timing']['receipt_end_s']>frame['timing']['receipt_end_s']):
             raise ValueError('FIELD_COMPLETE_NATIVE_RING_REQUIRED')
-        return previous,frame_points(previous,config,now),frame,partial_points
+        return previous,frame_points(previous,config,now,timing_values=timing),frame,partial_points
 
 
-def _validated_points(frame, config, now):
+def tracking_observation(native,config,now,*,frame=None):
+    """ICP uses complete rings ONLY; a validated closing-gap ring is skipped.
+
+    Skipping never renews a pose timestamp, supplies fake points, or removes the
+    output guard's newer-hazard veto. The unchanged tracking age/gap limits
+    still stop a route if a new complete ring does not arrive in time.
+    """
+    frame=native.latest_frame() if frame is None else frame
+    if frame and frame.get('complete'):return frame,frame_points(frame,config,now,timing_values=getattr(native,'timing_values',None))
+    control_observation(native,config,now) # Reject every other incomplete shape.
+    return None
+
+
+def _validated_points(frame, config, now, *, timing_values=None):
     t = frame['timing']
-    if not 0 <= now-t['receipt_end_s'] <= NATIVE_RECEIPT_S or not 0 <= t['receipt_end_s']-t['receipt_start_s'] <= NATIVE_RECEIPT_S:
+    limit=values_of(timing_values)['native_receipt_ms']/1000
+    if not 0 <= now-t['receipt_end_s'] <= limit or not 0 <= t['receipt_end_s']-t['receipt_start_s'] <= limit:
         raise ValueError('FIELD_NATIVE_RECEIPT_STALE_OR_BACKLOG')
     span = frame['source_byte_span']
     if not 0 <= span['start'] < span['end'] or not re.fullmatch('[a-f0-9]{64}', frame['raw_sha256']):
@@ -156,11 +172,13 @@ def _registration_worker(connection):
         while True:
             job=connection.recv()
             if job is None:return
-            job_id,before,after=job
+            job_id,before,after=job[:3]
+            budget=job[3] if len(job)==4 else ICP_COMPUTE_S
+            if type(budget) not in (float,int) or not .02<=budget<=.5:raise ValueError('TRACKING_BUDGET_INVALID')
             started=time.monotonic()
             try:
                 if len(before)>4096 or len(after)>4096:raise ValueError('TRACKING_POINT_BOUND')
-                value=register_pair(before,after,deadline=started+ICP_COMPUTE_S)
+                value=register_pair(before,after,deadline=started+budget)
                 result=dict(ok=True,fit=value)
             except (ValueError,KeyError,TypeError,OverflowError) as exc:
                 result=dict(ok=False,reason=str(exc))
@@ -174,6 +192,7 @@ class NativeTracker:
     """Latest-only tracking; ICP has a separate process/GIL and one in-flight job."""
     def __init__(self, native, config, clock=time.monotonic):
         self.native, self.config, self.clock = native, config, clock
+        self.timing_values=values_of(getattr(native,'timing_values',None))
         self.cancel = threading.Event(); self.lock = threading.Lock(); self.epoch = uuid4().hex
         self.result = dict(status='WAITING', epoch=self.epoch, pose=None, independent=True, accuracy='UNQUALIFIED')
         ctx=multiprocessing.get_context('spawn')
@@ -191,7 +210,7 @@ class NativeTracker:
             current.get('stream_id',getattr(self.native,'stream_id',None))!=r.get('stream_id') or
             current['frame_sequence']<r.get('frame_sequence',0)):
             r.update(status='STALE',reason='TRACKING_NATIVE_IDENTITY_CHANGED',pose=None)
-        if r.get('sample_s') is not None and self.clock()-r['sample_s'] > TRACKING_RESULT_S:
+        if r.get('sample_s') is not None and self.clock()-r['sample_s'] > getattr(self,'timing_values',values_of())['tracking_result_ms']/1000:
             r.update(status='STALE', reason='TRACKING_SAMPLE_STALE')
         return r
 
@@ -218,7 +237,7 @@ class NativeTracker:
                 self.worker_failed='TRACKING_PROCESS_START_TIMEOUT';raise ValueError(self.worker_failed)
         self.job_sequence+=1;job=self.job_sequence
         self.compute_timing=dict(job_id=job,stage='DISPATCHED')
-        self.connection.send((job,before,after));sent=time.monotonic()
+        self.connection.send((job,before,after,getattr(self,'timing_values',values_of())['icp_compute_ms']/1000));sent=time.monotonic()
         while not self.cancel.is_set():
             if self.connection.poll(.01):
                 value=self.connection.recv()
@@ -231,7 +250,7 @@ class NativeTracker:
                 return value['fit']
             # This bounds process delivery; it does not extend the .08s compute
             # budget or the original frame/pose freshness checks.
-            if time.monotonic()-sent>.5 or not self.process.is_alive():
+            if time.monotonic()-sent>getattr(self,'timing_values',values_of())['tracking_delivery_ms']/1000 or not self.process.is_alive():
                 self.compute_timing.update(stage='DELIVERY_FAILED',delivery_elapsed_s=time.monotonic()-sent)
                 self.worker_failed='TRACKING_PROCESS_UNRESPONSIVE'
                 raise ValueError(self.worker_failed)
@@ -252,20 +271,25 @@ class NativeTracker:
             sequence = frame['frame_sequence']
             self.compute_timing=dict(stage='FRAME_VALIDATION')
             try:
-                pts = frame_points(frame, self.config, self.clock())
+                observed=tracking_observation(self.native,self.config,self.clock(),frame=frame)
+                if observed is None:
+                    # Original pose/sample/epoch stay untouched across one
+                    # bounded omitted ring. Incomplete bytes remain raw evidence.
+                    continue
+                frame,pts=observed
                 if previous is None:
                     previous = (frame, pts)
                     continue
                 prior, p = previous
                 dt = frame['timing']['receipt_end_s']-prior['timing']['receipt_end_s']
-                if not 0 < dt <= .6:raise ValueError('TRACKING_FRAME_GAP')
+                if not 0 < dt <= self.timing_values['tracking_result_ms']/1000:raise ValueError('TRACKING_FRAME_GAP')
                 fit = self._fit(p, pts)
                 current=self.native.latest_frame()
                 if self.cancel.is_set():return
                 if not current or current.get('stream_id',getattr(self.native,'stream_id',None))!=stream:
                     raise ValueError('TRACKING_STREAM_CHANGED')
                 if current['frame_sequence']<sequence:raise ValueError('TRACKING_FRAME_SEQUENCE_ROLLED_BACK')
-                if self.clock()-frame['timing']['receipt_end_s']>.6:raise ValueError('TRACKING_SAMPLE_STALE')
+                if self.clock()-frame['timing']['receipt_end_s']>self.timing_values['tracking_result_ms']/1000:raise ValueError('TRACKING_SAMPLE_STALE')
                 dx, dy, da = fit['delta']
                 if math.hypot(dx,dy) > .12*dt+.02 or abs(da) > .6*dt+.02:
                     raise ValueError('TRACKING_IMPLAUSIBLE_JUMP')
@@ -289,6 +313,14 @@ class NativeTracker:
 class FieldEvidenceWriter:
     """Fixed members, bounded queue; no disk work on the motor owner thread."""
     MEMBERS={'field-config.json','field-trials.json','field-stop.json','field-tracking.json'}
+    # Disk durability is not a motor/sensor deadline. Two serial fsyncs on the
+    # powered Pi took 0.299 + 0.208 s (2026-10-20 operation cd5d8c45...), so the
+    # former 0.5 s latch rejected a completed, exact-byte write. Report that age
+    # as buffering; keep results/stop authority pending until both durable ACKs.
+    # This bounded storage budget is not a measured safety limit. Motor input,
+    # sensor age and local output watchdog deadlines are deliberately unchanged.
+    BUFFERING_S=.5
+    COMMIT_DEADLINE_S=2.
     def __init__(self,directory,clock=time.monotonic):
         self.directory=Path(directory);self.clock=clock;self.queue=queue.Queue(maxsize=32)
         self.lock=threading.Lock();self.pending={};self.error=None;self.closed=False
@@ -298,7 +330,7 @@ class FieldEvidenceWriter:
 
     def check(self):
         with self.lock:
-            if self.pending and self.clock()-min(self.pending.values())>.5:self.error=self.error or 'FIELD_EVIDENCE_STALLED'
+            if self.pending and self.clock()-min(self.pending.values())>self.COMMIT_DEADLINE_S:self.error=self.error or 'FIELD_EVIDENCE_STALLED'
             error=self.error
         if error:raise ValueError(error)
 
@@ -329,9 +361,11 @@ class FieldEvidenceWriter:
 
     def status(self):
         with self.lock:
+            age=max(0.,self.clock()-min(self.pending.values())) if self.pending else 0.
             return dict(writer_id=self.writer_id,last_write_id=self.sequence,error=self.error,pending=len(self.pending),phase=self.phase,
                 phase_elapsed_s=max(0.,self.clock()-self.phase_started),phase_max_s=dict(self.phase_max),
-                oldest_pending_s=max(0.,self.clock()-min(self.pending.values())) if self.pending else 0.)
+                oldest_pending_s=age,buffering=age>=self.BUFFERING_S,
+                commit_deadline_s=self.COMMIT_DEADLINE_S)
 
     def _phase(self,name):
         with self.lock:
@@ -370,7 +404,7 @@ class FieldEvidenceWriter:
                     self._phase('ACK_FSYNC');os.fsync(stream.fileno())
                 self._phase('IDLE')
                 with self.lock:
-                    if self.clock()-self.pending[index]>.5:self.error=self.error or 'FIELD_EVIDENCE_STALLED'
+                    if self.clock()-self.pending[index]>self.COMMIT_DEADLINE_S:self.error=self.error or 'FIELD_EVIDENCE_STALLED'
                     acknowledgement['ack_observed_s']=self.clock()
                     self.committed[index]=acknowledgement
                     del self.pending[index]
@@ -381,7 +415,7 @@ class FieldEvidenceWriter:
             with self.lock:self.error=self.error or 'FIELD_EVIDENCE_WRITE_FAILED'
 
     def close(self):
-        self.closed=True;self.thread.join(timeout=2.)
+        self.closed=True;self.thread.join(timeout=self.COMMIT_DEADLINE_S+.1)
         return dict(self.status(),complete=not self.thread.is_alive() and not self.error and not self.pending,
                     writer_reaped=not self.thread.is_alive())
 
@@ -389,6 +423,7 @@ class FieldEvidenceWriter:
 class FieldGuard:
     def __init__(self, config, native, link, admitted, clock=time.monotonic):
         self.config, self.native, self.link, self.admitted, self.clock = config, native, link, admitted, clock
+        self.timing_values=values_of(getattr(link,'timing_values',None))
         self.last_result = None; self.progress = {}; self.last_frame = None; self.last_end = None
         self.bootstrap = False; self.started = None; self.samples = []
         self.tracker=None;self.body_samples=[]
@@ -400,7 +435,7 @@ class FieldGuard:
         now = self.clock()
         if not self.admitted():raise ValueError('FIELD_SESSION_NOT_ARMED_OR_EXPIRED')
         if abs(v) > CAP_V+1e-9 or abs(w) > CAP_W+1e-9:raise ValueError('FIELD_POLICY_SPEED_CAP')
-        if source_created is None or not 0 <= now-source_created <= .25:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
+        if source_created is None or not 0 <= now-source_created < self.timing_values['input_ttl_ms']/1000:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
         frame,partial=self._range_check(v,w,now)
         end=frame['timing']['receipt_end_s']
         self._progress_check(v,w,now)
@@ -413,8 +448,8 @@ class FieldGuard:
                 # full recheck uses original clocks and all direction tests.
                 frame,_=self._range_check(v,w,self.clock())
                 end=frame['timing']['receipt_end_s']
-        if not 0<=self.clock()-source_created<=.25:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
-        if not 0<=self.clock()-end<=NATIVE_RECEIPT_S:raise ValueError('FIELD_GUARD_COMPUTE_EXPIRED')
+        if not 0<=self.clock()-source_created<self.timing_values['input_ttl_ms']/1000:raise ValueError('FIELD_ORIGINAL_INPUT_EXPIRED')
+        if not 0<=self.clock()-end<=self.timing_values['native_receipt_ms']/1000:raise ValueError('FIELD_GUARD_COMPUTE_EXPIRED')
 
     def _range_check(self,v,w,now):
         frame,pts,partial,partial_points = control_observation(self.native, self.config, now)
@@ -462,14 +497,14 @@ class FieldGuard:
         if self.bootstrap and (v != CAP_V or w != 0. or now-self.started > .65):
             raise ValueError('FIELD_BOOTSTRAP_OUTPUT_BOUND')
         sensor = self.link.sensor
-        if not 0 <= now-self.link.sensor_t <= .2:raise ValueError('FIELD_WHEEL_TELEMETRY_STALE')
+        if not 0 <= now-self.link.sensor_t <= self.timing_values['sensor_receipt_ms']/1000:raise ValueError('FIELD_WHEEL_TELEMETRY_STALE')
         enc = (sensor.left_encoder, sensor.right_encoder)
         commanded=(v-w*self.config['wheel_separation_m']/2,v+w*self.config['wheel_separation_m']/2)
         scale=self.config['wheel_metres_per_tick']
         sample_s=self.link.sensor_t
         if self.samples and sample_s!=self.samples[-1][0]:
             previous=self.samples[-1];dt=sample_s-previous[0]
-            if not 0<dt<=.2:raise ValueError('FIELD_WHEEL_CLOCK_OR_GAP')
+            if not 0<dt<=self.timing_values['wheel_interval_ms']/1000:raise ValueError('FIELD_WHEEL_CLOCK_OR_GAP')
             for current,prior,requested in zip(enc,previous[1],commanded):
                 delta=(current-prior)*scale
                 if delta*math.copysign(1,requested)<-2*scale:raise ValueError('FIELD_WHEEL_REVERSE_TO_COMMAND')

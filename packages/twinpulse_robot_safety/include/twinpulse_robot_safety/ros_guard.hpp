@@ -5,6 +5,7 @@
 #include <chrono>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -26,11 +27,18 @@ class RosGuard {
           [this](uint8_t count) {
             std::string message;
             return sdk_->set_data_to_device(19, 1, &count, &message);
-          }) {
+          }, configured_timeout()) {
     if (node_->get_parameter("use_sim_time").as_bool())
       throw std::runtime_error("Physical command guard rejects use_sim_time");
     if (!guard_.stop()) throw std::runtime_error("Startup zero write failed");
     status_ = node_->create_publisher<std_msgs::msg::String>("motion_guard/status", 1);
+    timing_ = node_->create_publisher<std_msgs::msg::String>("motion_guard/timing", rclcpp::QoS(1).reliable().transient_local());
+    // Immutable startup configuration, latched once. Do not add a new 50Hz
+    // diagnostic stream to the already loaded control executor.
+    std_msgs::msg::String timing;
+    timing.data = "{\"schema\":\"robot-output-timing-1.0\",\"output_timeout_ms\":" +
+        std::to_string(guard_.configured_timeout_ms()) + "}";
+    timing_->publish(timing);
     command_ = node_->create_subscription<geometry_msgs::msg::TwistStamped>(
         "guarded_cmd_vel", rclcpp::QoS(1).reliable().durability_volatile(),
         [this](geometry_msgs::msg::TwistStamped::SharedPtr msg, const rclcpp::MessageInfo& info) {
@@ -85,6 +93,14 @@ class RosGuard {
     try { guard_.stop(); } catch (...) { /* no future heartbeat */ }
   }
  private:
+  static int64_t configured_timeout() {
+    const char* text = std::getenv("TWINPULSE_OUTPUT_TIMEOUT_MS");
+    if (!text) return CommandGuard::timeout_ms;
+    const std::string value(text);
+    if (value.empty() || value.size() > 4 || value.find_first_not_of("0123456789") != std::string::npos)
+      throw std::invalid_argument("invalid output timing setting");
+    return std::stoll(value);
+  }
   static int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -105,6 +121,7 @@ class RosGuard {
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr command_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr timing_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr arm_, stop_;
 };
 }  // namespace twinpulse_robot_safety

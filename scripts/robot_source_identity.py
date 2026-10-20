@@ -55,7 +55,7 @@ def bundle_files(root):
     root = Path(root)
     package = root / 'packages/twinpulse_robot_safety'
     files = {p.relative_to(package).as_posix(): p.read_bytes() for p in package.rglob('*')
-             if p.is_file() and (p.suffix in {'.py', '.json', '.cpp', '.hpp', '.txt', '.patch', '.md', '.sh'}
+             if p.is_file() and (p.suffix in {'.py', '.json', '.cpp', '.hpp', '.txt', '.patch', '.md', '.sh','.xml'}
                                 or p.name in {'LICENSE', 'NOTICE'})
              and not {'__pycache__', 'checks', 'build'}.intersection(p.relative_to(package).parts)}
     files['robot_health.py'] = (root / 'scripts/robot_health.py').read_bytes()

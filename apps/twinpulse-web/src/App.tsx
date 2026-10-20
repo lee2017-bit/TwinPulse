@@ -109,9 +109,8 @@ export function App({ api = DEFAULT_API }: { api?: TwinPulseApi }) {
   };
   const desktopShutdown=useRef(shutdown);desktopShutdown.current=shutdown;
   useEffect(()=>window.twinpulseDesktop?.onExitRequested(()=>void desktopShutdown.current(true)),[]);
-  const runtimeExit=<span><DesktopTesting/><button type="button" disabled={!state.available||state.phase!=='idle'} onClick={()=>void shutdown()}
-    title="Available when owned runtime work is idle. Exit stops TwinPulse's owned Isaac and backend normally.">Exit TwinPulse</button>
-    <small>{window.twinpulseDesktop?' Closing this app requests the same normal runtime shutdown.':' Browser close only closes this screen; Exit stops owned Isaac/backend normally.'}</small>
+  const runtimeExit=<span className="runtime-exit-controls"><DesktopTesting/><button type="button" disabled={!state.available||state.phase!=='idle'} onClick={()=>void shutdown()}
+    aria-label="Exit TwinPulse" title={window.twinpulseDesktop?"Exit stops TwinPulse's owned Isaac and backend normally. Closing this app requests the same shutdown.":'Exit stops owned Isaac and backend normally. Browser close only closes this screen.'}>Exit</button>
     {state.error&&<span role="alert"> {state.error}</span>}</span>;
   if(state.phase==='requested')return <div className="chat-workspace"><section className="chat-home" role="status" aria-label="TwinPulse shutdown">
     <h1>Exit requested</h1><p>TwinPulse is shutting down its owned Isaac and backend normally.</p>

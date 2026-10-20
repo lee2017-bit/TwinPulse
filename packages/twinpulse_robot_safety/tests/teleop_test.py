@@ -319,7 +319,7 @@ class ReleaseTests(unittest.TestCase):
                 link.changed=now[0]
                 ticks=(100 if len(link.rows)%2 else 0) if oscillate else round(now[0]*40)
                 link.sensor.left_encoder=link.sensor.right_encoder=ticks
-            link.rows.append({'encoders':[link.sensor.left_encoder,link.sensor.right_encoder]})
+            link.rows.append({'t':now[0],'encoders':[link.sensor.left_encoder,link.sensor.right_encoder]})
         link.spin=spin
         def fresh():
             if stale:raise ValueError('TELEMETRY_STALE')
@@ -333,8 +333,13 @@ class ReleaseTests(unittest.TestCase):
         elapsed=self.exercise()
         self.assertGreaterEqual(elapsed,.54);self.assertLess(elapsed,.9)
 
-    def test_final_cleanup_criterion_unchanged(self):
-        with self.assertRaisesRegex(ValueError,'STOP_READBACK_UNCONFIRMED'):self.exercise(final=True)
+    def test_final_cleanup_uses_the_same_stable_observation_as_release(self):
+        elapsed=self.exercise(final=True)
+        self.assertGreaterEqual(elapsed,.54);self.assertLess(elapsed,.9)
+
+    def test_final_cleanup_does_not_confirm_torque_or_service_failure(self):
+        for kwargs in ({'torque_stuck':True},{'service_fail':True},{'stale':True},{'moving_until':2.}):
+            with self.assertRaisesRegex(ValueError,'STOP_READBACK_UNCONFIRMED'):self.exercise(final=True,**kwargs)
 
     def test_continued_motion_and_torque_never_confirm_idle(self):
         for kwargs in ({'moving_until':2.},{'torque_stuck':True}):

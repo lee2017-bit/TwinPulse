@@ -353,7 +353,7 @@ export function SimulationRunCard({api,revision,artifactId,product,report,review
     {live&&!resetUnconfirmed&&!resetNotice&&snapshot!.runtime_state==='completed'&&<p className="sim-completion" role="status">Destination reached · stopped normally. This was one finite route, not continuous roaming. Ask in chat for the next destination.</p>}
     {live&&phase.startsWith('Already at this goal')&&<p role="status">{phase}</p>}
     <small>Existing Burger with PhysX. Coordinates refer to the approximate room, not a measured physical map.</small>
-    {!taskBlocked&&<><p>Ask in chat: “Go to the bed” or “Go to x=0 y=1”. Without a saved start, include “from x=0 y=0 to x=0 y=1”. Unsupported goals require clarification; no paid model is called.</p>
+    {!taskBlocked&&<><details><summary>SIM command guide</summary><p>Ask in chat: “Go to the bed” or “Go to x=0 y=1”. Without a saved start, include “from x=0 y=0 to x=0 y=1”. Unsupported goals require clarification; no paid model is called.</p></details>
     <div><label>Start x, y (m)<input aria-label="SIM start" value={start} disabled={busy||live||!!pending} onChange={e=>{setStart(e.target.value);setPlan(null);}}/></label>
       <label>Goal x, y (m)<input aria-label="SIM goal" value={goal} disabled={busy||moving||!!pending} onChange={e=>{setGoal(e.target.value);setPlan(null);}}/></label></div></>}
     {plan&&<p>{plan.route.length} waypoint(s) · up to {plan.max_linear_mps} m/s · no physical command</p>}
@@ -365,10 +365,10 @@ export function SimulationRunCard({api,revision,artifactId,product,report,review
     {!buildAvailable&&(taskBlocked||!currentDisplayed)&&<p role="status" aria-label="Isaac Build readiness">The current idle engine has not confirmed site-scene Build support. View requires a matching engine snapshot and explicit capability. Build permission is checked after the requested lease is acquired; no Build is started automatically.</p>}
     <div>{showActions&&(taskBlocked||!currentDisplayed)&&<button disabled={!buildAvailable||!observationFresh||chatPending||busy||moving||!!pending||resetUnconfirmed||!product?.engine_connected||engineFault}
       onClick={()=>void act(async()=>{await prepareRoom(undefined,true,true);if(isCurrentOwner())setPhase('Draft apply confirmed. Check the current 3D display. No motion is authorized.');})}>{taskBlocked?'View draft in Isaac':'View current Twin'}</button>}
-      {showActions&&!taskBlocked&&!plan&&<button disabled={!observationFresh||chatPending||busy||moving||!!pending||resetUnconfirmed||!product?.engine_connected||engineFault} onClick={preview}>Preview SIM route</button>}
-      {showActions&&!taskBlocked&&<button disabled={!observationFresh||chatPending||busy||moving||!!pending||resetUnconfirmed||!plan||!product?.engine_connected||engineFault||displayPending||browserBlocked} onClick={run}>Run simulation</button>}
-      {showActions&&<button disabled={!resetAllowed} onClick={reset} title="Reset simulated runtime only. The saved scene is retained; preview a fresh route before Run.">Reset simulation</button>}
-      <button disabled={!moving||stopPending} onClick={()=>void stop()}>{stopPending?'Stopping simulation…':'Stop simulation'}</button></div>
+      {showActions&&!taskBlocked&&!plan&&<button aria-label="Preview SIM route" disabled={!observationFresh||chatPending||busy||moving||!!pending||resetUnconfirmed||!product?.engine_connected||engineFault} onClick={preview}>Preview route</button>}
+      {showActions&&!taskBlocked&&<button aria-label="Run simulation" disabled={!observationFresh||chatPending||busy||moving||!!pending||resetUnconfirmed||!plan||!product?.engine_connected||engineFault||displayPending||browserBlocked} onClick={run}>Run</button>}
+      {showActions&&<button aria-label="Reset simulation" disabled={!resetAllowed} onClick={reset} title="Reset simulated runtime only. The saved scene is retained; preview a fresh route before Run.">Reset</button>}
+      <button aria-label={stopPending?'Stopping simulation…':'Stop simulation'} disabled={!moving||stopPending} onClick={()=>void stop()}>{stopPending?'Stopping…':'Stop'}</button></div>
     {resetUnconfirmed&&<small>Reset outcome is not yet confirmed. Do not resend it or start another simulation task; review the saved operation.</small>}
     {pending&&<small>{pending.delivery==='submitting'?'Waiting for Run acceptance.':pending.delivery==='accepted'?'Checking the accepted Run receipt.':'Run delivery is unconfirmed. Checking the same request only.'} Do not resend this request. Closing the App does not grant automatic resume.</small>}
     {pending&&receiptExpired&&<button onClick={()=>setReceiptCheck(value=>value+1)}>Check Run result · read only</button>}

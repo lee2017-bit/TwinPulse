@@ -29,7 +29,19 @@ const faultFleetRoute=request=>new URL(request.request().url()).pathname.endsWit
  ?conversationFaultHandler?conversationFaultHandler(request):request.continue()
  :fleetRouteHandler?fleetRouteHandler(request):request.continue();
 let routeBoundary;
-const save=()=>fs.writeFile(path.join(out,'result.json'),JSON.stringify(result,null,2));
+let preservedSteps=0;
+const save=async()=>{
+ // Preserve each completed step once, not a growing 30+MB result on every
+ // progress update. The passive recorder polls this file every300ms: repeatedly
+ // parsing the entire history adds test-only CPU/GC/disk load to the App host.
+ // Only the terminal file is the complete, gate-eligible acceptance record.
+ while(preservedSteps<result.steps.length){const index=preservedSteps++;
+  await fs.writeFile(path.join(out,`step-${String(index+1).padStart(3,'0')}.json`),JSON.stringify(result.steps[index],null,2),{flag:'wx'});}
+ const progress=result.status==='IN_PROGRESS'?{phase,status:'IN_PROGRESS',project:result.project,
+  desktop:result.desktop,steps:result.steps.map(({name,status,elapsed_ms})=>({name,status,elapsed_ms})),
+  partial_evidence:'Individual step files; not a terminal acceptance record'}:result;
+ await fs.writeFile(path.join(out,'result.json'),JSON.stringify(progress,null,2));
+};
 const shot=async name=>{await page.screenshot({path:path.join(out,name+'.png'),timeout:5000});result.screenshots.push(name+'.png');};
 const clean=e=>String(e).replace(/#bootstrap=[^\s"']+/g,'#bootstrap=[REDACTED]').slice(0,2000);
 const step=async(name,fn)=>{activeStep=name;const start=Date.now();console.log(JSON.stringify({ui_step:name,at:start}));try{const evidence=await fn();result.steps.push({name,status:'PASS',elapsed_ms:Date.now()-start,evidence});}
@@ -112,7 +124,7 @@ try{
     const receivedAt=Date.now();
     try{
      const state=p.endsWith('/current')?JSON.parse(r.headers()['x-twinpulse-viewport']??'null'):await r.json();
-     const frame=f=>f?Object.fromEntries(['frame_id','captured_at_ms','engine_session_id','stage_epoch','applied_revision','camera_sequence','sha256'].map(k=>[k,f[k]])):null;
+     const frame=f=>f?Object.fromEntries(['frame_id','captured_at_ms','engine_session_id','stage_epoch','applied_revision','camera_sequence','sha256','robot_anchors'].map(k=>[k,f[k]])):null;
      result.viewport_receipt_trace.receipts.push({at:receivedAt,body_observed_at:Date.now(),step:activeStep,path:p,status:r.status(),context,
       state:state?.state,fps:state?.fps,camera_pending:state?.camera_pending,frame:frame(state?.frame),last_frame:frame(state?.last_frame)});
     }catch(e){result.viewport_receipt_trace.receipts.push({at:receivedAt,step:activeStep,path:p,status:r.status(),error:clean(e)});}
@@ -530,6 +542,13 @@ try{
   await expect(controls.getByRole('region',{name:'Physical connection and readiness'})).toHaveCount(0);
   await expect(controls.getByText('Fresh authenticated session',{exact:false})).toHaveCount(0);
   await expect(controls.getByRole('button',{name:'Hold forward',exact:true})).toBeDisabled();
+  await expect(controls.getByText('Object destinations use an operator-reviewed Twin anchor',{exact:false})).toBeVisible();
+  const commandBox=controls.getByRole('textbox',{name:'Robot command',exact:true}),priorDraft=await commandBox.inputValue();
+  const beforeDestination=result.fleet_requests.filter(row=>row.action==='command'&&row.robot_id===physical.robot_id).length;
+  await commandBox.fill('Go to the nearest bed');
+  await expect(controls.getByRole('button',{name:'Send command',exact:true})).toBeDisabled();
+  await commandBox.fill(priorDraft);
+  if(result.fleet_requests.filter(row=>row.action==='command'&&row.robot_id===physical.robot_id).length!==beforeDestination)throw Error('OFF destination review sent a physical command');
   const advanced=controls.getByText('Advanced measured protective profile · strict JSON',{exact:true});
   await expect(advanced).toBeVisible();
   if(await advanced.locator('..').getAttribute('open')===null)await advanced.click();
@@ -542,7 +561,8 @@ try{
   await (await pending).saveAs(path.join(out,'blank-measured-profile.json'));
   const template=JSON.parse(await fs.readFile(path.join(out,'blank-measured-profile.json'),'utf8'));
   if(template.robot_id!==physical.robot_id||!template.binding_sha256||!Object.entries(template).filter(([k])=>!['schema','robot_id','binding_sha256'].includes(k)).every(([,group])=>Object.values(group).every(v=>v===null)))throw Error('Template fabricated measured values or lost identity');
-  await shot('physical-off-setup');return {robot_id:physical.robot_id,connection:physical.connection_state,drive:physical.capabilities.drive};
+  await shot('physical-off-setup');return {robot_id:physical.robot_id,connection:physical.connection_state,drive:physical.capabilities.drive,
+   destination_policy_visible:true,off_destination_send_disabled:true,physical_destination_commands_sent:0};
  });
  await step('App-only supervised setup saves offline; all eleven trial paths visible without physical activation',async()=>{
   const controls=drawer(result.physical_label),section=controls.getByRole('region',{name:'Supervised field tests',exact:true});

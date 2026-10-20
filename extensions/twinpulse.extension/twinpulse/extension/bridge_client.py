@@ -474,10 +474,15 @@ class BridgeClient:
         try:
             # One owner, one in-flight current report. No retry of this POST,
             # including on stale reused sockets: discard and fail this cycle.
+            started=time.monotonic()
             connection.request('POST','/v1/engine/robots',body=payload,headers=headers)
-            response=connection.getresponse();raw=response.read()
+            sent=time.monotonic()
+            response=connection.getresponse();responded=time.monotonic();raw=response.read()
+            read=time.monotonic()
             if response.will_close:self.close_robot_channel()
             value=json.loads(raw.decode('utf-8'))
+            self._robot_http.timing=dict(send_s=round(sent-started,6),headers_s=round(responded-sent,6),
+                body_s=round(read-responded,6),decode_s=round(time.monotonic()-read,6))
             if response.status!=200:
                 raise BridgeProtocolError('Backend rejected robot report')
             if not isinstance(value,Mapping) or not isinstance(value.get('fleet'),Mapping):
@@ -486,3 +491,8 @@ class BridgeClient:
         except Exception:
             self.close_robot_channel()
             raise
+
+    def robot_channel_timing(self):
+        # Numeric phases only, read by the same FleetIO owner; no URL, headers,
+        # payload, credential, socket operations or authority changes.
+        return dict(getattr(self._robot_http,'timing',{}))

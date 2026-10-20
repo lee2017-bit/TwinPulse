@@ -20,6 +20,7 @@ or excessive gaps are UNKNOWN, never free. Stopping is always permitted.
 from dataclasses import dataclass
 import math
 import re
+from .robot_control_timing import INPUT_TTL_S
 
 EPS = 1e-10
 KINDS = {'synthetic_test_fixture', 'saved_sensor_recording', 'live_sensor'}
@@ -282,7 +283,7 @@ def evaluate_manual_motion(intent, frame, geometry, sampling, stop_model, now):
             or not _number(policy.angular_velocity_uncertainty_rad_s, 0, 2)
             or not _number(policy.position_uncertainty_m, 0, 1)
             or not _number(policy.maximum_scan_age_s, .000001, .2)
-            or not _number(policy.maximum_input_age_s, .000001, .25)
+            or not _number(policy.maximum_input_age_s, .000001, INPUT_TTL_S)
             or not _number(policy.maximum_linear_speed_m_s, .000001, .05)
             or not _number(policy.maximum_angular_speed_rad_s, .000001, .3)):
         return _decision('MEASURED_STOP_MODEL_REQUIRED')

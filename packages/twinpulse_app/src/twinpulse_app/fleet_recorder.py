@@ -10,9 +10,20 @@ from uuid import uuid4
 def materialize_operation(record):
     # Event objects are immutable after admission. Only the list/manifest are
     # captured under the fleet lock; expensive serialization happens outside it.
-    content=json.dumps(record['events'],sort_keys=True,ensure_ascii=False,allow_nan=False).encode('utf-8')
-    record['manifest'].update(event_count=len(record['events']),events_sha256=hashlib.sha256(content).hexdigest())
+    digest=hashlib.sha256()
+    # CPython's single C encoder holds the GIL for the entire event history.
+    # Background threads alone do not isolate that pause from control I/O.
+    # iterencode preserves the original canonical bytes, with bounded chunks
+    # and regular interpreter scheduling instead of one multi-MB C call.
+    for part in json.JSONEncoder(sort_keys=True,ensure_ascii=False,allow_nan=False).iterencode(record['events']):
+        digest.update(part.encode('utf-8'))
+    record['manifest'].update(event_count=len(record['events']),events_sha256=digest.hexdigest())
     return record
+
+
+def operation_json_bytes(record,*,separators=None):
+    return b''.join(part.encode('utf-8') for part in json.JSONEncoder(
+        ensure_ascii=False,allow_nan=False,separators=separators).iterencode(record))
 
 
 class FleetRecorder:
@@ -85,7 +96,7 @@ class FleetSnapshotWriter:
                     if not self.pending:break
                     path=next(iter(self.pending));content,_=self.pending.pop(path)
                 if isinstance(content,dict):
-                    content=json.dumps(materialize_operation(content),ensure_ascii=False,allow_nan=False).encode('utf-8')
+                    content=operation_json_bytes(materialize_operation(content))
                 if len(content)>33*1024*1024:raise OSError('SNAPSHOT_RECORD_CAPACITY')
                 path.parent.mkdir(parents=True,exist_ok=True)
                 temp=path.with_suffix('.'+uuid4().hex+'.tmp')

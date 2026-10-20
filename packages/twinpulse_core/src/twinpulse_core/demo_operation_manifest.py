@@ -9,6 +9,7 @@ instruction to start a robot or as proof that a test has run.
 """
 
 from types import MappingProxyType
+from .robot_control_timing import INPUT_TTL_MS
 
 
 # Current automatic product flow, distinct from the retained DP0 inventory.
@@ -79,28 +80,28 @@ _ROWS = {
     'forward_motion': (
         'POST /v1/product/robot/physical/input', 'owned qualified session, fresh input and scoped floor clearance',
         'action=forward, sequence, expiry', 'PC receipt, worker acceptance and ROS publish result',
-        'encoder/odom forward displacement and final zero command', 'per-input 250 ms freshness; bounded hold/session',
+        'encoder/odom forward displacement and final zero command', f'per-input {INPUT_TTL_MS} ms freshness; bounded hold/session',
         'input/pipe/publish/encoder/odom journal and raw ROS', 'expected direction, no collision and independently confirmed stop',
         'zero command, torque OFF and original evidence export',
         'tests/integration/test_physical_controller.py#test_http_forward_input_reaches_fake_owned_pipe', None),
     'reverse_motion': (
         'POST /v1/product/robot/physical/input', 'owned qualified session, fresh input and scoped rear clearance',
         'action=backward, sequence, expiry', 'PC receipt, worker acceptance and ROS publish result',
-        'encoder/odom rear displacement and final zero command', 'per-input 250 ms freshness; bounded hold/session',
+        'encoder/odom rear displacement and final zero command', f'per-input {INPUT_TTL_MS} ms freshness; bounded hold/session',
         'input/pipe/publish/encoder/odom journal and raw ROS', 'expected direction, no collision and independently confirmed stop',
         'zero command, torque OFF and original evidence export',
         'tests/integration/test_physical_controller.py#test_http_reverse_input_reaches_fake_owned_pipe', None),
     'left_turn': (
         'POST /v1/product/robot/physical/input', 'owned qualified session, fresh input and scoped turn clearance',
         'action=left, sequence, expiry', 'PC receipt, worker acceptance and ROS publish result',
-        'encoder/odom counterclockwise yaw and final zero command', 'per-input 250 ms freshness; bounded hold/session',
+        'encoder/odom counterclockwise yaw and final zero command', f'per-input {INPUT_TTL_MS} ms freshness; bounded hold/session',
         'input/pipe/publish/encoder/odom journal and raw ROS', 'expected yaw sign, no collision and independently confirmed stop',
         'zero command, torque OFF and original evidence export',
         'tests/integration/test_physical_controller.py#test_http_left_input_reaches_fake_owned_pipe', None),
     'right_turn': (
         'POST /v1/product/robot/physical/input', 'owned qualified session, fresh input and scoped turn clearance',
         'action=right, sequence, expiry', 'PC receipt, worker acceptance and ROS publish result',
-        'encoder/odom clockwise yaw and final zero command', 'per-input 250 ms freshness; bounded hold/session',
+        'encoder/odom clockwise yaw and final zero command', f'per-input {INPUT_TTL_MS} ms freshness; bounded hold/session',
         'input/pipe/publish/encoder/odom journal and raw ROS', 'expected yaw sign, no collision and independently confirmed stop',
         'zero command, torque OFF and original evidence export',
         'tests/integration/test_physical_controller.py#test_http_right_input_reaches_fake_owned_pipe', None),

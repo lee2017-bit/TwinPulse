@@ -7,7 +7,9 @@ their explicit action. EOF/signals stop both owners and report observed cleanup.
 No shell, model code, client paths, parameter overrides or deployment accepted.
 """
 from copy import deepcopy
+from control_timing import INPUT_TTL_S, INPUT_TTL_MS
 from twinpulse_core.robot_lineage import checked_twin_context
+from twinpulse_core.robot_timing_profile import checked_profile as checked_timing_profile,values_of,digest as timing_digest
 import base64
 import hashlib
 import json
@@ -86,6 +88,8 @@ def checked_context(value):
     required={'schema',*IDENTITY,'binding_sha256','worker_sha256'}
     version2=isinstance(value,dict) and value.get('schema')=='physical-live-start-2.0'
     if version2:required.add('source_twin_context')
+    if isinstance(value,dict) and 'timing_profile' in value:
+        required.update({'timing_profile','timing_profile_sha256'})
     if not isinstance(value,dict) or set(value)!=required or value['schema'] not in {'physical-live-start-1.0','physical-live-start-2.0'}:
         raise ValueError('START_SHAPE')
     if any(not isinstance(value[k],str) or not re.fullmatch('[A-Za-z0-9_-]{1,100}',value[k]) for k in IDENTITY):
@@ -94,6 +98,9 @@ def checked_context(value):
     if any(not isinstance(value[k],str) or not re.fullmatch('[a-f0-9]{64}',value[k]) for k in ('binding_sha256','worker_sha256')):
         raise ValueError('START_DIGEST')
     if version2:checked_twin_context(value['source_twin_context'],project_id=value['project_id'])
+    if 'timing_profile' in value:
+        checked_timing_profile(value['timing_profile'],robot_id=value['robot_id'],binding_sha256=value['binding_sha256'])
+        if timing_digest(value['timing_profile'])!=value['timing_profile_sha256']:raise ValueError('START_TIMING_DIGEST')
     return deepcopy(value)
 
 
@@ -202,7 +209,7 @@ class FleetWorker:
             now=self.clock();issued=self.preparation_challenges.pop(p.get('challenge'),None)
             age=p.get('source_age_ms')
             if (issued is None or type(age) not in (int,float) or not math.isfinite(age)
-                    or not 0<=age<250 or not 0<=now-issued+age/1000<.25):
+                    or not 0<=age<values_of(self.context.get('timing_profile'))['input_ttl_ms'] or not 0<=now-issued+age/1000<values_of(self.context.get('timing_profile'))['input_ttl_ms']/1000):
                 raise ValueError('PREPARATION_PRESENCE_EXPIRED')
             self.emit('command',{'request_id':value['request_id'],'action':'watch','status':'COMPLETED',
                 'scope':presence_only+'_PRESENCE_ONLY_NO_MOTION_LEASE'})
@@ -253,7 +260,7 @@ class FleetWorker:
     def heartbeat(self):
         status=self.control.snapshot()
         if status['control_state']=='PREPARING' or status.get('maintenance_phase')=='CLEANUP':
-            now=self.clock();self.preparation_challenges={k:v for k,v in self.preparation_challenges.items() if now-v<.25}
+            now=self.clock();self.preparation_challenges={k:v for k,v in self.preparation_challenges.items() if now-v<values_of(self.context.get('timing_profile'))['input_ttl_ms']/1000}
             nonce=secrets.token_hex(12);self.preparation_challenges[nonce]=now;status['watch_challenge']=nonce
         if self.recording_failed:
             status['blockers']=status['blockers']+['RECORDING_INCOMPLETE'];status['drive_ready']=False
@@ -290,7 +297,14 @@ class FleetWorker:
                     try:self.command(value)
                     except Exception as exc:self.emit('fault',{'subsystem':'command','reason':reason_code(exc)})
                 if incoming.failed.is_set() and incoming.messages.empty():raise ValueError(incoming.reason)
-                if self.clock()-last>=.05:
+                # Large display/field receipts are not input leases. Keep the
+                # preparation/cleanup presence exchange at its original rate;
+                # otherwise avoid serializing full receipts at 20Hz alongside
+                # the separate 20Hz small input windows.
+                with self.control.lock:
+                    urgent=(self.control.state['control_state']=='PREPARING'
+                            or self.control.state.get('maintenance_phase')=='CLEANUP')
+                if self.clock()-last>=(.05 if urgent else .1):
                     self.emit('heartbeat',self.heartbeat());last=self.clock()
                 self.cancel.wait(.01)
         except Exception as exc:fault=reason_code(exc)

@@ -78,6 +78,9 @@ class FleetRuntime:
         self.snapshot_capture_pending=False;self.model_generation=0
         self.planner=None;self.frame_scan=None;self.navigation_geometry_epoch=0
         self.sensor_sections={};self.sensor_geometry_epoch=-1
+        self.host_timing={}
+        self.navigation_scene=None;self.navigation_scene_epoch=None
+        self.scene_produced_at=None
 
     def _navigation_scene(self,stage):
         from pxr import UsdGeom,Usd
@@ -118,7 +121,15 @@ class FleetRuntime:
             navigation=dict(request_id=task['task_id'],state='PLANNING',target_kind=task['target_kind'],reason=None)
             robot['navigation']=navigation;robot['navigation_index']=0;robot['navigation_geometry_epoch']=self.navigation_geometry_epoch
             try:
-                targets,bounds,boxes=self._navigation_scene(stage)
+                # _refresh_bounds already copied current USD geometry on this
+                # update. A goal must not traverse USD again on Kit's thread.
+                # The epoch check below still invalidates a changed scene.
+                scene=self.navigation_scene
+                if scene is None or self.navigation_scene_epoch!=(self.identity,self.navigation_geometry_epoch):
+                    raise ValueError('NAVIGATION_SCENE_GEOMETRY_UNAVAILABLE')
+                targets,bounds,boxes=scene['targets'],scene['bounds'],scene['obstacles']
+                if not any(target['kind']==task['target_kind'] for target in targets):
+                    raise ValueError('NAVIGATION_TARGET_MISSING')
                 discs=[(*other['pose'][:2],.105) for key,other in self.robots.items() if key!=identity]
                 if self.planner is None:
                     from concurrent.futures import ThreadPoolExecutor
@@ -185,6 +196,13 @@ class FleetRuntime:
             boxes=self._bounds(stage)
             if not self.bounds_watch and boxes!=self.obstacles:self.navigation_geometry_epoch+=1
             self.obstacles=boxes;self.scan_at=now;self.bounds_dirty=False;self.bounds_rebuilds+=1
+        key=(self.identity,self.navigation_geometry_epoch)
+        if self.navigation_scene_epoch!=key:
+            self.navigation_scene=None;self.navigation_scene_epoch=key
+            try:
+                targets,bounds,boxes=self._navigation_scene(stage)
+                self.navigation_scene=dict(epoch=self.navigation_geometry_epoch,targets=targets,bounds=bounds,obstacles=boxes)
+            except ValueError:pass # Missing geometry cannot authorize a route.
 
     def receive(self,value,received_at=None):
         self.desired=value;self.received_at=time.monotonic() if received_at is None else received_at
@@ -230,6 +248,7 @@ class FleetRuntime:
         identity=(snapshot.engine_session_id,snapshot.stage_epoch,snapshot.applied_revision)
         if identity!=self.identity:
             self.identity=identity;self.robots={};self.report=[];self.anchors=[];self.desired=None
+            self.navigation_scene=None;self.navigation_scene_epoch=None;self.scene_produced_at=None
             if stage.GetPrimAtPath(self.ROOT):stage.RemovePrim(self.ROOT)
             self._watch_environment(stage)
         fleet=self.desired
@@ -237,6 +256,7 @@ class FleetRuntime:
         if not stage.GetPrimAtPath('/World/TwinPulse'):return
         bounds_started=time.monotonic();self._refresh_bounds(stage,now)
         bounds_elapsed=max(0.,time.monotonic()-bounds_started)
+        self.scene_produced_at=now
         rows=fleet['robots'];wanted={row['robot_id'] for row in rows}
         for identity in set(self.robots)-wanted:
             stage.RemovePrim(self.ROOT+'/Robot_'+identity);del self.robots[identity]
@@ -278,6 +298,7 @@ class FleetRuntime:
                 active_dt=0.
                 robot.update(motion_epoch=request['motion_epoch'],reason=None,task=None,travel=0.,intent_sequence=None,
                              last_intent=None,stale_intent_sequence=None,intent_active_since=None,warm_rejected_task=None)
+                robot.pop('first_fault',None)
             intent=bind_intent(robot,request.get('intent'),time.time()*1000,received_at=self.received_at,now=now)
             task=request.get('task');direction=None;reason=robot['reason']
             if not robot.get('startup_ready',False):
@@ -307,6 +328,7 @@ class FleetRuntime:
                 if reason not in {'ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE'}:
                     robot.update(task=task['task_id'],travel=0.,reason=None);reason=None
                 active_dt=0.
+            navigation_started=time.monotonic()
             if (dt>=.5 or time.monotonic()-now>=.5) and (intent or task):reason='ISAAC_UPDATE_STALLED'
             if not robot.get('startup_ready',False):
                 # No buffering, renewal or later replay of premature commands.
@@ -327,6 +349,7 @@ class FleetRuntime:
                         if active_dt<.5:
                             active_dt=min(active_dt,max(0.,now-robot['intent_active_since']))
             elif now-self.received_at>=.5 and (intent or task):reason='ISAAC_TRANSPORT_STALE'
+            navigation_elapsed=max(0.,time.monotonic()-navigation_started)
             if direction and time.monotonic()-self.received_at>=.5:
                 reason='ISAAC_TRANSPORT_STALE';direction=None
             substeps=0;integrated_s=0.
@@ -343,12 +366,25 @@ class FleetRuntime:
                 elif task and task.get('kind')!='navigate' and robot['travel']>=task['amount']-1e-12:reason='TASK_COMPLETED'
             if reason=='INPUT_STALE' and robot.get('stale_intent_sequence') is None:
                 robot['stale_intent_sequence']=robot.get('intent_sequence')
+            work=dict(bounds_s=round(bounds_elapsed,6),model_authoring_s=round(model_elapsed,6),bounds_rebuilds=self.bounds_rebuilds,
+                scan_s=round(robot.get('scan_compute_s',0.),6),scan_error=robot.get('scan_error'),
+                navigation_s=round(navigation_elapsed,6),update_s=round(time.monotonic()-now,6),host=dict(self.host_timing))
+            if reason in {'ISAAC_UPDATE_STALLED','ISAAC_TRANSPORT_STALE'} and not robot.get('first_fault'):
+                # The report is latest-only, but the FIRST trigger is immutable
+                # for this motion epoch. A later 32ms update must not overwrite
+                # the original 500ms gap and its preceding work.
+                from copy import deepcopy
+                robot['first_fault']=dict(schema='fleet-first-fault-1.0',reason=reason,
+                    observed_monotonic_s=now,observed_at_ms=time.time()*1000,elapsed_s=dt,
+                    current_work=deepcopy(work),previous_work=deepcopy(robot.get('previous_work')),
+                    motion_epoch=request['motion_epoch'],task_id=task.get('task_id') if task else None)
             robot['reason']=reason
             placement=UsdGeom.Xform(stage.GetPrimAtPath(path));ops=placement.GetOrderedXformOps()
             ops[0].Set(Gf.Vec3d(robot['pose'][0],robot['pose'][1],0.));ops[1].Set(math.degrees(robot['pose'][2]))
             # Read authored USD transform back: telemetry reflects the actual scene.
             matrix=placement.ComputeLocalToWorldTransform(0);p=matrix.ExtractTranslation()
             measured=[float(p[0]),float(p[1]),math.radians(float(ops[1].Get()))]
+            scan_elapsed=0.
             if request['lidar'] and now-robot['scan_at']>=.2:
                 from twinpulse_app.lidar_scene_geometry import sensor_pose,scene_section
                 scan_started=time.monotonic();scan_stamp=time.time()*1000
@@ -367,14 +403,16 @@ class FleetRuntime:
                 except ValueError as exc:
                     robot['scan']=None;robot['scan_error']=str(exc)
                 robot['scan_at']=now;robot['scan_compute_s']=time.monotonic()-scan_started
+                scan_elapsed=robot['scan_compute_s']
             if not request['lidar']:robot['scan']=None
+            work.update(scan_s=round(scan_elapsed,6),scan_error=robot.get('scan_error'),update_s=round(time.monotonic()-now,6))
+            robot['previous_work']=work
             report.append(dict(robot_id=identity,connection_epoch=robot['epoch'],motion_epoch=robot['motion_epoch'],
                 sequence=self.sequence,position_m=measured,scan=robot['scan'],reason=reason,task_id=robot['task'],
                 runtime_timing=dict(elapsed_s=round(dt,6),integrated_s=round(integrated_s,6),substeps=substeps),
                 runtime_startup=dict(model_authored=True,render_observed=robot.get('render_observed',False),
                     snapshot_capture_pending=self.snapshot_capture_pending,post_author_updates=robot.get('startup_samples',0),ready=robot.get('startup_ready',False)),
-                    runtime_work=dict(bounds_s=round(bounds_elapsed,6),model_authoring_s=round(model_elapsed,6),bounds_rebuilds=self.bounds_rebuilds,
-                        scan_s=round(robot.get('scan_compute_s',0.),6),scan_error=robot.get('scan_error')),
+                runtime_work=work,runtime_fault=robot.get('first_fault'),
                 navigation=dict(robot['navigation']) if robot.get('navigation') else None,
                 intent_sequence=robot.get('stale_intent_sequence') if reason=='INPUT_STALE' else robot.get('intent_sequence')))
             robot['selected']=request.get('selected',False)

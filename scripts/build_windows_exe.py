@@ -54,6 +54,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--channel', choices=['development', 'sim-alpha', 'robot-observation'], default='sim-alpha')
+    parser.add_argument('--package-only',action='store_true',help='Build the verified local package without a redundant distribution ZIP.')
     parser.add_argument('--reuse-desktop-from',type=Path,
         help='Verified immutable prior package with identical desktop sources; same-volume hard links only.')
     args = parser.parse_args()
@@ -62,6 +63,15 @@ def main():
         raise ValueError('BUILD_OUTPUT_ALREADY_EXISTS')
     if version('PyInstaller') != '6.22.3' or version('Pillow') != '12.3.0':
         raise ValueError('BUILD_TOOL_VERSION_MISMATCH')
+    # A pre-existing dist can be older than the very sources copied below.
+    # Always regenerate with the already-installed locked tools; never install
+    # packages implicitly and never package stale UI after a source-only edit.
+    web = ROOT / 'apps/twinpulse-web'
+    suffix = '.cmd' if os.name == 'nt' else ''
+    for tool, arguments in (('tsc', ['-b']), ('vite', ['build'])):
+        executable=web/'node_modules/.bin'/(tool+suffix)
+        if not executable.is_file():raise ValueError('BUILD_WEB_TOOLING_MISSING')
+        subprocess.run([str(executable), *arguments],cwd=web,check=True)
     web_dist = ROOT / 'apps/twinpulse-web/dist'
     assets = ROOT / 'assets/simulation/turtlebot3_burger/usd'
     if not (web_dist / 'index.html').is_file() or not list((web_dist / 'assets').glob('*.js')):
@@ -115,7 +125,8 @@ def main():
                     visited.add(filename); pending.append(filename); copy('scripts/' + filename)
     for source in (ROOT / 'packages/twinpulse_robot_safety').rglob('*'):
         if (source.is_file() and not any(part in {'build', 'checks', '__pycache__'} for part in source.parts)
-                and source.suffix in {'.py', '.json', '.cpp', '.hpp', '.txt', '.patch', '.md', '.sh'}):
+                and (source.suffix in {'.py', '.json', '.cpp', '.hpp', '.txt', '.patch', '.md', '.sh','.xml'}
+                     or source.name in {'LICENSE','NOTICE'})):
             copy(source.relative_to(ROOT).as_posix())
     for source in web_dist.rglob('*'):
         if source.is_file():
@@ -212,6 +223,9 @@ def main():
     if desktop.get('source_build_id'):
         manifest['desktop_reused_from']=desktop['source_build_id']
     (package / 'windows-release-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    if args.package_only:
+        print(json.dumps({'package':str(package),'zip':None,'sha256':None,'build_id':build_id,'archive_status':'NOT_REQUESTED_LOCAL_PACKAGE_ONLY'}))
+        return
     archive = output / ('TwinPulse-Windows-x64-' + manifest['release_version'] + '-' + build_id + '.zip')
     with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as zipfile_out:
         for path in sorted(package.rglob('*')):

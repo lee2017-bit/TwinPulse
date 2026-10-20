@@ -32,6 +32,21 @@ def _checked_box(box):
             and box[0]<box[2] and box[1]<box[3])
 
 
+def checked_scene_geometry(value):
+    """Copied current USD geometry, usable for planning, not physical truth."""
+    from copy import deepcopy
+    if (not isinstance(value,dict) or set(value)!={'epoch','targets','bounds','obstacles'}
+            or type(value['epoch']) is not int or value['epoch']<0 or not _checked_box(value['bounds'])
+            or not isinstance(value['targets'],list) or len(value['targets'])>128
+            or not isinstance(value['obstacles'],list) or len(value['obstacles'])>128
+            or any(not _checked_box(b) for b in value['obstacles'])):return None
+    for target in value['targets']:
+        if (not isinstance(target,dict) or set(target)!={'id','kind','label','bounds'}
+                or any(not isinstance(target[k],str) or len(target[k])>160 for k in ('id','kind','label'))
+                or not _checked_box(target['bounds'])):return None
+    return deepcopy(value)
+
+
 def approach_plan(start,kind,targets,bounds,obstacles,discs=()):
     """Nearest semantic object, reachable exterior standoff, exact goal endpoint.
 

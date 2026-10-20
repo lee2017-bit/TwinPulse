@@ -18,6 +18,7 @@ import time
 from uuid import uuid4
 
 from .command_broker import BrokerError
+from twinpulse_core.robot_control_timing import INPUT_TTL_MS
 
 
 class ChatRobotPreparation:
@@ -310,10 +311,10 @@ class ChatRobotPreparation:
                     if not state['busy']:continue
                     if state.get('state') in {'FINISHED','STOPPING','FAILED','CONNECTION_LOST','REJECTED'}:continue
                     if state['state'] == 'READY' and not sent:
-                        self.controller.input(self.owner, state['job_id'], state['sequence']+1, 'qualify', self.wall()+250)
+                        self.controller.input(self.owner, state['job_id'], state['sequence']+1, 'qualify', self.wall()+INPUT_TTL_MS)
                         sent = True
                     else:
-                        self.controller.input(self.owner, state['job_id'], state['sequence']+1, 'watch', self.wall()+250)
+                        self.controller.input(self.owner, state['job_id'], state['sequence']+1, 'watch', self.wall()+INPUT_TTL_MS)
                 if sent:self._set(stage='BOUNDED_FORWARD_AND_STOP')
                 self.cancelled.wait(.1)
             trial = state.get('last_trial')
@@ -410,7 +411,7 @@ class ChatRobotPreparation:
             state = self.controller.snapshot(owner) if self.controller else {}
             if state.get('busy') and state.get('owned'):
                 return self.controller.input(owner, state['job_id'], state['sequence']+1,
-                    'force_stop' if force else 'finish_stop', self.wall()+250)
+                    'force_stop' if force else 'finish_stop', self.wall()+INPUT_TTL_MS)
         if owner == self.owner:self._set(state='STOPPED', code='NO_ACTIVE_MOTION_WORKER')
         return {'state':'NO_ACTIVE_MOTION_WORKER', 'stop_confirmed':False}
 

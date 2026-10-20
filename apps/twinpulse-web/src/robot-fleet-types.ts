@@ -53,15 +53,19 @@ export type RobotFleetRobot = {
   sensor_frame?:Record<string,unknown>|null;
   telemetry_diagnostic?:Record<string,unknown>|null;
   timing_policy?:Record<string,unknown>|null;
+  timing_values?:Record<string,number>|null;
+  timing_profile_sha256?:string|null;
+  output_timing?:{schema:string;output_timeout_ms:number}|null;
+  odom_interval?:{previous_sample_s:number;sample_s:number;interval_s:number;limit_s:number;reason:string}|null;
   field_evidence?:Record<string,unknown>|null;
   native_diagnostic?:Record<string,unknown>|null;
-  setup?:{runtime_state:string;blockers:string[];profile:Record<string,unknown>|null;qualification:Record<string,unknown>|null;binding_sha256?:string};
+  setup?:{runtime_state:string;blockers:string[];profile:Record<string,unknown>|null;qualification:Record<string,unknown>|null;binding_sha256?:string;maintenance_phase?:string|null;output_guard_build?:Record<string,unknown>|null};
   field?:RobotFieldState;
   capabilities:{drive:boolean;lidar:boolean;read_only_connection?:boolean;prepare?:boolean;qualify?:boolean;profile?:boolean};
   scan:{points:[number,number][];source:string;height_m?:number;captured_at_ms?:number;complete?:boolean;frame_id?:string;frame_sequence?:number;raw_sha256?:string;
     point_frame?:'sensor_local';sensor_xy_yaw_world?:[number,number,number]|null;sensor_frame?:string|null;geometry?:Record<string,unknown>|null}|null;
   scan_receipt?:{age_ms:number;age_basis:string;frame_id:string;aligned:false}|null;
-  command?:{request_id:string;text:string;kind:'finite'|'navigate';state:'ACCEPTED'|'PLANNING'|'RUNNING'|'ARRIVED'|'COMPLETED'|'CANCELLED'|'FAILED';
+  command?:{request_id:string;text:string;kind:'finite'|'navigate';state:'ACCEPTED'|'PLANNING'|'RUNNING'|'ARRIVED'|'ESTIMATE_REACHED'|'COMPLETED'|'CANCELLED'|'FAILED';
     target_kind?:string;target_label?:string;target_id?:string;goal_xy?:[number,number];waypoints?:[number,number][];remaining_m?:number;reason?:string|null}|null;
 };
 export type RobotFleetState = {

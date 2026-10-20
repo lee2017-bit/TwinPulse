@@ -369,7 +369,7 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-fleet-register { border-top:1px solid #c6d5df; padding-top:6px; margin-top:6px; color:#203e4a; }
 .robot-fleet summary { cursor:pointer; padding:5px 0; color:#203e4a; }
 .robot-fleet form { display:grid; gap:8px; margin:8px 0; }
-.robot-fleet label { display:grid; gap:4px; font-size:.77rem; min-width:0; }
+.robot-fleet label { display:grid; gap:4px; font-size:.77rem; min-width:0; margin:0; }
 .robot-fleet input { min-width:0; width:100%; box-sizing:border-box; padding:7px; border:1px solid var(--line,#d7e1e5); border-radius:6px; }
 .robot-fleet-position { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
 .robot-fleet-drawer { position:static; width:100%; min-width:0; box-sizing:border-box; border-top:1px solid var(--line,#d7e1e5); background:#fff; padding:6px 0 0; margin-top:5px; }
@@ -476,8 +476,8 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-lidar-overlay circle { fill:#07aeb4; opacity:.78; }
 .robot-lidar-overlay line { stroke:#07aeb4; stroke-width:.8; opacity:.18; }
 .twin-scan-toolbar { flex:0 0 30px; height:30px; display:flex; gap:8px; align-items:center; overflow:hidden; font-size:10px; }
-.twin-scan-toolbar label { flex:0 0 auto; display:flex; align-items:center; gap:4px; }
-.twin-scan-toolbar select { width:auto; height:24px; padding:1px 4px; font-size:10px; }
+.twin-scan-toolbar label { flex:0 0 auto; display:flex; align-items:center; gap:4px; margin:0; }
+.twin-scan-toolbar select { width:auto; height:24px; padding:1px 4px; font-size:10px; margin:0; }
 .twin-scan-toolbar span { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .key-settings-panel.lidar-review-panel { color:#203e4a; background:#fff; width:min(820px,94vw); max-height:90dvh; overflow:auto; }
 .lidar-review-panel>header { display:flex; align-items:center; gap:8px; position:sticky; top:0; background:#fff; z-index:1; }
@@ -493,6 +493,7 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .is-control-view .robot-fleet-notices { height:60px; min-height:60px; max-height:60px; overflow:auto; }
 .is-control-view .robot-fleet-notices:empty { display:block; }
 .robot-fleet .robot-fleet-control-primary>.robot-fleet-command { grid-template-columns:minmax(0,1fr) auto; }
+.robot-fleet .robot-fleet-control-primary>.robot-fleet-command label { margin:0; }
 .robot-fleet-command label { grid-column:1; grid-row:1; }
 .robot-fleet-command>button { grid-column:2; grid-row:1; align-self:end; white-space:nowrap; }
 .robot-command-receipt { grid-column:1/-1; grid-row:2; display:block; height:43px; overflow:auto; font-size:10px; line-height:1.3; border-left:2px solid #0d7567; padding-left:5px; overflow-wrap:anywhere; }
@@ -510,3 +511,29 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-anchor-status.fresh { background:#189565; }
 .chat-workspace .robot-anchor-badge small, .robot-anchor-badge small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px; line-height:1.15; margin-top:2px; }
 @media(max-width:600px) { .robot-fleet { padding:9px; }.chat-workspace .robot-fleet button, .robot-fleet button { min-height:42px; }.robot-fleet-list { max-height:155px; } }
+
+/* Keep real status/command rows separate; long notices must scroll within
+   their own reserved row, never paint over the destination result. */
+.robot-fleet-actions button,.robot-fleet-detail-tools>button { white-space:nowrap; overflow-wrap:normal; word-break:normal; }
+.robot-fleet-notices { min-width:0; overflow-wrap:anywhere; }
+.robot-command-receipt { box-sizing:border-box; min-width:0; }
+.lidar-display-help { flex:0 0 auto; position:relative; font-size:11px; }
+.lidar-display-help>summary { cursor:pointer; white-space:nowrap; }
+.lidar-display-help[open] { flex-basis:100%; }
+.lidar-display-help p { white-space:normal; margin:4px 0; }
+.twin-scan-toolbar { flex:0 0 auto; height:auto; min-height:30px; flex-wrap:wrap; overflow:visible; }
+.twin-scan-toolbar>span { flex:1 1 180px; white-space:normal; overflow:visible; }
+@media(max-height:850px) and (min-width:1151px) {
+  .is-control-view .robot-fleet.has-controls { height:216px; max-height:216px; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-drawer { grid-template-rows:32px 16px 90px 28px minmax(28px,1fr); }
+  .is-control-view .robot-fleet-notices { height:28px; min-height:28px; max-height:28px; }
+}
+@media(max-width:1150px) {
+  .is-control-view .robot-fleet.has-controls { display:block; height:270px; max-height:270px; overflow:auto; }
+  .is-control-view .robot-fleet.has-controls:not(.is-expanded)>.robot-fleet-list { display:none; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-list { max-height:96px; }
+  .is-control-view .robot-fleet.has-controls>.robot-fleet-drawer { display:flex; flex-direction:column; gap:3px; border-left:0; padding:3px 0 0; }
+  .is-control-view .robot-fleet-notices { height:28px; min-height:28px; max-height:28px; order:4; }
+  .is-control-view .robot-fleet-control-primary { grid-template-columns:110px minmax(0,1fr); }
+  .is-control-view .robot-fleet-detail-tools { order:5; flex:0 0 24px; }
+}

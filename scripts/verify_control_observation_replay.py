@@ -12,8 +12,9 @@ from types import SimpleNamespace
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety'))
+sys.path.insert(0,str(ROOT/'packages/twinpulse_core/src'))
 from native_stream import NativeDecoder,NativeStream
-from field_tests import control_observation,FieldGuard
+from field_tests import control_observation,tracking_observation,FieldGuard
 
 
 def main():
@@ -35,6 +36,10 @@ def main():
                 row.update(observation='CURRENT_STRICT' if partial is None else 'LAST_STRICT_ORIGINAL_AGE_WITH_CURRENT_STOP_VETO',
                     used_frame=selected['frame_sequence'],used_age_s=now[0]-selected['timing']['receipt_end_s'])
             except ValueError as exc:row.update(observation='REJECTED',reason=str(exc))
+            try:
+                observation=tracking_observation(self,config,now[0])
+                row['tracking_input']='COMPLETE_ONLY' if observation is not None else 'SKIPPED_UNKNOWN_NO_POSE_TIME_RENEWAL'
+            except ValueError as exc:row['tracking_input']='REJECTED:'+str(exc)
             for name,v,w in [('forward',.03,0),('backward',-.03,0),('left',0,.2),('right',0,-.2)]:
                 link=SimpleNamespace(sensor_t=now[0],sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
                 guard=FieldGuard(config,self,link,lambda:True,clock=lambda:now[0])
@@ -53,10 +58,13 @@ def main():
     sources={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in (
         'packages/twinpulse_robot_safety/native_stream.py','packages/twinpulse_robot_safety/field_tests.py','packages/twinpulse_robot_safety/fleet_control.py')}
     result=dict(schema='control-observation-replay-1.0',classification='OFFLINE_SAVED_INPUT_NOT_PI_OR_PHYSICAL_ACCEPTANCE',
-        status='PASS' if len(rows)==6081 and len(incomplete)==202 and len(held)==201 and decoder.errors==0 else 'FAIL',
+        status='PASS' if (len(rows)==6081 and len(incomplete)==202 and len(held)==201 and decoder.errors==0
+            and sum(r['tracking_input']=='SKIPPED_UNKNOWN_NO_POSE_TIME_RENEWAL' for r in rows)==201
+            and not any(not r['raw_complete'] and r['tracking_input']=='COMPLETE_ONLY' for r in rows)) else 'FAIL',
         raw_sha256=sha,raw_bytes=len(raw),chunks=len(chunks),frames=len(rows),strict_incomplete=len(incomplete),
         unknown_bytes=decoder.noise_bytes,checksum_errors=decoder.errors,pending_bytes=len(decoder.buffer),
         retained_complete_observations=len(held),rejected_incomplete=[r for r in incomplete if r not in held],
+        tracking_inputs=dict(collections.Counter(r['tracking_input'] for r in rows)),
         held_age_max_ms=max((r['used_age_s'] for r in held),default=0)*1000,
         held_age_mean_ms=statistics.mean(r['used_age_s'] for r in held)*1000 if held else None,
         directions=dict(directions),rows=rows,source_sha256=sources,elapsed_s=time.perf_counter()-began,

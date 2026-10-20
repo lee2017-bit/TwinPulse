@@ -19,6 +19,7 @@ from field_tests import checked_config, digest, frame_points, register_pair, Fie
 from native_stream import NativeDecoder, NativeStream
 from fleet_control import RobotControl
 from fleet_worker import checked_command, SOURCE_MEMBERS
+from control_timing import INPUT_TTL_S
 
 
 def config():
@@ -57,7 +58,7 @@ class FieldTests(unittest.TestCase):
         link=SimpleNamespace(sensor=SimpleNamespace(left_encoder=0,right_encoder=0),sensor_t=1.)
         guard=FieldGuard(config(),native,link,lambda:True,clock=lambda:now[0])
         guard(.03,0.,1.);self.assertEqual(guard.last_result['acquisition_timing'],'UNQUALIFIED')
-        for v,w,stamp,reason in [(.05,0,1.,'SPEED_CAP'),(.03,0,.7,'ORIGINAL_INPUT')]:
+        for v,w,stamp,reason in [(.05,0,1.,'SPEED_CAP'),(.03,0,1.-INPUT_TTL_S-.001,'ORIGINAL_INPUT')]:
             with self.assertRaisesRegex(ValueError,reason):guard(v,w,stamp)
         frame['beams'][0]['distance_m']=.20
         with self.assertRaisesRegex(ValueError,'PROXIMITY'):guard(.03,0.,1.)
@@ -146,7 +147,7 @@ class FieldTests(unittest.TestCase):
         order=[];owner=RobotControl({},'.',lambda *_:None,SimpleNamespace())
         owner.field_trial=dict(status='RUNNING',case='stationary')
         with self.assertRaisesRegex(ValueError,'COLLECTION_ACTIVE'):
-            owner._command(dict(action='drive',payload={}))
+            owner._command(dict(action='drive',payload=dict(motion_generation=owner.gate.generation)))
         owner.field_trial=dict(status='RUNNING',case='forward',publications=1,trial_id='x')
         owner.link=SimpleNamespace(enabled=True,sensor=SimpleNamespace(torque=True),release=lambda:order.append('ZERO_OFF'))
         def failed(*_):order.append('RECORD');raise OSError('FULL')
@@ -179,6 +180,7 @@ class FieldTests(unittest.TestCase):
                     owner._field_bootstrap(c)
                 persist(owner)
                 self.assertEqual(qualify.call_args.kwargs['supervised_field_speed'],.03)
+                self.assertIs(qualify.call_args.kwargs['post_arm_watch'],True)
                 if passed:
                     self.assertEqual(owner.field_receipt['scope'],'FORWARD_WHEEL_WATCHDOG_OBSERVATION_ONLY')
                     self.assertEqual(owner.field_receipt['angular_stopping'],'NOT_MEASURED')
@@ -187,6 +189,40 @@ class FieldTests(unittest.TestCase):
                     self.assertIsNone(owner.field_receipt);self.assertEqual(owner.field_until,0.)
             self.assertTrue(owner.field_writer.close()['complete'])
             self.assertFalse((Path(tmp)/'qualification.json').exists())
+
+    def test_actual_bootstrap_incoming_discards_prearm_generation_but_keeps_stop(self):
+        for interrupt in (False,True):
+            with self.subTest(interrupt=interrupt),tempfile.TemporaryDirectory() as tmp:
+                now=[1.];events=[]
+                owner=RobotControl(dict(robot_id='b'*32,binding_sha256='a'*64),tmp,
+                    lambda kind,data:events.append((kind,data)),SimpleNamespace(latest_frame=lambda:ring()),clock=lambda:now[0])
+                owner.field_config=config();owner.field_mode=True;owner.field_until=10.
+                owner.link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+                owner._install_guard();owner._cleanup=lambda:dict(cleanup_confirmed=True)
+                owner.field_trial=dict(trial_id='arm-'+str(interrupt),case='bootstrap_stop',status='RUNNING')
+                c=dict(action='field_test',request_id='trial',sequence=1,payload=dict(case='bootstrap_stop',confirmed=True,
+                    challenge=owner.gate.challenge(),source_age_ms=0,motion_generation=owner.gate.generation))
+                def protocol(link,incoming,output,gate,clock,**kw):
+                    prior=gate.generation;gate.suspend_for_arm()
+                    owner.queue.put(dict(action='watch',request_id='old',sequence=2,payload=dict(motion_generation=prior)))
+                    self.assertIsNone(incoming.receive())
+                    self.assertFalse(gate.active)
+                    if interrupt:
+                        owner.queue.put(dict(action='stop',request_id='stop',sequence=3,payload={}))
+                        incoming.receive()
+                        self.fail('Stop must interrupt the bootstrap before output')
+                    output(dict(challenge=gate.challenge()))
+                    owner.queue.put(dict(action='watch',request_id='new',sequence=3,payload=dict(
+                        motion_generation=gate.generation,challenge=owner.state['watch_challenge'],source_age_ms=0)))
+                    packet=incoming.receive();gate.accept(packet)
+                    self.assertEqual(gate.sequence,3)
+                    return dict(status='STOP_POLICY_FAIL')  # Not hardware qualification.
+                with patch('teleop_worker.qualify',side_effect=protocol):owner._field_bootstrap(c)
+                persist(owner)
+                self.assertTrue(any(data.get('request_id')=='old' and data.get('status')=='REJECTED' for _,data in events))
+                self.assertIsNone(owner.field_receipt)
+                if interrupt:self.assertEqual(owner.field_trial['result']['receipt']['observed']['reason'],'FIELD_BOOTSTRAP_INTERRUPTED')
+                self.assertTrue(owner.field_writer.close()['complete'])
 
     def test_motion_prerequisites_are_separate_and_no_restore_on_configuration(self):
         native=SimpleNamespace(latest_frame=lambda:ring(),snapshot=lambda:dict(lidar_state='STREAMING'))

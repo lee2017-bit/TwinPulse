@@ -43,6 +43,25 @@ class WindowsInstallTests(unittest.TestCase):
         (self.source/'TwinPulse.exe').write_bytes(b'bad')
         with self.assertRaises(ValueError):install_package(self.source,self.installed)
         self.assertEqual(active.read_bytes(),b'old')
+
+    def test_optional_desktop_reuse_shares_only_verified_identical_immutable_bytes(self):
+        from twinpulse_app.windows_package import verify_package
+        (self.source/'desktop').mkdir();data=b'verified-electron-fixture'
+        (self.source/'desktop/runtime.bin').write_bytes(data)
+        self.manifest['files'].append(dict(path='desktop/runtime.bin',bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        first=install_package(self.source,self.installed);old=Path(first['exe']).parent
+        self.manifest['build_id']='build_2';(self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        second=install_package(self.source,self.installed,reuse_desktop_from=old);new=Path(second['exe']).parent
+        self.assertEqual(second['verified_desktop_hardlinks'],1)
+        self.assertTrue(os.path.samefile(old/'desktop/runtime.bin',new/'desktop/runtime.bin'))
+        self.assertFalse(os.path.samefile(old/'TwinPulse.exe',new/'TwinPulse.exe'))
+        verify_package(old);verify_package(new)
+        self.manifest['build_id']='build_3';(self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        with patch('twinpulse_app.windows_install.os.link',side_effect=OSError('unsupported')):
+            fallback=install_package(self.source,self.installed,reuse_desktop_from=old)
+        self.assertEqual(fallback['verified_desktop_hardlinks'],0)
+        verify_package(Path(fallback['exe']).parent)
     def test_live_launch_is_not_overwritten(self):
         state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True)
         (state/'launcher.lock').write_text('owned')

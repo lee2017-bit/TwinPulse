@@ -3,6 +3,7 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import { useEffect, useRef, useState } from 'react';
 import type { TwinPulseApi } from './api';
+import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
 import { driveDirection, driveKeyBlocked } from './driveKeys';
 import { SessionHistory } from './SessionHistory';
 import type { RobotDiagnosticsState } from './RobotDiagnostics';
@@ -61,7 +62,7 @@ const reasons:Record<string,string>={
   SENSOR_COVERAGE_INVALID:'Stop measurement samples were insufficient or interrupted. Do not treat this as stopped.',
   OBSERVATION_INTERRUPTED_BY_TORQUE_OFF:'Motor OFF occurred before observation completed. Cleanup confirmation and stopping performance are separate.',
   INPUT_OR_SESSION_TIMEOUT:'Input or session time limit ended the connection. After confirming shutdown, reconnect with step 3 if needed.',
-  INPUT_DEADLINE_EXPIRED:'Fresh input did not arrive within 250 ms. Review connection latency and input records.',
+  INPUT_DEADLINE_EXPIRED:`Fresh input did not arrive within ${CONTROL_INPUT_TTL_MS} ms. Review original input age and delivery records.`,
   PROTOCOL_DELIVERY_STALLED:'Robot telemetry delivery stalled. Control ended; review protocol delivery timing and final cleanup.',
   PROTOCOL_WRITE_FAILED:'Robot telemetry transport failed. Review the robot original logs and final cleanup before reconnecting.',
   PROTOCOL_QUEUE_FULL:'Robot telemetry queue filled. Control ended rather than silently dropping evidence.',
@@ -255,7 +256,7 @@ export function PhysicalRobotController({api,backendReady=true,historyReady=back
     const pulse=setInterval(async()=>{
       const manual=manualSession(),now=performance.now(),gap=now-lastPulse;lastPulse=now;
       if(!manual&&pending.current||failed.current||!approvedSession.current)return;
-      if(manual&&held.current&&gap>250){stop(false);return;}
+      if(manual&&held.current&&gap>=CONTROL_INPUT_TTL_MS){stop(false);return;}
       if(!manual)pending.current=true;
       try {
         if(live.current.motion_lease_policy!=='fresh-intent-1.0'&&segmentPhase.current==='moving'&&held.current&&performance.now()-holdStarted.current>=1400){

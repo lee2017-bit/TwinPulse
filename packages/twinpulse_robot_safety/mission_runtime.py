@@ -265,7 +265,7 @@ def run_mission(link, incoming, output, request, *, record, consume, clock=time.
     """One mission consent, local decisions, automatic challenge heartbeat only.
 
     No per-direction approval. watch retains link liveness, not permission to
-    override a blocked mission. Existing 250ms input/60s session limits remain.
+    override a blocked mission. Configured input/60s session limits remain.
     The lower base command-expiry watchdog is still required for a stalled loop.
     A host Python loop is not an independently certified emergency-stop system.
     """

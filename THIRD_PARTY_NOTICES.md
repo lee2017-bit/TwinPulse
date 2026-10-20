@@ -4,6 +4,16 @@ TwinPulse's Apache-2.0 declaration covers its own code only. It does not replace
 
 ## ROBOTIS TurtleBot3 source and nominal assets
 
+The optional physical Prepare path now also includes the pinned node sources at
+`packages/twinpulse_robot_safety/guard_base`, from commit
+`90a68bd2e3c61c12966779da89d8eeaec82730e9`. Its unchanged upstream LICENSE,
+original file headers and separate NOTICE are preserved. TwinPulse modifications
+add the stamped final-output guard, disable the independent raw-input/heartbeat
+activation, stop output on exit and add the local guard include path. It builds
+an application-owned executable beside the old migration binary; it does not
+replace the user's ROS installation, firmware or default launch configuration.
+Compilation is not physical qualification or deployment approval.
+
 The SIM-alpha EXE uses the separately prepared, hash-pinned copy in `assets/simulation/turtlebot3_burger`. Its unchanged upstream `ROBOTIS-LICENSE` and `SOURCE.json` record source commit, URDF/mesh lineage, original/public USD hashes and prominent TwinPulse metadata-only modifications. It does not require the private/ignored local preparation folders below. Geometry/physics were compared with the preserved originals; no Isaac runtime, importer binary, model weights or NVIDIA asset packs are shipped. Historical offline assets retain their original records.
 
 - Origin: https://github.com/ROBOTIS-GIT/turtlebot3

@@ -81,6 +81,8 @@ class RobotRegistry:
     def __init__(self, state_root):
         self.path = Path(state_root) / 'robot-registry.json'
         self.lock = RLock()
+        from .robot_timing_store import RobotTimingStore
+        self.timing_store=RobotTimingStore(self.path.parent)
         self._migrate_candidate_battery_settings()
 
     def _battery_path(self,robot_id):
@@ -151,6 +153,11 @@ class RobotRegistry:
                 row.pop('credential_ref')
                 row['battery_display']=self._battery_config(row)
                 row['battery_display_sha256']=battery_display_sha256(row['battery_display'])
+                from .robot_adapters import instance_binding
+                try:row['timing_settings']=self.timing_store.read(row['id'],instance_binding(row)['sha256'])
+                except (ValueError,KeyError,OSError):
+                    row['timing_settings']=None
+                    row['timing_settings_error']='Saved adapter/binding or timing data needs review; no settings or authority restored.'
                 row.update(connection_state='unverified', motion_authorized=False)
             return value
 
@@ -258,6 +265,40 @@ class RobotRegistry:
             self._write_battery(robot_id,checked)
             self._publish_locked(value,expected_revision)
             return deepcopy(checked)
+
+    def timing_action(self,robot_id,*,expected_revision,expected_sha256,values=None,mode=None,measurement=None,operation_id=None,origin=None,
+                      recalculate=False,expected_recommendation_sha256=None):
+        from .robot_adapters import instance_binding
+        with self.lock,self._writer():
+            value=self._read()
+            if type(expected_revision) is not int or expected_revision!=value['revision']:raise ValueError('ROBOT_REGISTRY_CHANGED')
+            row=next((r for r in value['robots'] if r['id']==robot_id),None)
+            if row is None:raise ValueError('ROBOT_NOT_REGISTERED')
+            binding=instance_binding(row)
+            current=self.timing_store.read(robot_id,binding['sha256'])
+            if current['profile_sha256']!=expected_sha256:raise ValueError('ROBOT_REGISTRY_CHANGED')
+            if recalculate:
+                result=self.timing_store.recalculate(robot_id,binding['sha256'])
+            elif measurement is not None:
+                result=self.timing_store.record(robot_id,binding['sha256'],operation_id,measurement,origin=origin)
+            else:
+                result=self.timing_store.edit(robot_id,binding['sha256'],values,mode,expected_sha256,expected_recommendation_sha256)
+            self._publish_locked(value,expected_revision)
+            return result
+
+    def record_timing_measurement(self,robot_id,binding_sha256,operation_id,measurement):
+        from .robot_adapters import instance_binding
+        # Cleanup can be joined while the pool entry lock is held. A simultaneous
+        # UI selection holds registry.lock while checking that entry. Do not
+        # create entry -> reader -> registry -> entry inversion. The cross-
+        # process writer lock and revision CAS still serialize atomic publishes;
+        # there is no shared mutable in-memory registry state to protect here.
+        with self._writer():
+            value=self._read();row=next((r for r in value['robots'] if r['id']==robot_id),None)
+            if row is None or instance_binding(row)['sha256']!=binding_sha256:raise ValueError('TIMING_BINDING_CHANGED')
+            result=self.timing_store.record(robot_id,binding_sha256,operation_id,measurement,origin='AUTHENTICATED_SESSION_PASSIVE_SOFTWARE_TIMING')
+            self._publish_locked(value,value['revision'])
+            return result
 
 
 def enumerate_windows_devices():

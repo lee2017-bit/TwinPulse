@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import unittest
 
 ROOT=Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(ROOT/'packages/twinpulse_core/src'))
 sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety'))
 sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety/tests'))
-from field_tests import control_observation,frame_points,FieldGuard
+from field_tests import control_observation,tracking_observation,frame_points,FieldGuard,NativeTracker
 from native_stream import NativeDecoder,NativeStream,freeze_frame
 from test_field_tests import ring,config
 from test_native_parser_quality import packet,UNKNOWN
@@ -28,6 +29,44 @@ def pair():
 
 
 class ControlObservationTests(unittest.TestCase):
+    def test_tracker_continues_same_epoch_over_skipped_ring_without_pose_time_renewal(self):
+        import threading
+        partial,previous=pair();partial['frame_sequence']=3;previous['frame_sequence']=2
+        first=ring(.9);first.update(stream_id='stream',frame_sequence=1)
+        last=ring(1.2);last.update(stream_id='stream',frame_sequence=4)
+        frames=[first,previous,partial,last];index=[-1];observed=[];fits=[]
+        tracker=NativeTracker.__new__(NativeTracker)
+        from twinpulse_core.robot_timing_profile import values_of
+        tracker.timing_values=values_of()
+        class Cancel:
+            def wait(_self,_):
+                observed.append(deepcopy(tracker.result));index[0]+=1
+                return index[0]>=len(frames)
+            def is_set(_self):return False
+        tracker.cancel=Cancel();tracker.lock=threading.Lock();tracker.config=config();tracker.epoch='initial'
+        tracker.result={'status':'WAITING'};tracker.compute_timing={}
+        tracker.native=SimpleNamespace(latest_frame=lambda:frames[index[0]],
+            control_frames=lambda:(partial,previous))
+        tracker.clock=lambda:frames[index[0]]['timing']['receipt_end_s']
+        def fit(a,b):fits.append((a,b));return dict(delta=[0.,0.,0.],independent=True,accuracy='UNQUALIFIED')
+        tracker._fit=fit;tracker._run()
+        self.assertEqual(len(fits),2)
+        self.assertEqual(observed[2]['epoch'],observed[3]['epoch'])
+        self.assertEqual(observed[2]['sample_s'],observed[3]['sample_s'])
+        self.assertEqual(observed[3]['frame_sequence'],2)
+        self.assertEqual(tracker.result['epoch'],observed[2]['epoch'])
+        self.assertEqual(tracker.result['frame_sequence'],4)
+
+    def test_tracking_skips_bounded_unknown_without_fabricating_points_or_renewing_pose(self):
+        latest,previous=pair();before=deepcopy((latest,previous))
+        native=SimpleNamespace(latest_frame=lambda:latest,control_frames=lambda:(latest,previous))
+        self.assertIsNone(tracking_observation(native,config(),1.1))
+        self.assertEqual((latest,previous),before)
+        self.assertEqual(tracking_observation(SimpleNamespace(latest_frame=lambda:previous),config(),1.1)[0],previous)
+        with self.assertRaisesRegex(ValueError,'STALE'):tracking_observation(native,config(),1.351)
+        latest['quality']['checksum_invalid_packets']=1
+        with self.assertRaisesRegex(ValueError,'COMPLETE'):tracking_observation(native,config(),1.1)
+
     def guard(self,latest,previous,now=1.1):
         native=SimpleNamespace(control_frames=lambda:(latest,previous))
         link=SimpleNamespace(sensor_t=now,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
@@ -118,7 +157,7 @@ class ControlObservationTests(unittest.TestCase):
         self.guard(latest,previous,.35)(.03,0,.35)
         with self.assertRaisesRegex(ValueError,'STALE'):self.guard(latest,previous,.350001)(.03,0,.350001)
         latest,previous=pair();now=[1.1];guard=self.guard(latest,previous);guard.clock=lambda:now[0]
-        guard._progress_check=lambda *_:now.__setitem__(0,1.36)
+        guard._progress_check=lambda *_:now.__setitem__(0,1.46)
         with self.assertRaisesRegex(ValueError,'EXPIRED|STALE'):guard(.03,0,1.1)
 
     def test_stream_disappearing_during_compute_revokes_instead_of_retiming(self):

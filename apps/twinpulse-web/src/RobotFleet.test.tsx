@@ -24,11 +24,21 @@ function setup(state=fleet(),custom?:(body:RobotFleetAction)=>Promise<RobotFleet
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
 describe('robot fleet controls (supplementary UI tests)',()=>{
+  it('shows one short preparation phase while retaining the original reason in help',()=>{
+    const r={...robot(),kind:'physical' as const,reason:'OLD_STOP_REASON',setup:{runtime_state:'PREPARING',blockers:['BUILDING_OUTPUT_GUARD'],profile:null,qualification:null,maintenance_phase:'BUILDING_OUTPUT_GUARD'}};
+    setup(fleet([r]));
+    expect(screen.getByText('Building output guard…')).toBeTruthy();
+    expect(screen.queryByText('OLD_STOP_REASON')).toBeNull();
+    expect(screen.getByText('Building output guard…').getAttribute('title')).toContain('OLD_STOP_REASON');
+  });
   it('distinguishes local dispatch from real arrival and shows a later main-chat receipt',async()=>{
     const state=fleet();const {props,rerender,action}=setup(state);
     fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'Go to the nearest bed'}});
     fireEvent.click(screen.getByRole('button',{name:'Send command'}));
     await waitFor(()=>expect(screen.getByLabelText('Robot command progress').textContent).toContain('ACCEPTED'));
+    expect((screen.getByLabelText('Robot command') as HTMLInputElement).value).toBe('');
+    expect(screen.getByLabelText('Robot command').getAttribute('placeholder')).toBe('Type a new command…');
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('Go to the nearest bed');
     expect(screen.getByLabelText('Robot command progress').textContent).not.toContain('ARRIVED');
     const id=action.mock.calls.find(([b])=>b.action==='command')![0].request_id;
     const current=fleet([{...robot(),command:{request_id:id,text:'Go to the nearest bed',kind:'navigate',state:'ARRIVED',target_label:'bed bed1'}}]);
@@ -36,8 +46,44 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(screen.getByLabelText('Robot command progress').textContent).toContain('ARRIVED');
     const next=fleet([{...robot(),command:{request_id:'main-chat-new',text:'Go to the nearest chair',kind:'navigate',state:'PLANNING',target_kind:'chair'}}]);
     rerender(<RobotFleet {...props} state={next}/>);
-    expect(screen.getByLabelText('Robot command progress').textContent).toContain('main-chat-new');
+    expect(screen.getByLabelText('Robot command progress').getAttribute('title')).toContain('main-chat-new');
+    expect(screen.getByText('main-chat-new',{selector:'code'})).toBeTruthy();
     expect(screen.getByLabelText('Robot command progress').textContent).toContain('PLANNING');
+  });
+  it('keeps the draft until ACK and preserves it on a rejected command',async()=>{
+    let reject!:(error:Error)=>void;
+    setup(fleet(),()=>new Promise((_,no)=>{reject=no;}));
+    const input=screen.getByLabelText('Robot command') as HTMLInputElement;
+    fireEvent.change(input,{target:{value:'Go to the nearest bed'}});
+    fireEvent.submit(input.closest('form')!);
+    expect(input.value).toBe('Go to the nearest bed');
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('SENDING');
+    await act(async()=>{reject(new Error('Destination unavailable'));});
+    expect(input.value).toBe('Go to the nearest bed');
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('FAILED');
+  });
+  it.each(['Go to the nearest chair','Go to the nearest bed'])('does not erase a newer draft on late ACK: %s',async value=>{
+    let resolve!:(next:RobotFleetState)=>void;
+    setup(fleet(),()=>new Promise(yes=>{resolve=yes;}));
+    const input=screen.getByLabelText('Robot command') as HTMLInputElement;
+    fireEvent.change(input,{target:{value:'Go to the nearest bed'}});
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.change(input,{target:{value:''}});
+    fireEvent.change(input,{target:{value}});
+    await act(async()=>{resolve(fleet());});
+    expect(input.value).toBe(value);
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('ACCEPTED');
+  });
+  it('does not clear another selected robot draft on late ACK',async()=>{
+    let resolve!:(next:RobotFleetState)=>void;
+    const {props,rerender}=setup(fleet(),()=>new Promise(yes=>{resolve=yes;}));
+    const input=screen.getByLabelText('Robot command') as HTMLInputElement;
+    fireEvent.change(input,{target:{value:'Go to the nearest bed'}});
+    fireEvent.submit(input.closest('form')!);
+    rerender(<RobotFleet {...props} selectedId="b"/>);
+    fireEvent.change(screen.getByLabelText('Robot command'),{target:{value:'Go to the nearest chair'}});
+    await act(async()=>{resolve(fleet());});
+    expect((screen.getByLabelText('Robot command') as HTMLInputElement).value).toBe('Go to the nearest chair');
   });
   it('keeps the compact primary pad and Stop before collapsed setup and opens logs explicitly',async()=>{
     const {action,container}=setup();
@@ -535,7 +581,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     const summary=screen.getByText('Estimated Twin marker',{selector:'summary'});
     expect(summary.parentElement?.hasAttribute('open')).toBe(false);
     expect(action).not.toHaveBeenCalled();fireEvent.click(summary);expect(action).not.toHaveBeenCalled();
-    expect(screen.getByText('Visualization estimate only; not sensor/world alignment or driving permission.')).toBeTruthy();
+    expect(screen.getByText('Review the robot position and yaw in this Twin. This estimate anchors relative LiDAR tracking for display and explicitly requested destinations; it never grants driving permission or claims measured world alignment.')).toBeTruthy();
     expect((screen.getByLabelText('Marker X (m)') as HTMLInputElement).value).toBe('0');
     fireEvent.change(screen.getByLabelText('Marker X (m)'),{target:{value:'1.25'}});
     fireEvent.change(screen.getByLabelText('Marker Y (m)'),{target:{value:'-0.5'}});
@@ -896,18 +942,18 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
 
 describe('fleet HTTP delivery (mocked supplementary)',()=>{
   const response=(body:object,status=200)=>({ok:status>=200&&status<300,status,json:async()=>body,headers:new Headers({'X-TwinPulse-Context':'fleet-context'})}) as Response;
-  it('bounds a held delivery to 250ms while Stop bypasses that pending request',async()=>{
+  it.each([250,350])('bounds a held delivery to its original %ims while Stop bypasses that pending request',async lifetime=>{
     vi.useFakeTimers();
     const request=vi.fn(async(path:string,init?:RequestInit)=>{
       if(path==='/v1/product/session')return response({csrf_token:'csrf',context_id:'fleet-context',project_id:'project',project_switch:null});
       if(JSON.parse(String(init?.body)).action==='drive')return new Promise<Response>(()=>{});
       return response(fleet());
     });vi.stubGlobal('fetch',request);const api=new TwinPulseApi();await api.bootstrap();
-    const drive:RobotFleetAction={action:'drive',request_id:crypto.randomUUID(),robot_id:'a',connection_epoch:'c',motion_epoch:'m',payload:{direction:'forward',sequence:1,expires_at_ms:Date.now()+250}};
+    const drive:RobotFleetAction={action:'drive',request_id:crypto.randomUUID(),robot_id:'a',connection_epoch:'c',motion_epoch:'m',payload:{direction:'forward',sequence:1,expires_at_ms:Date.now()+lifetime}};
     const pending=api.robotFleetAction(drive).catch(error=>error);
     await api.robotFleetAction({...drive,action:'stop',request_id:crypto.randomUUID(),payload:{}});
     expect(request.mock.calls.filter(([path])=>path==='/v1/product/robot-fleet')).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(lifetime);
     expect(await pending).toMatchObject({code:'fleet_input_expired'});
     const driveCall=request.mock.calls.find(([path,init])=>path==='/v1/product/robot-fleet'&&JSON.parse(String(init?.body)).action==='drive');
     expect(driveCall?.[1]?.signal?.aborted).toBe(true);

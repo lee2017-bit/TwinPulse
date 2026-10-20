@@ -116,7 +116,9 @@ class PhysicalFleetAdapter:
             RobotReadiness(self.source_root, archive_root=archive_root) if enabled else None,
             PhysicalController(self.source_root, archive_root=archive_root) if enabled else None,
             PhysicalLiveSession(self.source_root, self.state_root/'physical-live',
-                identity=existing.identity,known_hosts=existing.known_hosts) if enabled else None)
+                identity=existing.identity,known_hosts=existing.known_hosts,
+                on_timing_measurement=lambda context,measurement:self.registry.record_timing_measurement(
+                    context['robot_id'],context['binding_sha256'],context['operation_id'],measurement)) if enabled else None)
 
     def _row(self, robot_id):
         identity = _uuid(robot_id, 'robot ID')
@@ -293,6 +295,7 @@ class PhysicalFleetAdapter:
                     entry.services.live.start(dict(operation_id=entry.operation_id,
                         robot_id=entry.binding['instance_id'],project_id=entry.project_id,
                         connection_epoch=entry.connection_epoch,motion_epoch=entry.motion_epoch,
+                        timing_profile=self.registry.timing_store.read(entry.binding['instance_id'],entry.binding['sha256'])['profile'],
                         **({'source_twin_context':deepcopy(entry.source_twin_context)} if entry.source_twin_context is not None else {})))
                     profile=self.profile_for_view(entry.binding['instance_id'])
                     # Restoring data is not restoring authority. The transport
@@ -400,7 +403,7 @@ class PhysicalFleetAdapter:
             elif entry.services.controller is not None and entry.services.controller.snapshot(owner).get('mode') in {'control','control_scan'}:
                 self._stop(entry,owner,'FOCUS_CHANGED')
 
-    def _live_command(self,robot_id,owner,action,payload,*,connection_epoch=None,motion_epoch=None,request_id=None,request_twin_context=None):
+    def _live_command(self,robot_id,owner,action,payload,*,connection_epoch=None,motion_epoch=None,request_id=None,request_twin_context=None,route_guard=None):
         _owner(owner)
         if (action in {'prepare','qualify','drive','task','field_arm','field_test'}
                 and getattr(self.devices,'engine_process_probe_blocked',False)):
@@ -412,15 +415,22 @@ class PhysicalFleetAdapter:
             if entry.services.live is None:
                 raise BrokerError('physical_protective_guards_unavailable' if action in {'drive','task','prepare','qualify'} else 'physical_native_lidar_unavailable',
                     'This observation-only release cannot run the reviewed physical session. Use the physical development candidate.',status=409)
+            live_epoch=getattr(entry.services.live,'motion_epoch',None)
+            if isinstance(live_epoch,str) and live_epoch!=entry.motion_epoch:
+                entry.motion_epoch=live_epoch;entry.last_gesture=None;entry.intent_kind=None
             if connection_epoch is not None and connection_epoch!=entry.connection_epoch:
                 raise BrokerError('fleet_connection_changed','The robot connection changed; select it again.',status=409)
-            if action in {'drive','task','field_arm','field_test'} and motion_epoch is not None and motion_epoch!=entry.motion_epoch:
+            if action in {'drive','task','prepare','qualify','lidar','field_arm','field_test'} and motion_epoch is not None and motion_epoch!=entry.motion_epoch:
                 raise BrokerError('fleet_motion_epoch_changed','The motion generation changed; press again.',status=409)
             if action in {'field_arm','field_test'} and motion_epoch is None:
                 raise BrokerError('fleet_motion_epoch_changed','Current motion generation is required for field tests.',status=409)
             if action in {'prepare','qualify'}:
                 if payload!={'confirmed':True}:raise BrokerError('physical_confirmation_required','Review the on-screen flat/clear floor and power-off conditions first.',status=409)
             if request_twin_context is not None:request_twin_context=checked_twin_context(request_twin_context,project_id=entry.project_id)
+            if route_guard is not None:
+                if not route_guard():raise BrokerError('physical_navigation_scene_changed','Twin route context expired before admission.',status=409)
+                entry.services.live.navigation_guard=route_guard
+            elif action in {'drive','task','stop','close'}:entry.services.live.navigation_guard=None
             result=entry.services.live.command(action,payload,motion_epoch=entry.motion_epoch,request_id=request_id or uuid4().hex,
                 **({'request_twin_context':request_twin_context} if request_twin_context is not None else {}))
             if action in {'drive','task'}:entry.intent_kind='manual' if action=='drive' else 'task'
@@ -443,6 +453,9 @@ class PhysicalFleetAdapter:
     def drive(self,robot_id,owner,*,action='drive',payload=None,**values):
         return self._live_command(robot_id,owner,action,payload or {},**values)
 
+    def navigate(self,robot_id,owner,*,payload,guard,**values):
+        return self._live_command(robot_id,owner,'task',payload,route_guard=guard,**values)
+
     def lidar(self,robot_id,owner,*,enabled,**values):
         if type(enabled) is not bool:raise BrokerError('fleet_shape','Expected sensor enabled boolean.',status=400)
         return self._live_command(robot_id,owner,'lidar',{'enabled':enabled},**values)
@@ -456,6 +469,16 @@ class PhysicalFleetAdapter:
     def profile_for_view(self,robot_id):
         try:return self._load_profile(robot_id)
         except (BrokerError,OSError,ValueError,RecursionError):return None
+
+    def timing_for_view(self,robot_id):
+        entry=self._cached(robot_id)
+        if entry is None or entry.services.live is None:return dict(state='DISCONNECTED',profile_sha256=None,values=None,output_guard=None)
+        with entry.lock:
+            live=entry.services.live.snapshot()
+            return dict(state='LAST_AUTHENTICATED_REPORT' if live.get('live_heartbeat') and not entry.disconnected else 'HISTORICAL_OR_DISCONNECTED',
+                profile_sha256=live.get('timing_profile_sha256'),values=deepcopy(live.get('timing_values')),
+                output_guard=deepcopy(live.get('output_timing')),operation_id=entry.operation_id,
+                no_motion_authority=True)
 
     def field_config_for_view(self,robot_id):
         path=self.state_root/'physical-field-configs'/(_uuid(robot_id,'robot ID')+'.json')
@@ -534,6 +557,8 @@ class PhysicalFleetAdapter:
     def _snapshot(self, entry, owner):
         if entry.services.live is not None:
             live=entry.services.live.snapshot()
+            if isinstance(live.get('pc_motion_epoch'),str) and live['pc_motion_epoch']!=entry.motion_epoch:
+                entry.motion_epoch=live['pc_motion_epoch'];entry.last_gesture=None;entry.intent_kind=None
             reported_control=live.get('control_state','UNPREPARED')
             control={'ACTIVE':'DRIVING','PREPARING':'ARMING','QUALIFYING':'ARMING',
                 'ARMED_AWAITING_FRESH_INPUT':'READY','CLOSED':'UNPREPARED'}.get(reported_control,reported_control)
@@ -554,6 +579,8 @@ class PhysicalFleetAdapter:
             setup=live.get('setup') or dict(runtime_state='STARTING' if not live.get('live_heartbeat') else 'CONNECTED',blockers=live.get('blockers',[]),
                                           profile=live.get('profile'),qualification=live.get('qualification'))
             setup['binding_sha256']=entry.binding['sha256']
+            setup['maintenance_phase']=live.get('maintenance_phase')
+            setup['output_guard_build']=deepcopy(live.get('output_guard_build'))
             ended=entry.disconnected or entry.services.live.closed
             local_recording=live.get('recording') or {};robot_recording=live.get('robot_recording') or {}
             recording_error=local_recording.get('error') or robot_recording.get('error')
@@ -566,11 +593,13 @@ class PhysicalFleetAdapter:
                 live_heartbeat=live.get('live_heartbeat',False) and not ended,
                 control_state=control,controller_state=reported_control,
                 reason='DISCONNECTING_AWAITING_ROBOT_CLEANUP' if entry.disconnecting else live.get('transport_error') or live.get('reason') or entry.reason,
-                battery=battery,pose=live.get('pose'),field=live.get('field'),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),
+                battery=battery,pose=live.get('pose'),field=live.get('field'),command=deepcopy(live.get('command')),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),
                 scan_receipt=None if ended else deepcopy(live.get('scan_receipt')),
                 lidar_state=('OFF' if live.get('cleanup_confirmed') else 'FAULT') if ended else live.get('lidar_state','OFF'),
                 telemetry_diagnostic=deepcopy(live.get('telemetry_diagnostic')),native_diagnostic=deepcopy(live.get('lidar')),
-                timing_policy=deepcopy(live.get('timing_policy')),field_evidence=deepcopy(live.get('field_evidence')),
+                timing_policy=deepcopy(live.get('timing_policy')),odom_interval=deepcopy(live.get('odom_interval')),field_evidence=deepcopy(live.get('field_evidence')),
+                timing_values=deepcopy(live.get('timing_values')),timing_profile_sha256=live.get('timing_profile_sha256'),
+                output_timing=deepcopy(live.get('output_timing')),
                 recording_state='INCOMPLETE' if recording_error else 'BUFFERING' if robot_recording.get('buffering') else
                     'RECORDING' if not ended else 'COMPLETE' if live.get('cleanup_confirmed') and local_recording.get('complete') else 'INCOMPLETE',
                 operation_id=None if ended else entry.operation_id,last_operation_id=entry.operation_id,project_id=entry.project_id,setup=setup,

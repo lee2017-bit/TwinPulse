@@ -80,6 +80,7 @@ describe('Chat-first product workspace',()=> {
     const workflow={phase:'draft_ready',provider:{configured:true,label:'Saved'},site_draft:{revision,scene_state_sha256:sha,input_revision:'input-a',artifact_id:'artifact'}};
     api.conversation.mockResolvedValue(chat);api.workflow.mockResolvedValue(workflow as never);
     const view=render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);
+    fireEvent.click(await screen.findByText('Sensor correction',{selector:'summary'}));
     const panel=await screen.findByRole('region',{name:'Obstacle observation feedback'});await screen.findByText(/No saved obstacle observation/);
     const undo=screen.getByRole('button',{name:'Preview Undo last scene edit'});expect(undo).toHaveProperty('disabled',false);
     fireEvent.change(screen.getByRole('textbox',{name:'Message TwinPulse'}),{target:{value:'Move the chair'}});

@@ -147,7 +147,7 @@ class ProfileAndGuardTests(unittest.TestCase):
 
     def test_profile_exact_bounds_and_binding_no_defaults(self):
         value=profile();self.assertEqual(checked_profile(value),value);profile_objects(value)
-        for path,new in [('maximum_linear_speed_m_s',.051),('maximum_angular_speed_rad_s',.301),('maximum_input_age_s',.251)]:
+        for path,new in [('maximum_linear_speed_m_s',.051),('maximum_angular_speed_rad_s',.301),('maximum_input_age_s',.351)]:
             bad=deepcopy(value);bad['stop_model'][path]=new
             with self.assertRaises(ValueError):checked_profile(bad)
         with self.assertRaises(ValueError):checked_profile(value,robot_id='c'*32)
@@ -233,7 +233,7 @@ class ProtocolTests(unittest.TestCase):
         now[0]=1.1;nonce=owner.gate.challenge()
         owner._command(command('watch',2,dict(challenge=nonce,source_age_ms=0,motion_generation=0)))
         self.assertEqual(old,(owner.gate.deadline,owner.gate.source_created,owner.gate.hold_end))
-        now[0]=1.251
+        now[0]=1.351
         with self.assertRaisesRegex(ValueError,'INPUT_DEADLINE_EXPIRED'):owner.gate.check()
 
     def test_prearm_probe_not_reused_as_wheel_progress_window(self):
@@ -317,7 +317,7 @@ class ProtocolTests(unittest.TestCase):
         now[0]=1.1;nonce=owner.gate.challenge()
         owner._command(command('watch',2,dict(challenge=nonce,source_age_ms=0,motion_generation=0)))
         self.assertEqual(original,(owner.gate.deadline,owner.gate.source_created,owner.gate.hold_end))
-        now[0]=1.251
+        now[0]=1.351
         with self.assertRaisesRegex(ValueError,'INPUT_DEADLINE_EXPIRED'):owner.gate.check()
 
     def test_stop_clears_queued_drive_and_has_priority(self):
@@ -528,10 +528,36 @@ class ProtocolTests(unittest.TestCase):
             owner._tick()
             if owner.task is None:break
         self.assertIsNone(owner.task);self.assertEqual(owner.snapshot()['reason'],'TASK_WHEEL_ODOM_TARGET_REACHED')
+        receipt=owner.snapshot()['command']
+        self.assertEqual(receipt['state'],'COMPLETED');self.assertEqual(receipt['request_id'],'r'*32)
+        self.assertTrue(receipt['stop_readback_confirmed']);self.assertEqual(receipt['result_basis'],'wheel_odom_not_independent_body')
         self.assertFalse(owner.link.enabled)
         self.assertTrue(any(data.get('status')=='PUBLISHED' for _,data in events))
         nonce=owner.gate.challenge();owner._command(command('watch',300,dict(challenge=nonce,source_age_ms=0,motion_generation=owner.gate.generation)))
         self.assertIsNone(owner.direction);self.assertIsNone(owner.task)
 
+    def test_finite_completion_requires_actual_release_readback(self):
+        owner=RobotControl(context(),'.',lambda *_:None,SimpleNamespace(),clock=lambda:1.)
+        owner.state['command']=dict(request_id='original-request',kind='finite',state='RUNNING',text='turn right 90 degrees')
+        def failed_release():raise ValueError('RELEASE_READBACK_FIXTURE')
+        owner.link=SimpleNamespace(enabled=True,sensor=SimpleNamespace(torque=True),release=failed_release)
+        with self.assertRaisesRegex(ValueError,'RELEASE_READBACK'):owner._pause('TASK_WHEEL_ODOM_TARGET_REACHED')
+        receipt=owner.snapshot()['command']
+        self.assertEqual(receipt['state'],'FAILED');self.assertFalse(receipt['stop_readback_confirmed'])
+        self.assertEqual(receipt['request_id'],'original-request');self.assertEqual(receipt['reason'],'STOP_READBACK_UNCONFIRMED')
 
+    def test_guard_build_failure_before_device_lease_disarm_or_driver_start(self):
+        import runtime
+        import guard_runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);(home/'current').mkdir()
+            (home/'current/profile.json').write_text(json.dumps(dict(manual_control_policy='explicit_session_and_same_boot_release_stop_receipt')))
+            value=dict(context(),release_id='a'*64)
+            owner=RobotControl(value,tmp,lambda *_:None,SimpleNamespace())
+            with patch.object(runtime,'HOME',home),patch.object(runtime,'verify_release',return_value={'source_id':'a'*64}),\
+                 patch.object(guard_runtime,'ensure',side_effect=ValueError('BUILD_FAILED_FIXTURE')),\
+                 patch.object(runtime,'ownership') as lease,patch.object(runtime,'disarm_board') as off,patch.object(owner,'_read_board') as read,\
+                 patch('fleet_control.subprocess.Popen') as start:
+                with self.assertRaisesRegex(ValueError,'BUILD_FAILED_FIXTURE'):owner._prepare()
+                lease.assert_not_called();off.assert_not_called();read.assert_not_called();start.assert_not_called()
 if __name__=='__main__':unittest.main()

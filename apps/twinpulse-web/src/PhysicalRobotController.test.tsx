@@ -545,7 +545,7 @@ describe('physical manual controls',()=>{
     expect(h.api.physicalInput.mock.calls.filter(call=>call[2]==='forward')).toHaveLength(1);
     expect(h.api.physicalInput.mock.calls.some(call=>call[2]==='close')).toBe(false);
   });
-  it('bounds direction HTTP delivery to 250ms without blocking Stop or retrying the old input',async()=>{
+  it('bounds direction HTTP delivery to 350ms without blocking Stop or retrying the old input',async()=>{
     vi.useFakeTimers();const response=(body:object)=>({ok:true,status:200,json:async()=>body,headers:new Headers({'X-TwinPulse-Context':'physical-test'})}) as Response;
     const request=vi.fn(async(path:string,init?:RequestInit)=>{
       if(path==='/v1/product/session')return response({csrf_token:'csrf',context_id:'physical-test',project_id:'default',project_switch:null});
@@ -553,7 +553,7 @@ describe('physical manual controls',()=>{
       return response({state:'READY',mode:'control',busy:true,owned:true,job_id:'job',sequence:2});
     });vi.stubGlobal('fetch',request);const api=new TwinPulseApi();await api.bootstrap();
     const pending=api.physicalInput('job',1,'forward').catch(error=>error);
-    await api.physicalInput('job',2,'stop');await vi.advanceTimersByTimeAsync(250);
+    await api.physicalInput('job',2,'stop');await vi.advanceTimersByTimeAsync(350);
     expect(await pending).toMatchObject({code:'physical_delivery_unknown'});
     const inputs=request.mock.calls.filter(([path])=>path==='/v1/product/robot/physical/input');
     expect(inputs).toHaveLength(2);expect(inputs[0][1]?.signal?.aborted).toBe(true);

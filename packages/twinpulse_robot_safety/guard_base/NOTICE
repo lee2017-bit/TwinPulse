@@ -1,0 +1,7 @@
+ROBOTIS TurtleBot3 node sources, commit 90a68bd2e3c61c12966779da89d8eeaec82730e9.
+Source: https://github.com/ROBOTIS-GIT/turtlebot3
+Original copyright/license notices and Apache-2.0 LICENSE are retained.
+Modified by TwinPulse (2026-10-20): final stamped-command guard, removal of
+independent raw-command/heartbeat activation, explicit exit zero and local
+guard include path. This builds a separate application-owned executable;
+it never replaces the user's ROS installation or default launch files.
