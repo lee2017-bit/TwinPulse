@@ -1,6 +1,12 @@
 # TwinPulse — 구현 기준 지침서
 
-- 문서 버전: **Baseline v1.0.562**
+- 문서 버전: **Baseline v1.0.563**
+
+> **v563 / 2026-10-20 · 사용자 승인 경로 한정 정리·GitHub 보존.** 기존 비공개 main source `f3b7cf84903702d5059dedcd504d7a838d462590`과 원 `20261020T034213Z-ee4c39105987`/1668-file ZIP189,173,012B를 [비공개 scoped SIM/PC 복구 Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-20-scoped-checkpoint)에 보존했다. 원격 재다운로드 SHA `6458ee3803a2a8a4e2a5d8b44997efebc313b290f09ff32c85222f3662d596a5`/크기 확인 후 삭제를 시작했다. 원 패키지의 dirty-build/이전 git_revision은 수정하지 않았고 clean rebuild·실물 정상본으로 승격하지 않았다. source preflight1743파일/키 패턴0, 새 보조75(1skip), 경로 거절8/정상2를 확인했다. 무관한 PNG7개는 미stage/미삭제다.
+>
+> 삭제 허용 범위는 canonical repo의 generated `outputs`·`artifacts`와 `C:\Users\jaewo\AppData\Local\TwinPulse\installed\releases`뿐이다. 관계가 있어도 Codex/WSL/Docker/Isaac/Windows/다른 데이터는 삭제 승인으로 해석하지 않는다. 유효 package manifest와 경로·reparse·현재 pointer·실행 참조 검사 뒤339 target(설치63/배포복사69/중간138/ZIP69) 제거·실패0·범위 밖0, 실제 여유3,753,857,024→44,368,777,216B/관측 증가40,614,920,192B. 현재ee4/직전 UI d349/최종 전체통합 ab4/필요 재현 a31 및 실행 참조 edf891/16c654 두 package를 보존(총6), 강제 종료0. 옛70 source/resources version map+909 SHA object/manifest를 따로 보존했다. 보호7190파일/3,138,998,602B의 전후 SHA 동일, 유지 package 재검증/source diff0. 원사진·프로젝트·센서 원문·로그·PNG/MP4·장부는 그대로다. 삭제 EXE 정확한 bytes 복원은 보장하지 않는다. [한 로컬 보고서·정확 경로/원격 검증/전후 SHA](../../outputs/github-preservation-20261020/report.html).
+>
+> AGENTS에 경계를 고정했다. 새 정리 명령은 고정 checkpoint용 inventory 기본/원격 보존 확인 후 명시 Apply이며 설치 앱 자동 GC가 아니다. 향후 pins/proof를 재검토해야 한다. 이 유지보수는 새 App/native/실물 시험이 아니며 v562의 scoped SIM/PC와 ROS/ARM64·실물·전체fresh9-role 미인수는 불변이다. 새 LLM HTTP/USD0, 추가50 마지막 장부잔여46.8551834/이전20별도 불변. 새 설치/유료Cloud/로봇조작/visibility 변경0. 후속 문서/정리 명령 설명은 별도 소스 commit으로 기록하되 원 package를 다시 만들지 않았다.
 
 > **v562 / 2026-10-20 · 로봇 제어 준비 구현·설치, PC/SIM 범위 한정 인수.** nonce를 단회 사용하며 수동 갱신 대기는 원 입력 만료/세대/연결/Stop epoch를 유지한다. HTTP ingress를 느린 상태 refresh 전에 결속하고 로봇 자동 pause가 활성 권한을 철회하면 PC에도 새 fence를 생성해 오래된 held/HTTP 입력을 새 창에 재결속하지 않는다. 보류/대체 원인을 실행 ACK와 별도로 기록한다. 새 시간 설정을 구 고정 binary에 넘기던 경로 대신 shipped source SHA의 별도 C++/ROS 출력 노드를 명시 Prepare에서 장치 lease 전에 build/검사/cache 검증하고 실행/설정 readback을 확인한다. 실패 시 구 binary 우회가 없으며 임의 shell/model code를 실행하지 않는다. target ROS/ARM64 전체 compile·배포·실제 readback은 로봇 OFF로 NOT_RUN이다. compact 영문 단계·Blob 수명 보존·package-only/검증된 동일 desktop73파일 hardlink를 추가했고 입력350/odom300 및 v560의 명시 추천/적용 계약은 불변이다.
 >
@@ -1472,6 +1478,7 @@ Baseline은 고정된 출발점이지만 영구 불변 사양은 아니다. 실�
 
 | ID | 날짜 | 버전 | 변경 | 근거·상태 |
 |---|---|---|---|---|
+| BL-563 | 2026-10-20 | 1.0.563 | main/private ZIP 검증 후 exact TwinPulse generated 경로 정리·타 경로 금지 영속화 | 원격 ZIP189173012B/SHA 일치→339 target 삭제/실패0/범위밖0, 실제40.615GB 증가/44.369GB 여유. 4pin+2실행참조 유지, 보호7190파일 SHA동일/source diff0. 실물/전체제품 READY 승격 아님. [보고서](../../outputs/github-preservation-20261020/report.html) |
 | BL-562 | 2026-10-20 | 1.0.562 | nonce 단회/ingress·자동pause fence, source-bound 출력 노드 build/readback 경로·반출/저장 부담 개선 | ee4c 설치1668exact, 실제 저장 scene2SIM8단계/정확 Stop ACK7대상·4음성시험/cold·PC준비/원 실물raw 반출 PASS.08 gate거절→11독립재시험 보존. ROS/ARM64/실물·전체fresh9-role 미인수. [한 보고서](../../outputs/robot-protocol-prep-20261020/report.html) |
 | BL-553 | 2026-10-19 | 1.0.553 | ACK後초안비움·새입력보호·중립예시·녹화3초후Enter | 최종10c UI90/실제bed초안비움PASS나bed주행ISAAC_UPDATE_STALLED로전체FAIL. work로그계약불일치확인·근본원인UNKNOWN. 영상게시0·실물OFF/목적지내비SIM전용. [보고서](../../outputs/command-draft-enter-20261019/report.html)|
 | BL-552 | 2026-10-19 | 1.0.552 | 메뉴 SIM등록의 같은채팅 불변이력·권한분리·느린 실제추가와Home부터새전체영상 |23d 실제39/14/8/4+별도demo/cold·일반native lifecycle·9역할SHA gateREADY/issues0/negative거절. 원MP4 226.160초/추가32.368초. 실물NOT_RUN·과거GPU원인UNKNOWN보존. [보고서](../../outputs/robot-registration-history-20261019/requested-report.html)|

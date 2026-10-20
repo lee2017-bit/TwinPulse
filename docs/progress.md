@@ -1,5 +1,13 @@
 # TwinPulse progress
 
+## 2026-10-20 — v563 private source/archive preservation and exact-path cleanup
+
+main `f3b7cf84903702d5059dedcd504d7a838d462590`과 기존 비공개 [scoped SIM/PC 복구 Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-20-scoped-checkpoint)를 보존했다. 원1668-file ee4c package ZIP189,173,012B의 원격 재다운로드 SHA6458ee38…d596a5 일치를 확인한 뒤 삭제했다. source preflight1743/키 패턴0·보조75(1skip)·경로8거절/2정상. 원 dirty-build provenance와 실물/전체fresh 미인수는 그대로다.
+
+canonical `outputs`/`artifacts`의 식별된 generated package 및 LocalAppData/TwinPulse/installed/releases만339 target 제거·실패0·범위 밖0. 실제 여유3,753,857,024→44,368,777,216B, 관측 회수40,614,920,192B. 설치69→6(현재·UI rollback·전체통합 rollback·재현4개+실행 참조2개), 강제 종료0. 옛70 source version/909 SHA object와 manifest 보존, 보호7190파일/3,138,998,602B 전후 SHA 동일/유지 package 재검증/source diff0. 원사진·프로젝트·원 센서·로그·PNG/MP4·장부 및 Codex/Docker/WSL/Isaac/Windows는 삭제하지 않았다. 삭제 EXE 정확한 bytes 복원은 보장하지 않는다.
+
+경로 제한을 AGENTS에 기록했다. 정리 명령은 dry-run 기본/원격 보존 후 명시 Apply인 고정 checkpoint 도구이며 설치 앱 자동 GC가 아니다. 새 runtime/로봇/모델 시험·설치·visibility 변경0, LLM HTTP/USD0/추가50 마지막잔여46.8551834/이전20별도 불변. [한 로컬 보고서·원격 검증·정확 경로·전후 SHA](../outputs/github-preservation-20261020/report.html).
+
 ## 2026-10-20 — v562 제어 protocol·출력 노드 적용 경로 준비, 설치 SIM/반출 한정 인수
 
 nonce 단회 사용/원 만료 유지·Stop 뒤 보류 입력 폐기, 느린 refresh 전 ingress epoch 결속, 활성 로봇 자동 pause의 PC fence를 구현했다. 새 시간 설정이 구 고정 출력 binary에 머물던 경로는 source-SHA 별도 build/cache/검사/readback으로 교체했다. 명시 Prepare가 무구동 빌드부터 수행하고 실패 시 구본 우회가 없다. 실제 target ROS/ARM64 컴파일·배포/readback은 아직 NOT_RUN이다. 영문 compact 준비 단계, download Blob 수명 보존, package-only와 검증된 동일 desktop hardlink도 반영했다. 입력350/odom300·수동 Recalculate/별도 Apply 계약과 기존 보호는 불변이다.
