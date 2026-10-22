@@ -171,6 +171,7 @@ class RobotControl:
         self.link = self.base = self.lease = self.lease_context = self.base_log = None
         self.release = None; self.guard = None; self.task = None; self.direction = None
         self.drive_command = None; self.last_publish = -math.inf; self.armed_until = 0.
+        self.motion_observation=None
         self.last_publication_source=None
         self.cleanup_confirmed = True
         self.field_config=None; self.field_until=0.; self.field_receipt=None; self.field_trials=[]
@@ -186,7 +187,11 @@ class RobotControl:
     def start(self):self.thread.start()
 
     def snapshot(self):
-        with self.lock:value=deepcopy(self.state)
+        # _update publishes private nested copies and never mutates them.
+        # Hold the lock only for a coherent root snapshot, not the large
+        # display/history deepcopy that used to block nonce/state updates.
+        with self.lock:published=dict(self.state)
+        value=deepcopy(published)
         diagnostic=value.get('telemetry_diagnostic')
         if diagnostic and diagnostic.get('checked_monotonic_s') is not None:
             elapsed=self.clock()-diagnostic['checked_monotonic_s']
@@ -219,7 +224,17 @@ class RobotControl:
         return dict(self.snapshot(),worker_reaped=not self.thread.is_alive(),cleanup_confirmed=self.cleanup_confirmed)
 
     def _update(self, **data):
-        with self.lock:self.state.update(data)
+        # Copy-on-write ownership: caller mutation of task/field dictionaries
+        # cannot modify an already-published snapshot outside this lock.
+        published=deepcopy(data)
+        with self.lock:self.state.update(published)
+
+    def status_flags(self):
+        with self.lock:return {key:self.state.get(key) for key in ('control_state','maintenance_phase')}
+
+    def _read_state(self,key):
+        with self.lock:value=self.state.get(key)
+        return deepcopy(value)
 
     def _input_window(self, challenge=None):
         # A small control update does not wait for the large display heartbeat.
@@ -267,7 +282,54 @@ class RobotControl:
         if len(raw)>65536:raise ValueError('BOARD_READ_OUTPUT_BOUND')
         return parse_board_snapshot(raw.decode('utf-8'))
 
-    def _prepare(self):
+    def _guard_diagnostic(self,request_id,trigger,record,log):
+        """Keep bounded build evidence beside the operation's fixed exports."""
+        record=deepcopy(record)
+        record['binding']={key:self.context[key] for key in
+            ('operation_id','robot_id','project_id','connection_epoch','worker_sha256','binding_sha256','boot_id','release_id')
+            if key in self.context}
+        record['binding'].update(request_id=request_id,trigger=trigger,
+            source_twin_context_id=self.context.get('source_twin_context',{}).get('context_id'))
+        record['observed_monotonic_s']=self.clock()
+        self._update(output_guard_diagnostic_expected=True)
+        try:
+            if record['status'] in {'FAILED_NOT_ACTIVATED','VERIFIED_NOT_RUNNING'} and log is not None and log.exists():
+                self._update(output_guard_log_expected=True)
+                if any(member.is_symlink() for member in (log,*log.parents)):
+                    raise ValueError('OUTPUT_GUARD_DIAGNOSTIC_SYMLINK')
+                with log.open('rb') as stream:
+                    size=os.fstat(stream.fileno()).st_size;offset=max(0,size-64*1024)
+                    stream.seek(offset);raw=stream.read(64*1024)
+                metadata=dict(schema='output-guard-log-tail-1.0',binding=record['binding'],
+                    attempt_id=record['attempt_id'],source_id=record['source_id'],
+                    source_size_bytes=size,source_offset=offset,exported_bytes=len(raw),
+                    sha256=hashlib.sha256(raw).hexdigest(),source_complete=offset==0 and len(raw)==size)
+                target=self.directory/'output-guard-build.log'
+                if any(member.is_symlink() for member in (target,*target.parents)):
+                    raise ValueError('OUTPUT_GUARD_DIAGNOSTIC_SYMLINK')
+                with target.open('ab') as stream:
+                    stream.write(json.dumps(metadata,sort_keys=True).encode()+b'\n')
+                    metadata['operation_log_offset']=stream.tell()
+                    stream.write(raw);stream.write(b'\n')
+                record['log_tail']=metadata
+            target=self.directory/'output-guard-build.jsonl'
+            if any(member.is_symlink() for member in (target,*target.parents)):
+                raise ValueError('OUTPUT_GUARD_DIAGNOSTIC_SYMLINK')
+            with target.open('ab') as stream:stream.write(json.dumps(record,sort_keys=True).encode()+b'\n')
+        except Exception as exc:
+            record['evidence_error']=reason_code(exc)
+            if not self.state.get('output_guard_diagnostic_evidence_error'):
+                self._update(output_guard_diagnostic_evidence_error=record['evidence_error'])
+        if self.state.get('output_guard_diagnostic_evidence_error'):
+            record['evidence_error']=self.state['output_guard_diagnostic_evidence_error']
+        summary={key:deepcopy(record[key]) for key in
+            ('attempt_id','source_id','status','active_step','binding','error','log_tail','evidence_error','failure_record_error')
+            if key in record}
+        self._update(output_guard_diagnostic=summary)
+        self.emit('command',dict(action='output_guard_diagnostic',request_id=request_id,
+            status=record['status'],build_diagnostic=record))
+
+    def _prepare(self,request_id=None):
         if self.link is not None:return
         from runtime import HOME, ownership, verify_release, disarm_board
         from stationary import commands, require_idle
@@ -280,8 +342,12 @@ class RobotControl:
         if deployed.get('manual_control_policy')!='explicit_session_and_same_boot_release_stop_receipt':
             raise ValueError('LEGACY_MANUAL_POLICY_NOT_REVIEWED')
         from guard_runtime import ensure
+        trigger='EXPLICIT_PREPARE' if request_id is not None else 'CONTROL_REPREPARE'
+        if request_id is not None:self.prepare_request_id=request_id
+        request_id=getattr(self,'prepare_request_id',None)
         binary,build_receipt=ensure(Path(__file__).resolve().parent,HOME,safety=self._safety,
-            phase=lambda phase:self._update(maintenance_phase=phase,blockers=[phase]))
+            phase=lambda phase:self._update(maintenance_phase=phase,blockers=[phase]),
+            diagnostic=lambda record,log:self._guard_diagnostic(request_id,trigger,record,log))
         self.emit('command',dict(action='output_guard_build',status='VERIFIED_NOT_RUNNING',build=build_receipt))
         self._update(output_guard_build={k:build_receipt[k] for k in ('source_id','artifacts','tests','motion_enabled')},
             maintenance_phase='VERIFYING_OUTPUT_GUARD_READBACK')
@@ -351,6 +417,7 @@ class RobotControl:
         # Zero-authority maintenance may outlast the bounded command queue.
         # The session owner acknowledges presence separately, never as a motor
         # lease, while this thread performs actual zero/OFF/readback cleanup.
+        observation_reason=self.state.get('reason') or 'SESSION_CLOSED'
         self._update(control_state='PAUSED',reason='CONTROL_CLEANUP_IN_PROGRESS',maintenance_phase='CLEANUP',
                      drive_ready=False,blockers=['CONTROL_CLEANUP_IN_PROGRESS'])
         result={'subsystem':'control','ros_stop_confirmed':False,'base_reaped':self.base is None,
@@ -360,6 +427,8 @@ class RobotControl:
             try:self.link.halt(); result['ros_stop_confirmed']=True
             except Exception as exc:errors.append(reason_code(exc))
             result['stop_diagnostic']=deepcopy(getattr(self.link,'stop_diagnostic',None))
+            result['motion_observation']=self._observe_motion(reason=observation_reason,ended=True,
+                stop_readback=result['ros_stop_confirmed'])
             try:self.link.close()
             except Exception as exc:errors.append(reason_code(exc))
             self.link=None
@@ -387,7 +456,22 @@ class RobotControl:
         self.emit('cleanup',result)
         return result
 
-    def _pause(self, reason, *, repeated_observation=False):
+    def _pause(self, reason, *, repeated_observation=False, fault_diagnostic=None, input_fault_diagnostic=None):
+        # Capture only the exception-bound ORIGINAL failed check. release()
+        # below services ROS and may replace the current check with a success.
+        original_fault=deepcopy(fault_diagnostic)
+        pause_requested_s=self.clock()
+        input_diagnostic=dict(pause_requested_s=pause_requested_s,
+            gate_at_handler_last_admission=deepcopy(getattr(self.gate,'last_admission',None)),
+            original_failed_gate=deepcopy(input_fault_diagnostic),
+            source_created_s=getattr(self.gate,'source_created',None),
+            deadline_s=getattr(self.gate,'deadline',None),
+            last_publish_s=getattr(self,'last_publish',None),
+            last_publication_source_s=getattr(self,'last_publication_source',None),
+            publication_attempt=deepcopy(getattr(self.link,'publication_diagnostic',None)),
+            scope='PRE_RELEASE_HANDLER_STATE_PLUS_EXCEPTION_BOUND_ORIGINAL_CHECK_WHEN_PRESENT')
+        if original_fault is not None:
+            self._update(last_control_fault=dict(reason=reason,telemetry=original_fault))
         prior=(self.state.get('control_state'),self.state.get('reason'),self.gate.generation)
         command=self.state.get('command')
         if command and command.get('state') in {'ACCEPTED','RUNNING'}:
@@ -405,6 +489,7 @@ class RobotControl:
                 self.link.release();release_confirmed=True
         finally:
             # Evidence storage must never precede the immediate zero/OFF path.
+            observed=self._observe_motion(reason=reason,ended=True,stop_readback=release_confirmed)
             if command:
                 command['stop_readback_confirmed']=release_confirmed
                 if command['state'] in {'COMPLETED','ESTIMATE_REACHED'} and not release_confirmed:
@@ -424,7 +509,67 @@ class RobotControl:
             self.pause_sequence+=1
             self.emit('control_pause',dict(pause_id=f"{self.context.get('connection_epoch','local')}:{self.pause_sequence}",
                 reason=reason,observed_monotonic_s=self.clock(),motion_generation=self.gate.generation,
-                zero_off_readback_confirmed=release_confirmed))
+                zero_off_readback_confirmed=release_confirmed,
+                input_diagnostic=input_diagnostic,
+                motion_observation=observed,
+                **({'fault_diagnostic':original_fault} if original_fault is not None else {})))
+
+    def _start_motion_observation(self,command,direction):
+        """Bounded diagnostic only: wheel change is never independent body proof."""
+        current=getattr(self,'motion_observation',None)
+        if (current and current['state']=='OBSERVING' and current['direction']==direction
+                and current.get('action')=='drive' and command.get('action','drive')=='drive'
+                and current['motion_epoch']==command['motion_epoch']):
+            current['latest_request_id']=command['request_id'];current['last_generation']=self.gate.generation;return
+        config=self.field_config if self.field_mode else (self.profile or {}).get('progress')
+        rows=getattr(self.link,'rows',[]) if self.link else []
+        if not config or not rows:return
+        if current and current['state']=='OBSERVING':
+            ended=self._observe_motion(reason='OBSERVATION_SUPERSEDED_BY_NEW_REQUEST',ended=True)
+            self.emit('command',dict(action='motion_observation',status='ENDED',request_id=ended['request_id'],motion_observation=ended))
+        row=rows[-1]
+        self.motion_observation=dict(schema='robot-wheel-observation-1.0',state='OBSERVING',
+            operation_id=self.context.get('operation_id'),robot_id=self.context.get('robot_id'),
+            source_twin_context_id=(self.context.get('source_twin_context') or {}).get('context_id'),
+            motion_epoch=command['motion_epoch'],request_id=command['request_id'],latest_request_id=command['request_id'],
+            action=command.get('action','drive'),
+            first_generation=self.gate.generation,last_generation=self.gate.generation,
+            direction=direction,started_s=self.clock(),first_sample_s=row['t'],sample_s=row['t'],
+            timing_basis='ROS_CALLBACK_RECEIPT',first_receipt_s=row['t'],receipt_s=row['t'],
+            first_source_age_s=row.get('source_age_s'),source_age_s=row.get('source_age_s'),
+            first_source_s=row['t']-row['source_age_s'] if row.get('source_age_s') is not None else None,
+            source_s=row['t']-row['source_age_s'] if row.get('source_age_s') is not None else None,
+            first_encoders=list(row['encoders']),encoders=list(row['encoders']),
+            wheel_metres_per_tick=config['wheel_metres_per_tick'],wheel_separation_m=config['wheel_separation_m'],
+            left_m=0.,right_m=0.,centre_m=0.,yaw_rad=0.,samples=1,
+            published_count=0,last_published_request_id=None,last_publication_source_s=None,
+            observation_scope='FIRST_ADMISSION_PRE_ARM_TO_STOP_READBACK',wheel_data_quality='RAW_DELTA_UNQUALIFIED',
+            result='NOT_ESTABLISHED',body_progress='UNKNOWN',
+            independent_comparison='SAME_SESSION_STATIONARY_NOISE_COMPARISON_REQUIRED',
+            basis='WHEEL_ENCODERS_NOT_INDEPENDENT_BODY',reason=None,stop_readback_confirmed=False)
+        self._observe_motion()
+
+    def _observe_motion(self,*,reason=None,ended=False,stop_readback=False):
+        observation=getattr(self,'motion_observation',None)
+        if not observation or observation['state']!='OBSERVING':return None
+        rows=getattr(self.link,'rows',[]) if self.link else []
+        if rows:
+            row=rows[-1]
+            if row['t']>observation['sample_s']:
+                observation['samples']+=1;observation['sample_s']=row['t'];observation['encoders']=list(row['encoders'])
+                observation.update(receipt_s=row['t'],source_age_s=row.get('source_age_s'),
+                    source_s=row['t']-row['source_age_s'] if row.get('source_age_s') is not None else None)
+                left,right=[(b-a)*observation['wheel_metres_per_tick'] for a,b in zip(observation['first_encoders'],row['encoders'])]
+                observation.update(left_m=left,right_m=right,centre_m=(left+right)/2,
+                    yaw_rad=(right-left)/observation['wheel_separation_m'])
+        if ended:
+            observation.update(state='ENDED',ended_s=self.clock(),reason=reason,
+                result='INCONCLUSIVE_BODY_MOTION',stop_readback_confirmed=stop_readback)
+            if not 0<=self.clock()-observation['sample_s']<self.timing_values['sensor_receipt_ms']/1000:
+                observation['wheel_data_quality']='LAST_SAMPLE_STALE'
+        # A successful Stop/HTTP response cannot promote this to body PASS.
+        self._update(motion_observation=observation)
+        return deepcopy(observation)
 
     def _accept(self, command, action):
         p=command['payload']
@@ -487,7 +632,7 @@ class RobotControl:
                 'body_progress_policy':profile['progress']['body_progress_policy']})
         elif action=='prepare':
             if p.get('confirmed') is not True:raise ValueError('EXPLICIT_PREPARE_CONFIRMATION_REQUIRED')
-            self._prepare()
+            self._prepare(command['request_id'])
         elif action=='watch':
             old=(self.gate.active,self.gate.deadline,self.gate.hold_end,self.gate.source_created,self.gate.last_action)
             self._accept(command,'watch')
@@ -519,6 +664,7 @@ class RobotControl:
             direction=p.get('direction')
             if direction not in MANUAL_DIRECTIONS:raise ValueError('DIRECTION_INVALID')
             self._accept(command,direction)
+            if self.direction is None or self.direction==direction:self._start_motion_observation(command,direction)
             if action=='drive':
                 if self.guard and hasattr(self.guard,'require_body'):self.guard.require_body=False
                 # A fresh manual gesture supersedes an earlier finite task.
@@ -661,7 +807,7 @@ class RobotControl:
         result=qualify(self.link,Incoming(),output,self.gate,self.clock,safety=self._safety)
         cleanup=self._cleanup()
         if result['status']=='STOP_POLICY_PASS' and cleanup['cleanup_confirmed']:
-            expected=self.snapshot()['qualification']['expected']
+            expected=self._read_state('qualification')['expected']
             write_json(HOME/'state/manual-qualification.json',dict(expected,status='QUALIFIED',report_directory=str(self.directory)))
             write_json(self.directory/'qualification.json',dict(result,cleanup=cleanup,worker_sha256=self.context['worker_sha256']))
             self.gate.pause('QUALIFICATION_COMPLETE');self._prepare()
@@ -676,6 +822,10 @@ class RobotControl:
             self.link.timing_load=('tracking_recording' if self.tracker is not None else
                 'lidar' if self.native.snapshot().get('lidar_state')=='STREAMING' else 'base')
         self.link.spin(.005)
+        # The first cycle freshness check is also an output-admission
+        # boundary. A publish-only pump cannot service its ready guard data.
+        if getattr(self.link,'persistent_manual',False):self.link.drain_ready_control()
+        self._observe_motion()
         # Record observations independently of drive admission. A stale source
         # must still display its real voltage/age; fresh() below still blocks it.
         sensor=self.link.sensor
@@ -765,6 +915,12 @@ class RobotControl:
             self.field_trial['publications']=self.field_trial.get('publications',0)+1
         self.last_publish=self.clock()
         self.last_publication_source=self.gate.source_created
+        observation=getattr(self,'motion_observation',None)
+        if observation and observation['state']=='OBSERVING':
+            observation.update(published_count=observation['published_count']+1,
+                last_published_request_id=self.drive_command['request_id'],last_publication_source_s=self.gate.source_created,
+                last_generation=self.gate.generation,last_published_generation=self.gate.generation)
+            self._observe_motion()
         self._update(applied_motion_epoch=self.drive_command['motion_epoch'])
         self.emit('command',{'request_id':self.drive_command['request_id'],'action':self.drive_command['action'],
             'status':'PUBLISHED','direction':self.direction,'linear_m_s':v,
@@ -792,7 +948,7 @@ class RobotControl:
                     if self.link is None:blockers.append('PREPARE_REQUIRED')
                     if self.profile is None:blockers.append('MEASURED_PROFILE_REQUIRED')
                     elif self.profile['progress']['body_progress_policy']=='independent_required':blockers.append('INDEPENDENT_BODY_PROGRESS_SOURCE_NOT_IMPLEMENTED')
-                    if self.snapshot()['qualification']['status']!='QUALIFIED':blockers.append('PHYSICAL_STOP_QUALIFICATION_REQUIRED')
+                    if self._read_state('qualification')['status']!='QUALIFIED':blockers.append('PHYSICAL_STOP_QUALIFICATION_REQUIRED')
                     if self.native.snapshot()['lidar_state']!='STREAMING':blockers.append('NATIVE_LIDAR_ON_REQUIRED')
                     frame=self.native.latest_frame()
                     if not frame or not frame['complete']:blockers.append('NATIVE_COMPLETE_FRAME_REQUIRED')
@@ -815,6 +971,18 @@ class RobotControl:
             try:
                 if self.lease is not None:self._cleanup()
             finally:
+                # A cancel can skip the loop's Stop branch. No observation may
+                # remain live after the owner ends, including no-device exits.
+                ended=self._observe_motion(reason=self.state.get('reason') or 'SESSION_CLOSED',ended=True,
+                    stop_readback=False)
+                if ended:
+                    try:self.emit('command',dict(action='motion_observation',status='ENDED',
+                        request_id=ended['request_id'],motion_observation=ended))
+                    except Exception as error:
+                        # Optional result reporting cannot abort independent
+                        # tracker/recording cleanup. Keep the failure sticky.
+                        self.cleanup_confirmed=False
+                        self._update(motion_observation_error=reason_code(error))
                 command=self.state.get('command')
                 if command and command.get('state') in {'ACCEPTED','RUNNING'}:
                     self._update(command=dict(command,state='CANCELLED',reason='SESSION_CLOSED'))
@@ -847,21 +1015,24 @@ class RobotControl:
                 self._command(command)
                 self.emit('command',{'request_id':command['request_id'],'action':command['action'],
                     'status':'ADMITTED' if command['action'] in {'drive','task'} else 'COMPLETED'})
-            except Exception as exc:self._reject_command(command,reason_code(exc))
+            except Exception as exc:self._reject_command(command,reason_code(exc),
+                fault_diagnostic=getattr(exc,'telemetry_diagnostic',None),
+                input_fault_diagnostic=getattr(exc,'input_diagnostic',None))
             processed+=1
             if self.gate.generation!=generation or processed>=8 or self.clock()-began>=.01:break
             try:command=self.queue.get_nowait()
             except queue.Empty:break
         return processed
 
-    def _reject_command(self,command,code):
+    def _reject_command(self,command,code,*,fault_diagnostic=None,input_fault_diagnostic=None):
         # enable()/verified release may block while the PC is still receiving
         # the former generation. Reject those queued intents, never execute or
         # rebase them. Pausing again would revoke the newly issued generation
         # and make each 100ms held-input renewal destroy its own handshake.
         obsolete=code=='MOTION_GENERATION_CHANGED' and command['action'] in {'drive','task','watch'}
         expired=code in {'INPUT_DEADLINE_EXPIRED','OPERATOR_PRESENCE_EXPIRED','HOLD_LIMIT_EXCEEDED','SESSION_EXPIRED'}
-        if (command['action']!='watch' and not obsolete) or expired:self._pause(code)
+        if (command['action']!='watch' and not obsolete) or expired:self._pause(code,
+            fault_diagnostic=fault_diagnostic,input_fault_diagnostic=input_fault_diagnostic)
         if (command['action']=='field_test' and self.field_trial and self.field_trial['status']=='RUNNING'
                 and self.field_trial['case']=='bootstrap_stop'):
             self.field_receipt=None;self.field_until=0.
@@ -888,10 +1059,12 @@ class RobotControl:
         try:self._tick()
         except Exception as exc:
             code=reason_code(exc)
+            original_fault=getattr(exc,'telemetry_diagnostic',None)
+            original_input=getattr(exc,'input_diagnostic',None)
             if self.field_evidence_fault:
                 self._update(secondary_control_fault=code)
-                self._pause(self.field_evidence_fault,repeated_observation=True)
-            else:self._pause(code,repeated_observation=True)
+                self._pause(self.field_evidence_fault,repeated_observation=True,fault_diagnostic=original_fault,input_fault_diagnostic=original_input)
+            else:self._pause(code,repeated_observation=True,fault_diagnostic=original_fault,input_fault_diagnostic=original_input)
 
     def _field_write(self,name,value):
         if self.field_writer is None:self.field_writer=FieldEvidenceWriter(self.directory,clock=self.clock)
@@ -913,7 +1086,11 @@ class RobotControl:
             evidence_error=self.field_evidence_fault or (self.field_writer.error if self.field_writer else None),
             evidence_status=self.field_writer.status() if self.field_writer and hasattr(self.field_writer,'status') else None,
             native_observation=native_observation,
-            active_trial=deepcopy(self.field_trial),trials=deepcopy(self.field_trials[-32:]))
+            # Completed trials remain in the full immutable history below;
+            # do not repeat their large result again as an "active" trial.
+            active_trial=(deepcopy(self.field_trial) if self.field_trial and
+                self.field_trial['status'] in {'RUNNING','PENDING_PERSISTENCE'} else None),
+            trials=deepcopy(self.field_trials[-32:]))
 
     def _field_blockers(self, *, receipt=True):
         result=[]
@@ -1109,7 +1286,8 @@ class RobotControl:
         def output(value):self._input_window(value['challenge'])
         try:
             observed=qualify(self.link,Incoming(),output,self.gate,self.clock,safety=self._safety,
-                supervised_field_speed=CAP_V,post_arm_watch=True,diagnostic=diagnostic)
+                supervised_field_speed=CAP_V,supervised_stop_timing=self.timing_values,
+                post_arm_watch=True,diagnostic=diagnostic)
         except Exception as exc:
             observed=dict(status='INCONCLUSIVE',reason=reason_code(exc))
             diagnostic('FAULT_BEFORE_CLEANUP')

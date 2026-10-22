@@ -1,5 +1,159 @@
 # TwinPulse progress
 
+## 2026-10-23 — v596 제품내러티브·사진충실도·실제RoomPlan 종합분석/소스 체크포인트
+
+사용자원문2개를정확SHA로보존하고 [상세분석](analysis/TWINPULSE_NARRATIVE_ROOMPLAN_ALIGNMENT_2026-10-23.md)을작성했다. 실제USD30mesh/단위누락/Y-up/physics0·기존Library소스probe typed거절·통짜box콜라이더문제로환경Import와개별CAD자산을분리해야한다. 현재9region/직각/사각3벽·group관계전달한계와원사진0/6을확인했다. 제어baseline33 PC/SIM READY와사진·실물품질은별도다. 다음권고는RoomPlan기하보존Import→사진보완→별도collision/nav·SIM/Undo/cold. 이번분석은제품수정/새모델·Cloud·LLM·실물/SSH/삭제0,첨부명령자동실행0. 기존비공개main에소스·시험·두문서·분석/수치요약을반영하고개인사진/USD·평면도/raw/출력·설치물은제외한다. [체크포인트](releases/SIM_PC_CHECKPOINT_2026-10-23.md).
+
+## 2026-10-23 — v595 설치33 PC/SIM 전체 인수·현장시험 진입 gate 통과
+
+설치33 `20261022T141522Z-633d315cfc23`/1674 exact에서 root Start57/재시작49.845/56.859s·native Home/인증 Isaac/AltF4 및 같은 Electron fresh/cold/lineage/history57의39/14/10/5단계, 별도 원 저장기하58의36단계 전체PASS. 60초 연속·4방향·90/360scan·LiDAR OFF·bed/chair·정확 Stop ACK·수정Undo·로그/cold 복원 포함, 일반HTTP/abort0. 원기하 준비59는 명시 별도UI여정이며 같은 초기pose/시각 재현으로 부르지 않는다. 8launch 내부join/root자연0/Job회수분리·최종gate/별도재검사 READY issues0·13음성거절·Sol6.1high 실제최종독립검토. 원47/48/50/53 실패·기존unknown/보조실패는 보존한다. 보고서formatter 후속만 SHA검토/addendum, 제품/원본/gate불변. [한 보고서·실제 최신2영상·모든 시도/ID/SHA/비용](../outputs/robot-continuous-repair-20261021/report.html); 영상 전체decode/대표 encoded검수PASS. 추가50누적4.6899930/잔여45.3100070·이전20별도불변. **로봇OFF: 실제Pi 빌드/readback·센서·부하저장·제동/주행/세계정합 NOT_RUN.** 감독 전원시험 진입 준비이며 전체제품·사진/CAD완료가 아니다. 실물/SSH·새설치·시스템·삭제/Git0. 아래 v594부터는 중간 이력이다.
+
+## 2026-10-22 — v594 원53 전체FAIL 보존·목록 metadata 최소보완/재개
+
+설치32 일반53/restart53 실제AX Home/Isaac/nativeAltF4·내부join/root0/lockports0 PASS. fresh53의39단계 통과에도 정상projects GET6.027초abort로wholeFAIL이며cold/lineage/history/원54는NOT_RUN. 서버metadata열거와RAM약1MiB압박동시관측·단독원인UNKNOWN. DirEntry후보순위최적화는동일280dirs응답SHA/원선택보안검사/6초유지·offline시간약절반, 실제새33/57·58/gate미완료. 7launch종료gate및선택repro SHA결속도보완. Astra한도후Sol읽기검토중·추가50잔여45.3543731·실물OFF/삭제Git0. 상세PROJECT_MEMORY v594.
+
+## 2026-10-22 — v593 설치31 실제47/52 통과·내부 종료 gate 거절/큐 wake 보완
+
+같은31의 fresh47/cold47/lineage47/history47=39/14/10/5, 원기하52=36 전체PASS. 그러나 cold/restart의 optional diagnostic worker alive로 gate47 NOT_READY이며 root0/포트0로 대체하지 않는다. .1초 Queue 대기와 .1초 join 경합을 explicit sentinel로 보완·기한불변/진짜출력block 계속FAIL/owner별cleanup 지속·RED1/47회귀/Astra 검토 통과. 새32·actual53/54·최종gate 대기. 원48 startclearance 거절, 별도 실제UI준비49, 원50 body10cm/world-X8.768cm 시험오판을 분리·원FAIL보존. 52는 body기준 교정 후 별도 저장기하 여정으로 동일시작pose나fresh와합친실행이아니다. 추가50잔여45.3991619·실물OFF/SDK시스템삭제Git0. 상세PROJECT_MEMORY v593.
+
+## 2026-10-22 — v592 후보31 scan700·원자관측 동결/47·48 인수 대기
+
+현재31 2769c3…8b636, UI1소스compiled4delta·원scan700/이미지1000·제어pose권한불변. 기존5초visibility를공유원자관측창으로대체·absence만재관측/중간visible위반·늦은응답즉시FAIL/gate독립검사. UI209/Node4/gate33·Astra실제최종읽기추가확정차단없음. 원45/gateFAIL보존·현재NOT_READY/전체47/원48후판정. 추가50잔여45.4438517/로봇OFF/새SDK시스템삭제Git0. 상세PROJECT_MEMORY v592.
+
+## 2026-10-22 — v591 원45 LiDAR 표시FAIL 보존·원700ms/원자표본 보완
+
+설치30의일반/재시작·보조/replay는통과했지만fresh45는21PASS뒤scan표시검사FAIL. 원scan stamp/원자시각이없어제품/IPC기여UNKNOWN·step827ms를scanage로쓰지않는다. 전체NOT_READY/cold·이력·원46미실행. 원700ms 전용expiry/render now와같은renderer-turn의DOM/clock/frame/epoch보존·gate독립음성보완중·RED/GREEN207/gate32·최종Astra/새47·48대기. normal45최초replay겹침은분리보존후깨끗한일반45재실행. 원문/영상/정상정리/memory750행SHA·추가50잔여45.4438517보존. 상세PROJECT_MEMORY v591.
+
+## 2026-10-22 — v590 최종30 a9ed718… 설치/45·46 실제 인수 대기
+
+1674파일exact·제품delta3개, 최종100copy/전체원문검증 유지·bounded진단. Astra가찾은optional clock/phase 예외마스킹을격리해 원결과/예외보존·61보조PASS·최종읽기추가확정차단없음. 29는미설치중간본제외. 설치45보조·replay→일반/재시작→fresh/cold/lineage/history45→원46→진단UI/gate를순차수행, 아직NOT_READY/실물OFF. 원43FAIL보존·추가50잔여45.4887824. 상세PROJECT_MEMORY v590.
+
+## 2026-10-22 — v589 설치28 fresh43/cold43 PASS·원 이력 GET FAIL/최소 복원비용 보완
+
+일반43/restart43/actual fresh39/cold14단계는 통과했지만 lineage43의 원 실물65fe…a33f GET가20초 만료하여 전체NOT_READY다.7단계성공을 전체성공으로합치지않고 history43/원44 NOT_RUN·원문/영상/runtime/정상종료/memory43 1104행보존. 원 서버단계기록부재로단독원인UNKNOWN. 전체42484행·119.5MB검증은유지하고 최종100개만깊게복사하는최소수정·반환SHA동일/격리5.2–5.4→2.91–2.92초. read/encode진단추가·기한/권한/기하불변. RED/21보조PASS·Astra검토/후보29/전체45·원46대기. 실물OFF·추가50잔여45.4887824/이전20별도. 상세PROJECT_MEMORY v589.
+
+## 2026-10-22 — v588 원41영상HTTP실패/전용연결28수정·실제43대기
+
+41은60초hold38.866s에서화면6131183ms만료로FAIL. 다음614HTTP2047msURLError/JPEG16ms/raw15ms가원기록에남았고다른GET은응답했다. snapshot197ms는실패뒤로원인에서제외·OS/connect/send원errnoUNKNOWN. 28/a103430…cccb2/1674exact는영상전용owner재사용/원2s·POSTretry0·close오류sticky/원거절보존/프레임별진단결속보완·104회귀31gate/Astra읽기추가source차단없음. 보조43뒤일반/전체43·원44/gate전NOT_READY. 원41/정상cleanup·539memory표본SHA보존·추가50잔여45.5338313/이전20별도·실물/시스템삭제Git0. 상세PROJECT_MEMORY v588.
+
+## 2026-10-22 — v587 원39 도착후화면FAIL·snapshot 인코딩27 최소수정/실제41대기
+
+39는24PASS·침대명령도착후stale204→staticpreviewOnly/livefalse로실패했다. age707ms만의만료가아니며후행atomic복구로덮지않는다. 원1234event/3.8MB snapshot1438ms·status지연이동시발생했고JPEG/lock/GIL단독기여UNKNOWN. 새27은인코딩1파일만event단위로바꿔원bytes/hash를유지·격리CPU/시간약72%감소·peer최대gap보장아님. 8신규포함86보조/Astra소스읽기PASS범위·실제41/42/gate아직NOT_RUN/NOT_READY. 원39로그/영상/정상cleanup·752memory표본/SHA보존. 추가50잔여45.5781404/이전20별도·로봇OFF/SSH센서모터·시스템삭제Git0. 상세PROJECT_MEMORY v587.
+
+## 2026-10-22 — v586 설치26 원37 조건통과/집계FAIL보존·39/40 재시험 준비
+
+원37은 모든39step PASS·Beta 장애물정지/명시후진통과이나 마지막fault window의 bounded-preview 409 1건으로whole FAIL을보존했다. 원본문/context/권한flags가없어소급PASS금지. 제품의기존1장cache/typed409처리/마지막픽셀·1초freshness는변경0. 기록기만 exactSHA/context/native양방향유일성/후속동일장면decode와별도Stop을검증해구분·Astra지적2개및음성보완. source26/1674exact불변. 일반37/재시작native종료PASS·cold/원38미실행. 보조39 첫systemPython오선택(PIL없음)원로그보존/기존venv재시험·새설치0. 실제39/40/gate전NOT_READY·로봇OFF/SSH센서모터·시스템삭제Git0. 추가50잔여45.6231914/이전20별도, 상세PROJECT_MEMORY v586.
+
+## 2026-10-21 — v585 원35 actual raycast GC·closure cycle확정/26최소수정
+
+보조계산없는실제35도16PASS뒤Beta828msFAIL. GCcycle2434는세대2/MATCHED/TwinPulseSimRaycast/735ms·CPU734.375ms/visit→cast→scan에서촉발됐다. ray당재귀closure cycle1/index당build cycle1을격리RED2로확인. 26(692686…bb44d8/1674exact)는geometry1파일만module builder+명시left-firstDFS로변경·취소/기하/한도/GC정책/기한보존. 23보조PASS/Astra읽기검토완료,전체GC제거·성능해결/실물성공아님. 현재보조37뒤normal/restart/whole37·원38순차재인수예정/NOT_READY. 원35로그/영상/runtime/cleanup·707메모리표본SHA보존,예산추가50잔여45.6679994/이전20별도·실물/시스템삭제Git0.
+
+## 2026-10-21 — v584 원33 GC 동시정체 FAIL·진단25 설치/실제35대기
+
+fresh33는16단계PASS뒤Beta625ms ISAAC_UPDATE_STALLED로실패했다. 직전tail_idle570ms/processGC563ms/KitCPU0결속이며collector세대/thread/CPU원인은미기록·UNKNOWN. 원409는별도release응답/원실패SHA와native정상cleanup·gate33NOT_READY보존. main보조replay병렬부하도혼입, 다음실제통합과겹치지않는다. Host-only GC origin/slow32/phase복원진단만추가한25(dd041b334ddb/1674exact)를설치했고Astra지적보완·60보조/AST통과. GC설정/만료/기하/권한변경없음·성능해결선언아님. 보조35뒤normal/restart/whole35·원36순차재인수예정/현재NOT_READY. 로봇OFF/SSH센서모터·시스템삭제Git0·예산추가50잔여45.7127633/이전20별도.
+
+## 2026-10-21 — v583 Codex 정상 재실행 정리 확인·현재33 실제 재인수 중
+
+원도구51개+Codex17개PID/생성시각모두종료·새도구11. 도구WS단순합2.43→.586GB(공유중복가능),DWMprivate잔존/WS감소·일반33직전가용6.11GB. 사용자화면켜짐/잠금해제확인. own Tk38 AX만성공/native캡처2timeout·120초자동종료·원지속메모리증가미재현으로캡처원인확정아님. 같은설치24일반33/재시작50.802/55.871s·actualAX Home/인증/AltF4·소유정리PASS,초기미확인상태별도보존. 새전체33실제모델/두SIM/네방향/60초이후검증진행중·원기하34/gate남음,READY아님. 원31FAIL/현재source·기준보존/실물OFF·시스템설치삭제Git0. 최종동일보고서후속갱신예정.
+
+## 2026-10-21 — v582 종료승인후 선택종료 한계·own kernel reset 전후
+
+현재종료확정TwinPulse시험프로세스0,도구는31→51개증가관측·reset뒤51그대로다. 지원JS reset1회만수행/MCPclose·강제종료·설정변경0이며정리완료가아니다. DWMprivate7,554,936,832B전후동일/가용약2.6GiB,도구부담과원31네트워크실패인과를구분한다. 현재Codex/다른작업공유여부를안전하게매핑/선택해제할기능이현도구에없어일괄종료안함. 다음은작업저장후Codex만정상종료재열기·원36대비계측이며자동실행/PC재부팅·driver필수확정아님. 설치24/원31FAIL/gateNOT_READY/실물NOT_RUN·예산불변. [같은보고서·실제행동/한계](../outputs/robot-continuous-repair-20261021/report.html#authorized-cleanup).
+
+## 2026-10-21 — v581 백그라운드 프로세스 감사 / 도구 연결 수명 미확정
+
+현재/과거PID+생성시각을 대조해 추적된 옛TwinPulse 생존0·현재App/Kit/시험녹화후보0/lock·포트0, 재사용PID4개를 구분했다. 다만 ComputerUse/Node19개와REA전송12개가 남아WS단순합약1.3GB(공유중복가능)이다. 현재Codex자식이지만 모두필요한지·종료누락/DWM원인인지 미확정이고 JS reset≠MCP전체종료다. 사용자지적에따라드라이버변경보다불필요도구세션소유/수명점검우선. 이번읽기전용/종료·설정·driver/제품·새App·로봇0, source24/원31FAIL/gateNOT_READY/예산불변. [같은 보고서·원PID/메모리](../outputs/robot-continuous-repair-20261021/report.html#background-audit).
+
+## 2026-10-21 — v580 진단 계약 수정·일반 시작/재시작 PASS / 새 전체31 FAIL·환경 미해결
+
+현재24 `20261021T123341Z-5fcf913946a1`/source5fcf…bc42638/1674exact. frozen23 대비제품1파일의 actual UpdateProbe CPU/resource allowlist결함을 strict검사유지하며수정·RED/GREEN59/Astra delta검토완료. 설치보조31·33/replay31 PASS는보조다. 일반Start와재시작39.071/52.725s·중복sameowner/debug0·actualAX Home/Isaac인증·nativeAltF4/root0/Job/backend/lock포트0 PASS(exec rootStart이지Explorer인수아님).
+
+실제새생성31은10단계뒤60초hold37.596s FAIL. WindowsWLAN끊김/재연결과nativeGET3 ERR_NETWORK_CHANGED→App미확인/live/anchorsOFF·원INPUT_STALE를보존했다. 실패frame767.767ms<1000/동일epoch·rev, frame만료나과거host정체로오인하지않는다. persisted119CPU행은수정보존확인이지UI다운로드/coldPASS아님. 후속cold/lineage/history·원장면32·진단반출cold NOT_RUN, gate31 NOT_READY. 원실패로그/Kit/SHA/영상·정상native종료뒤실제cleanup을보존하며초기wrappercleanup미생성과구분한다.
+
+종료후에도DWM resident/private증가·22:07~08 App/Kit0에서WS4.251GiB/private7.036GiB,ownComputerUse JS reset뒤실질회복없음. Intel27.20.100.8935/10세대는공식누수안내의후보이나인과확정아님. privatecommit≠RAM/pagefile/모델파일. driver/OS/Wi-Fi변경/강제종료/재부팅/삭제0. C여유약55.2GB. 호환업데이트검토·새시스템변경은해당승인후,안정환경의새전체33/원장면34/일반재시작/진단UIcold/gate까지완료전로봇요청하지않는다.33보조만PASS·App NOT_RUN. 새5HTTP 추정.0454455/UNKNOWN0·추가50정확잔여45.7582517/이전20별도,로봇·SSH/새외부도구/Git0. [모든시도·화면/녹화·ID/SHA·환경추세·정확잔여 단일보고서](../outputs/robot-continuous-repair-20261021/report.html#current-failed-review). 아래v579는다른설치의이전비교다.
+
+## 2026-10-21 — v579 재부팅 확인·동일본 원장면30 전체36 PASS·메모리 A/B 완료
+
+실제boot20:57:50.5KST/설치23 77b57c434631/1674exact·collector/UI/Windows일치issues0. 같은실제Electron Test/원25저장기하30은4방향·60초·90/360scan·bed/chair·명시fault/반출/Exit36단계PASS, chair55.876s도착(원29는10.708s후516ms정체FAIL). root0/Job2/backend0·lock/listener0/cleanupPASS·443행memory+원문/Kit/전체영상SHA보존. App닫힘기준시스템commit50.191GB→9.662GB/DWMprivate25.498GB→67.854MB/nonpaged3.231GB→747MB/가용2894→7594MiB, 새시험종료후가용8163MiB. privatecommit≠RAM·background/driver변화혼재·특정누수/단독원인미확정. 진단allowlist결함은같은sourceA/B위해미수정·별도fix/newbuild/최종일반재시작/gate남아전체NOT_READY. 원29FAIL/gate27덮기금지·저장기하반복≠exactpose/fresh생성/실물. 새LLMUSD0·잔여45.8036972·로봇/시스템변경/설치/삭제/Git0. [한 보고서·부문별 비교·실제 화면/녹화](../outputs/robot-continuous-repair-20261021/report.html#reboot-result).
+
+## 2026-10-21 — v578 재부팅 없이4여정 PASS·원29 정체 FAIL·부문별 메모리 원자료 보존
+
+23 source77b57c434631/1674exact 설치·source동일 보조5집합/replay 및 실제fresh27/cold27/lineage27/history27 39/14/10/5 각각PASS. R4 명시Analyze→다음cold GET-only 동일결과복원은 설치UI에서 확인했지만 저장원05 body UNKNOWN이다. 원25저장장면29의chair는 event1182/09:10:31.117KST/dt516ms ISAAC_UPDATE_STALLED로FAIL·gate27 NOT_READY. 원문/Kit/영상SHA보존후native정상종료/root0/Job2/backend0/lock0. Windows 부문별RAM/commit/pools/cache/실제pagefile/GPU/PID+creation/CPU/fault865+900+종료후45표본·stage보존. 실패전후가용650.9/600.8MiB·KitWS축소/CPU/fault증가관측, 원인RAM단정금지.27최저281.7MiB는engine_start이며chairPASS대조아님;29종료후DWM WS2.557GB와27의54MB혼합금지·privatecommit25.509GB≠RAM. Astra확인host새진단키/구checked_work allowlist불일치로 exact516ms runtime_work/fault=null·최종ring회전/900초후native종료공백기록. 동일frozen23/collector/UI SHA로재부팅A/B reserved30준비, 비교후진단fix/newbuild인수별도. 자동재부팅/다른앱종료/OS/새물리/삭제/Git0, 일반27재시작·재부팅후비교NOT_RUN. 새5HTTP USD.0448044/UNKNOWN0·추가50잔여45.8036972. [한 보고서](../outputs/robot-continuous-repair-20261021/report.html#memory-reboot), 전체미완료.
+
+## 2026-10-21 — v577 명령별 센서 비교 소스·frozen 역할 완료, 실제 전체는 NOT_READY
+
+offline Analyze/별도process/epoch별wheel·독립LiDAR·동일세션 잡음/원문SHA·취소·Details/cold GET을 연결했다. Job/Library 원오류·독립정리와 CPU진단 실패 격리도 보완, Astra xhigh 소스 재검토 추가 확정 blocker 없음. 동결 미설치 후보23 77b57c434631/1674 verified·실제 frozen role 원05 42484행·29segment/receipt exact·exit0 PASS. candidate5보조집합596(1skip)/35/83/UI559/tsc 모두 PASS·source 전후동일, 설치/UI/주행 인수가 아니며 finalgate 대체 금지다. 현재21 whole25 chair에서 APP.update921ms/가용RAM453MiB→화면1.040s stale 실패와 gate25 NOT_READY를 유지한다. 종료후 DWM privatecommit약24GB는 모델파일/실제RAM이 아니며 단독 원인 미확정·시스템변경0, PC재시작 가능 여부 답변대기. 다음은 자원확인후 후보23 설치→동일39/14/10/5·일반재시작·원장면재현·gate, 새 분석의 다음 cold GETonly 동일결과 복원 포함이다. 로봇은 켤 필요 없음/새물리0·기준완화/삭제/SDK/Git0. 추가50 잔여45.8485016. [한 로컬 보고서](../outputs/robot-continuous-repair-20261021/report.html).
+
+## 2026-10-21 — v576 실제 whole25 FAIL·원문 기반 보완 계속
+
+현21 a4e83842/1671 exact·보조5집합/replay/Astra는 통과했으나 실제25 chair주행에서 APP.update921ms→화면1039.896ms stale/ISAAC_UPDATE_STALLED로 실패했다. 4방향/60초/90/360/bed 성공을 전체통과로 합치지 않는다. 종료전·후 원문/Kit SHA와 native정상종료 증거를 보존했다. 가용RAM453MiB·종료후DWM private24GB는 메모리압박 후보이며 단독원인 미확정, OS프로세스 변경0. provider 조회lock/204drain 수정은 이 Kit 정체 해결을 뜻하지 않는다. R4 앱내 명령별 독립LiDAR/정지잡음 비교도 남아 pure분석초안 작성중(미연결/미검증)이다. **NOT_READY**, 로봇OFF·새물리/삭제/Git0. 전체재인수/일반재시작/gate까지 계속한다.
+
+## 2026-10-21 — v575 원15/17 후속 실패·원자적 화면 수신 재인수 준비
+
+SDK close 비반환과 root/Job 종료 진단·gate 결속은 실제15 일반/재시작에서 확인했지만 whole15 Beta전진은 tail.703s/원dt.796으로 FAIL, 진단용 저장장면17은90도 엔진완료에도 화면1.044s 지연으로 FAIL이다. 원문과 실제 영상은 SHA 보존한다. live atomic1요청/별도history-only cold복원·원1s/identity 유지, 동일slowtail 하위CPU/GC 및 진단 예외보호를 보완했다. UI112·진단7 보조/Astra 검토는 완료됐으나 최종 후보18 실제 전체 인수는 남았다. **NOT_READY/로봇OFF**, 원15tail 특정근본원인 UNKNOWN. [단일 보고서](../outputs/robot-continuous-repair-20261021/report.html). 아래v574는 이전 진행이다.
+
+## 2026-10-21 — v574 연속 조종 수정·12 최종 재인수 진행 중
+
+확인한 event/상태/PC admission 잠금·직렬화·ROS clock-pair 결함, 종료 wheel 관측·원 실패 표시와 optional 진단 예외를 수정했다. 원08 동기scan671ms/fleet685ms+APP438ms를 확인하고 단일 no-queue SIM raycast worker·원결과 결속/폐기·독립cleanup과 최종종료오류 보존을 보완했다. 현재12 `20261020T192448Z-c070e7bac514`/1671 exact·보조5집합/source동일 PASS, 실제 whole12은 진행 중으로 아직 전체 READY 아님. 원03/05/07/08의 실패·원문/SHA를 유지한다. 보호값350/100/300/200/450ms 불변, 실물접속/삭제/Git게시0. [단일 보고서](../outputs/robot-continuous-repair-20261021/report.html). 실제Pi·주행·제동·정합과 일반화된 독립LiDAR 자동판정은 미검증/미구현 상태를 유지한다.
+
+## 2026-10-21 — v573 수정계획·현재 설치본 SIM60초 데모
+
+실물 원05 지연/미세이동의 후속계획을 먼저 정리했고 제품/설치/보호값은 변경하지 않았다. [한 보고서](../outputs/sim-zoom-demo-20261021/report.html)에 R1–R5인수조건과 실제텍스트1/사진2/실패보존·SIM조종·정확예산을 결속했다. 현재18 실물재시험NOT_RUN/전체NOT_READY 유지. 실제원사진 두번째는 새 explicit coarse 주요가구5개 추정이며 첫 상세26개 중4pending·GETabort4개를 대체통과시킨 것이 아니다. 최초가려진로봇정의는미구동/Disconnect보존·빈바닥Scout새등록후실제4방향/채팅2π/침대ARRIVED/Stop/LiDAROFF/정상Exit를 촬영했다.
+
+[최종MP4](../outputs/sim-zoom-demo-20261021/TwinPulse-SIM-Demo-60s-2026-10-21.mp4)60.000초/3,050,335B/SHA5a2b54731619f5572c46df8de5f671208ade0bb08a6d853d680e373b5a156e31·1600×900/30fps. 원1499표본/영상/시각·16편집구간/배속표시/실제포인터annotation·대표decode확인,실물영상아님. 새23HTTP 추정USD.2362638/UNKNOWN0·추가50누적3.7472106/잔여46.2527894, 이전20별도. source77e1d4b5 설치불변·하드웨어/새설치/삭제/Git게시0, App/owned정상종료.
+
+## 2026-10-21 — v572 원 센서 이동량 분석·반복 목격 질문 제거
+
+사용자의 “티가날 만큼 움직이지 않았다” 지적에 따라 원05 명령/출력·wheel odom·LiDAR 전후 스캔을 계산했다. wheel 추정 전진10.681mm/후진−3.240mm/좌2.665°/우변위0이며 유효 연속주행 미완료다. 정지 LiDAR6쌍의3.318mm중앙/13.431mm최대 추정잡음과 동작전후수mm가겹쳐 독립 몸이동확증으로 쓰지 않는다. 일상적 목격질문 대신 원센서/잡음비교·미확인 유지 원칙을 AGENTS에 기록하고 [기존 단일보고서](../outputs/robot-powered-20261021-report/report.html)에 수치/원frame·SHA를 추가했다. 제품/설치/권한/예산 변경·새로봇/모델 호출0, v571 전체NOT_READY 유지.
+
+## 2026-10-21 — v571 실제 로봇5회: 짧은 정지 관측 PASS / 전체 연속주행 NOT_READY
+
+[원문·화면·영상·모든 ID/SHA·정확 예산 단일 보고서](../outputs/robot-powered-20261021-report/report.html). 실제 Pi build/loader/base/readback 및 감독 Bootstrap Stop은 확인됐으나 마지막 실제 operation65fe078b1975404886704c2df728a33f의 forward/left 입력 만료·backward/right guard200ms 초과로 네 방향 무결점 FAIL. HTTP200만으로 초반 성공 안내한 것을 원문 기준 철회했다. 최종18/source77e1d4b5…70b3c/1669exact는 첫 _tick 콜백 경계와 예외 원시각·출력단계 진단 보완·설치/152+55subtests·cold 이력보존 한정 검증, 실제18 주행 NOT_RUN이다.
+
+04의 로봇/PC256MiB 용량실패·source본문누락은 보존하고768MiB/256segment 유한계약과 완료 active 중복만 보완했다. 05는 raw42484행·전체반출·robot/PC complete/cleanup true,340.600초실제renderer 영상SHA551dbfd3…bea. 원02/04 full녹화 타임라인 미확보는 종료영상과 구분. 다음은350ms 내 nonce/처리/출력 병목 입증·최종18 원네방향재시험 후 채팅90/360/전체사이클이다. 현재 App/owned 종료·motorOFF확인/전원OFF회신미수신. 새모델HTTP/USD0/추가50잔여46.4890532·이전20별도불변, 새SDK/ROS설치/삭제/Git게시0.
+
+## 2026-10-20 — v570 Prepare 세 보완 구현·설치 / 실제 타깃 미실행
+
+현재 20261020T130655Z-7464ec6bcea2/1669 exact·physical_robot=true. 원예외 보존·요청/operation/Twin/source ID를 묶은 빌드 진단 반출·최종 binary 도움말 로더 검사를 구현했다. 캐시도 재검사하며 device lease 전에 끝난다. Astra가 중간 발견한 atomic receipt, 자식정리 오류 분리, symlink 진단 경로, sticky incomplete, sourceID 결속도 수정했고 최종 읽기검토에 미해결 확정 소스문제는 없다.
+
+최종 no-device61(26subtests)·별도contract56(8subtests)·UI136은 보조 집합이다. 같은 설치 Electron Test에서 원거실/원operation752010e7…을 열어107/107events·84sources·실패segment11/receipt bytes SHA exact/권한 미복원·Exit를 확인했다. 새 진단은 별도무장치 주입/반출/cold 복원(op19557f83…)으로 검증했다. 실제 Pi compile/loader/readback·주행은 NOT_RUN이며 원 실패 단독 원인 미확정도 유지한다. 첫 잘못된 채널은 설치전 거절했고 fixture/selector/report 도구오류도 [단일 실제보고서](../outputs/guard-diagnostics-20261020/report.html)에 남겼다. App/owned종료·lock/포트0, 새 로봇접속/Nebius HTTP/USD/SDK설치/삭제/Git게시0·추가50 잔여46.4890532.
+
+## 2026-10-20 — v569 Astra 독립 재검토 / 수정 타당성 승인·Prepare 실물 미확정
+
+사용자 요청으로 Astra xhigh가 원13분할 SHA·원107/107 이력/84sources·current 설치 수정파일을 다시 검토했다. SHARED/cache identity/상대 library 경로 수정은 타당하고 cold history는 검증됐다. 실제 Pi 누락 파일/빌드 로그 부재로 Prepare 해결 완료는 아직 아니다. guard4/bootstrap3/history10 보조 재실행은 actual target build가 아니다.
+
+추가로 rename 후 verify 오류를 failure.json 쓰기 FNF가 덮는 진단결함을 main 무장치 주입으로 재현했고, build.log/구체 실패의 operation 반출 누락을 확인했다. 원 예외 보존·operation에 결속한 bounded 빌드 증거·최종 실제 binary의 무장치 loader 검사만 최소 보완으로 권고하며 이번에는 구현하지 않았다. [원 보고서에 독립검토 추가](../outputs/robot-powered-20261020-final01b/report.html#astra-review-20261020). 제품/설치/앱 실행/로봇 접속/새 Nebius 호출/Git게시0.
+
+## 2026-10-20 — v568 실제 전원 연결 성공·Prepare 실패 / 수정 후보 설치
+
+현재 설치29c886 실제 App→SSH 인증/거실 복원/지속 Connect는 성공했으나 zero-command Prepare가 FileNotFoundError로 실패했다. BUILDING362.6s/CHECKING71.1s, 센서·Arm·바퀴 요청0. cleanup 미확인은 그대로이며 사용자에게 전원 OFF 요청했다(실제 OFF 미확인). operation `752010e7fbab430e9a4c6213839a752f`; 원문22554accepted=saved/13분할53,978,091B 전SHA 일치.
+
+SHARED 미지정/`.so` 기대 계약을 수정하고 typed 산출물 검사·상대 RPATH를 추가했다. 이전 fixture가 `.so`를 만들어 실제 CMake 선언을 검증하지 못한 공백을 기록했다. 첫 후보584 cold에서107→7 이력 누락도 발견; 옛 source validator의 C++/CMake/XML/notice 거절이 원인이다. 형식/경로/SHA 경계를 보존해 수정했고 원본 read-only replay와 최종9f0a 후보의 실제 UI cold107/107·source84·cleanup=false·자동접속0을 확인했다. Astra xhigh1 독립 읽기검토, 보조4+3+2+10은 실제 Pi 성적이 아니다.
+
+현재 `20261020T121823Z-9f0a5bb0ae10`/1669 exact는 이력 복원·다운로드·Exit 한정 PASS. 수정 Pi compile/readback·센서·주행·정합·새 전체 SIM은 NOT_RUN, 현재 전체 실물 READY 아님. [실제 화면·영상·원시도·ID/SHA·정확 잔여 한 보고서](../outputs/robot-powered-20261020-final01b/report.html). 두 녹화 분할/passive 다운로드 도구 실패/cold09 실패도 보존. 새 모델HTTP/USD0·추가50잔여46.4890532/이전20 불변, 새의존성·ROS설치/삭제/Git게시0. App 정상 종료/현재 lock·8765·19222=0.
+
+## 2026-10-20 — v567 데모 녹화에 커서·클릭 강조
+
+두 renderer 녹화 경로에 실제 trusted mouse event의 화살표/옅은 노란 halo/짧은 클릭원을 추가했다. 기록시만 표시하고 입력을 가로채거나 제품 상태를 바꾸지 않으며 끝/실패/reload를 정리한다. 원 녹화 간격/원시각 유지, 옛 영상 좌표 복원/수정0. 같은 설치 Electron의 ui02 짧은 실제 메뉴 녹화4항목 PASS(끝좌표오차0px·pageerror0), 실제 JPEG/MP4의 온전한 원·커서도 직접 확인. ui01 작은 SVG 밖 강조 잘림은 별도 시각 FAIL로 보존하고64px 내부중심으로 수정 후 재시험했다.
+
+[로컬5.6초 샘플](../outputs/pointer-recording-20261020-ui02/recording/app-screen.mp4) · [실제 결과](../outputs/pointer-recording-20261020-ui02/result.json). 샘플238725B/SHA268ec16c…9b57c2. recorder도구만 수정/설치판 bytes 불변, 앱 정상Exit/lock·포트0. 새 모델HTTP/USD·로봇/설치/삭제/Git게시0, 이전 full acceptance/실물NOT_RUN과 예산 불변. AGENTS·조작 가이드·Memory/Baseline 동시 갱신. 새 전체 demo 녹화나 업로드를 한 것은 아니다.
+
+## 2026-10-20 — v566 Codex/Claude Code 등 로컬 에이전트 조작 안내
+
+README 앞부분에 [실제 Electron 에이전트 조작 가이드](DESKTOP_UI_TESTING.md)를 연결했다. 일반/native·명시Test/CDP·기본4검사·외부 smoke·SIM/실물을 구분하고, 실제 반환 포트/launch 확인·복사 prompt·기존 실행 예제·ID/로그·정상 종료/재열기를 영어로 정리했다. 전용 Codex/Claude/MCP 통합이나 Claude 별도 환경 검증 완료를 주장하지 않는다. 고정19222 예제와 모든 패키지에 실물 controller가 없다는 옛 단정을 수정했다. Test 모드는 실제 데이터/백엔드이며 비용·로봇 권한을 부여하지 않는다.
+
+정적 확인: PowerShell 예제3개 parse, 참조7개/link/Node syntax PASS. 실행 예제는 이번에 실행하지 않았고 앱/모델HTTP/로봇/설치0. 설치/source29c886bf…688a와 패키징 대상 bytes 일치 재확인, v565 실제 인수 불변. Memory/Baseline 함께v566 갱신. 다음 승인된 GitHub 업로드에 README/guide 포함, 이번 push/게시0.
+
+## 2026-10-20 — v565 로봇 OFF 사전수정·현재 설치본 전체 집중여정 완료
+
+현재 로컬08 `20261020T081059Z-29c886bf13b1`/source29c886bf13b1dececb0199cbda4eff6e79adb08d93e19911764bc222686c688a/1669 exact. 같은 Electron Test 창·실제 Flash/Nemotron·Isaac에서 fresh39/cold14/90도·수정Undo8/원실물이력4를 각각 전체 통과했다. 60초hold·수동/채팅·360scan·침대/의자 도착·Stop/OFF/반출·명시fault 포함, display761표본 최대897.556ms/원1초 초과0/정상경로interception0. 일반 Start67.955/69.084s·중복sameowner/debug0·실제 Home AX/native AltF4/현재owned·lock·port0도 별도 확인. gate9역할 SHA exact/READY/issues0, 필수step누락 negative NOT_READY. Astra xhigh 독립 읽기 감사에서 현재 새 진입 blocker없음.
+
+ROS 삭제가 아니라 live bootstrap guard_base 경로/prepare archive 전이 의존 누락 및 설치 PC의 measured-profile robot-peer import 결함이었다. 실제 원receiver와 격리-I App save 원FAIL→수정 후 정상400을 재현했다. PC SDK는 일반 앱 필수품이 아니며 Prepare가 기존 Pi의 source-SHA 빌드·검사·readback을 lease 전에 수행한다. unexpected backend 예외는 재실행 없이 unknown/진단ID, source/prose/locals제외, UUID결속; 진단 저장 실패 시 앱조회 대신 로그만 가능하다. 느린 진단 출력은 bounded writer로 분리했다. 보호기한·속도·기하 완화0.
+
+모든 원03/05/06 렌더·847ms HTTP UNKNOWN/07 import 실패는 보존하고 새통과로 소급 해결하지 않았다. normal08의5일 전 notepad/PID 재사용·조기 restart 관찰 혼합은 시험기 결함으로 원FAIL 보존, 생성시각 확인기 후 두 독립 일반 여정 재실행·외부프로세스 종료0. supplementary08의 최소fixture broker 누락3곳/중복6FAIL·ERROR도 보존, 제품 변경 없이09 보조5집합 PASS/source unchanged(PC441/1skip·native33·field72·UI535·tsc). 실제 여정 수에 합산하지 않는다.
+
+최종 실제 전체 시험영상387.48초/5,477,675B/SHAed8758a6…46973d, Home→Exit·원572/packet573 최대20ms·배속/보간0. fault·local설정 포함이므로 공개 Demo 게시0. [하나의 로컬 보고서·실제 화면/모든시도/ID/SHA/비용/정확잔여](../outputs/robot-field-ready-20261020/report.html). 새40HTTP/USD.3661302/UNKNOWN0·추가50 누적3.5109468/정확잔여46.4890532, 이전20 별도 불변. 새로운 Git쓰기/삭제/SDK·ROS설치/SSH·센서·모터0, 자료/dirty 보존. 실제 새 Pi target compile/readback·센서/저장·제동/주행·세계정합 및 native전체/Explorer/OSpaste/DPI·새사진 품질은 NOT_RUN. 감독 무구동 Prepare부터 시작할 준비이지 실물 성공 보장이 아니다.
+
 ## 2026-10-20 — v563 private source/archive preservation and exact-path cleanup
 
 main `f3b7cf84903702d5059dedcd504d7a838d462590`과 기존 비공개 [scoped SIM/PC 복구 Release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-alpha-2026-10-20-scoped-checkpoint)를 보존했다. 원1668-file ee4c package ZIP189,173,012B의 원격 재다운로드 SHA6458ee38…d596a5 일치를 확인한 뒤 삭제했다. source preflight1743/키 패턴0·보조75(1skip)·경로8거절/2정상. 원 dirty-build provenance와 실물/전체fresh 미인수는 그대로다.

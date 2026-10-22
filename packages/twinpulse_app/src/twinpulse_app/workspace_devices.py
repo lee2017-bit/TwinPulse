@@ -109,6 +109,7 @@ class WorkspaceDevices:
 
     def bind_operation(self, context):
         """Called under the shared start lock before a fresh physical operation."""
+        self.cancel_offline_motion_review()
         if self.engine_process_probe_blocked:
             raise BrokerError('engine_observation_stale','Wait for current engine observation before a new physical operation.',status=409)
         for other in self.contexts:
@@ -125,6 +126,11 @@ class WorkspaceDevices:
         return bool(self.readiness and self.readiness.local_operation_active()
                     or self.controller and self.controller.operation_active()
                     or self.diagnostics and self.diagnostics._running())
+
+    def cancel_offline_motion_review(self):
+        pool=self.physical_fleet
+        review=getattr(pool,'motion_reviews',None) if pool is not None else None
+        if review is not None:review.cancel_for_start('PHYSICAL_START')
 
     def physical_runtime_active(self):
         """Conservative LOCAL proof for an idle/SIM-only process-loss probe.
@@ -210,10 +216,9 @@ class WorkspaceDevices:
             if self.closed:
                 return
             self.closed = True
-        if self.physical_fleet is not None:self.physical_fleet.close()
-        for service in (self.controller, self.diagnostics, self.readiness):
+        errors=[]
+        for service in (self.physical_fleet,self.controller,self.diagnostics,self.readiness,self.registry_service,self.owner_lease):
             if service is not None:
-                service.close()
-        if self.registry_service is not None:self.registry_service.close()
-        if self.owner_lease is not None:
-            self.owner_lease.close()
+                try:service.close()
+                except Exception as error:errors.append(error)
+        if errors:raise ExceptionGroup('Workspace owner cleanup failed',errors)

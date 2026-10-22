@@ -302,6 +302,30 @@ class LifecycleTests(unittest.TestCase):
 
 class ReleaseTests(unittest.TestCase):
     """Execute production release with a deterministic sensor clock, no ROS."""
+    def test_first_sample_absent_still_attempts_both_stop_services_and_never_confirms(self):
+        for fail in (False, True):
+            for final in (False, True):
+                with self.subTest(service_fail=fail, final=final):
+                    link=teleop_ros.RosLink.__new__(teleop_ros.RosLink)
+                    link.sensor=None;link.enabled=True;link.rows=[];calls=[]
+                    link.stop=object();link.Trigger=SimpleNamespace(Request=lambda:None)
+                    def call(*_):
+                        calls.append('stop')
+                        if fail:raise ValueError('SERVICE_FAILED_BASE_EXITED')
+                    def torque(enabled):
+                        self.assertFalse(enabled);calls.append('torque_off')
+                        if fail:raise ValueError('SERVICE_FAILED_BASE_EXITED')
+                    link.call=call;link.torque=torque
+                    expected=('STOP_READBACK_UNCONFIRMED' if final else
+                              'RELEASE_SERVICE_UNCONFIRMED' if fail else 'RELEASE_SENSOR_BASELINE_UNAVAILABLE')
+                    with self.assertRaisesRegex(ValueError,expected):
+                        (link.halt if final else link.release)()
+                    self.assertEqual(calls,['stop','torque_off'])
+                    self.assertEqual([v['name'] for v in link.stop_diagnostic['services']],calls)
+                    self.assertFalse(link.stop_diagnostic['initial_sensor_received'])
+                    self.assertFalse(link.stop_diagnostic['confirmed'])
+                    self.assertFalse(link.enabled);self.assertFalse(link.release_observing)
+
     def exercise(self, moving_until=.35, torque_stuck=False, stale=False, oscillate=False, service_fail=False, final=False):
         now=[0.];link=teleop_ros.RosLink.__new__(teleop_ros.RosLink)
         link.enabled=True;link.changed=0.;link.reason='active';link.rows=[]

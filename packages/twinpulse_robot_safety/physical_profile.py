@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 import re
-from control_timing import INPUT_TTL_S
+from twinpulse_core.robot_control_timing import INPUT_TTL_S
 
 try:
     from twinpulse_core.manual_motion_guard import NativeGeometry, SamplingModel, StopModel, ProgressThresholds

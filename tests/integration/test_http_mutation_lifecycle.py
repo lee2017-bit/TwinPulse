@@ -54,7 +54,7 @@ class HttpMutationLifecycleTests(unittest.TestCase):
         for action in ('stop','stop_all','disconnect'):
             seen=[]
             def handle(request):seen.append(request._twinpulse_saved_json);return {'delivered':True}
-            api=SimpleNamespace(context_id='current',_handle_current=handle,
+            api=SimpleNamespace(context_id='current',broker=SimpleNamespace(project_id='fixture-project'),_handle_current=handle,
                 _authenticate_product=lambda *a,**k:None,_read_json=lambda _,**kw:dict(action=action),
                 _error=lambda *a: self.fail('Owned Stop must not be a fenced mutation'))
             workspace=PersistentWorkspace(api,lambda _:None)
@@ -73,7 +73,7 @@ class HttpMutationLifecycleTests(unittest.TestCase):
             def write(self,value):
                 entered.set();release.wait(2)
         def handle(request):LocalApiServer._json(request,200,dict(status='business_finished'))
-        api=SimpleNamespace(context_id='fixture-context',_handle_current=handle)
+        api=SimpleNamespace(context_id='fixture-context',broker=SimpleNamespace(project_id='fixture-project'),_handle_current=handle)
         workspace=PersistentWorkspace(api,lambda _:None)
         request=self.request();request.wfile=WaitingWriter()
         worker=Thread(target=lambda:workspace.dispatch(request),daemon=True);worker.start()
@@ -92,7 +92,7 @@ class HttpMutationLifecycleTests(unittest.TestCase):
         entered=Event();release=Event();caught=[]
         def handle(request):
             entered.set();release.wait(2);raise ValueError('explicit fixture exception')
-        api=SimpleNamespace(context_id='fixture-context',_handle_current=handle)
+        api=SimpleNamespace(context_id='fixture-context',broker=SimpleNamespace(project_id='fixture-project'),_handle_current=handle)
         workspace=PersistentWorkspace(api,lambda _:None)
         def run():
             try:workspace.dispatch(self.request('/v1/product/not-a-real-route/private-text'))

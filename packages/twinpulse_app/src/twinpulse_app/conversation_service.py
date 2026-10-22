@@ -778,8 +778,9 @@ class ConversationService:
             public['inspection_display']=(self.inspection.display_readiness(descriptor)
                 if descriptor and self._state['mode']=='REAL' and self.inspection else None)
             public['room_build'] = None
-            job=self._state['generation'];workflow=self.workflow.snapshot()
-            if (self._state['mode']=='REAL' and job and job['state']=='completed'
+            job=self._state['generation']
+            workflow=(self.workflow.snapshot() if self._state['mode']=='REAL' and job and job['state']=='completed' else None)
+            if (workflow is not None
                     and job['generation_id']==workflow['generation_id'] and workflow['phase']=='draft_ready'
                     and workflow.get('site_draft')):
                 draft=workflow['site_draft']

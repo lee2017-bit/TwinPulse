@@ -29,7 +29,13 @@ def boot_id():
 
 def emit(value):
     # No Python stdout-buffer lock in a daemon sender blocked by its peer.
-    data=(json.dumps(value, allow_nan=False)+'\n').encode('utf-8')
+    emit_line(json.dumps(value, allow_nan=False))
+
+
+def emit_line(line):
+    """Trusted pre-encoded JSON body, not an additional command interpreter."""
+    if not isinstance(line,str) or '\n' in line:raise ValueError('PROTOCOL_PREPARED_LINE')
+    data=(line+'\n').encode('utf-8')
     while data:
         written=os.write(sys.stdout.fileno(),data)
         if written<=0:raise OSError('PROTOCOL_WRITE_FAILED')
@@ -45,8 +51,9 @@ class ProtocolOutbox:
     delayed nonce/input is restamped. Cleanup never waits on the sender thread.
     """
     def __init__(self, writer, *, clock=time.monotonic, max_messages=128,
-                 max_bytes=1024*1024, stall_s=.2, buffered=False):
+                 max_bytes=1024*1024, stall_s=.2, buffered=False,line_writer=None):
         self.writer,self.clock=writer,clock
+        self.line_writer=line_writer
         self.max_bytes,self.stall_s=max_bytes,stall_s
         self.queue=queue.Queue(maxsize=max_messages)
         self.lock=threading.Lock()
@@ -68,6 +75,15 @@ class ProtocolOutbox:
         # Serialize now, not in the thread: mutable reports cannot change while
         # queued, and invalid/oversized messages never reach the wire.
         line=json.dumps(value,allow_nan=False)
+        self.send_prepared(line)
+
+    def send_prepared(self,line):
+        """Enqueue an owned JSON line without serializing under an emit lock.
+
+        Only the fixed local event builder calls this prepared path. Preserve
+        the exact UTF-8 capacity and FIFO of send(), including the newline.
+        """
+        if not isinstance(line,str) or not line or '\n' in line:raise ValueError('PROTOCOL_PREPARED_LINE')
         size=len(line.encode('utf-8'))+1
         self.check()
         with self.lock:
@@ -89,7 +105,9 @@ class ProtocolOutbox:
                     if self.closed:return
                 continue
             started=self.clock()
-            try:self.writer(json.loads(line))
+            try:
+                if self.line_writer is None:self.writer(json.loads(line))
+                else:self.line_writer(line)
             except Exception:
                 with self.lock:self.error=self.error or 'PROTOCOL_WRITE_FAILED'
                 return
@@ -334,9 +352,13 @@ def wait_for_post_arm_watch(link, incoming, output, gate, clock, *, safety=lambd
     raise ValueError('FRESH_POST_ARM_INPUT_REQUIRED')
 
 
-def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervised_field_speed=None, post_arm_watch=False, diagnostic=lambda _:None):
+def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervised_field_speed=None, supervised_stop_timing=None, post_arm_watch=False, diagnostic=lambda _:None):
     """Fixed 0.05m/s / 600ms expiry test; versioned supervised stop metrics."""
     if supervised_field_speed not in (None, .03):raise ValueError('QUALIFICATION_SPEED_NOT_REVIEWED')
+    from stop_policy import field_stop_policy, assess_field_stop
+    if supervised_stop_timing is not None and supervised_field_speed!=.03:
+        raise ValueError('FIELD_STOP_TIMING_REQUIRES_SUPERVISED_SPEED')
+    stop_policy=field_stop_policy(supervised_stop_timing) if supervised_stop_timing is not None else POLICY
     trial_speed = .05 if supervised_field_speed is None else .03
     origin = [link.sensor.left_encoder, link.sensor.right_encoder]
     if post_arm_watch:gate.suspend_for_arm()
@@ -379,10 +401,11 @@ def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervis
             if max(abs(a-b) for a,b in zip(current,timeout_encoders))*MM_PER_TICK > POLICY['wheel_travel_limit_mm']:
                 raise ValueError('STOP_TRAVEL_EXCEEDED')
             if clock()-timeout_seen >= OBSERVE_S:
-                assessment = assess_stop(link.rows, timeout_seen, last_send)
+                assessment = (assess_field_stop(link.rows,timeout_seen,last_send,supervised_stop_timing)
+                    if supervised_stop_timing is not None else assess_stop(link.rows, timeout_seen, last_send))
                 # Wait only for a real bracketing sensor sample; never invent one.
                 if (assessment.get('reason') == 'OBSERVATION_WINDOW_INCOMPLETE'
-                        and clock()-timeout_seen < OBSERVE_S + POLICY['max_sample_gap_s']):
+                        and clock()-timeout_seen < OBSERVE_S + stop_policy['max_sample_gap_s']):
                     continue
                 detail = settling_details(link.rows, timeout_seen)
                 passed = assessment['status']=='PASS' and min(dl,dr)>0

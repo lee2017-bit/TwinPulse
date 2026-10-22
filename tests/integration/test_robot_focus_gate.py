@@ -11,12 +11,48 @@ import unittest
 module=runpy.run_path(str(Path(__file__).resolve().parents[2]/'scripts/verify_robot_focus_gate.py'))
 validate=module['validate_records'];required=module['REQUIRED']
 
+
+class BodyEscapeGateTests(unittest.TestCase):
+    def observation(self):
+        def row(x,y,reason=None):
+            return dict(robot_id='beta',operation_id='op',connection_epoch='connection',
+                pose=dict(position_m=[x,y,-.5015999997298083],frame_id='isaac_world',source='isaac_usd_kinematic',aligned=True),
+                reason=reason,command=dict(state='COMPLETED' if reason=='TASK_COMPLETED' else 'FAILED'))
+        yaw=-.5015999997298083
+        a=row(0,0);b=row(.11*math.cos(yaw),.11*math.sin(yaw),'OBSTACLE_STOP')
+        c=row(.01*math.cos(yaw),.01*math.sin(yaw),'TASK_COMPLETED')
+        return dict(steps=[dict(name='Actual obstacle approach stops Beta and fresh reverse escapes',evidence=dict(before=a,stopped=b,escaped=c))])
+    def test_original_rotated_body_criteria_not_world_axis(self):
+        self.assertTrue(module['body_escape_verified'](self.observation()))
+    def test_missing_wrong_direction_lateral_and_identity_rejected(self):
+        for alteration in ('missing','direction','lateral','identity','nonfinite','huge','incomplete','before_list','pose_list','command_list','command_null'):
+            value=self.observation();evidence=value['steps'][0]['evidence'];row=evidence['escaped']
+            if alteration=='missing':evidence.pop('before')
+            elif alteration=='direction':row['pose']['position_m'][:2]=[.2*math.cos(-.5016),.2*math.sin(-.5016)]
+            elif alteration=='lateral':row['pose']['position_m'][1]+=.02
+            elif alteration=='identity':row['operation_id']='other'
+            elif alteration=='nonfinite':row['pose']['position_m'][0]=math.nan
+            elif alteration=='huge':row['pose']['position_m'][0]=10**1000
+            elif alteration=='before_list':evidence['before']=[]
+            elif alteration=='pose_list':row['pose']=[]
+            elif alteration=='command_list':row['command']=[]
+            elif alteration=='command_null':row['command']=None
+            else:row['command']['state']='RUNNING'
+            with self.subTest(alteration=alteration):self.assertFalse(module['body_escape_verified'](value))
+
 def fixture():
     rows={role:dict(status='PASS',project='p',phase={'fresh':'fresh','cold':'reopen','lineage':'run','lineage_cold':'cold'}[role],
         desktop=dict(engine=dict(release_id='release')),steps=[dict(name=n,status='PASS',evidence={}) for n in names]) for role,names in required.items()}
     normal=[n for n in required['fresh'] if not n.startswith('FAULT') and n!='Visible Exit TwinPulse normal shutdown']
     rows['fresh'].update(normal_steps_before_fault_window=normal,fault_window_held_until_exit=True)
     rows['fresh']['registration_history']=dict(project_id='p',session_id='session',entries=[dict(robot_id=n) for n in ('Alpha','Beta')])
+    scan=dict(present=True,visible=True,frame_live=True,preview_only=False,requested_at_ms=1600,received_at_ms=1700,captured_at_ms=1000.25,observed_at_ms=1699,age_ms=698.75,frame_id=2,
+        frame_captured_at_ms=1650,robot_id='a',stage_epoch='stage',scene_revision='scene',connection_epoch='connection',motion_epoch='motion',rays_count=1,points_count=2)
+    next(s for s in rows['fresh']['steps'] if s['name'].startswith('Frame-bound selected LiDAR'))['evidence']['scan_display']=scan
+    rows['fresh']['scan_display_observations']=[deepcopy(scan)]
+    window=dict(started_at_ms=1600,deadline_ms=6600,timeout_ms=5000,expected={k:scan[k] for k in ('robot_id','connection_epoch','motion_epoch')})
+    rows['fresh']['scan_display_window']=window
+    next(s for s in rows['fresh']['steps'] if s['name'].startswith('Frame-bound selected LiDAR'))['evidence']['scan_display_window']=deepcopy(window)
     next(s for s in rows['fresh']['steps'] if s['name']=='Physical setup shown while robot remains off; no Connect or movement')['evidence'].update(
         destination_policy_visible=True,off_destination_send_disabled=True,physical_destination_commands_sent=0)
     rows['cold']['registration_history']=deepcopy(rows['fresh']['registration_history'])
@@ -25,6 +61,10 @@ def fixture():
         if s['name']=='Main chat bounded 90 degree command, measured completion':s['evidence']['delta']=math.pi/2
         if s['name']=='One session full turn with actual simulated scan':s['evidence']['delta']=2*math.pi
     rows['lineage']['requested_command']='left 90 degrees'
+    motion=dict(operation_id='saved-physical',job_id='job',input_receipt_sha256='receipt',review_sha256='review',input_segments_sha256='segments',input_rows=10,
+        physical_activation=0,physical_motion_verified=False,raw_receipt_sha256_checked=True)
+    next(s for s in rows['lineage']['steps'] if s['name']=='Original physical recording motion review runs offline with exact IDs and no restored authority')['evidence']=dict(motion,analysis_post_count=1)
+    next(s for s in rows['lineage_cold']['steps'] if s['name']=='Saved physical motion review cold reopens without Analyze or restored authority')['evidence']=dict(motion,analysis_post_count=0)
     display=dict(at=1,frame_id=1,frame_age_ms=20,live=True,scene_revision='scene',stage_epoch='stage',canvas_visible=True,canvas=dict(height=300),intersection_px2=0,
         stop_visible=True,pad_visible=True,robot_badge_visible=True,robot_bounds=[.1,.2,.15,.3],origin_marker_count=0,label_under_body_error_px=0,label_horizontal_error_px=0)
     cold_prefix=[]
@@ -40,6 +80,12 @@ def fixture():
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['rows']=[dict(deepcopy(display),window=dict(width=w,height=h)) for w,h in [(1920,1080),(1366,768),(1093,614),(911,512),(1600,900)]]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Non-overlapping dock'))['evidence']['bodySelections']=[dict(name=n,bodyHit=True,origin_marker_count=0,label_under_body_error_px=.01,label_horizontal_error_px=.01) for n in ('Alpha','Beta')]
     next(s for s in rows['fresh']['steps'] if s['name']=='LiDAR Off pauses but retains connection; On restarts sensor')['evidence']['off']=dict(overlay_count=0,sensor_state='OFF',observed_ms=900)
+    def robot_pose(x,reason=None):
+        return dict(robot_id='beta',operation_id='beta-op',connection_epoch='beta-connection',
+            pose=dict(position_m=[x,0,0],frame_id='isaac_world',source='isaac_usd_kinematic',aligned=True),
+            reason=reason,command=dict(state='COMPLETED' if reason=='TASK_COMPLETED' else 'FAILED'))
+    next(s for s in rows['fresh']['steps'] if s['name']=='Actual obstacle approach stops Beta and fresh reverse escapes')['evidence'].update(
+        before=robot_pose(0),stopped=robot_pose(.11,'OBSTACLE_STOP'),escaped=robot_pose(.01,'TASK_COMPLETED'))
     rows['fresh']['sustained_hold_observations']=[dict(at=r['at']) for r in rows['fresh']['display_samples']]
     next(s for s in rows['fresh']['steps'] if s['name'].startswith('Continuous 60-second'))['elapsed_ms']=61000
     rows.update(normal=dict(status='PASS_NORMAL_START_REUSE_DEBUG_OFF',release_id='release',source_sha256='source',launch_id='first',ready_wait_ms=40000,
@@ -53,7 +99,157 @@ def fixture():
         budget=dict(within_approved_total=True))
     return rows
 
+def reproduction_fixture():
+    row=fixture()['fresh'];row['phase']='reproduction'
+    row['steps']=[s for s in row['steps'] if s['name'] not in module['REPRODUCTION_EXCLUDED']]
+    row['steps'].insert(1,dict(name=module['REPRODUCTION_OPEN'],status='PASS',evidence=dict(project='p',expected_revision='scene')))
+    next(s for s in row['steps'] if s['name']=='Two simultaneous real Isaac SIM connections and independent scan')['evidence']=[
+        dict(kind='sim',connection_state='CONNECTED',source_twin_context=dict(scene_revision='scene')) for _ in range(2)]
+    row['normal_steps_before_fault_window']=[s['name'] for s in row['steps'] if not s['name'].startswith('FAULT') and s['name']!='Visible Exit TwinPulse normal shutdown']
+    return row
+
 class GateTests(unittest.TestCase):
+    def test_reproduction_requires_original_full_journey_and_same_geometry(self):
+        check=module['reproduction_issues'];expected=dict(project='p',scene_revision='scene')
+        self.assertEqual(check(reproduction_fixture(),'release',expected),[])
+        for name in module['REPRODUCTION_REQUIRED']:
+            row=reproduction_fixture();row['steps']=[s for s in row['steps'] if s['name']!=name]
+            with self.subTest(missing=name):self.assertIn('REPRODUCTION_MISSING_OR_FAILED_STEP:'+name,check(row,'release',expected))
+        for field,value,issue in (('phase','fresh','REPRODUCTION_NOT_WHOLE_PASS'),('project','other','REPRODUCTION_ORIGINAL_GEOMETRY_NOT_BOUND'),
+                                 ('request_failures',[dict(path='/v1/product/projects')],'REPRODUCTION_UNCLASSIFIED_REQUEST_FAILURE')):
+            row=reproduction_fixture();row[field]=value
+            self.assertIn(issue,check(row,'release',expected))
+        row=reproduction_fixture();row.pop('final_fault_recovery');row['fleet_requests']=[]
+        self.assertIn('REPRODUCTION_FINAL_ISOLATED_FAULT_STOP_AND_DISPLAY_RECOVERY_NOT_PROVEN',check(row,'release',expected))
+    def test_only_explicit_absence_may_precede_current_scan_within_shared_deadline(self):
+        rows=fixture();last=rows['fresh']['scan_display_observations'][0]
+        absent=dict(last,present=False,visible=False,captured_at_ms=None,age_ms=None)
+        rows['fresh']['scan_display_observations']=[absent,last]
+        self.assertNotIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+        for earlier in (dict(last,captured_at_ms=900,age_ms=799),dict(last,preview_only=True),dict(last,motion_epoch='wrong')):
+            rows['fresh']['scan_display_observations']=[earlier,last]
+            self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+        rows['fresh']['scan_display_observations']=[absent]
+        self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+        rows=fixture();sample=rows['fresh']['scan_display_observations'][0];sample['received_at_ms']=6601
+        next(s for s in rows['fresh']['steps'] if s['name'].startswith('Frame-bound selected LiDAR'))['evidence']['scan_display']=deepcopy(sample)
+        self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+        rows=fixture();sample=rows['fresh']['scan_display_observations'][0]
+        sample.update(observed_at_ms=6601,captured_at_ms=6590,frame_captured_at_ms=6590,age_ms=11)
+        next(s for s in rows['fresh']['steps'] if s['name'].startswith('Frame-bound selected LiDAR'))['evidence']['scan_display']=deepcopy(sample)
+        self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+    def test_atomic_scan_proof_cannot_be_missing_expired_hidden_or_unbound(self):
+        for delta in ({'present':False},{'visible':False},{'frame_live':False},{'preview_only':True},{'preview_only':None},
+                      {'age_ms':700,'observed_at_ms':1700.25},{'captured_at_ms':10**1000},
+                      {'captured_at_ms':float('nan')},{'motion_epoch':None},{'frame_id':True}):
+            rows=fixture()
+            scan=next(s for s in rows['fresh']['steps'] if s['name'].startswith('Frame-bound selected LiDAR'))['evidence']['scan_display']
+            scan.update(delta);rows['fresh']['scan_display_observations']=[deepcopy(scan)]
+            self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+        rows=fixture();rows['fresh']['scan_display_observations']=[]
+        self.assertIn('CURRENT_SCAN_DISPLAY_UNVERIFIED',validate(rows,'release','source'))
+    def test_preview_cache_classification_rechecks_original_native_context_and_decode(self):
+        digest='a'*64
+        error=dict(path='/v1/product/viewport/preview/'+digest,method='GET',status=409,code='viewport_preview_expired',response_body_available=True,
+            response_body=dict(code='viewport_preview_expired'),request_step='FAULT MATRIX: dispatch',request_fault_window=True,request_at=100,response_at=120,request_wall_time_ms=1000,
+            context='ctx',response_context='ctx',current_context='ctx')
+        frame=dict(frame_id=1,sha256=digest,preview_only=True,physical_authority=False,engine_session_id='engine',stage_epoch='stage',applied_revision='scene')
+        proof=dict(classification='TYPED_PREVIEW_CACHE_REPLACEMENT_WITH_SAME_CONTEXT_DECODE',browser_request_id='native',sha256=digest,context='ctx',metadata_at=90,decoded_frame_id=3)
+        row=dict(original_http_errors=[deepcopy(error)],http_errors=[],expected_preview_cache_miss=[dict(error=deepcopy(error),proof=proof)],final_fault_context='ctx',
+            fault_window_held_until_exit=True,fetch_boundaries=[dict(action='after_enable',node_at=50,cdp_monotonic_s=.5)],
+            viewport_network_timings=[dict(path=error['path'],method='GET',status=409,context_id='ctx',cdp_wall_time=1,cdp_timestamp=1,browser_request_id='native')],
+            viewport_receipt_trace=dict(receipts=[dict(path='/v1/product/viewport',status=200,context='ctx',at=90,last_frame=frame,frame=dict(frame,frame_id=2)),
+                dict(status=200,context='ctx',at=190,frame=dict(frame,frame_id=3))]),
+            final_fault_recovery=dict(after=dict(at=200,live=True,frame_age_ms=10,frame_id=3,stage_epoch='stage',scene_revision='scene')))
+        check=module['preview_cache_issues'];self.assertEqual(check(row),[])
+        changes=[lambda r:r.update(original_http_errors=[]),lambda r:r['original_http_errors'].append(deepcopy(error)),
+            lambda r:r['original_http_errors'].append(dict(error,request_wall_time_ms=1000.5)),
+            lambda r:r['expected_preview_cache_miss'].append(deepcopy(r['expected_preview_cache_miss'][0])),
+            lambda r:r.update(expected_preview_cache_miss=[]),lambda r:r['http_errors'].append(deepcopy(error)),
+            lambda r:r.update(final_fault_context='other'),lambda r:r['viewport_network_timings'][0].update(status=403),
+            lambda r:r['viewport_network_timings'].append(deepcopy(r['viewport_network_timings'][0])),
+            lambda r:r['viewport_receipt_trace']['receipts'][0]['last_frame'].update(sha256='b'*64),
+            lambda r:r['viewport_receipt_trace']['receipts'][0]['last_frame'].update(preview_only=False),
+            lambda r:r['viewport_receipt_trace']['receipts'][0]['last_frame'].update(physical_authority=True),
+            lambda r:r['viewport_receipt_trace']['receipts'][1].update(context='other'),
+            lambda r:r['final_fault_recovery']['after'].update(live=False),lambda r:r['final_fault_recovery']['after'].update(frame_age_ms=1000),
+            lambda r:r['final_fault_recovery']['after'].update(stage_epoch='wrong'),lambda r:r.update(fault_window_held_until_exit=False)]
+        for change in changes:
+            r=deepcopy(row);change(r);self.assertTrue(check(r))
+        r=deepcopy(row)
+        duplicate=dict(error,request_wall_time_ms=1000.5)
+        r['original_http_errors'].append(duplicate)
+        r['expected_preview_cache_miss'].append(dict(error=deepcopy(duplicate),proof=deepcopy(proof)))
+        self.assertTrue(check(r)) # Equal counts cannot reuse the one native response.
+        for key,value in [('method','POST'),('status',401),('status',403),('code','other'),('response_body_available',False),
+                ('request_fault_window',False),('response_context','other'),('path','/v1/product/viewport/current')]:
+            r=deepcopy(row);r['original_http_errors'][0][key]=value;r['expected_preview_cache_miss'][0]['error'][key]=value
+            self.assertTrue(check(r))
+
+    def test_candidate_offline_checks_cannot_replace_installed_supplementary_role(self):
+        records=fixture();records['supplementary']['inspection_target']='FROZEN_CANDIDATE_NOT_INSTALLED'
+        self.assertIn('SUPPLEMENTARY_MISSING_OR_FAILED',validate(records,'release','source'))
+
+    def test_motion_review_cold_rejects_reanalysis_changed_identity_or_authority(self):
+        name='Saved physical motion review cold reopens without Analyze or restored authority'
+        for key,value in (('job_id','different'),('input_receipt_sha256','different'),('review_sha256','different'),('input_segments_sha256','different'),
+                ('input_rows',11),('analysis_post_count',1),('physical_activation',1),('physical_motion_verified',True),('raw_receipt_sha256_checked',False)):
+            with self.subTest(key=key):
+                records=fixture();e=next(s for s in records['lineage_cold']['steps'] if s['name']==name)['evidence'];e[key]=value
+                self.assertIn('MOTION_REVIEW_COLD_BINDING_OR_AUTHORITY_INVALID',validate(records,'release','source'))
+
+    def test_shutdown_requires_exact_handoff_owner_roles_and_unforced_roots(self):
+        # Synthetic contract tests only. No result is App/hardware evidence.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);records=fixture()
+            names=('fresh','cold','lineage','lineage_cold','normal','restart','reproduction')
+            starts={name:dict(launch_id='launch-'+name,owner_pid=100+i) for i,name in enumerate(names)}
+            for name in names[:4]:records[name]['desktop']['engine']['launch_id']=starts[name]['launch_id']
+            records['normal']['launch_id']=starts['normal']['launch_id'];records['lifecycle']['restart_launch_id']=starts['restart']['launch_id']
+            joins=dict(viewport_alive=False,fleet_alive=False,diagnostic_alive=False,scan_worker=dict(worker_alive=False,cleanup_errors=[]))
+            engine=dict(cleanup_status='PRE_CLOSE_COMPLETE',cleanup_errors=[],app_close=dict(state='PREPARED_FOR_ISAAC_CLOSE',external_confirmation_required=True),viewport_phase_diagnostics=dict(join_status=joins))
+            roles={name:dict(role=name,pid=200+i,ownership='HELD_POPEN_PROCESS_HANDLE',evidence_complete=True,errors=[],
+                root_disposition='EXITED_DURING_GRACE',return_code=0,job_close_requested=True,job_observation='OBSERVED',job_active_before_close=1)
+                for i,name in enumerate(('engine','backend'))}
+            def write(name,value):
+                path=root/name;raw=json.dumps(value).encode();path.write_bytes(raw)
+                return dict(path=name,sha256=hashlib.sha256(raw).hexdigest())
+            def check(change=None,changed_branch='fresh'):
+                contract=dict(schema='owned-shutdown-contract-1.0',release_id='release',source_sha256='source',branches={})
+                for name in names:
+                    start=deepcopy(starts[name]);inner=dict(deepcopy(engine),launch_id=start['launch_id'])
+                    owner=dict(schema='owned-exit-observations-1.0',**start,execution_id='shutdown-'+name,evidence_complete=True,roles=deepcopy(roles))
+                    cleanup=dict(**start,owned_processes_stopped=True,exit_evidence_complete=True,process_exit_observations=deepcopy(roles))
+                    if name==changed_branch and change:change(start,inner,owner,cleanup)
+                    contract['branches'][name]={key:write(name+'-'+key+'.json',value) for key,value in dict(start=start,engine_result=inner,owner_exit=owner,cleanup=cleanup).items()}
+                reproduction=reproduction_fixture();reproduction['desktop']['engine']['launch_id']=starts['reproduction']['launch_id']
+                manifest=dict(physical_readiness_review=dict(schema='physical-readiness-review-1.2',shutdown_contract=write('contract.json',contract),reproduction=write('reproduction.json',reproduction),reproduction_expected=dict(project='p',scene_revision='scene')))
+                return module['shutdown_review_issues'](manifest,root,records,'release','source')
+            self.assertEqual(check(),[]) # A Job descendant count is not root graceful-exit proof or a hidden veto.
+            for value in (True,None):
+                self.assertIn('SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:reproduction',check(
+                    lambda s,e,o,c:e['viewport_phase_diagnostics']['join_status'].update(diagnostic_alive=value),'reproduction'))
+            self.assertIn('SHUTDOWN_LAUNCH_BINDING_INVALID:reproduction',check(lambda s,e,o,c:e.update(launch_id='other'),'reproduction'))
+            for change,expected in (
+                (lambda s,e,o,c:e.update(cleanup_status='PRE_CLOSE_FAILED'),'SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:fresh'),
+                (lambda s,e,o,c:e['viewport_phase_diagnostics']['join_status'].update(fleet_alive=True),'SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:fresh'),
+                (lambda s,e,o,c:e['viewport_phase_diagnostics']['join_status'].update(cleanup_errors=[dict(owner='viewport_http',error='OSError')]),'SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:fresh'),
+                (lambda s,e,o,c:e['app_close'].update(state='RAISED'),'SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:fresh'),
+                (lambda s,e,o,c:e.update(error='ORIGINAL_HOST_ERROR'),'SHUTDOWN_INNER_HANDOFF_NOT_COMPLETE:fresh'),
+                (lambda s,e,o,c:e.update(launch_id='other-good-sha-launch'),'SHUTDOWN_LAUNCH_BINDING_INVALID:fresh'),
+                (lambda s,e,o,c:o.update(evidence_complete=False),'SHUTDOWN_OWNER_EVIDENCE_INCOMPLETE:fresh'),
+                (lambda s,e,o,c:c.update(exit_evidence_complete=False),'SHUTDOWN_OWNER_EVIDENCE_INCOMPLETE:fresh'),
+                (lambda s,e,o,c:s.update(launch_id='other'),'SHUTDOWN_LAUNCH_BINDING_INVALID:fresh'),
+                (lambda s,e,o,c:o['roles']['engine'].update(root_disposition='TERMINATE_AFTER_TIMEOUT'),'SHUTDOWN_ROOT_FORCED_UNKNOWN_OR_JOB_UNOBSERVED:fresh:engine'),
+                (lambda s,e,o,c:o['roles']['engine'].update(root_disposition='UNKNOWN'),'SHUTDOWN_ROOT_FORCED_UNKNOWN_OR_JOB_UNOBSERVED:fresh:engine'),
+                (lambda s,e,o,c:o['roles']['engine'].update(job_observation='UNKNOWN'),'SHUTDOWN_ROOT_FORCED_UNKNOWN_OR_JOB_UNOBSERVED:fresh:engine'),
+                (lambda s,e,o,c:o['roles']['engine'].update(evidence_complete=False,errors=[dict(stage='evidence_store')]),'SHUTDOWN_ROOT_FORCED_UNKNOWN_OR_JOB_UNOBSERVED:fresh:engine'),
+            ):
+                with self.subTest(expected=expected):self.assertIn(expected,check(change))
+            self.assertEqual(module['shutdown_review_issues'](dict(physical_readiness_review=dict(schema='physical-readiness-review-1.2')),root,records,'release','source'),['SHUTDOWN_CONTRACT_UNREADABLE_OR_SHA_MISMATCH'])
+            for schema in ('physical-readiness-review-1.0','physical-readiness-review-1.1',None):
+                self.assertEqual(module['shutdown_review_issues'](dict(physical_readiness_review=dict(schema=schema)),root,records,'release','source'),['CURRENT_SHUTDOWN_CONTRACT_REQUIRED'])
+
     def test_registration_restore_proof_missing_or_changed_is_rejected(self):
         for role in ('fresh','cold'):
             rows=fixture();rows[role].pop('registration_history')

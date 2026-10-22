@@ -52,6 +52,7 @@ export type RobotFleetRobot = {
   cleanup_confirmed?:boolean|null;
   sensor_frame?:Record<string,unknown>|null;
   telemetry_diagnostic?:Record<string,unknown>|null;
+  motion_observation?:Record<string,unknown>|null;
   timing_policy?:Record<string,unknown>|null;
   timing_values?:Record<string,number>|null;
   timing_profile_sha256?:string|null;

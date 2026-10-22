@@ -10,11 +10,20 @@ static unsigned checks=0;
 #define CHECK(x) do { ++checks; if(!(x)) { std::cerr<<"FAIL line "<<__LINE__<<": " #x "\n"; std::exit(1); } } while(0)
 int main(int argc,char** argv) {
   setenv("ROS_DOMAIN_ID","87",1); setenv("ROS_LOCALHOST_ONLY","1",1);
+  unsetenv("TWINPULSE_OUTPUT_TIMEOUT_MS"); // Deterministic default for this fake-SDK check.
   rclcpp::init(argc,argv);
-  auto node=std::make_shared<rclcpp::Node>("guard", "/twinpulse_guard_fake_only");
+  // Match the actual base, not rclcpp's default intra-process=false fixture.
+  auto node=std::make_shared<rclcpp::Node>("guard", "/twinpulse_guard_fake_only",
+      rclcpp::NodeOptions().use_intra_process_comms(true));
   auto client_node=std::make_shared<rclcpp::Node>("test", "/twinpulse_guard_fake_only");
   auto sdk=std::make_shared<twinpulse_robot_safety::RosGuard::SDK>();
   auto guard=std::make_unique<twinpulse_robot_safety::RosGuard>(node,sdk);
+  // Subscribe after the constructor's one-time publication. Volatile QoS or
+  // dropping the startup record must not silently bypass timing readback.
+  std::string timing;
+  auto timing_subscription=client_node->create_subscription<std_msgs::msg::String>(
+      "motion_guard/timing",rclcpp::QoS(1).reliable().transient_local(),
+      [&](std_msgs::msg::String::SharedPtr msg){timing=msg->data;});
   auto publisher=client_node->create_publisher<geometry_msgs::msg::TwistStamped>("guarded_cmd_vel",1);
   auto arm=client_node->create_client<std_srvs::srv::Trigger>("motion_guard/arm");
   auto stop=client_node->create_client<std_srvs::srv::Trigger>("motion_guard/stop");
@@ -40,6 +49,12 @@ int main(int argc,char** argv) {
     publisher->publish(msg); spin(40);
   };
   spin(500); CHECK(node->count_publishers("guarded_cmd_vel")==1);
+  CHECK(timing=="{\"schema\":\"robot-output-timing-1.0\",\"output_timeout_ms\":"+
+      std::to_string(twinpulse_robot_safety::CommandGuard::timeout_ms)+"}");
+  CHECK(sdk->last_velocity()==0);
+  for (const auto& write : sdk->writes) {
+    CHECK(write.linear==0); CHECK(write.angular==0);
+  }
   send(.03); CHECK(sdk->last_velocity()==0); // startup latched
   CHECK(call(arm)); spin(5); send(.03); CHECK(sdk->last_velocity()==3);
   spin(450); CHECK(sdk->last_velocity()==0); CHECK(status=="command_timeout");

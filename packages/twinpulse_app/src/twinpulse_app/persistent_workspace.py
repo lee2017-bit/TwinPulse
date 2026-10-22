@@ -69,6 +69,8 @@ class PersistentWorkspace:
                 request._twinpulse_request_phase=lambda phase:self.request_phase(ticket,phase)
                 request._twinpulse_business_done=lambda:self.finish_business(ticket)
             request._twinpulse_context_id=api.context_id
+            request._twinpulse_project_id=api.broker.project_id
+            request._twinpulse_bound_api=api
         if failure:return api._error(request,409,*failure)
         try:
             # Every callback/guard belongs to this immutable service instance.

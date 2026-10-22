@@ -412,6 +412,93 @@ class PhysicalFleetAdapterTests(unittest.TestCase):
         self.assertNotIn(new_owner.encode(), original)
         self.assertNotIn(self.owner.encode(), original)
 
+    def assert_segmented_cold_history(self, *, capacity_failure):
+        from twinpulse_app.physical_live_session import StreamEvidence
+
+        identity, lifecycle_path, lifecycle_original = self.saved_operation()
+        first = json.loads(lifecycle_original.splitlines()[0])
+        context = {key: first[key] for key in
+            ('operation_id', 'project_id', 'robot_id', 'connection_epoch')}
+        sources = {'fleet_worker.py': 'a' * 64}
+        worker_sha = hashlib.sha256(json.dumps(sources, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+        records = [dict(schema='physical-live-pc-start-2.0', **context,
+            binding_sha256=first['data']['binding_sha256'], source_twin_context=None,
+            worker_sha256=worker_sha, worker_sources=sources, fixture_padding='x' * 2048)]
+        for sequence in range(1, 129):
+            records.append(dict(schema='physical-live-event-2.0', **context,
+                sequence=sequence, robot_monotonic_s=sequence / 10., kind='heartbeat',
+                data=dict(worker_sha256=worker_sha, challenge='HISTORICAL_NOT_AUTHORITY',
+                    watch_challenge='HISTORICAL_NOT_AUTHORITY', fixture_padding='x' * 2048)))
+        records[-1].update(kind='cleanup', data=dict(subsystem='session', confirmed=True,
+            recording_complete=not capacity_failure, fixture_padding='x' * 2048))
+        raw = [(json.dumps(record, separators=(',', ':')) + '\n').encode() for record in records]
+        # Real rotation, using small valid segments rather than a 500MiB fixture.
+        # Every full JSONL record fits, but two cannot share a segment.
+        segment_bytes = max(map(len, raw))
+        self.assertGreater(2 * min(map(len, raw)), segment_bytes)
+        directory = Path(self.tmp.name, 'physical-live', identity)
+        evidence = StreamEvidence(directory, segment_bytes=segment_bytes,
+            maximum_bytes=sum(map(len, raw)))
+        try:
+            for line in raw:
+                self.assertTrue(evidence.append(line))
+            if capacity_failure:
+                self.assertFalse(evidence.append(raw[-1]))
+        finally:
+            receipt = evidence.close(cleanup_confirmed=True)
+        self.assertFalse(evidence.thread.is_alive())
+        self.assertEqual(len(receipt['segments']), 129)
+        self.assertEqual(receipt['accepted'], 129)
+        self.assertEqual(receipt['saved'], 129)
+        self.assertEqual(receipt['complete'], not capacity_failure)
+        self.assertEqual(receipt['error'],
+            'ValueError:STREAM_RECORDING_CAPACITY' if capacity_failure else None)
+        originals = {path.name: path.read_bytes() for path in directory.iterdir()}
+        for segment, line in zip(receipt['segments'], raw):
+            self.assertEqual(originals[segment['path']], line)
+            self.assertEqual(segment['sha256'], hashlib.sha256(line).hexdigest())
+            self.assertEqual(segment['events'], 1)
+
+        self.history_session()
+        cold = self.cold_pool()
+        trace = deepcopy(self.trace)
+        with patch('subprocess.Popen', side_effect=AssertionError('NO_TRANSPORT')):
+            result = cold.operation(identity, self.owner, project_id='project-a')
+            self.assertEqual(cold.snapshot(self.owner)['robots'], [])
+        manifest = result['manifest']
+        self.assertEqual(manifest['stream'], receipt)
+        self.assertEqual(manifest['runtime_event_count'], 129)
+        self.assertEqual(manifest['worker_sources'], sources)
+        self.assertTrue(manifest['cleanup_confirmed'])
+        self.assertEqual(manifest['complete'], not capacity_failure)
+        self.assertEqual(manifest['completeness'],
+            'RECOVERED_INCOMPLETE' if capacity_failure else 'VERIFIED_CLOSED_RECORDING')
+        self.assertEqual(manifest['missing'], ['LIVE_STREAM_INCOMPLETE'] if capacity_failure else [])
+        runtime = [event for event in result['events'] if event.get('schema') == 'physical-live-event-2.0']
+        expected_tail = deepcopy(records[-100:])
+        for event in expected_tail:
+            event['data'].pop('challenge', None)
+            event['data'].pop('watch_challenge', None)
+        self.assertEqual(runtime, expected_tail)
+        self.assertFalse(manifest['connection_restored'])
+        self.assertFalse(manifest['device_authority_restored'])
+        self.assertFalse(manifest['field_trial_resolution']['authority_restored'])
+        self.assertFalse(manifest['physical_motion_verified'])
+        self.assertFalse(manifest['original_logs_rewritten'])
+        self.assertFalse(cold.sessions)
+        self.assertFalse(cold.operations)
+        self.assertFalse(cold.requests)
+        self.assertEqual(self.trace, trace)
+        self.assertEqual(lifecycle_path.read_bytes(), lifecycle_original)
+        self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, originals)
+
+    def test_cold_adapter_restores_129_real_segments_without_authority(self):
+        self.assert_segmented_cold_history(capacity_failure=False)
+
+    def test_cold_adapter_preserves_129_segment_capacity_failure_without_authority(self):
+        self.assert_segmented_cold_history(capacity_failure=True)
+
     def test_cold_history_missing_invalid_expired_role_or_project_session_denied_before_io(self):
         identity, _, _ = self.saved_operation()
         cold = self.cold_pool()

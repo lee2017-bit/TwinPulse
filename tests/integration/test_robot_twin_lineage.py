@@ -157,8 +157,9 @@ class ProtocolV2Tests(unittest.TestCase):
         context=deepcopy(self.f.session.context);context.pop('motion_epoch',None)
         worker=object.__new__(FleetWorker);worker.context=checked_context(context)
         worker.lock=RLock();worker.sequence=0;worker.clock=lambda:50.;saved=[];sent=[]
-        worker.journal=SimpleNamespace(append=lambda event:saved.append(deepcopy(event)))
-        worker.protocol=SimpleNamespace(send=lambda event:sent.append(deepcopy(event)))
+        worker.emit_timing=dict(events=0,maximum_payload_prepare_s=0.,maximum_order_lock_wait_s=0.)
+        worker.journal=SimpleNamespace(append_prepared=lambda line,kind:saved.append(json.loads(line)))
+        worker.protocol=SimpleNamespace(send_prepared=lambda line:sent.append(json.loads(line)))
         for kind in ('raw','scan','raw_source','command','cleanup'):
             worker.emit(kind,dict(receipt_start_s=1.,receipt_end_s=2.))
         self.assertEqual(len(sent),5);self.assertEqual(saved,sent)

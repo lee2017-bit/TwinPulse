@@ -81,6 +81,32 @@ print('ISOLATED_PC_FIELD_SAVE_PASS')
         self.assertEqual(sent,[])
         entry.services.live=None
 
+    def test_pc_measured_profile_validator_rejects_bad_input_without_robot_search_path(self):
+        code='''import sys,tempfile
+from pathlib import Path
+root=Path(sys.argv[1])
+for name in ('twinpulse_app','twinpulse_core','twinpulse_provider'):sys.path.insert(0,str(root/'packages'/name/'src'))
+from twinpulse_app.physical_fleet_adapter import PhysicalFleetAdapter
+from twinpulse_app.command_broker import BrokerError
+with tempfile.TemporaryDirectory() as folder:
+    adapter=PhysicalFleetAdapter.__new__(PhysicalFleetAdapter)
+    adapter.source_root=root;adapter.state_root=Path(folder)
+    adapter._row=lambda robot_id:(None,dict(instance_id=robot_id,sha256='a'*64))
+    adapter._cached=lambda robot_id:None
+    try:adapter.save_profile('b'*32,'isolated-owner',{})
+    except BrokerError as error:
+        assert error.code=='physical_profile_invalid' and error.status==400 and 'PROFILE_SHAPE' in str(error)
+    else:raise AssertionError('Invalid profile must not save')
+    assert not list(Path(folder).iterdir())
+    assert 'control_timing' not in sys.modules
+    assert 'rclpy' not in sys.modules
+print('ISOLATED_PC_MEASURED_PROFILE_REJECTED')
+'''
+        with tempfile.TemporaryDirectory() as cwd:
+            run=subprocess.run([sys.executable,'-I','-B','-c',code,str(f.ROOT)],cwd=cwd,text=True,capture_output=True,timeout=20)
+        self.assertEqual(run.returncode,0,run.stdout+run.stderr)
+        self.assertIn('ISOLATED_PC_MEASURED_PROFILE_REJECTED',run.stdout)
+
     def test_reviewed_source_bundle_includes_new_worker_not_just_pc_ui(self):
         _,_,members=reviewed_bundle(f.ROOT)
         self.assertIn('field_tests.py',members)

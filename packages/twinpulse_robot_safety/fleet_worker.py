@@ -8,6 +8,7 @@ No shell, model code, client paths, parameter overrides or deployment accepted.
 """
 from copy import deepcopy
 from control_timing import INPUT_TTL_S, INPUT_TTL_MS
+from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES
 from twinpulse_core.robot_lineage import checked_twin_context
 from twinpulse_core.robot_timing_profile import checked_profile as checked_timing_profile,values_of,digest as timing_digest
 import base64
@@ -28,7 +29,7 @@ try:
     from fleet_control import RobotControl, reason_code
     from native_stream import NativeStream
     from robot_journal import RobotJournal
-    from teleop_worker import ProtocolOutbox, emit as stdout_emit
+    from teleop_worker import ProtocolOutbox, emit as stdout_emit, emit_line as stdout_emit_line
 except ImportError:
     if __name__=='__main__':
         os.write(2,b'FLEET_WORKER_REJECTED:WORKER_DEPENDENCY_MISSING\n');os._exit(2)
@@ -37,25 +38,28 @@ except ImportError:
 IDENTITY=('operation_id','robot_id','project_id','connection_epoch')
 ACTIONS={'lidar','prepare','qualify','drive','task','watch','stop','close','profile',
          'field_setup','field_arm','field_test','field_review'}
-SOURCE_MEMBERS=('heartbeat-board.log','prepare-off.log','prepare-before.log',
+SOURCE_MEMBERS=('heartbeat-board.log','output-guard-build.jsonl','output-guard-build.log','prepare-off.log','prepare-before.log',
     'base.log','final-off.log','final-read.log','qualification.json','field-config.json',
     'field-trials.json','field-stop.json','field-tracking.json','field-commits.jsonl')
 
 
-def export_sources(directory, emit, *, owners_reaped=True, member_limit=256*1024, total_limit=1024*1024):
+def export_sources(directory, emit, *, owners_reaped=True, member_limit=256*1024, total_limit=1024*1024,
+                   required_members=(),evidence_error=None):
     """Export only fixed robot-generated evidence, with explicit truncation.
 
     Tail chunks preserve exact byte offsets and their own SHA. A whole-source
     SHA is asserted only when every byte was read from a stable regular file.
     There is no client-supplied path, directory traversal or executable input.
     """
-    directory=Path(directory);members=[];remaining=total_limit;complete=True
+    directory=Path(directory);members=[];remaining=total_limit;complete=evidence_error is None
     for name in SOURCE_MEMBERS:
         path=directory/name
         row={'member':name,'status':'NOT_CREATED','source_complete':None}
         try:
             if path.is_symlink():raise ValueError('SOURCE_SYMLINK')
             if not path.exists():
+                if name in required_members:
+                    row.update(status='REQUIRED_SOURCE_MISSING',source_complete=False);complete=False
                 members.append(row);continue
             if not path.is_file():raise ValueError('SOURCE_NOT_REGULAR')
             before=path.stat();size=before.st_size
@@ -79,7 +83,8 @@ def export_sources(directory, emit, *, owners_reaped=True, member_limit=256*1024
             row.update(status='EXPORT_FAILED',source_complete=False,reason=reason_code(exc));complete=False
         members.append(row)
     manifest=dict(schema='physical-live-source-1.0',kind='manifest',members=members,complete=complete,
-        member_limit_bytes=member_limit,total_limit_bytes=total_limit,exported_bytes=total_limit-remaining)
+        member_limit_bytes=member_limit,total_limit_bytes=total_limit,exported_bytes=total_limit-remaining,
+        evidence_error=evidence_error,required_members=list(required_members))
     emit('raw_source',manifest)
     return manifest
 
@@ -142,7 +147,7 @@ class InputLines:
 
 class SegmentedWriter:
     """Only the journal's disk thread calls write; hard capacity never drops data."""
-    def __init__(self, directory, segment_bytes=4*1024*1024, maximum_bytes=256*1024*1024):
+    def __init__(self, directory, segment_bytes=4*1024*1024, maximum_bytes=EVENT_ARCHIVE_BYTES):
         self.directory=Path(directory);self.segment_bytes=segment_bytes;self.maximum_bytes=maximum_bytes
         self.total=self.size=0;self.stream=None;self.segments=[];self.digest=None
 
@@ -168,14 +173,15 @@ class SegmentedWriter:
 
 
 class FleetWorker:
-    def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream):
+    def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream,line_writer=None):
         self.context=checked_context(context);self.directory=Path(directory);self.clock=clock
         self.lock=threading.RLock();self.sequence=0;self.last_command=0;self.cancel=threading.Event()
         self.recording_failed=False;self.cleanup_confirmed=False
         self.disk=SegmentedWriter(directory)
-        self.journal=RobotJournal(self.directory/'unused',max_bytes=256*1024*1024,capacity=512,
+        self.journal=RobotJournal(self.directory/'unused',max_bytes=EVENT_ARCHIVE_BYTES,capacity=512,
             opener=lambda _:self.disk,buffered=True)
-        self.protocol=ProtocolOutbox(writer,max_messages=512,max_bytes=4*1024*1024,buffered=True)
+        self.protocol=ProtocolOutbox(writer,max_messages=512,max_bytes=4*1024*1024,buffered=True,line_writer=line_writer)
+        self.emit_timing=dict(events=0,maximum_payload_prepare_s=0.,maximum_order_lock_wait_s=0.)
         self.native=native_factory(self.directory/'native',self.emit)
         self.control=control_factory(self.context,self.directory,self.emit,self.native,clock=clock)
         self.board={'voltage_v':None,'source':'unknown','age_ms':None};self.board_at=None
@@ -184,24 +190,65 @@ class FleetWorker:
         self.preparation_challenges={}
 
     def emit(self,kind,data,*,record=True):
+        # Payloads belong to callers until this owned copy is made. Large
+        # heartbeat/raw snapshots and both JSON encodings must NOT hold the
+        # order lock needed by the small original input-window/output events.
+        began=self.clock()
+        try:
+            owned=deepcopy(data)
+            if not isinstance(owned,dict) or 'event_delivery' in owned:raise ValueError('EVENT_PAYLOAD_SHAPE')
+            wire_body=json.dumps(owned,allow_nan=False,separators=(',',':'))
+            archive_body=(json.dumps({k:v for k,v in owned.items() if k not in {'challenge','watch_challenge'}},
+                allow_nan=False,separators=(',',':')) if record and ('challenge' in owned or 'watch_challenge' in owned) else wire_body)
+            if max(len(wire_body.encode('utf-8')),len(archive_body.encode('utf-8')))>256*1024:
+                raise ValueError('EVENT_LINE_BYTE_LIMIT')
+        except Exception:
+            self._recording_fault();raise
+        prepared=self.clock()
         with self.lock:
             self.sequence+=1
+            enqueued=self.clock()
             event=dict(schema='physical-live-event-1.0',**{k:self.context[k] for k in IDENTITY},
-                sequence=self.sequence,kind=kind,robot_monotonic_s=self.clock(),data=deepcopy(data))
+                sequence=self.sequence,kind=kind,robot_monotonic_s=enqueued)
             if self.context['schema']=='physical-live-start-2.0':
                 event.update(schema='physical-live-event-2.0',source_twin_context_id=self.context['source_twin_context']['context_id'])
-            archive=deepcopy(event);archive['data'].pop('challenge',None);archive['data'].pop('watch_challenge',None)
+            self.emit_timing['events']+=1
+            self.emit_timing['maximum_payload_prepare_s']=max(self.emit_timing['maximum_payload_prepare_s'],prepared-began)
+            self.emit_timing['maximum_order_lock_wait_s']=max(self.emit_timing['maximum_order_lock_wait_s'],enqueued-prepared)
+            if kind in {'command','control_pause'}:
+                diagnostic=json.dumps(dict(schema='robot-event-preparation-1.0',
+                    payload_started_s=began,payload_ready_s=prepared,ordered_s=enqueued,
+                    payload_prepare_s=prepared-began,order_lock_wait_s=enqueued-prepared),separators=(',',':'))
+                # Fixed JSON structure assembly, never string replacement of
+                # user text. Nonces and every original source clock are intact.
+                def diagnosed(body):return body[:-1]+(',' if body!='{}' else '')+'"event_delivery":'+diagnostic+'}'
+                wire_body=diagnosed(wire_body);archive_body=diagnosed(archive_body)
+            prefix=json.dumps(event,allow_nan=False,separators=(',',':'))[:-1]+',"data":'
+            wire=prefix+wire_body+'}'
+            archive=prefix+archive_body+'}\n'
+            if max(len(wire.encode('utf-8'))+1,len(archive.encode('utf-8')))>256*1024:
+                self._recording_fault();raise ValueError('EVENT_LINE_BYTE_LIMIT')
             if record:
                 try:
-                    if self.journal.append(archive) is False:self.recording_failed=True
-                except Exception:self.recording_failed=True
-            self.protocol.send(event)
+                    if self.journal.append_prepared(archive,kind) is False:self._recording_fault()
+                except Exception:self._recording_fault()
+            try:self.protocol.send_prepared(wire)
+            except Exception:self._recording_fault();raise
+
+    def _recording_fault(self):
+        self.recording_failed=True
+        control=getattr(self,'control',None)
+        if control is not None:
+            control.field_until=0.;control.stop_requested.set()
+
+    def _control_flags(self):
+        return self.control.status_flags() if hasattr(self.control,'status_flags') else self.control.snapshot()
 
     def command(self,value):
         value=checked_command(value,self.context,self.last_command)
         self.last_command=max(self.last_command,value['sequence'])
         action,p=value['action'],value['payload']
-        status=self.control.snapshot()
+        status=self._control_flags()
         presence_only=('CLEANUP' if status.get('maintenance_phase')=='CLEANUP' else
                        'PREPARATION' if status['control_state']=='PREPARING' else None)
         if action=='watch' and self.cancel.is_set():raise ValueError('SESSION_CLOSING')
@@ -229,7 +276,7 @@ class FleetWorker:
         from runtime import HOME,ownership,read_board,verify_release
         from robot_health import parse_board_snapshot
         while not self.cancel.is_set():
-            if self.control.snapshot()['control_state']=='UNPREPARED':
+            if self._control_flags()['control_state']=='UNPREPARED':
                 began=self.clock()
                 with self.board_lock:self.board_read_status={'state':'READING','started_s':began}
                 try:
@@ -276,7 +323,8 @@ class FleetWorker:
         sensor_frame=None if frame is None else {'source':'physical_native_sensor_unaligned',
             'age_ms':(self.clock()-frame['timing']['receipt_end_s'])*1000,'age_basis':'serial_receipt',
             'acquisition_timing':frame['timing'],'complete':frame['complete'],'nodes_sha256':frame['nodes_sha256']}
-        return dict(status,boot_id=self.context['boot_id'],release_id=self.context['release_id'],sensor_frame=sensor_frame,
+        with self.lock:emission=dict(self.emit_timing)
+        return dict(status,boot_id=self.context['boot_id'],release_id=self.context['release_id'],sensor_frame=sensor_frame,event_emission=emission,
             worker_sha256=self.context['worker_sha256'],battery=battery,lidar_state=self.native.snapshot()['lidar_state'],lidar=self.native.snapshot(),
             live_heartbeat=True,recording=self.journal.status(),new_integration_hardware_acceptance='NOT_RUN')
 
@@ -322,8 +370,12 @@ class FleetWorker:
             try:self.emit('cleanup',{'subsystem':'devices','reason':fault,'control':control,'native':native})
             except Exception:pass
             try:
+                required=[]
+                if control.get('output_guard_diagnostic_expected'):required.append('output-guard-build.jsonl')
+                if control.get('output_guard_log_expected'):required.append('output-guard-build.log')
                 source_export=export_sources(self.directory,self.emit,owners_reaped=
-                    control['worker_reaped'] and not (self.board_thread and self.board_thread.is_alive()))
+                    control['worker_reaped'] and not (self.board_thread and self.board_thread.is_alive()),
+                    required_members=required,evidence_error=control.get('output_guard_diagnostic_evidence_error'))
                 if not source_export['complete']:self.recording_failed=True
             except Exception:
                 source_export={'complete':False,'reason':'ROBOT_SOURCE_EXPORT_FAILED'};self.recording_failed=True
@@ -362,7 +414,7 @@ def main():
     directory=Path.home()/'.local/share/twinpulse/fleet/sessions'/context['operation_id']
     directory.mkdir(parents=True,exist_ok=False,mode=0o700)
     # Context enrichment is robot-owned, never accepted from PC stdin.
-    worker=FleetWorker({k:v for k,v in context.items() if k not in {'boot_id','release_id'}},directory,stdout_emit)
+    worker=FleetWorker({k:v for k,v in context.items() if k not in {'boot_id','release_id'}},directory,stdout_emit,line_writer=stdout_emit_line)
     worker.context.update(boot_id=context['boot_id'],release_id=context['release_id'])
     worker.control.context=worker.context
     for name in ('SIGINT','SIGTERM','SIGHUP'):

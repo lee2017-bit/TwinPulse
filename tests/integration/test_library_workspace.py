@@ -34,6 +34,22 @@ def mesh(scale=1.):
 
 
 class LibraryWorkspaceTests(unittest.TestCase):
+    def test_finite_process_cleanup_preserves_tool_error_and_still_reaps_root(self):
+        from unittest.mock import Mock,patch
+        from types import SimpleNamespace
+        from twinpulse_app.library_process import run_finite
+        import twinpulse_app.process_manager as manager
+        job=Mock();job.close.side_effect=OSError('job close failed');process=Mock();process.poll.return_value=None
+        for failing_stage in ('assign','spawn','cancel'):
+            with self.subTest(stage=failing_stage),TemporaryDirectory() as folder:
+                original=OSError('original '+failing_stage);job.reset_mock();job.assign.side_effect=original if failing_stage=='assign' else None
+                with patch.object(manager,'_WindowsJob',return_value=job),patch('twinpulse_app.library_process.subprocess.Popen',side_effect=original if failing_stage=='spawn' else None,return_value=process):
+                    with self.assertRaises((OSError,ValueError)) as raised:run_finite(['fixed'],folder,SimpleNamespace(is_cancelled=True))
+                if failing_stage in ('assign','spawn'):self.assertIs(raised.exception,original)
+                else:self.assertEqual(str(raised.exception),'LIBRARY_CANCELLED')
+                self.assertIn('cleanup also failed',raised.exception.__notes__[0]);job.close.assert_called_once()
+                if failing_stage!='spawn':process.wait.assert_called_with(3)
+
     def setUp(self):
         self.temp=TemporaryDirectory();self.root=Path(self.temp.name)
         self.workflow=workflow(self.root);self.library=LibraryWorkspace(self.workflow,None)

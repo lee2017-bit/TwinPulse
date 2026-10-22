@@ -36,10 +36,19 @@ describe('supervised field tests (supplementary UI contract only)',()=>{
     const {onAction}=setup(row);
     expect(screen.getByRole('region',{name:'Power-on test sequence'})).toBeTruthy();
     expect(screen.getByText(/Bootstrap stop does not require a prior stop receipt/)).toBeTruthy();
-    expect(screen.getByText(/불완전 — 원문 경고 보존.*미해석 11 bytes/)).toBeTruthy();
-    expect(screen.getByText(/수집 구간 완료 · 엄격 회전 품질 INCOMPLETE_RINGS/)).toBeTruthy();
-    expect(screen.getByText(/원문 저장 무결성은 센서 종료 manifest에서 별도 확인/)).toBeTruthy();
+    expect(screen.getByText(/incomplete — original warning retained.*unknown 11 bytes/)).toBeTruthy();
+    expect(screen.getByText(/Collection window complete · strict ring quality INCOMPLETE_RINGS/)).toBeTruthy();
+    expect(screen.getByText(/Verify raw archive integrity separately in the final sensor manifest/)).toBeTruthy();
     expect(onAction).not.toHaveBeenCalled();
+  });
+  it('shows current input timing and confirmed output readback, never legacy constants or an unconfirmed registered output',()=>{
+    const row=robot();row.timing_values={input_ttl_ms:350} as RobotFleetRobot['timing_values'];
+    const view=setup(row);
+    expect(screen.getByLabelText('Current field timing').textContent).toBe('Input expiry 350 ms · applied output timeout not confirmed ms.');
+    row.output_timing={output_timeout_ms:450} as RobotFleetRobot['output_timing'];
+    view.rerender(<RobotFieldTests {...view.props} robot={{...row}}/>);
+    expect(screen.getByLabelText('Current field timing').textContent).toBe('Input expiry 350 ms · applied output timeout 450 ms.');
+    expect(screen.queryByText(/Input expiry 250 ms/)).toBeNull();
   });
   it('saves editable reference setup offline only after explicit axes/model review, with fixed identities and no arm/connect',()=>{
     const off={...robot(),connection_state:'DISCONNECTED' as const,connection_epoch:null,live_heartbeat:false,field:undefined};

@@ -12,6 +12,7 @@ SCRIPT_ROLES = {
     'robot-readiness': 'run_robot_readiness.py',
     'robot-prepare': 'prepare_robot.py',
     'library-tool': 'twinpulse_library_worker.py',
+    'motion-review': 'twinpulse_motion_review_worker.py',
 }
 
 

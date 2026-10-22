@@ -201,10 +201,13 @@ class InputGate:
                   'HOLD_LIMIT_EXCEEDED' if self.active and now >= self.hold_end else
                   'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=self.presence_s else None)
         if reason:
+            original=dict(reason=reason,**self.timing())
             if self.first_fault is None:self.first_fault=dict(reason=reason,**self.timing())
             if self.recoverable and reason in {'INPUT_DEADLINE_EXPIRED','OPERATOR_PRESENCE_EXPIRED','HOLD_LIMIT_EXCEEDED'}:
                 self.pause(reason)
-                raise MotionPaused(reason)
+                error=MotionPaused(reason)
+                error.input_diagnostic=original
+                raise error
             self.closed = True
             raise ValueError(reason)
 

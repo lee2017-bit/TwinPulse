@@ -421,9 +421,11 @@ class ChatConversationTests(unittest.TestCase):
             self.assertEqual(restored.snapshot()['messages'],first['messages'])
 
     def test_discarded_response_does_not_raise_or_reexecute(self):
+        from email.message import Message
         from unittest.mock import Mock
         from twinpulse_app.api import LocalApiServer
         request=Mock();request.wfile.write.side_effect=ConnectionAbortedError('reload fixture')
+        request.headers=Message();request.command='GET';request.request_version='HTTP/1.1'
         request.connection.gettimeout.return_value=None
         LocalApiServer._json(request,200,{'accepted_request_ids':['committed-id']})
         self.assertTrue(request.close_connection);self.assertEqual(request.wfile.write.call_count,1)

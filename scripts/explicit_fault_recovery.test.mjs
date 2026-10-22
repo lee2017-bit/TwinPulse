@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Synthetic negative classifier fixtures ONLY; not App/model/robot acceptance.
 import assert from 'node:assert/strict';
-import {safeUnknownDriveRejection,scopedFetchBoundaryFailure} from './explicit_fault_recovery.mjs';
+import {safeUnknownDriveRejection,scopedFetchBoundaryFailure,scopedPreviewCacheMiss,explicitFinalFaultStep} from './explicit_fault_recovery.mjs';
 const clone=v=>structuredClone(v),robot={robot_id:'r',operation_id:'o',connection_epoch:'c',motion_epoch:'new',applied_motion_epoch:'new',control_state:'PAUSED',pose:{position_m:[0,0,0]},telemetry_sequence:10};
+for(const name of ['FAULT INJECTION: delayed image','FAULT MATRIX: dispatch'])assert.equal(explicitFinalFaultStep(name),true);
+for(const name of ['Continuous 60-second hold','Visible Exit TwinPulse normal shutdown','prefix FAULT MATRIX: no',undefined])assert.equal(explicitFinalFaultStep(name),false);
 const drive={...robot,action:'drive',request_id:'app-id',motion_epoch:'old',order:1,response_order:2,response_at:251,expires_at_ms:250,at:0};
 const stop={...robot,action:'stop',motion_epoch:'old',status:200,order:3,response_at:270,result_robots:[robot]};
 const error={path:'/v1/product/robot-fleet',method:'POST',action:'drive',status:409,request_id:'app-id',response_body_available:false,fault:{kind:'dispatch-delay-matrix',delay_ms:100}};
@@ -23,3 +25,19 @@ for(const mutate of [r=>{delete r.fetch_teardown_recovery.before.frame_id;delete
 for(const mutate of [r=>r.request_failures.push({...get,at:151}),r=>delete r.network_failures[0].browser_request_id,r=>r.network_failures[0].context_id='other']){const r=clone(rec);mutate(r);assert.equal(scopedFetchBoundaryFailure(get,r),null);count++;}
 assert.equal(scopedFetchBoundaryFailure({...get,path:'/v1/product/conversation'},rec),null);count++;
 console.log(JSON.stringify({status:'PASS',assertions:count,scope:'SYNTHETIC_CLASSIFIER_SUPPLEMENTARY_NOT_USER_ACCEPTANCE'}));
+const digest='a'.repeat(64),pe={path:'/v1/product/viewport/preview/'+digest,method:'GET',status:409,code:'viewport_preview_expired',response_body_available:true,
+ response_body:{code:'viewport_preview_expired'},request_step:'FAULT MATRIX: dispatch',request_fault_window:true,request_at:100,response_at:120,request_wall_time_ms:1000,context:'ctx',response_context:'ctx',current_context:'ctx'};
+const frame={frame_id:1,sha256:digest,preview_only:true,physical_authority:false,engine_session_id:'engine',stage_epoch:'stage',applied_revision:'scene'};
+const pr={original_http_errors:[pe],final_fault_context:'ctx',fault_window_held_until_exit:true,fetch_boundaries:[{action:'after_enable',node_at:50,cdp_monotonic_s:.5}],
+ viewport_network_timings:[{path:pe.path,method:'GET',status:409,context_id:'ctx',cdp_wall_time:1,cdp_timestamp:1,browser_request_id:'native'}],
+ viewport_receipt_trace:{receipts:[{path:'/v1/product/viewport',status:200,context:'ctx',at:90,last_frame:frame,frame:{...frame,frame_id:2}},
+  {status:200,context:'ctx',at:190,frame:{...frame,frame_id:3}}]},final_fault_recovery:{after:{at:200,live:true,frame_age_ms:10,frame_id:3,stage_epoch:'stage',scene_revision:'scene'}}};
+assert(scopedPreviewCacheMiss(pe,pr));let previewAssertions=1;
+for(const change of [r=>r.original_http_errors=[],r=>r.original_http_errors.push(clone(pe)),r=>r.original_http_errors.push({...pe,request_wall_time_ms:1000.5}),r=>r.final_fault_context='other',r=>r.viewport_network_timings.push(clone(r.viewport_network_timings[0])),
+ r=>r.viewport_receipt_trace.receipts[0].last_frame.sha256='b'.repeat(64),r=>r.viewport_receipt_trace.receipts[0].last_frame.preview_only=false,
+ r=>r.viewport_receipt_trace.receipts[0].last_frame.physical_authority=true,r=>r.viewport_receipt_trace.receipts[1].context='other',r=>r.final_fault_recovery.after.live=false,
+ r=>r.final_fault_recovery.after.frame_age_ms=1000,r=>r.final_fault_recovery.after.stage_epoch='wrong',r=>r.fault_window_held_until_exit=false]){
+ const r=clone(pr);change(r);assert.equal(scopedPreviewCacheMiss(pe,r),null);previewAssertions++;}
+for(const change of [e=>e.request_fault_window=false,e=>e.method='POST',e=>e.status=401,e=>e.status=403,e=>e.code='other',e=>e.response_body_available=false,
+ e=>e.response_body={},e=>e.response_context='other',e=>e.path='/v1/product/viewport/current']){const e=clone(pe);change(e);assert.equal(scopedPreviewCacheMiss(e,pr),null);previewAssertions++;}
+console.log(JSON.stringify({status:'PASS',previewAssertions,scope:'SYNTHETIC_PREVIEW_CLASSIFIER_ONLY'}));

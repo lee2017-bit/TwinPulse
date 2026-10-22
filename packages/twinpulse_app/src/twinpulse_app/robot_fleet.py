@@ -117,7 +117,8 @@ class RobotFleet:
             pose=dict(position_m=list(pose),frame_id='isaac_world',source='user_spawn',aligned=kind=='sim') if kind=='sim' else None,
             telemetry_age_ms=None,telemetry_sequence=0,capabilities=dict(drive=kind=='sim',lidar=kind=='sim'),scan=None,scan_receipt=None,
             live_heartbeat=False,setup=None,field=None,cleanup_confirmed=False,controller_state=None,sensor_frame=None,command=None,
-            telemetry_diagnostic=None,native_diagnostic=None,project_id=None,display_pose=None,
+            telemetry_diagnostic=None,native_diagnostic=None,motion_observation=None,project_id=None,display_pose=None,
+            timing_values=None,timing_profile_sha256=None,output_timing=None,
             source_twin_context=None,
             _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf,_registration=None)
 

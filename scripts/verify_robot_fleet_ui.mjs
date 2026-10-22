@@ -5,23 +5,26 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {currentControlView,checkControlView,visibleMotion} from './control_view_acceptance.mjs';
-import {safeUnknownDriveRejection,scopedFetchBoundaryFailure} from './explicit_fault_recovery.mjs';
+import {safeUnknownDriveRejection,scopedFetchBoundaryFailure,scopedPreviewCacheMiss,explicitFinalFaultStep} from './explicit_fault_recovery.mjs';
 import {recordStopReceipt,assertFinalStopReceipt} from './control_stop_receipt.mjs';
 import {sceneRobotUx} from './scene_robot_ux_acceptance.mjs';
 import {registrationHistory} from './registration_history_receipt.mjs';
+import {recordRenderedPage} from './record_rendered_page.mjs';
+import {requireBodyTranslation} from './body_frame_travel.mjs';
 const args=process.argv.slice(2),arg=n=>{const i=args.indexOf(n);return i<0?undefined:args[i+1];};
 const out=arg('--output'),endpoint=arg('--cdp'),phase=arg('--phase')??'fresh';
 if(!out||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit CDP/output required');
 if(phase==='reopen'&&(!arg('--project')||!arg('--field-config')||!arg('--registration-prior')))throw Error('Cold reopen requires explicit project, field-config and registration-prior before any UI action');
+if(phase==='reproduction'&&(!arg('--project')||!arg('--scene-revision')))throw Error('Saved failure reproduction requires original project and revision; it is not a fresh generation');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],display_samples:[],native_os_input:'NOT_RUN',physical:'OFF_NOT_RUN'};
-result.fault_classification_contract='07b_NORMAL_FIRST_SINGLE_FINAL_FAULT_WINDOW_ORDINARY_ABORT_REMAINS_FAILURE';
+result.fault_classification_contract='08_TYPED_PREVIEW_CACHE_RACE_WITH_ORIGINAL_AND_EXACT_CONTEXT_RECOVERY';
 result.keyboard_release_trials=[];
 const recordViewportReceipts=args.includes('--viewport-receipts');
 result.viewport_receipt_trace={enabled:recordViewportReceipts,method:'Passive existing GET response bodies/headers only; no request interception, extra fetch or product state injection',receipts:[]};
 const finalFaultSteps=[];
 const faultRequests=new WeakMap(),requestMeta=new WeakMap(),responseChecks=[];let observedOrder=0;
-let browser,page,fleet=null,conversation=null,chatState=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null,conversationFaultHandler=null,imageFaultHandler=null;const fleetsByContext=new Map();
+let browser,page,finishRecording,fleet=null,conversation=null,chatState=null,expectInvalidProfile=false,exiting=false,activeStep='HARNESS_ATTACH',fleetRouteHandler=null,conversationFaultHandler=null,imageFaultHandler=null;const fleetsByContext=new Map();
 const faultRoutePattern=/\/v1\/product\/(?:robot-fleet|conversation|viewport\/current)(?:\?.*)?$/;
 const faultFleetRoute=request=>new URL(request.request().url()).pathname.endsWith('/viewport/current')
  ?imageFaultHandler?imageFaultHandler(request):request.continue()
@@ -72,6 +75,7 @@ try{
  if(pages.length!==1)throw Error('One installed renderer required');[page]=pages;page.setDefaultTimeout(10000);
  result.desktop=await page.evaluate(()=>window.twinpulseDesktop?.versions());
  if(!result.desktop?.engine?.launch_id)throw Error('Installed desktop identity missing');
+ if(args.includes('--record-renderer'))finishRecording=await recordRenderedPage(page,path.join(out,'recording'));
  const network=await page.context().newCDPSession(page),networkRequests=new Map();
  result.control_network_timings=[];result.viewport_network_timings=[];result.viewport_network_extra=[];result.browser_console_errors=[];result.fetch_boundaries=[];
  await network.send('Performance.enable');
@@ -80,17 +84,18 @@ try{
  const networkExtra=new Map();
  network.on('Network.responseReceivedExtraInfo',e=>{
   const h=e.headers??{},value={request_id:e.requestId,status:e.statusCode,blocked_cookies:e.blockedCookies?.length??0,
-   headers:{content_length:h['Content-Length']??h['content-length'],content_type:h['Content-Type']??h['content-type'],connection:h.Connection??h.connection}};
+   headers:{content_length:h['Content-Length']??h['content-length'],content_type:h['Content-Type']??h['content-type'],connection:h.Connection??h.connection,
+    server_timing:h['Server-Timing']??h['server-timing'],accepted_at_ms:h['X-TwinPulse-Accepted-At']??h['x-twinpulse-accepted-at']}};
   networkExtra.set(e.requestId,value);if(networkRequests.get(e.requestId)?.path.startsWith('/v1/product/viewport'))result.viewport_network_extra.push(value);
  });
  network.on('Network.requestWillBeSent',e=>{const pathname=new URL(e.request.url).pathname;if(pathname.startsWith('/v1/product/')){
   let body;try{body=JSON.parse(e.request.postData??'null');}catch{}
-  const row={path:pathname,method:e.request.method,at:Date.now(),step:activeStep,cdp_timestamp:e.timestamp,cdp_wall_time:e.wallTime,context_id:e.request.headers['x-twinpulse-context']??e.request.headers['X-TwinPulse-Context']};
+  const row={path:pathname,method:e.request.method,at:Date.now(),step:activeStep,cdp_timestamp:e.timestamp,cdp_wall_time:e.wallTime,context_id:e.request.headers['x-twinpulse-context']??e.request.headers['X-TwinPulse-Context'],read_id:e.request.headers['X-TwinPulse-Read-ID']??e.request.headers['x-twinpulse-read-id']};
   if(pathname==='/v1/product/robot-fleet'&&body?.action==='drive')Object.assign(row,{drive:true,request_id:body.request_id,sequence:body.payload?.sequence,expires_at_ms:body.payload?.expires_at_ms});
   row.application_request_id=row.request_id;row.browser_request_id=e.requestId;networkRequests.set(e.requestId,row);
  }});
  network.on('Network.responseReceived',e=>{const row=networkRequests.get(e.requestId);
-  if(row?.drive||row?.path.startsWith('/v1/product/viewport')){
+  if(row?.drive||row?.path.startsWith('/v1/product/viewport')||['/v1/product/workflow','/v1/product/conversation'].includes(row?.path)){
    const receipt={...row,request_id:e.requestId,response_cdp_timestamp:e.timestamp,response_node_received_at:Date.now(),timing:e.response.timing,status:e.response.status,
     connection_reused:e.response.connectionReused,connection_id:e.response.connectionId,protocol:e.response.protocol};
    (row.drive?result.control_network_timings:result.viewport_network_timings).push(receipt);
@@ -99,7 +104,10 @@ try{
  page.on('console',message=>{if(message.type()==='error')result.browser_console_errors.push({at:Date.now(),step:activeStep,
   text:clean(message.text()).replace(/Bearer\s+\S+/gi,'Bearer [REDACTED]')});});
  await network.send('Network.enable');
- page.on('request',r=>{if(new URL(r.url()).pathname!=='/v1/product/robot-fleet'||r.method()!=='POST')return;
+ const previewReads=new WeakMap();
+ page.on('request',r=>{
+  if(/^\/v1\/product\/viewport\/preview\/[a-f0-9]{64}$/.test(new URL(r.url()).pathname)&&r.method()==='GET')previewReads.set(r,{request_at:Date.now(),request_step:activeStep,context:r.headers()['x-twinpulse-context'],current_context:conversation?.context,request_fault_window:explicitFinalFaultStep(activeStep)});
+  if(new URL(r.url()).pathname!=='/v1/product/robot-fleet'||r.method()!=='POST')return;
   let body;try{body=r.postDataJSON();}catch{return;}
   const meta={order:++observedOrder,at:Date.now(),action:body?.action,request_id:body?.request_id,robot_id:body?.robot_id,
    connection_epoch:body?.connection_epoch,motion_epoch:body?.motion_epoch,operation_id:fleet?.robots.find(v=>v.robot_id===body?.robot_id)?.operation_id,
@@ -114,7 +122,8 @@ try{
     let payload=null,body=null,bodyAvailable=false;try{payload=await r.json();bodyAvailable=true;}catch{}try{body=r.request().postDataJSON();}catch{}
     const fault=faultRequests.get(r.request());const code=payload?.code??payload?.error?.code;
     const row={path:p,status:r.status(),method:r.request().method(),action:body?.action,request_id:body?.request_id,
-     code,message:payload?.message??payload?.error?.message,response_body_available:bodyAvailable,fault};
+     code,message:payload?.message??payload?.error?.message,response_body_available:bodyAvailable,fault,
+     ...(previewReads.has(r.request())?{...previewReads.get(r.request()),response_at:Date.now(),request_wall_time_ms:r.request().timing().startTime,response_context:r.headers()['x-twinpulse-context'],response_body:payload}:{} )};
     if(fault&&p==='/v1/product/robot-fleet'&&r.status()===409&&body?.action==='drive'&&['fleet_input_expired','fleet_motion_changed','fleet_sequence'].includes(code))result.fault_rejections.push(row);
     else if(expectInvalidProfile&&p==='/v1/product/robot-fleet'&&body?.action==='profile'&&r.status()===400&&code==='physical_profile_invalid')result.expected_rejections.push(row);
     else result.http_errors.push(row);
@@ -124,7 +133,7 @@ try{
     const receivedAt=Date.now();
     try{
      const state=p.endsWith('/current')?JSON.parse(r.headers()['x-twinpulse-viewport']??'null'):await r.json();
-     const frame=f=>f?Object.fromEntries(['frame_id','captured_at_ms','engine_session_id','stage_epoch','applied_revision','camera_sequence','sha256','robot_anchors'].map(k=>[k,f[k]])):null;
+     const frame=f=>f?Object.fromEntries(['frame_id','captured_at_ms','engine_session_id','stage_epoch','applied_revision','camera_sequence','sha256','robot_anchors','preview_only','physical_authority','url'].map(k=>[k,f[k]])):null;
      result.viewport_receipt_trace.receipts.push({at:receivedAt,body_observed_at:Date.now(),step:activeStep,path:p,status:r.status(),context,
       state:state?.state,fps:state?.fps,camera_pending:state?.camera_pending,frame:frame(state?.frame),last_frame:frame(state?.last_frame)});
     }catch(e){result.viewport_receipt_trace.receipts.push({at:receivedAt,step:activeStep,path:p,status:r.status(),error:clean(e)});}
@@ -160,6 +169,20 @@ try{
  });
  if(phase!=='fresh')await checkPcPreparation();
  if(['physical-only','controls-only','controls-tail'].includes(phase))result.project=arg('--project');
+ if(phase==='reproduction'){
+  result.fresh_generation='NOT_RUN_ORIGINAL_SAVED_SCENE_REPRODUCTION_NOT_FRESH_ACCEPTANCE';
+  await step('Explicitly reopen the original failed SIM scene through the visible UI',async()=>{
+   result.project=arg('--project');
+   if(!await page.locator('.chat-sidebar-slot').isVisible())await page.getByRole('button',{name:'Toggle conversations and projects',exact:true}).click();
+   await page.getByRole('button',{name:'Open '+result.project,exact:true}).click();await poll(()=>sims().length===2);
+   if(sims().some(r=>r.connection_state!=='DISCONNECTED'||r.operation_id))throw Error('Restored motion authority');
+   const reopen=page.getByRole('button',{name:'Reopen saved scene',exact:true});if(await reopen.isVisible())await reopen.click();
+   await page.getByRole('button',{name:'Current Twin and SIM controls',exact:true}).click();
+   await page.getByRole('button',{name:'View current Twin',exact:true}).click();
+   await expect(page.getByRole('img',{name:'Current Isaac Digital Twin render',exact:true})).toBeVisible({timeout:60000});
+   await shot('original-failed-scene-reopened');return {project:result.project,expected_revision:arg('--scene-revision'),source:'Visible saved scene; no generation or result injection'};
+  });
+ }
  if(phase==='fresh'){
   await step('Visible New chat and original robot-containing scene brief',async()=>{
    const home=page.getByRole('button',{name:'＋ Start a new chat',exact:true});
@@ -277,7 +300,7 @@ try{
    await drawer('Beta').getByRole('button',{name:'Close robot controls',exact:true}).click();
    return {delayed,concurrent,preserved_draft_submitted:true,classification:'Separate cold fault branch, not ordinary network coexistence'};
   });
- }else if(['fresh','controls-only','controls-tail'].includes(phase)){
+ }else if(['fresh','controls-only','controls-tail','reproduction'].includes(phase)){
   if(phase==='controls-tail')await select('Alpha');
   else{
   await step('Two simultaneous real Isaac SIM connections and independent scan',async()=>{
@@ -289,6 +312,7 @@ try{
     await poll(()=>robot(name)?.lidar_state==='STREAMING');
    }
    await select('Alpha');await shot('two-connected');return sims();});
+  if(phase==='reproduction'&&sims().some(r=>r.source_twin_context?.scene_revision!==arg('--scene-revision')))throw Error('Original failed geometry revision not actually loaded');
   await step('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',async()=>{
    const rows=[];
    for(const [width,height] of [[1920,1080],[1366,768],[1093,614],[911,512],[1600,900]]){
@@ -297,7 +321,7 @@ try{
     await shot(`control-layout-${width}-${height}`);
    }
    const bodySelections=[];
-   if(phase==='fresh'||args.includes('--compact-labels')){
+   if(['fresh','reproduction'].includes(phase)||args.includes('--compact-labels')){
     for(const name of ['Beta','Alpha']){
      const close=page.getByRole('button',{name:'Close robot controls',exact:true});if(await close.isVisible())await close.click();
      await sleep(400);
@@ -325,7 +349,9 @@ try{
    const b=await padBox('Alpha','forward');await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();await sleep(2100);await page.mouse.up();
    await poll(()=>robot('Alpha')?.control_state==='PAUSED');await sleep(500);const after=structuredClone(sims());
    const a=after.find(r=>r.label==='Alpha'),b0=before.find(r=>r.label==='Alpha'),beta=after.find(r=>r.label==='Beta');
-   if(a.pose.position_m[0]-b0.pose.position_m[0]<.04)throw Error('No measured movement');
+   const p=b0.pose.position_m,q=a.pose.position_m;
+   const forward=(q[0]-p[0])*Math.cos(p[2])+(q[1]-p[1])*Math.sin(p[2]);
+   if((phase==='reproduction'?forward:q[0]-p[0])<.04)throw Error('No measured movement');
    if(after.some((r,i)=>r.connection_epoch!==before[i].connection_epoch||r.connection_state!=='CONNECTED'||r.lidar_state!=='STREAMING'))throw Error('Connection/sensor lost');
    if(JSON.stringify(beta.pose)!==JSON.stringify(before.find(r=>r.label==='Beta').pose))throw Error('Wrong robot moved');
    await shot('held-release');return {before,after};});
@@ -485,11 +511,11 @@ try{
    await select('Beta');const before=structuredClone(robot('Beta'));
    await sendChat('Beta robot forward 1m');await poll(()=>robot('Beta')?.control_state==='DRIVING');
    await poll(()=>robot('Beta')?.reason==='OBSTACLE_STOP',30000);const stopped=structuredClone(robot('Beta'));
-   if(stopped.pose.position_m[0]<=before.pose.position_m[0]+.05)throw Error('No approach before obstacle result');
+   const approach_measurement=requireBodyTranslation(before,stopped,'forward',.05);
    await shot('obstacle-stop');await sendChat('Beta robot backward 10cm');
    await poll(()=>robot('Beta')?.control_state==='DRIVING');await poll(()=>robot('Beta')?.reason==='TASK_COMPLETED',10000);
-   const escaped=structuredClone(robot('Beta'));if(stopped.pose.position_m[0]-escaped.pose.position_m[0]<.09)throw Error('Fresh escape failed');
-   await select('Alpha');return {before,stopped,escaped,guard:'AABB kinematic SIM only, not physical stopping-distance qualification'};});
+   const escaped=structuredClone(robot('Beta')),escape_measurement=requireBodyTranslation(stopped,escaped,'backward',.09);
+   await select('Alpha');return {before,stopped,escaped,approach_measurement,escape_measurement,guard:'AABB kinematic SIM only, not physical stopping-distance qualification'};});
   await step('Named chat Stop interrupts finite task without model call or disconnect',async()=>{
    const epoch=robot('Alpha').connection_epoch;await sendChat('Alpha robot forward 10cm');
    await poll(()=>robot('Alpha')?.control_state==='DRIVING');await sleep(300);
@@ -525,7 +551,7 @@ try{
     await expect(drawer(name)).toBeVisible();clicks.push(name);await drawer(name).getByRole('button',{name:'Close robot controls',exact:true}).click();
    }
    await shot('badges-both-clicked');return {count,clicks};});
-  if(phase==='fresh')await sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result,demoRecorder:arg('--public-demo-recorder-dir')});
+  if(['fresh','reproduction'].includes(phase))await sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result,demoRecorder:arg('--public-demo-recorder-dir')});
  }
   if(phase==='fresh')await checkPcPreparation();
   await step('Physical setup shown while robot remains off; no Connect or movement',async()=>{
@@ -535,7 +561,7 @@ try{
   result.physical_robot_id=physical.robot_id;result.physical_label=physical.label;
   await page.locator('.robot-fleet-row').filter({hasText:physical.label}).first().click();
   const controls=drawer(physical.label);await expect(controls).toBeVisible();
-  const setupDetails=controls.getByText('Setup, sensor details and logs',{exact:true});
+  const setupDetails=controls.locator('.robot-fleet-diagnostics>summary');
   if(await setupDetails.locator('..').getAttribute('open')===null)await setupDetails.click();
   const physicalSetup=controls.locator('.robot-physical-setup>summary');
   if(await physicalSetup.locator('..').getAttribute('open')===null)await physicalSetup.click();
@@ -594,7 +620,7 @@ try{
   }
   const field=runtime()?.field;
   const powerSequence=section.getByRole('region',{name:'Power-on test sequence',exact:true});
-  const powerHeading=powerSequence.getByRole('heading',{name:'이번 전원 세션의 시험 순서',exact:true});
+  const powerHeading=powerSequence.getByRole('heading',{name:'Power-on test sequence',exact:true});
   await powerHeading.scrollIntoViewIfNeeded();
   await expect(powerHeading).toBeInViewport();
   await shot('power-on-test-sequence');
@@ -681,6 +707,7 @@ try{
   await select('Alpha');await page.getByRole('button',{name:'Stop all',exact:true}).click();
   await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
   result.normal_steps_before_fault_window=result.steps.map(row=>row.name);
+  result.final_fault_context=conversation?.context;
   await routeBoundary('before_enable');await page.route(faultRoutePattern,faultFleetRoute);await routeBoundary('after_enable');
   result.fault_window_held_until_exit=true;
   for(const faultStep of finalFaultSteps)await faultStep();
@@ -693,7 +720,7 @@ try{
     exports.push({file,operation_id:record.operation_id,sha256:createHash('sha256').update(bytes).digest('hex'),events:record.events.length});}
    return {exports,scope:'Explicit final fault evidence readout, not ordinary movement after interception'};});
  }
- if(phase==='fresh'&&finalFaultSteps.length){await Promise.all(responseChecks);assertFinalStopReceipt(result);}
+ if(['fresh','reproduction'].includes(phase)&&finalFaultSteps.length){await Promise.all(responseChecks);assertFinalStopReceipt(result);}
  await step('Visible Exit TwinPulse normal shutdown',async()=>{exiting=true;const close=page.waitForEvent('close',{timeout:60000});
   await page.getByRole('button',{name:'Exit TwinPulse',exact:true}).click();await close;});
  await Promise.all(responseChecks);
@@ -716,9 +743,11 @@ try{
   return true;
  });
  result.original_http_errors=structuredClone(result.http_errors);result.original_request_failures=structuredClone(result.request_failures);result.scoped_fault_recovery=[];
+ result.expected_preview_cache_miss=[];
+ result.http_errors=result.http_errors.filter(error=>{const proof=scopedPreviewCacheMiss(error,result);if(proof){result.expected_preview_cache_miss.push({error,proof});return false;}return true;});
  result.http_errors=result.http_errors.filter(error=>{const proof=safeUnknownDriveRejection(error,result);if(proof){result.scoped_fault_recovery.push({error,proof});return false;}return true;});
  result.request_failures=result.request_failures.map(error=>{const proof=scopedFetchBoundaryFailure(error,result);if(proof){result.scoped_fault_recovery.push({error,proof});return {...error,fault:{kind:'explicit-fetch-boundary-associated',root_cause:'UNKNOWN',browser_request_id:proof.browser_request_id}};}return error;});
  result.status=result.errors.length||result.http_errors.length||result.request_failures.some(r=>!r.exiting&&!r.fault)?'FAIL':'PASS';
 }catch(e){result.status='FAIL';result.error=clean(e);}
-finally{if(page&&!page.isClosed()){await page.mouse.up().catch(()=>{});await page.keyboard.up('ArrowLeft').catch(()=>{});}await save();if(browser)await browser.close().catch(()=>{});console.log(JSON.stringify({status:result.status,steps:result.steps.map(({name,status})=>({name,status})),error:result.error}));}
+finally{if(page&&!page.isClosed()){await page.mouse.up().catch(()=>{});await page.keyboard.up('ArrowLeft').catch(()=>{});}if(finishRecording){try{result.recording=await finishRecording();}catch(error){result.recording_error=clean(error);}}await save();if(browser)await browser.close().catch(()=>{});console.log(JSON.stringify({status:result.status,steps:result.steps.map(({name,status})=>({name,status})),error:result.error}));}
 if(result.status!=='PASS')process.exitCode=1;

@@ -1,0 +1,43 @@
+{
+  "schema": "shared-roomplan-static-facts-1.0",
+  "checked_on_kst": "2026-10-23",
+  "status": "INSPECTED_NOT_IMPORTED_OR_CALIBRATED",
+  "source": {
+    "name": "Project-2610222326.usd",
+    "bytes": 38339,
+    "sha256": "844366fc9e53e1ad8887a2db92c086462bf12a4b54b16d39eb2d7e3259b4d69b",
+    "format": "USDC",
+    "creator": "Model IO export preview 1.10"
+  },
+  "usd_version": [0, 25, 11],
+  "up_axis": "Y",
+  "meters_per_unit_authored": false,
+  "resolved_fallback_meters_per_unit": 0.01,
+  "units_verdict": "MISSING_AUTHORED_UNITS_DO_NOT_AUTOCALIBRATE",
+  "mesh_categories": {
+    "Wall": 15, "Door": 4, "Window": 2, "Floor": 1,
+    "Chair": 2, "Refrigerator": 1, "Sofa": 1, "Storage": 3, "Table": 1
+  },
+  "mesh_vertices": 1212,
+  "mesh_faces": 620,
+  "all_faces_triangles": true,
+  "external_reference_asset_sublayer_count": 0,
+  "authored_physics_count": 0,
+  "source_only_original_library_probe": {
+    "status": "EXPECTED_TYPED_REJECTION",
+    "reason": "USD_EXPLICIT_UNITS_AND_AXIS_REQUIRED",
+    "inspector_source_sha256": "09aedfe26cbe34e1e59e762ad9acc510257ca823ec420e2927fbaafe8e81f9d7"
+  },
+  "photos": [
+    {"name": "KakaoTalk_20261023_001641404.jpg", "sha256": "79328b5b50cff0ee0f69e3ba2feb2afa20bbe9204cbeea7285d03fe8f17e0f9b"},
+    {"name": "KakaoTalk_20261023_001642352.jpg", "sha256": "4bae813cf9ec1b0dff9b1ba6caf9af09155b274c5b99da313b4060ad14636b7f"}
+  ],
+  "source_unchanged": true,
+  "raw_photos_usd_mesh_coordinates_and_floorplan_images_included": false,
+  "limits": [
+    "The same-site relationship is supplied by the creator, not registered independently.",
+    "This summary contains no source geometry and is not an independent reproducible USD asset.",
+    "No unit confirmation, App import, Isaac physics, navigation, photo fidelity or real alignment acceptance.",
+    "Local read-only mesh projection is not a native Isaac render."
+  ]
+}

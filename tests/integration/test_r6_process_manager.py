@@ -54,6 +54,31 @@ class FakeProcess:
 
 
 class R6ProcessManagerTests(unittest.TestCase):
+    def test_owned_exit_evidence_distinguishes_root_exit_force_and_job_close(self):
+        class Job:
+            def __init__(self,count):self.count=count;self.closed=False
+            def active_process_count(self):return self.count
+            def close(self):self.closed=True
+        for mode in ('already','natural','forced','query-error','store-error'):
+            with self.subTest(mode=mode):
+                manager=self.manager();manager._acquire_lock()
+                process=FakeProcess(901,0 if mode=='already' else None)
+                if mode not in ('already','forced'):
+                    def finish(**_):process.code=0;return 0
+                    process.wait=finish
+                job=Job(1)
+                if mode=='query-error':job.active_process_count=lambda:(_ for _ in ()).throw(OSError('query'))
+                manager._owned={'engine':process};manager._jobs={'engine':job}
+                from unittest.mock import patch
+                context=patch('twinpulse_app.process_manager._write_json_atomic',side_effect=OSError('store')) if mode=='store-error' else __import__('contextlib').nullcontext()
+                with context:manager._stop_owned('engine',graceful_s=.001)
+                row=manager._exit_observations['engine']
+                self.assertEqual(row['root_disposition'],'ALREADY_EXITED' if mode=='already' else 'TERMINATE_AFTER_TIMEOUT' if mode=='forced' else 'EXITED_DURING_GRACE')
+                self.assertTrue(job.closed);self.assertTrue(row['job_close_requested']);self.assertEqual(row['return_code'],0)
+                self.assertEqual(row['job_active_before_close'],None if mode=='query-error' else 1)
+                self.assertEqual(row['evidence_complete'],mode not in ('query-error','store-error'))
+                manager._release_lock()
+
     def test_explicit_diagnostic_exit_is_success_without_second_alert(self):
         main = runpy.run_path(str(ROOT / 'scripts/twinpulse_launcher.py'))['main']
         events = []
@@ -395,6 +420,44 @@ class R6ProcessManagerTests(unittest.TestCase):
         self.assertTrue(backend.terminated)
         self.assertFalse(unrelated.terminated)
         self.assertFalse(unrelated.killed)
+
+    def test_job_handle_close_failure_does_not_claim_closed_or_mask_initial_error(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import twinpulse_app.process_manager as module
+        api=SimpleNamespace(**{name:Mock() for name in ('CreateJobObjectW','SetInformationJobObject','AssignProcessToJobObject','TerminateJobObject','QueryInformationJobObject','CloseHandle')})
+        api.CreateJobObjectW.return_value=42;api.SetInformationJobObject.return_value=False;api.CloseHandle.return_value=False
+        primary=OSError('original configuration failure');secondary=OSError('cleanup failure')
+        errors=iter((primary,secondary))
+        with patch.object(module.ctypes,'WinDLL',return_value=api),patch.object(module.ctypes,'WinError',side_effect=lambda _:next(errors)):
+            with self.assertRaises(OSError) as raised:module._WindowsJob('fixture')
+        self.assertIs(raised.exception,primary);self.assertIn('cleanup also failed',raised.exception.__notes__[0])
+        job=module._WindowsJob.__new__(module._WindowsJob);job._handle=42;job._api=api
+        with patch.object(module.ctypes,'WinError',return_value=secondary):
+            with self.assertRaises(OSError):job.close()
+        self.assertEqual(job._handle,42)
+        api.CloseHandle.return_value=True;job.close();self.assertIsNone(job._handle)
+
+    def test_root_wait_and_job_close_failures_preserve_both_originals(self):
+        from unittest.mock import Mock
+        manager=self.manager();process=FakeProcess(901);original=OSError('original wait failed')
+        process.wait=Mock(side_effect=original);job=Mock();job.close.side_effect=OSError('close failed');job.active_process_count.return_value=1
+        manager._owned={'engine':process};manager._jobs={'engine':job}
+        with self.assertRaises(OSError) as raised:manager._stop_owned('engine',graceful_s=.001)
+        self.assertIs(raised.exception,original);self.assertIn('cleanup also failed',original.__notes__[0])
+        observation=manager._exit_observations['engine'];self.assertFalse(observation['evidence_complete'])
+        self.assertEqual([r['stage'] for r in observation['errors']],['root_wait','job_close'])
+
+    def test_assign_and_job_close_failures_do_not_skip_log_close_or_typed_cause(self):
+        from unittest.mock import Mock
+        import twinpulse_app.process_manager as module
+        original=OSError('original assign');job=Mock();job.assign.side_effect=original;job.close.side_effect=OSError('close failed')
+        manager=self.manager(popen_factory=lambda *a,**kw:FakeProcess(901),job_factory=lambda _:job)
+        manager.launch_dir.mkdir(parents=True);stream=Mock()
+        with patch.object(module.Path,'open',return_value=stream):
+            with self.assertRaises(ProcessManagerError) as raised:manager._spawn('backend',['fixed'],{},hidden=True)
+        self.assertEqual(raised.exception.code,'backend_job_failed');self.assertIs(raised.exception.__cause__,original)
+        stream.close.assert_called_once();self.assertIn('cleanup also failed',original.__notes__[0])
 
     def test_backend_spawn_failure_is_classified_and_cleans_only_owned_state(self) -> None:
         def fail_spawn(*_args: object, **_kwargs: object) -> FakeProcess:

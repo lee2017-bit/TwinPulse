@@ -213,6 +213,24 @@ describe('Real Isaac viewport',()=>{
     vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:960,height:640,close})));
     vi.stubGlobal('Image',class {src='';naturalWidth=960;naturalHeight=640;async decode(){}});
   });
+  it.each([0,.625])('expires the exact decoded frame at its original deadline with fractional clock %s',async(fraction)=>{
+    vi.useFakeTimers();
+    let component:ReturnType<typeof render>|undefined;
+    try{
+      const frame=view();frame.frame!.captured_at_ms=Date.now()-940+fraction;
+      const api=harness();api.viewportState.mockImplementation(async()=>frame);
+      component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+      await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+      expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'}).getAttribute('data-live')).toBe('true');
+      await act(async()=>{await vi.advanceTimersByTimeAsync(59);});
+      expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'})).toBeTruthy();
+      await act(async()=>{await vi.advanceTimersByTimeAsync(2);});
+      const last=screen.getByRole('img',{name:'Last Isaac preview · not live'});
+      expect(last.getAttribute('data-live')).toBe('false');
+      expect(last.getAttribute('data-captured-at')).toBe(String(frame.frame!.captured_at_ms));
+      expect(screen.getByRole('button',{name:'Orbit left'})).toHaveProperty('disabled',true);
+    }finally{component?.unmount();vi.useRealTimers();}
+  });
   it.each([
     ['observer_structure','waiting_model','Estimating the initial room structure · waiting for model response'],
     ['repair','validating','Correcting the scene · validating the received candidate'],
@@ -393,9 +411,34 @@ describe('Real Isaac viewport',()=>{
   });
   it('draws the atomically paired latest frame rather than the replaced metadata frame',async()=>{
     const api={...harness(),viewportImageFrame:vi.fn(async()=>({state:view(9),image:new Blob(['image'],{type:'image/jpeg'})}))};
+    api.viewportState.mockImplementation(()=>new Promise(()=>{})); // A slow JSON metadata request cannot hold live JPEG reception.
     const component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
     expect((await screen.findByRole('img')).getAttribute('data-frame-id')).toBe('9');
-    expect(api.viewportImage).not.toHaveBeenCalled();expect(api.command).not.toHaveBeenCalled();component.unmount();
+    expect(api.viewportState).not.toHaveBeenCalled();expect(api.viewportImage).not.toHaveBeenCalled();expect(api.command).not.toHaveBeenCalled();component.unmount();
+  });
+  it('never pairs a JPEG-less atomic reply with a newer metadata receipt during cold restoration',async()=>{
+    const api={...harness(),viewportImageFrame:vi.fn(async():Promise<{state:ViewportState;image:Blob|null}>=>({state:view(9),image:new Blob(['paired-nine'],{type:'image/jpeg'})}))};
+    api.viewportImageFrame.mockResolvedValueOnce({state:{...view(),state:'waiting',frame:null},image:null});
+    api.viewportState.mockResolvedValue(view(33)); // This frame has no paired image in the first response.
+    const component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+    const canvas=await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    expect(canvas.getAttribute('data-frame-id')).toBe('9');expect(api.viewportState).toHaveBeenCalledTimes(1);
+    expect(api.viewportImage).not.toHaveBeenCalled();expect(createImageBitmap).toHaveBeenCalledTimes(1);component.unmount();
+  });
+  it('restores the matching saved preview even when an older preview is still present in the atomic packet',async()=>{
+    const sha='a'.repeat(64);
+    const preview=(revision:string)=>({...view(8).frame!,applied_revision:revision,captured_at_ms:Date.now()-60000,
+      sha256:sha,url:`/v1/product/viewport/preview/${sha}`,preview_only:true as const,physical_authority:false as const});
+    const api={...harness(),viewportPreviewImage:vi.fn(async()=>new Blob(['saved'],{type:'image/jpeg'})),
+      viewportImageFrame:vi.fn(async()=>({state:{...view(),state:'waiting' as const,frame:null,last_frame:preview('old')},image:null}))};
+    api.viewportState.mockResolvedValue({...view(),state:'stale',frame:null,last_frame:preview('new')});
+    const generation:NonNullable<ConversationState['generation']>={operation_id:'saved',state:'completed',summary:'Saved',
+      can_cancel:false,started_at:'now',last_progress_at:'now',error:null};
+    const component=render(<TwinViewport api={api as unknown as TwinPulseApi} generation={generation} savedScene={{revision:'new',partial:true}}/>);
+    const canvas=await screen.findByRole('img',{name:'Last Isaac preview · not live'});
+    expect(canvas.dataset.frameId).toBe('8');expect(api.viewportState).toHaveBeenCalled();
+    expect(api.viewportPreviewImage).toHaveBeenCalledWith(sha);expect(api.viewportImage).not.toHaveBeenCalled();
+    expect(screen.getByRole('button',{name:'Orbit left'})).toHaveProperty('disabled',true);component.unmount();
   });
   it('retains a static preview when the atomic packet says the current scene has no frame',async()=>{
     let sequence=0;
@@ -1096,6 +1139,7 @@ describe('Real Isaac viewport',()=>{
   });
   it('expires a stalled decoder without stacking native decodes, keeps polling and releases its late bitmap',async()=>{
     let finish!:(bitmap:ImageBitmap)=>void;
+    const lateClose=vi.fn(),lateBitmap={width:960,height:640,close:lateClose} as unknown as ImageBitmap;
     vi.stubGlobal('createImageBitmap',vi.fn()
       .mockImplementationOnce(()=>new Promise<ImageBitmap>(resolve=>{finish=resolve;}))
       .mockImplementation(async()=>({width:960,height:640,close})));
@@ -1107,9 +1151,12 @@ describe('Real Isaac viewport',()=>{
     expect(screen.queryByRole('img')).toBeNull();expect(screen.getByRole('alert').textContent).toContain('decode');
     expect(api.viewportState.mock.calls.length).toBeGreaterThan(1);expect(createImageBitmap).toHaveBeenCalledTimes(1);
     expect(api.viewportObservation.mock.calls[0]).toEqual([expect.objectContaining({error_code:'viewport_decode_expired'})]);
-    await act(async()=>{finish({width:960,height:640,close} as unknown as ImageBitmap);});
-    expect(close).toHaveBeenCalledTimes(1);expect(drawing.drawImage).not.toHaveBeenCalled();
-    await screen.findByRole('img');expect(close.mock.calls.length).toBeGreaterThan(1);
+    await act(async()=>{finish(lateBitmap);});
+    // The next healthy decode may finish in this same act() flush. Track the
+    // expired bitmap separately, rather than timing an unrelated close/draw.
+    expect(lateClose).toHaveBeenCalledTimes(1);
+    expect(drawing.drawImage.mock.calls.every(call=>call[0]!==lateBitmap)).toBe(true);
+    await screen.findByRole('img');expect(close.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole('alert')).toBeNull();component.unmount();
   });
   it('identifies slow image delivery before decoding and records bounded stage timings, then recovers',async()=>{

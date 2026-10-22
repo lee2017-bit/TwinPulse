@@ -81,6 +81,89 @@ class FleetRuntime:
         self.host_timing={}
         self.navigation_scene=None;self.navigation_scene_epoch=None
         self.scene_produced_at=None
+        self.scan_worker=None;self.scan_cursor=None;self.scan_job=None;self.scan_join=None
+
+    def close(self):
+        errors=[]
+        try:
+            if self.scan_worker:self.scan_join=self.scan_worker.close()
+        except Exception as exc:errors.append(dict(owner='scan_worker',error=type(exc).__name__))
+        try:
+            if self.planner:self.planner.shutdown(wait=False,cancel_futures=True)
+        except Exception as exc:errors.append(dict(owner='planner',error=type(exc).__name__))
+        try:
+            if self.bounds_notice is not None:self.bounds_notice.Revoke();self.bounds_notice=None
+        except Exception as exc:errors.append(dict(owner='bounds_notice',error=type(exc).__name__))
+        return {**(self.scan_join or dict(closed=not errors,worker_alive=None if errors else False)),
+                'cleanup_errors':errors}
+
+    def _scan_token(self,identity,robot):
+        return (self.identity,self.navigation_geometry_epoch,identity,robot['epoch'],robot['motion_epoch'],
+                robot.get('model_generation'),robot.get('scan_generation',0))
+
+    def _collect_scan(self,requests):
+        if not self.scan_worker:return
+        result=self.scan_worker.poll()
+        if result is None:return
+        sample=self.scan_job;self.scan_job=None
+        if sample is None:return
+        identity=sample['robot_id'];robot=self.robots.get(identity)
+        request=next((r for r in requests if r['robot_id']==identity),None)
+        # Stop/OFF/reconnect/new model/revision may have happened while the
+        # worker ran. No result can renew authority or be restamped as current.
+        if (not robot or not request or not request.get('lidar') or request.get('visual_only') or
+            request['connection_epoch']!=robot['epoch'] or request['motion_epoch']!=robot['motion_epoch'] or
+            result['token']!=self._scan_token(identity,robot)):return
+        diagnostic={**sample['diagnostic'],**{k:v for k,v in result.items() if k not in {'token','points'}},
+                    'captured_at_ms':sample['captured_at_ms'],'position_m':sample['position_m']}
+        robot['scan_diagnostic']=diagnostic
+        worst=robot.get('scan_worst')
+        if worst is None or diagnostic['wall_s']>worst['wall_s']:robot['scan_worst']=dict(diagnostic)
+        robot['scan_compute_s']=result['wall_s']
+        error=result['error']
+        if not 0<=time.time()*1000-sample['captured_at_ms']<350:error=error or 'LIDAR_SAMPLE_EXPIRED'
+        robot['scan_error']=error
+        robot['scan']=None if error else dict(points=result['points'],source='isaac_usd_surface_rays',
+            position_m=sample['position_m'],height_m=sample['height_m'],sensor_frame=sample['sensor_frame'],
+            geometry=sample['geometry'],captured_at_ms=sample['captured_at_ms'])
+        robot['scan_token']=result['token']
+
+    def _schedule_scan(self,stage,requests,now):
+        if self.scan_worker is not None and self.scan_worker.busy:return
+        if not requests:return
+        ids=[r['robot_id'] for r in requests]
+        offset=(ids.index(self.scan_cursor)+1)%len(ids) if self.scan_cursor in ids else 0
+        for request in requests[offset:]+requests[:offset]:
+            identity=request['robot_id'];robot=self.robots.get(identity)
+            if not robot or not request.get('lidar') or request.get('visual_only') or now-robot['scan_at']<.2:continue
+            from twinpulse_app.lidar_scene_geometry import sensor_pose,scene_section
+            started=time.monotonic();cpu=time.thread_time();stamp=time.time()*1000
+            diagnostic={};self.scan_cursor=identity;robot['scan_at']=now
+            try:
+                sensor,height,path=sensor_pose(stage,self.ROOT+'/Robot_'+identity)
+                diagnostic.update(sensor_pose_wall_s=time.monotonic()-started,sensor_pose_cpu_s=time.thread_time()-cpu)
+                geometry_epoch=(self.identity,self.navigation_geometry_epoch)
+                if geometry_epoch!=self.sensor_geometry_epoch:
+                    self.sensor_sections={};self.sensor_geometry_epoch=geometry_epoch
+                key=round(height,9);hit=key in self.sensor_sections
+                began=time.monotonic();cpu=time.thread_time()
+                if not hit:self.sensor_sections[key]=scene_section(stage,height)
+                section,geometry=self.sensor_sections[key]
+                diagnostic.update(section_wall_s=time.monotonic()-began,section_cpu_s=time.thread_time()-cpu,
+                    section_cache_hit=hit,height_key=key,geometry_epoch=self.navigation_geometry_epoch,
+                    segments=geometry['segments'],triangles=geometry['triangles'],prepared_monotonic_s=time.monotonic())
+                if self.scan_worker is None:
+                    try:from twinpulse_scan_worker import ScanWorker
+                    except ModuleNotFoundError:from scripts.twinpulse_scan_worker import ScanWorker
+                    self.scan_worker=ScanWorker()
+                token=self._scan_token(identity,robot)
+                sample=dict(robot_id=identity,captured_at_ms=stamp,position_m=list(sensor),height_m=height,
+                    sensor_frame=path,geometry={k:v for k,v in geometry.items() if k!='surfaces'},diagnostic=diagnostic)
+                if self.scan_worker.submit(token,section,sensor):self.scan_job=sample
+            except ValueError as exc:robot['scan']=None;robot['scan_error']=str(exc)
+            robot['scan_prepare_s']=time.monotonic()-started
+            robot['scan_prepare']=diagnostic
+            return # Global one-slot worker, no per-robot queued jobs.
 
     def _navigation_scene(self,stage):
         from pxr import UsdGeom,Usd
@@ -213,6 +296,10 @@ class FleetRuntime:
             for request in value['robots']:
                 robot=self.robots.get(request['robot_id'])
                 if robot and robot['epoch']==request['connection_epoch'] and robot['motion_epoch']==request['motion_epoch']:
+                    enabled=request.get('lidar',False)
+                    if enabled!=robot.get('scan_enabled',False):
+                        robot['scan_generation']=robot.get('scan_generation',0)+1;robot['scan_enabled']=enabled
+                        if not enabled:robot['scan']=None
                     bind_intent(robot,request.get('intent'),now_ms,received_at=self.received_at,now=now)
                     if not robot.get('startup_ready',False):
                         robot.update(last_intent=None,intent_active_since=None)
@@ -261,6 +348,7 @@ class FleetRuntime:
         for identity in set(self.robots)-wanted:
             stage.RemovePrim(self.ROOT+'/Robot_'+identity);del self.robots[identity]
         self.sequence+=1;report=[]
+        self._collect_scan(rows)
         for request in rows:
             identity=request['robot_id'];path=self.ROOT+'/Robot_'+identity
             robot=self.robots.get(identity)
@@ -299,6 +387,7 @@ class FleetRuntime:
                 robot.update(motion_epoch=request['motion_epoch'],reason=None,task=None,travel=0.,intent_sequence=None,
                              last_intent=None,stale_intent_sequence=None,intent_active_since=None,warm_rejected_task=None)
                 robot.pop('first_fault',None)
+                robot['scan']=None;robot['scan_generation']=robot.get('scan_generation',0)+1
             intent=bind_intent(robot,request.get('intent'),time.time()*1000,received_at=self.received_at,now=now)
             task=request.get('task');direction=None;reason=robot['reason']
             if not robot.get('startup_ready',False):
@@ -384,28 +473,13 @@ class FleetRuntime:
             # Read authored USD transform back: telemetry reflects the actual scene.
             matrix=placement.ComputeLocalToWorldTransform(0);p=matrix.ExtractTranslation()
             measured=[float(p[0]),float(p[1]),math.radians(float(ops[1].Get()))]
-            scan_elapsed=0.
-            if request['lidar'] and now-robot['scan_at']>=.2:
-                from twinpulse_app.lidar_scene_geometry import sensor_pose,scene_section
-                scan_started=time.monotonic();scan_stamp=time.time()*1000
-                try:
-                    sensor,height,sensor_path=sensor_pose(stage,path)
-                    geometry_epoch=(self.identity,self.navigation_geometry_epoch)
-                    if geometry_epoch!=self.sensor_geometry_epoch:
-                        self.sensor_sections={};self.sensor_geometry_epoch=geometry_epoch
-                    key=round(height,9)
-                    if key not in self.sensor_sections:self.sensor_sections[key]=scene_section(stage,height)
-                    section,geometry=self.sensor_sections[key]
-                    robot['scan']=dict(points=section.scan(sensor),source='isaac_usd_surface_rays',
-                        position_m=sensor,height_m=height,sensor_frame=sensor_path,
-                        geometry={k:v for k,v in geometry.items() if k!='surfaces'},captured_at_ms=scan_stamp)
-                    robot['scan_error']=None
-                except ValueError as exc:
-                    robot['scan']=None;robot['scan_error']=str(exc)
-                robot['scan_at']=now;robot['scan_compute_s']=time.monotonic()-scan_started
-                scan_elapsed=robot['scan_compute_s']
-            if not request['lidar']:robot['scan']=None
-            work.update(scan_s=round(scan_elapsed,6),scan_error=robot.get('scan_error'),update_s=round(time.monotonic()-now,6))
+            if robot.get('scan_token')!=self._scan_token(identity,robot):robot['scan']=None
+            if not request['lidar']:
+                robot['scan']=None
+                if robot.get('scan_enabled',False):robot['scan_generation']=robot.get('scan_generation',0)+1
+            robot['scan_enabled']=request['lidar']
+            work.update(scan_s=0.,scan_worker=robot.get('scan_diagnostic'),scan_worker_worst=robot.get('scan_worst'),
+                scan_prepare_s=robot.get('scan_prepare_s',0.),scan_error=robot.get('scan_error'),update_s=round(time.monotonic()-now,6))
             robot['previous_work']=work
             report.append(dict(robot_id=identity,connection_epoch=robot['epoch'],motion_epoch=robot['motion_epoch'],
                 sequence=self.sequence,position_m=measured,scan=robot['scan'],reason=reason,task_id=robot['task'],
@@ -417,6 +491,11 @@ class FleetRuntime:
                 intent_sequence=robot.get('stale_intent_sequence') if reason=='INPUT_STALE' else robot.get('intent_sequence')))
             robot['selected']=request.get('selected',False)
         self.report=report
+        self._schedule_scan(stage,rows,now)
+        for row in report:
+            robot=self.robots[row['robot_id']]
+            row['runtime_work'].update(scan_prepare_s=robot.get('scan_prepare_s',0.),
+                scan_prepare=robot.get('scan_prepare'),update_s=round(time.monotonic()-now,6))
 
     def frame_anchors(self,viewport):
         self.frame_scan=None

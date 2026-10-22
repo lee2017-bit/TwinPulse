@@ -60,6 +60,22 @@ describe('original diagnostic evidence projection',()=>{
     expect(rows[1].values).toContainEqual(['stop zero_off_readback_confirmed','true']);
     expect(rows[1].values).toContainEqual(['stop observed_monotonic_s','9.99']);
   });
+  it('keeps payload-lock timing and wheel estimates separate from independent body evidence',()=>{
+    const [row]=projectDiagnosticEvents([{kind:'control_pause',robot_monotonic_s:10,data:{reason:'INPUT_DEADLINE_EXPIRED',
+      event_delivery:{payload_prepare_s:.002,order_lock_wait_s:.003,payload_started_s:9.99,ordered_s:10},
+      motion_observation:{centre_m:.010681,yaw_rad:.02,body_progress:'UNKNOWN',result:'INCONCLUSIVE_BODY_MOTION',request_id:'original-request'}}}]).rows;
+    expect(row.values).toContainEqual(['event order-lock wait','3.00 ms']);
+    expect(row.values).toContainEqual(['wheel centre mm','10.68']);
+    expect(row.values).toContainEqual(['wheel body_progress','UNKNOWN']);
+    expect(row.values).toContainEqual(['wheel request_id','original-request']);
+  });
+  it('preserves an original failed check after cleanup replaced the current diagnostic',()=>{
+    const [row]=projectDiagnosticEvents([{kind:'heartbeat',data:{telemetry_diagnostic:{reason:'CURRENT',guard_receipt_age_s:.01},
+      last_control_fault:{reason:'TELEMETRY_STALE',telemetry:{reason:'GUARD_RECEIPT_STALE',guard_receipt_age_s:.212418531,checked_monotonic_s:5913.5714}}}}]).rows;
+    expect(row.values).toContainEqual(['original failed check reason','GUARD_RECEIPT_STALE']);
+    expect(row.values).toContainEqual(['original failed guard receipt age','212.42 ms']);
+    expect(row.values).toContainEqual(['guard callback receipt age','10.00 ms']);
+  });
   it('does not label disconnected historical STREAMING or a missing check clock as current diagnostics',()=>{
     const r={kind:'physical',connection_state:'DISCONNECTED',live_heartbeat:false,lidar_state:'STREAMING',telemetry_age_ms:20,telemetry_diagnostic:{reason:'CURRENT'}} as unknown as RobotFleetRobot;
     expect(lidarDiagnosticLabel(r)).toContain('No current stream · last reported STREAMING');

@@ -6,7 +6,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {PassThrough,Writable} from 'node:stream';
+import {readFileSync} from 'node:fs';
 import {EngineChannel,PROTOCOL_VERSION,checkedAppUrl,allowAppNavigation} from './protocol.mjs';
+test('occlusion cannot throttle renderer receipt clocks; renderer privilege boundaries stay explicit',()=>{
+  const source=readFileSync(new URL('./main.mjs',import.meta.url),'utf8');
+  assert.match(source,/backgroundThrottling:false/);
+  assert.match(source,/contextIsolation:true/);
+  assert.match(source,/nodeIntegration:false/);
+  assert.match(source,/sandbox:true/);
+});
 function setup(options){const child=new EventEmitter(),sent=[];
   child.stdout=new PassThrough(); child.stdin=new Writable({write(data,_encoding,done){sent.push(JSON.parse(data));done();}});
   return {child,sent,channel:new EngineChannel(child,options)};}

@@ -29,7 +29,29 @@ def finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def field_stop_policy(timing_values):
+    """Separate engineering coverage, never a legacy stop qualification."""
+    from twinpulse_core.robot_timing_profile import checked_values, digest
+    values=checked_values(timing_values)
+    gap=values['wheel_interval_ms']/1000
+    # A sample interval cannot span the entire residual verification window.
+    if gap>POLICY['verification_s']:
+        raise ValueError('FIELD_STOP_SAMPLE_GAP_EXCEEDS_VERIFICATION_WINDOW')
+    return dict(POLICY,id='supervised-field-stop-coverage-1.0',max_sample_gap_s=gap,
+        scope='engineering_forward_wheel_observation_not_legacy_qualification',
+        coverage_basis='PINNED_SENSORSTATE_WHEEL_INTERVAL_NOT_ODOMETRY',
+        timing_values_sha256=digest(values))
+
+
+def assess_field_stop(rows, timeout_s, last_send_s, timing_values):
+    return _assess_stop(rows,timeout_s,last_send_s,field_stop_policy(timing_values))
+
+
 def assess_stop(rows, timeout_s, last_send_s):
+    return _assess_stop(rows,timeout_s,last_send_s,POLICY)
+
+
+def _assess_stop(rows, timeout_s, last_send_s, policy):
     """Independent cutoff/coverage/travel/residual results; no extrapolated samples.
 
 Both wheel paths use absolute increments so reversal cannot cancel travel.
@@ -37,16 +59,16 @@ Final verification is a fixed window AFTER the deceleration budget, not
 an anchor reset timer competing for that same budget. Bracketing real samples
 must cover every boundary. OFF/cleanup samples cannot qualify a torque-on stop.
 """
-    result = {'policy_id': POLICY['id'], 'policy_sha256': POLICY_SHA256,
+    result = {'policy_id': policy['id'], 'policy_sha256': hashlib.sha256(json.dumps(policy,sort_keys=True).encode()).hexdigest(),
               'status': 'INCOMPLETE', 'checks': {}, 'metrics': {},
-              'limits': dict(POLICY), 'chassis_stop': 'NOT_MEASURED'}
+              'limits': dict(policy), 'chassis_stop': 'NOT_MEASURED'}
     checks, metrics = result['checks'], result['metrics']
     if not finite(timeout_s) or not finite(last_send_s):
         result['reason'] = 'STOP_TIMESTAMPS_INVALID'
         return result
     delay = timeout_s - last_send_s
     metrics['guard_observation_ms'] = delay * 1000
-    checks['command_cutoff_observed'] = 0 <= delay <= POLICY['guard_observation_limit_s']
+    checks['command_cutoff_observed'] = 0 <= delay <= policy['guard_observation_limit_s']
     if not checks['command_cutoff_observed']:
         result.update(status='FAIL', reason='COMMAND_CUTOFF_LATE')
         return result
@@ -73,9 +95,12 @@ must cover every boundary. OFF/cleanup samples cannot qualify a torque-on stop.
         return result
     first, last = before[-1], after[0]
     selected = [r for r in rows if first['t'] <= r['t'] <= last['t']]
-    if (timeout_s-first['t'] > POLICY['max_sample_gap_s']
-            or last['t']-end > POLICY['max_sample_gap_s']
-            or any(b['t']-a['t'] > POLICY['max_sample_gap_s'] for a,b in zip(selected,selected[1:]))):
+    gaps=[b['t']-a['t'] for a,b in zip(selected,selected[1:])]
+    metrics.update(maximum_sample_gap_ms=max(gaps,default=0)*1000,
+        leading_bracket_ms=(timeout_s-first['t'])*1000,trailing_bracket_ms=(last['t']-end)*1000)
+    if (timeout_s-first['t'] > policy['max_sample_gap_s']
+            or last['t']-end > policy['max_sample_gap_s']
+            or any(gap > policy['max_sample_gap_s'] for gap in gaps)):
         result['reason'] = 'SENSOR_COVERAGE_INVALID'
         return result
     if any(not finite(r.get('source_age_s')) or not 0 <= r['source_age_s'] < POLICY['max_source_age_s']

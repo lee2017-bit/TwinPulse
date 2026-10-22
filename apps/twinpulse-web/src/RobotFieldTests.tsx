@@ -64,18 +64,18 @@ export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props
     <h5>Supervised household field tests</h5>
     <p>SUPERVISED_FIELD_TEST · separate from the measured protective profile. This is not an industrial safety guarantee or automatic calibration.</p>
     <section aria-label="Power-on test sequence">
-      <h5>이번 전원 세션의 시험 순서</h5>
+      <h5>Power-on test sequence</h5>
       <ol>
-        <li>연결·현재 전압 확인 → Prepare → LiDAR On → 정지 수집 8초와 기록 확인.</li>
-        <li>감독 확인·Arm → Bootstrap stop. 이것이 첫 저속 바퀴 시험이며, 물리 제동은 여기서 관찰합니다.</li>
-        <li>정지 확인 후 패드·키보드 4방향 → 채팅 90도 → 한 바퀴 스캔 → Stop → 로그 반출·Disconnect.</li>
+        <li>Connect and check current voltage → Prepare → LiDAR on → 8-second stationary collection and recording check.</li>
+        <li>Confirm supervision → Arm → Bootstrap stop. This is the first low-speed wheel trial; observe physical stopping here.</li>
+        <li>After confirmed Stop: four pad/keyboard directions → chat 90° → full-turn scan → Stop → export logs → Disconnect.</li>
       </ol>
-      <p>정지 수집에 원문 경고가 있어도 수집 자체의 완료와 이동 가능 여부는 별개입니다. 전체 프로토콜 해석·정밀 정합·5분 soak는 첫 감독시험의 선행조건이 아닙니다. 실제 Stop 실패·신선도/방향 관측 부족이면 이동만 중단하고 독립 수집·반출은 계속합니다.</p>
-      <small>Pi 부하·실제 저장 지연·제동·주행: 실물 시험에서 측정할 결과입니다. 이 화면이나 SIM 통과가 실물 PASS를 뜻하지 않습니다.</small>
+      <p>Collection completion is separate from raw-data quality and motion readiness. Full protocol decoding, precise alignment and a five-minute soak are not prerequisites for the first supervised trial. Failed Stop or insufficient fresh directional coverage blocks motion; independent collection and export remain available.</p>
+      <small>Pi load, storage delay, braking and driving are hardware-test outcomes. This screen or a SIM pass does not establish physical success.</small>
     </section>
     {field?.native_observation&&<section aria-label="Native raw integrity and control observation">
-      <p>원문 회전: {field.native_observation.raw_ring_complete?'완전':'불완전 — 원문 경고 보존'} · 미해석 {field.native_observation.unknown_bytes} bytes · frame {field.native_observation.frame_sequence} · 원수신 나이 {Number.isFinite(field.native_observation.receipt_age_s)?Math.round(field.native_observation.receipt_age_s*1000):'unknown'} ms</p>
-      <small>감독시험 정책: 미해석 회전은 불완전으로 보존합니다. 같은 stream의 마지막 완전 회전만 원래 350ms 수신 기한 안에서 사용하며, 새 불완전 회전의 근접·관측 공백도 이동을 차단합니다. 0/no-return은 빈 공간이 아니라 제외 표본입니다. 유효 거리만으로 진행 방향의 최대 5° 공백·10cm를 매 출력 검사하며, 새 시각을 만들거나 엄격 프로필·ICP 판정을 바꾸지 않습니다.</small>
+      <p>Raw ring: {field.native_observation.raw_ring_complete?'complete':'incomplete — original warning retained'} · unknown {field.native_observation.unknown_bytes} bytes · frame {field.native_observation.frame_sequence} · original receipt age {Number.isFinite(field.native_observation.receipt_age_s)?Math.round(field.native_observation.receipt_age_s*1000):'unknown'} ms</p>
+      <small>Supervised policy retains unknown rings as incomplete. Only the same stream's last complete ring within its original receive-age limit may be used; newer proximity or coverage gaps still veto motion. Zero/no-return is excluded, not free space. Each output checks valid directional returns, gaps up to 5° and 10 cm clearance. Original clocks, strict-profile and ICP decisions are unchanged.</small>
     </section>}
     <details open><summary>Simple supervised setup · offline save</summary>
       <p>Editable Burger reference values, not measurements: nominal wheel radius 33 mm, 4096 ticks/revolution, separation 0.16 m; footprint and sensor pose are starting estimates. Review model applicability and replace values for your robot. Saving starts no connection, sensor or movement and restores no authority.</p>
@@ -99,7 +99,7 @@ export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props
     <p role="status">{field?.armed?'Explicit supervision armed':'Supervision not armed'} · remaining {typeof field?.remaining_s==='number'&&Number.isFinite(field.remaining_s)?Math.max(0,Math.floor(field.remaining_s)):'unknown'} s (maximum 900 s). Stop and key release zero/OFF the motors and discard old movement. The current supervision session survives ordinary releases; each movement needs fresh input. LiDAR Off, disconnect, boot or config changes end supervision; reconnect never restores it.</p>
     <label className="robot-fleet-confirm"><input type="checkbox" checked={supervised} onChange={event=>setSupervised(event.target.checked)}/>I am supervising, charging is unplugged, the space is clear, and I can immediately power off the physical robot.</label>
     <button type="button" disabled={!live||!hasConfig||!supervised||!!running} onClick={()=>{setSupervised(false);onAction('field_arm',{confirmed:true});}}>Arm supervised field session</button>
-    <p>Policy caps 0.03 m/s · 0.20 rad/s, not measured values. Input expiry 250 ms · local watchdog 400 ms. Arming uses the saved config, not unsaved edits. Bootstrap stop does not require a prior stop receipt; subsequent motion requires its current durable receipt and native directional coverage.</p>
+    <p>Policy caps 0.03 m/s · 0.20 rad/s, not measured values. <span aria-label="Current field timing">Input expiry {robot.timing_values?.input_ttl_ms??'not loaded'} ms · applied output timeout {robot.output_timing?.output_timeout_ms??'not confirmed'} ms.</span> Arming uses the saved config, not unsaved edits. Bootstrap stop does not require a prior stop receipt; subsequent motion requires its current durable receipt and native directional coverage.</p>
     <label className="robot-fleet-confirm"><input type="checkbox" checked={testConfirmed} onChange={event=>setTestConfirmed(event.target.checked)}/>I reviewed the selected trial scope and explicitly confirm one supervised test.</label>
     <ol aria-label="Available field test cases">{fieldTestCases.map(test=><li key={test.id}><strong>{test.label}</strong><p>{test.scope}</p><button type="button" disabled={!live||!hasConfig||!testConfirmed||!!running} onClick={()=>{setTestConfirmed(false);onAction('field_test',{case:test.id,confirmed:true});}}>Run {test.label}</button></li>)}</ol>
     <small>Each click requests one bounded case; no automatic retries or next-case chaining. Backend prerequisites apply separately to collection, bootstrap and armed motion.</small>
@@ -112,7 +112,7 @@ export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props
     </section>
     <section aria-label="Field trial results"><h5>Individual trials · {trials.length}</h5>
       <p>PASS applies only to the recorded trial scope, not general physical safety, complete calibration or industrial qualification.</p>
-      {trials.length?<ol>{trials.map(trial=><li key={trial.trial_id}><strong>{trial.case} · {trial.status}</strong><p>{trial.trial_id} · {trial.reason??'No reason reported'}</p>{trial.result?.collection_complete===true&&<p>수집 구간 완료 · 엄격 회전 품질 {String(trial.result.strict_ring_quality)} · 원문 저장 무결성은 센서 종료 manifest에서 별도 확인 · 이동 권한은 부여하지 않음. INCONCLUSIVE는 품질 판정이며, 시험 전체가 실행되지 않았다는 뜻은 아닙니다.</p>}<details><summary>Trial evidence and scope</summary><pre>{pretty(trial)}</pre></details></li>)}</ol>:<p>No trial receipts loaded for this connection. Saved operation logs may contain historical trials; they do not restore current qualification.</p>}
+      {trials.length?<ol>{trials.map(trial=><li key={trial.trial_id}><strong>{trial.case} · {trial.status}</strong><p>{trial.trial_id} · {trial.reason??'No reason reported'}</p>{trial.result?.collection_complete===true&&<p>Collection window complete · strict ring quality {String(trial.result.strict_ring_quality)}. Verify raw archive integrity separately in the final sensor manifest. Collection grants no motion authority. INCONCLUSIVE is a quality verdict, not proof that the trial never ran.</p>}<details><summary>Trial evidence and scope</summary><pre>{pretty(trial)}</pre></details></li>)}</ol>:<p>No trial receipts loaded for this connection. Saved operation logs may contain historical trials; they do not restore current qualification.</p>}
       <form aria-label="Review actual field trial" onSubmit={event=>{
         event.preventDefault();if(!enabled||!trials.some(trial=>trial.trial_id===reviewTrial)||observed==='')return;
         const distance=Number(clearance);

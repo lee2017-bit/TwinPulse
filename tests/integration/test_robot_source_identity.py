@@ -34,13 +34,15 @@ class SourceIdentityTests(unittest.TestCase):
             self.assertEqual(set(actual),set(expected))
             self.assertIn('twinpulse_core/mission_correction_contract.py',actual)
             self.assertIn('twinpulse_core/mission_evidence_contract.py',actual)
+            self.assertIn('twinpulse_core/robot_timing_profile.py',actual)
+            self.assertIn('twinpulse_core/robot_control_timing.py',actual)
             package=root/'isolated';package.mkdir()
             for name,data in actual.items():
                 if name.endswith('.py'):
                     compile(data,name,'exec');path=package/name
                     self.assertTrue(path.resolve().is_relative_to(package.resolve()))
                     path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
-            code=('import sys;sys.path.insert(0,sys.argv[1]);import mission_runtime,teleop_ros,observed_runtime;'
+            code=('import sys;sys.path.insert(0,sys.argv[1]);import mission_runtime,teleop_ros,observed_runtime,fleet_worker,fleet_control,guard_runtime;'
                   'from twinpulse_core.mission_correction_contract import checked_reply;'
                   'from twinpulse_core.navigation_binding import PlanarBinding;'
                   'assert mission_runtime.PlanarBinding is PlanarBinding;'

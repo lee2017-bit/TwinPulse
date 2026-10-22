@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import base64
 from twinpulse_core.field_persistence import restored_field_trials
+from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES, EVENT_ARCHIVE_SEGMENTS
 
 MAX_LINE=256*1024
 
@@ -27,8 +28,17 @@ def _json(raw):
 def checked_worker_sources(files,worker_sha256):
     if not isinstance(files,dict) or not 1<=len(files)<=160:raise ValueError('WORKER_SOURCES_SHAPE')
     for name,sha in files.items():
-        if (not isinstance(name,str) or not re.fullmatch(r'(?:twinpulse_core/)?[A-Za-z0-9_.-]+\.(?:py|sh|json|txt)',name)
-                or not isinstance(sha,str) or not re.fullmatch('[a-f0-9]{64}',sha)):raise ValueError('WORKER_SOURCES_MEMBER')
+        if not isinstance(name,str):raise ValueError('WORKER_SOURCES_MEMBER')
+        flat=re.fullmatch(r'(?:twinpulse_core/)?[A-Za-z0-9_.-]+\.(?:py|sh|json|txt)',name)
+        guard=re.fullmatch(r'(?:guard_base/(?:src|include)|include/twinpulse_robot_safety)/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:cpp|hpp)',name)
+        fixed=name in {'CMakeLists.txt','guard_base/CMakeLists.txt','guard_base/package.xml',
+            'guard_base/LICENSE','guard_base/NOTICE','tests/command_guard_test.cpp',
+            'tests/torque_off_test.cpp','tests/ros_guard_test.cpp',
+            'tests/fake_include/turtlebot3_node/dynamixel_sdk_wrapper.hpp'}
+        # Match the reviewed live bootstrap's expanded guard source contract.
+        # This is read-only metadata recovery, not permission to run sources.
+        if not (flat or guard or fixed) or not isinstance(sha,str) or not re.fullmatch('[a-f0-9]{64}',sha):
+            raise ValueError('WORKER_SOURCES_MEMBER')
     digest=hashlib.sha256(json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     if digest!=worker_sha256:raise ValueError('WORKER_SOURCES_SHA_MISMATCH')
     return deepcopy(files)
@@ -37,7 +47,7 @@ def checked_worker_sources(files,worker_sha256):
 def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,connection_epoch,binding_sha256,source_twin_context):
     if (not isinstance(receipt,dict) or type(receipt.get('event_count')) is not int
             or type(receipt.get('bytes')) is not int or not isinstance(receipt.get('segments'),list)
-            or not 1<=len(receipt['segments'])<=128):raise ValueError('HISTORY_RECEIPT_SHAPE')
+            or not 1<=len(receipt['segments'])<=EVENT_ARCHIVE_SEGMENTS):raise ValueError('HISTORY_RECEIPT_SHAPE')
     directory=Path(directory);tail=deque(maxlen=100);first=None;sequence=0;count=0;size=0;cleanup=None;sources=None;export=None
     field_sources={name:bytearray() for name in ('field-trials.json','field-commits.jsonl','field-stop.json')};field_source_error=False
     expected=dict(operation_id=operation_id,project_id=project_id,robot_id=robot_id,connection_epoch=connection_epoch)
@@ -53,7 +63,7 @@ def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,co
                 if not line:break
                 if len(line)>MAX_LINE or not line.endswith(b'\n'):raise ValueError('HISTORY_LINE_BOUND')
                 size+=len(line);member_size+=len(line);count+=1;digest.update(line)
-                if size>256*1024*1024 or count>2_000_000:raise ValueError('HISTORY_READ_BOUND')
+                if size>EVENT_ARCHIVE_BYTES or count>2_000_000:raise ValueError('HISTORY_READ_BOUND')
                 event=_json(line)
                 if not isinstance(event,dict):raise ValueError('HISTORY_EVENT_SHAPE')
                 if first is None:
@@ -87,7 +97,11 @@ def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,co
                         target.extend(original)
                     except (ValueError,KeyError,TypeError):field_source_error=True
                 if kind not in {'raw','raw_source'}:
-                    safe=deepcopy(event);safe['data'].pop('challenge',None);safe['data'].pop('watch_challenge',None);tail.append(safe)
+                    # These parsed objects are private to this read. Validate
+                    # every row, but do not copy candidates later evicted by
+                    # the bounded tail. Redact only final copies below so the
+                    # separately retained cleanup/export projections stay exact.
+                    tail.append(event)
         if member_size!=segment['bytes'] or digest.hexdigest()!=segment['sha256']:raise ValueError('HISTORY_SEGMENT_SHA')
     if first is None or count!=receipt['event_count'] or size!=receipt['bytes']:raise ValueError('HISTORY_RECEIPT_COUNT')
     source_provenance='RECORDED_START_MANIFEST' if sources else 'NOT_RECORDED'
@@ -117,7 +131,10 @@ def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,co
             field_resolution=dict(status='VERIFIED_READ_ONLY' if complete else 'WRITER_INCOMPLETE',trials=trials,authority_restored=False)
         except (ValueError,KeyError,TypeError,StopIteration):
             field_resolution=dict(status='FIELD_PERSISTENCE_UNVERIFIED',trials=[],authority_restored=False)
-    return dict(events=list(tail),cleanup_confirmed=cleanup.get('confirmed') if cleanup is not None else None,
+    safe_tail=[]
+    for event in tail:
+        safe=deepcopy(event);safe['data'].pop('challenge',None);safe['data'].pop('watch_challenge',None);safe_tail.append(safe)
+    return dict(events=safe_tail,cleanup_confirmed=cleanup.get('confirmed') if cleanup is not None else None,
         field_trial_resolution=field_resolution,
         cleanup=cleanup,source_export=export,worker_sources=sources,worker_sources_provenance=source_provenance,
         runtime_event_count=count,runtime_worker_sequence=sequence,worker_sha256=first['worker_sha256'])

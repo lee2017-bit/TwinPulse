@@ -7,6 +7,7 @@ import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
 import {downloadBlob} from './download-blob';
 import {RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
+import {RobotMotionReview} from './RobotMotionReview';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
 import {LidarPointView} from './LidarPointView';
 import {LidarReviewDialog} from './LidarReviewDialog';
@@ -68,7 +69,10 @@ function summarizeOperation(operation:RobotFleetOperation){
   const manifest=operation.manifest,observations:{index:number;kind:string;detail:string}[]=[],commands:{index:number;kind:string;detail:string}[]=[];
   // Historical receipts never restore current field-session authority.
   const trials=new Map<string,Record<string,unknown>>();
+  let originalFailure:{event:Record<string,unknown>;fault:Record<string,unknown>;check:Record<string,unknown>}|null=null;
   for(const event of operation.events){
+    const fault=record(record(event.data).last_control_fault),check=record(fault.telemetry);
+    if(event.operation_id===operation.operation_id&&typeof fault.reason==='string'&&typeof check.reason==='string')originalFailure={event,fault,check};
     const field=record(record(event.data).field),values=Array.isArray(field.trials)?field.trials:[];
     for(const value of values.slice(-64)){
       const trial=record(value),id=trial.trial_id;
@@ -114,6 +118,14 @@ function summarizeOperation(operation:RobotFleetOperation){
     ['Source files',manifest.source_files==null&&manifest.worker_sources==null?'Unknown · not recorded':String(Object.keys(record(manifest.source_files??manifest.worker_sources)).length)],
     ['Source manifest basis',scalar(manifest.worker_sources_provenance)],
     ['Missing',Array.isArray(missing)?`${missing.length}${missing.length?` · ${missing.slice(0,4).map(item=>scalar(item,60)).join(' · ')}`:''}`:scalar(missing)]];
+  if(originalFailure){
+    const {event,fault,check}=originalFailure;
+    rows.push(['original failed control reason',scalar(fault.reason)],['original failed check reason',scalar(check.reason)],
+      ['Fault-carrying report sequence',scalar(event.sequence)],['Original failed check robot s',scalar(check.checked_monotonic_s)]);
+    for(const [label,key] of [['Original failed sensor receipt age','sensor_receipt_age_s'],['Original failed guard receipt age','guard_receipt_age_s']] as const){
+      const value=check[key];if(typeof value==='number'&&Number.isFinite(value)&&value>=0)rows.push([label,`${(value*1000).toFixed(2)} ms`]);
+    }
+  }
   const stream=record(manifest.stream),receipt=record(stream.local_receipt??manifest.local_receipt);
   for(const [id,trial] of [...trials].slice(-12))rows.push([`Historical trial ${id}`,
     `${scalar(trial.case)} · ${scalar(trial.status)} · ${scalar(trial.reason,180)} · frames ${scalar(trial.frames)} · not current qualification`]);
@@ -333,7 +345,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       {error&&<p role="alert">{error}</p>}
       {pollError&&<p role="status">{pollError}</p>}
       {(robot.setup?.maintenance_phase||robot.reason)&&<p className="robot-fleet-reason" role="status" title={robot.setup?.maintenance_phase?`Prepare: ${robot.setup.maintenance_phase} · ${robot.reason??'No motion during build/check'}`:robot.reason??undefined}>
-        {robot.setup?.maintenance_phase?({BUILDING_OUTPUT_GUARD:'Building output guard…',CHECKING_OUTPUT_GUARD:'Checking output guard…',VERIFYING_OUTPUT_GUARD_READBACK:'Verifying applied settings…'} as Record<string,string>)[robot.setup.maintenance_phase]??robot.setup.maintenance_phase:robot.reason}</p>}
+        {robot.setup?.maintenance_phase?({BUILDING_OUTPUT_GUARD:'Building output guard…',CHECKING_OUTPUT_GUARD:'Checking output guard…',CHECKING_OUTPUT_GUARD_LOADER:'Loading output guard…',VERIFYING_OUTPUT_GUARD_READBACK:'Verifying applied settings…'} as Record<string,string>)[robot.setup.maintenance_phase]??robot.setup.maintenance_phase:robot.reason}</p>}
       {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&
         <p role="status">{physical?'Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.':robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
       {!focusConfirmed&&!selectionPending&&<p role="status">Control focus differs from this drawer. Select this robot again before driving or sending a command.</p>}
@@ -403,6 +415,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           <div><dt>Control</dt><dd>{robot.control_state} · controller {scalar(robot.controller_state)}</dd></div>
           <div><dt>Sensor</dt><dd>LiDAR {lidarDiagnosticLabel(robot,available)} · source {scalar(record(robot.sensor_frame).source??robot.scan?.source)} · age {age(record(robot.sensor_frame).age_ms)}{!available?' · receipt stale':''}</dd></div>
           <div><dt>ROS receipt diagnosis</dt><dd>Last reported check: {scalar(record(robot.telemetry_diagnostic).reason)} · source {age(typeof record(robot.telemetry_diagnostic).source_age_s==='number'?(record(robot.telemetry_diagnostic).source_age_s as number)*1000:null)} · sensor {age(typeof record(robot.telemetry_diagnostic).sensor_receipt_age_s==='number'?(record(robot.telemetry_diagnostic).sensor_receipt_age_s as number)*1000:null)} · guard {age(typeof record(robot.telemetry_diagnostic).guard_receipt_age_s==='number'?(record(robot.telemetry_diagnostic).guard_receipt_age_s as number)*1000:null)}</dd></div>
+          {robot.motion_observation&&<div><dt>Wheel observation</dt><dd aria-label="Wheel observation">{scalar(robot.motion_observation.state)} · {scalar(robot.motion_observation.direction)} · {typeof robot.motion_observation.centre_m==='number'?`${(robot.motion_observation.centre_m*1000).toFixed(1)} mm`:'distance unknown'} · {typeof robot.motion_observation.yaw_rad==='number'?`${(robot.motion_observation.yaw_rad*180/Math.PI).toFixed(1)}°`:'angle unknown'} · Body motion unknown · {scalar(robot.motion_observation.reason)}</dd></div>}
           <div><dt>Voltage read</dt><dd>{scalar(record(robot.battery.read_status).state)} · {scalar(record(robot.battery.read_status).reason)}</dd></div>
           <div><dt>Recording</dt><dd>{available&&fresh?'':'Last reported · '}{robot.recording_state}</dd></div>
           <div><dt>Cleanup</dt><dd>{robot.cleanup_confirmed===true?'Confirmed by robot':robot.cleanup_confirmed===false?'Not confirmed':'Unknown · no cleanup receipt'}</dd></div>
@@ -513,6 +526,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           <p role="status">Twin references differ or the current reference is unconfirmed. Historical records are not relabelled as the current Twin. Stop and raw records remain available.</p>}
       </details>}
       <RobotOperationDiagnostics robot={robot} operation={operation} available={available}/>
+      <RobotMotionReview api={api} operation={operation?.operation_id??null} physical={physical}/>
       {operation&&operationSummary&&<section className="robot-operation-log" aria-label="Operation summary">
         <h5>Operation · {scalar(operation.operation_id,80)}</h5>
         <p>{operation.events.length} events · showing {operationSummary.events.length} recent summaries, including up to 5 observations.</p>

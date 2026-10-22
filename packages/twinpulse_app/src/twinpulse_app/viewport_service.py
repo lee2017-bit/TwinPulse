@@ -175,15 +175,24 @@ class ViewportService:
             while len(self.browser_failures)>64:self.browser_failures.pop(next(iter(self.browser_failures)))
             return result
 
-    def status(self, *, restore_preview=True):
+    def status(self, *, restore_preview=True, probe=None):
+        began=time.perf_counter()
         state, identity = self._current()
+        after_broker=time.perf_counter()
+        if probe is not None:probe['tp_view_broker']=(after_broker-began)*1000
         # Disk restoration is optional history, not part of the live frame
         # transport. Never enter the conversation/disk path from image_packet,
         # image or camera while holding the viewport mutex.
         with self.lock:
+            first_wait=time.perf_counter()-after_broker
             needs_restore=restore_preview and self.latest is None
+        before_restore=time.perf_counter()
         restored=self.static_preview_loader() if needs_restore and self.static_preview_loader else None
+        after_restore=time.perf_counter()
+        if probe is not None:probe['tp_view_restore']=(after_restore-before_restore)*1000
         with self.lock:
+            after_lock=time.perf_counter()
+            if probe is not None:probe['tp_view_wait']=(first_wait+after_lock-after_restore)*1000
             if self.latest is None and restored is not None:
                 binding,frame=restored
                 if binding!=self.restored_preview_binding or (frame is not None and self.last_preview is None):
@@ -221,12 +230,14 @@ class ViewportService:
             if last:
                 last.update(url=f"/v1/product/viewport/preview/{last['sha256']}",
                             preview_only=True,physical_authority=False)
-            return {'state':status,'frame':public,'fps':round(fps,2),'age_ms':round(age*1000) if frame else None,
+            result={'state':status,'frame':public,'fps':round(fps,2),'age_ms':round(age*1000) if frame else None,
                     'last_frame':last,
                     'camera_result':self.camera_result,'camera_pending':bool(self.camera),
                     'detail':('Fresh Isaac render; physics execution is separate.' if current else
                               'Waiting for fresh frames from the current Isaac stage.'),
                     'physical_authority':False}
+            if probe is not None:probe['tp_view_copy']=(time.perf_counter()-after_lock)*1000
+            return result
 
     def preview_image(self, digest):
         """One bounded static image, never a current-frame/camera receipt.
@@ -246,10 +257,12 @@ class ViewportService:
                 raise BrokerError('viewport_frame_expired', 'This frame is no longer current', status=409)
             return self.latest['data']
 
-    def image_packet(self):
+    def image_packet(self, *, probe=None):
         """Return one coherent latest receipt/JPEG pair, never an old cache."""
+        began=time.perf_counter()
         with self.lock:
-            state=self.status(restore_preview=False)
+            if probe is not None:probe['tp_image_wait']=(time.perf_counter()-began)*1000
+            state=self.status(restore_preview=False,probe=probe)
             return state,self.latest['data'] if state['frame'] else None
 
     def camera_action(self, body):

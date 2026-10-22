@@ -39,7 +39,9 @@ include_directories(
   include
 )
 
-add_library(${PROJECT_NAME}_lib
+# TwinPulse hashes and ships the sibling .so with the source-bound executable.
+# Do not depend on the host's optional BUILD_SHARED_LIBS default (normally OFF).
+add_library(${PROJECT_NAME}_lib SHARED
   "src/devices/motor_power.cpp"
   "src/devices/sound.cpp"
   "src/devices/reset.cpp"
@@ -77,6 +79,7 @@ target_link_libraries(${PROJECT_NAME}_lib
 
 set(EXECUTABLE_NAME "turtlebot3_ros")
 add_executable(${EXECUTABLE_NAME} src/node_main.cpp)
+set_target_properties(${EXECUTABLE_NAME} PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
 target_link_libraries(${EXECUTABLE_NAME}
   ${PROJECT_NAME}_lib
 )

@@ -119,7 +119,9 @@ class _WindowsJob:
             ctypes.sizeof(limits),
         ):
             error = ctypes.WinError(ctypes.get_last_error())
-            self.close()
+            try:self.close()
+            except Exception as cleanup_error:
+                error.add_note('Job handle cleanup also failed: '+type(cleanup_error).__name__)
             raise error
 
     def assign(self, process: subprocess.Popen[bytes]) -> None:
@@ -150,7 +152,7 @@ class _WindowsJob:
 
     def close(self) -> None:
         if self._handle:
-            self._api.CloseHandle(self._handle)
+            if not self._api.CloseHandle(self._handle):raise ctypes.WinError(ctypes.get_last_error())
             self._handle = None
 
 
@@ -243,6 +245,7 @@ class TwinPulseProcessManager:
         self._clock = clock
         self._sleep = sleep
         self._owned: dict[str, subprocess.Popen[bytes]] = {}
+        self._exit_observations={};self._exit_evidence_complete=True
         self._jobs: dict[str, _WindowsJob] = {}
         self._job_factory = job_factory
         if self._job_factory is None and os.name == "nt" and popen_factory is subprocess.Popen:
@@ -608,6 +611,8 @@ class TwinPulseProcessManager:
                     'schema_version': 'launcher-cleanup-1.0', 'launch_id': self._launch_id,
                     'owner_pid': self._owner_pid, 'owned_processes_stopped': True,
                     'completed_at_utc': _utc_now(),
+                    'process_exit_observations': self._exit_observations,
+                    'exit_evidence_complete': self._exit_evidence_complete,
                 })
             if trace:
                 trace.finish('failed' if self._cleanup_failed else 'succeeded', role='cleanup',
@@ -797,8 +802,10 @@ class TwinPulseProcessManager:
                     except Exception:
                         pass
                 if job is not None:
-                    job.close()
-                stream.close()
+                    try:job.close()
+                    except Exception as cleanup_error:error.add_note('Job handle cleanup also failed: '+type(cleanup_error).__name__)
+                try:stream.close()
+                except Exception as cleanup_error:error.add_note('Process log cleanup also failed: '+type(cleanup_error).__name__)
                 raise ProcessManagerError(
                     f"{name}_job_failed",
                     f"Failed to establish owned {name} process tree: {type(error).__name__}: {error}",
@@ -873,27 +880,74 @@ class TwinPulseProcessManager:
                 job.close()
                 self._jobs.pop(name, None)
             return
+        began=time.monotonic()
+        observation=dict(role=name,pid=process.pid,ownership='HELD_POPEN_PROCESS_HANDLE',
+            began_monotonic_s=began,root_disposition='UNKNOWN',return_code=None,
+            job_close_requested=False,job_active_before_close=None,job_observation='NOT_USED' if job is None else 'UNKNOWN',
+            evidence_complete=True,errors=[])
+        primary_error=None
         try:
             if process.poll() is None:
+                observation['root_disposition']='GRACEFUL_WAIT'
                 try:
                     process.wait(timeout=graceful_s)
                 except subprocess.TimeoutExpired:
+                    observation['root_disposition']='TERMINATE_AFTER_TIMEOUT'
                     process.terminate()
                     try:
                         process.wait(timeout=5.0)
                     except subprocess.TimeoutExpired:
                         if job is not None:
+                            observation['root_disposition']='JOB_TERMINATE_AFTER_TIMEOUT'
                             job.terminate()
                         else:
+                            observation['root_disposition']='KILL_AFTER_TIMEOUT'
                             process.kill()
                         process.wait(timeout=5.0)
+                else:observation['root_disposition']='EXITED_DURING_GRACE'
+            else:observation['root_disposition']='ALREADY_EXITED'
+        except BaseException as error:
+            primary_error=error
+            observation['errors'].append(dict(stage='root_wait',error=type(error).__name__))
+            observation['evidence_complete']=False
+            raise
         finally:
             # KILL_ON_JOB_CLOSE reaps descendants left behind by a wrapper
             # even when the root process already exited after terminate().
-            if job is not None:
-                job.close()
+            try:
+                try:observation['return_code']=process.poll()
+                except Exception as error:
+                    observation['evidence_complete']=False;observation['errors'].append(dict(stage='root_poll',error=type(error).__name__))
+                if job is not None:
+                    try:
+                        observation['job_active_before_close']=job.active_process_count()
+                        observation['job_observation']='OBSERVED'
+                    except Exception as error:
+                        observation['evidence_complete']=False;observation['errors'].append(dict(stage='job_query',error=type(error).__name__))
+                    observation['job_close_requested']=True
+                    try:job.close()
+                    except BaseException as error:
+                        observation['evidence_complete']=False;observation['errors'].append(dict(stage='job_close',error=type(error).__name__))
+                        if primary_error is None:raise
+                        primary_error.add_note('Job handle cleanup also failed: '+type(error).__name__)
+            finally:
+                observation.update(ended_at_utc=_utc_now(),elapsed_s=max(0.,time.monotonic()-began))
+                self._record_owned_exit(name,observation)
         self._owned.pop(name, None)
         self._jobs.pop(name, None)
+
+    def _record_owned_exit(self,name,observation):
+        """Evidence must not throw over the original wait/cleanup exception."""
+        self._exit_observations[name]=observation
+        self._exit_evidence_complete=self._exit_evidence_complete and observation['evidence_complete']
+        try:
+            _write_json_atomic(self.launch_dir/'owned-exit-observations.json',dict(schema='owned-exit-observations-1.0',
+                launch_id=self._launch_id,owner_pid=self._owner_pid,
+                execution_id=getattr(getattr(self,'_shutdown_trace',None),'execution_id',None),
+                evidence_complete=self._exit_evidence_complete,roles=self._exit_observations))
+        except Exception as error:
+            self._exit_evidence_complete=False
+            observation['evidence_complete']=False;observation['errors'].append(dict(stage='evidence_store',error=type(error).__name__))
 
     def _acquire_lock(self) -> None:
         from .release_contract import MaintenanceLock, initialize_data_epoch

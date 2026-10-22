@@ -21,6 +21,130 @@ from tests.integration.test_r4_bridge_api import R4ApiTests
 
 
 class ViewportTests(unittest.TestCase):
+    def test_diagnostic_shutdown_explicitly_wakes_queue_without_waiting_for_timeout(self):
+        from queue import Queue
+        from threading import Event, Thread
+        from types import SimpleNamespace
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        entered=Event()
+        class WaitingQueue(Queue):
+            def get(self,*args,**kwargs):
+                # Controlled no-device wait: a Stop event alone cannot wake a
+                # queue consumer. Only a real queue item releases this wait.
+                entered.set()
+                return super().get()
+        publisher=LiveViewportPublisher(SimpleNamespace())
+        publisher.fleet_diag_queue=WaitingQueue()
+        with patch('builtins.print') as printed:
+            publisher.fleet_diag_thread=Thread(target=publisher._fleet_diag_io,daemon=True)
+            publisher.fleet_diag_thread.start();self.assertTrue(entered.wait(1))
+            try:
+                publisher.stop()
+                self.assertFalse(publisher.diagnostic_snapshot()['join_status']['diagnostic_alive'])
+                printed.assert_not_called()  # Stop must not write a fetched stale item.
+            finally:
+                if publisher.fleet_diag_thread.is_alive():
+                    publisher.fleet_diag_queue.put({})
+                    publisher.fleet_diag_thread.join(1)
+
+    def test_diagnostic_blocked_stdout_and_full_queue_still_fail_handoff(self):
+        from queue import Queue
+        from threading import Event, Thread
+        from types import SimpleNamespace
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        entered,release=Event(),Event()
+        publisher=LiveViewportPublisher(SimpleNamespace())
+        publisher.fleet_diag_queue=Queue(maxsize=1)
+        publisher.fleet_diag_queue.put({'diagnostic_kind':'viewport'})
+        def blocked(*args,**kwargs):entered.set();release.wait(2)
+        with patch('builtins.print',side_effect=blocked):
+            publisher.fleet_diag_thread=Thread(target=publisher._fleet_diag_io,daemon=True)
+            publisher.fleet_diag_thread.start();self.assertTrue(entered.wait(1))
+            publisher.fleet_diag_queue.put({'diagnostic_kind':'viewport'})
+            try:
+                publisher.stop()
+                self.assertTrue(publisher.diagnostic_snapshot()['join_status']['diagnostic_alive'])
+                self.assertTrue(publisher.fleet_diag_queue.full())
+            finally:
+                release.set();publisher.fleet_diag_thread.join(1)
+
+    def test_diagnostic_wake_join_probe_errors_do_not_skip_other_cleanup(self):
+        from types import SimpleNamespace
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        publisher=LiveViewportPublisher(SimpleNamespace())
+        probe_close=publisher.phase_probe.close
+        publisher.phase_probe.close=Mock(side_effect=OSError('optional probe close'))
+        publisher.fleet_diag_queue.put_nowait=Mock(side_effect=RuntimeError('wake failed'))
+        publisher.thread=SimpleNamespace(join=Mock(side_effect=ValueError('join failed')),is_alive=lambda:False)
+        fleet_join=Mock();publisher.fleet_thread=SimpleNamespace(join=fleet_join,is_alive=lambda:False)
+        scan_close=Mock(return_value=dict(closed=True,worker_alive=False,cleanup_errors=[]))
+        publisher.fleet_runtime.close=scan_close
+        cancel=Mock();publisher.capture_wait=SimpleNamespace(done=lambda:False,cancel=cancel)
+        try:
+            publisher.stop()
+            fleet_join.assert_called_once_with(timeout=3.);scan_close.assert_called_once();cancel.assert_called_once()
+            owners={r['owner'] for r in publisher.diagnostic_snapshot()['join_status']['cleanup_errors']}
+            self.assertEqual(owners,{'viewport_probe','viewport_diagnostic_wake','viewport_join'})
+        finally:probe_close()
+
+    def test_diagnostic_print_failure_remains_visible_and_worker_can_stop(self):
+        from queue import Queue
+        from threading import Thread
+        from types import SimpleNamespace
+        import time
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        publisher=LiveViewportPublisher(SimpleNamespace());publisher.fleet_diag_queue=Queue()
+        publisher.fleet_diag_queue.put({'diagnostic_kind':'viewport'})
+        with patch('builtins.print',side_effect=OSError('log write failed')):
+            publisher.fleet_diag_thread=Thread(target=publisher._fleet_diag_io,daemon=True)
+            publisher.fleet_diag_thread.start()
+            until=time.monotonic()+1
+            while publisher.fleet_diag_write_errors!=1 and time.monotonic()<until:time.sleep(.001)
+            try:
+                self.assertEqual(publisher.fleet_diag_write_errors,1)
+                publisher.stop();self.assertFalse(publisher.diagnostic_snapshot()['join_status']['diagnostic_alive'])
+            finally:
+                publisher.stop_event.set();publisher.fleet_diag_queue.put({});publisher.fleet_diag_thread.join(1)
+
+    def test_prior_transport_failure_cannot_relabel_next_jpeg_or_discarded_frame(self):
+        from types import SimpleNamespace
+        import time
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        for second in ('jpeg','discard'):
+            with self.subTest(second=second):
+                prior=dict(phase='request_connect_or_send',reused=True,error_type='TimeoutError',errno=10060,winerror=None)
+                bridge=SimpleNamespace(connected=True,_lock=Lock(),_shared_stage_epoch='stage',adapter=SimpleNamespace(engine_session_id='engine'),
+                    viewport_transport_error=Mock(return_value=prior))
+                publisher=LiveViewportPublisher(bridge);publisher.render_epoch=1
+                publisher.stop_event=SimpleNamespace(wait=Mock(side_effect=[False,False,True]),set=Mock())
+                def raw(number,epoch=1):return (dict(frame_id=number,captured_at_ms=time.time()*1000,stage_epoch='stage',engine_session_id='engine'),1,1,b'\x00'*4,epoch)
+                publisher.raw=raw(1)
+                def timeout(*args,**kwargs):
+                    publisher.raw=raw(2,2 if second=='discard' else 1)
+                    raise TimeoutError('prior transport')
+                bridge._post=Mock(side_effect=timeout);original=Image.frombytes;calls=[]
+                def image(*args,**kwargs):
+                    calls.append(1)
+                    if len(calls)==2:raise OSError('new jpeg failure')
+                    return original(*args,**kwargs)
+                try:
+                    with patch.object(Image,'frombytes',side_effect=image):publisher._io_loop()
+                    latest=publisher.diagnostic_snapshot()['latest_io']
+                    self.assertEqual(latest['frame_id'],2);self.assertIsNone(latest['transport_detail'])
+                    self.assertEqual(latest['error'],'viewport_transport_OSError' if second=='jpeg' else None)
+                    bridge._post.assert_called_once();bridge.viewport_transport_error.assert_called_once()
+                finally:publisher.stop()
+
+    def test_viewport_owner_close_failure_does_not_mask_body_and_is_in_handoff(self):
+        from types import SimpleNamespace
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        bridge=SimpleNamespace(close_viewport_channel=Mock(side_effect=OSError('close failure')),viewport_cleanup_error=lambda:None)
+        publisher=LiveViewportPublisher(bridge)
+        publisher._io_loop=Mock(side_effect=ValueError('original loop failure'))
+        with self.assertRaisesRegex(ValueError,'original loop failure'):publisher._io()
+        publisher.stop()
+        self.assertEqual(publisher.diagnostic_snapshot()['join_status']['cleanup_errors'],[dict(owner='viewport_http',error='OSError')])
+
     def test_surface_scan_requires_finite_model_height(self):
         packet=self.frame();packet['frame']['lidar_overlay']=dict(robot_id='a',origin_uv=[.5,.5],points_uv=[[.1,.2]],
             captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,connection_epoch='epoch',motion_epoch='motion',physical_authority=False)
@@ -269,6 +393,22 @@ class ViewportTests(unittest.TestCase):
 
 
 class ViewportApiTests(R4ApiTests):
+    def test_unexpected_backend_error_has_redacted_unknown_outcome_and_queryable_id_not_empty_socket(self):
+        import re
+        cookie,_,_=self.bootstrap()
+        from io import StringIO
+        log=StringIO()
+        def fail_without_disclosing_source(*_args,**_kwargs):
+            raise RuntimeError('PRIVATE_EXCEPTION_FIXTURE')
+        with patch.object(self.server.viewport,'status',side_effect=fail_without_disclosing_source),patch('sys.stderr',log):
+            status,body,_=self.request('/v1/product/viewport',headers={'Cookie':cookie})
+        self.assertEqual(status,500);self.assertEqual(body['error']['code'],'unexpected_backend_error')
+        self.assertIn('outcome unconfirmed',body['error']['message'])
+        execution=re.search(r'execution ([a-f0-9]{32})',body['error']['message']).group(1)
+        self.assertIn(execution,log.getvalue());self.assertNotIn('PRIVATE_EXCEPTION_FIXTURE',log.getvalue())
+        self.assertNotIn('PRIVATE_EXCEPTION_FIXTURE',str(body))
+        self.assertFalse(self.broker.public_state('anything')['lease_owned'])
+
     def test_display_authentication_csrf_and_no_lease(self):
         cookie,csrf,token=self.bootstrap()
         for path in ('/v1/product/viewport','/v1/product/viewport/frame/1','/v1/product/viewport/current'):
@@ -306,6 +446,30 @@ class ViewportApiTests(R4ApiTests):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_capture_does_not_reapply_unchanged_native_resolution(self):
+        from types import SimpleNamespace
+        from scripts.twinpulse_live_viewport import LiveViewportPublisher
+        class Viewport:
+            def __init__(self):self.value=(800,600);self.writes=[]
+            @property
+            def resolution(self):return self.value
+            @resolution.setter
+            def resolution(self,value):self.writes.append(value);self.value=value
+        viewport=Viewport();bridge=Mock();bridge.connected=True
+        publisher=LiveViewportPublisher(bridge)
+        publisher.fleet_runtime=SimpleNamespace(rendered=lambda *_:None,receive=lambda *_:None,update=lambda *_:None,
+            report=[],navigation_scene=None,scene_produced_at=None,frame_scan=None,
+            frame_anchors=lambda *_:[],render_tokens=lambda:[])
+        utility=SimpleNamespace(capture_viewport_to_buffer=Mock(),get_active_viewport=lambda:viewport)
+        snapshot=SimpleNamespace(engine_session_id='engine',stage_epoch='stage',applied_revision='scene')
+        with patch.dict(sys.modules,{'omni.kit.viewport.utility':utility}):
+            for _ in range(8):
+                publisher.capture=None;publisher.last_capture=0;publisher.update(snapshot)
+            self.assertEqual(viewport.writes,[(960,640)])
+            viewport.value=(1024,768);publisher.capture=None;publisher.last_capture=0
+            publisher.update(snapshot)
+            self.assertEqual(viewport.writes,[(960,640),(960,640)])
+
     def test_completed_delegate_with_missing_callback_recovers_with_bounded_tickets(self):
         from scripts.twinpulse_live_viewport import LiveViewportPublisher
         publisher=LiveViewportPublisher(Mock());publisher.capture=True;publisher.capture_ticket=1

@@ -19,9 +19,9 @@ ROBOT_CORE_ENTRYPOINTS = ('observed_mission', 'current_mission_evidence',
                          'manual_motion_guard','field_persistence')
 
 
-def core_members(core):
+def core_members(core, entrypoints=()):
     core = Path(core)
-    pending = list(ROBOT_CORE_ENTRYPOINTS)
+    pending = list(ROBOT_CORE_ENTRYPOINTS) + list(entrypoints)
     seen = set()
     result = {'twinpulse_core/__init__.py': (
         b'# SPDX-FileCopyrightText: 2026 Jaewon Lee\n'
@@ -63,7 +63,21 @@ def bundle_files(root):
     for name in ('local_navigation.py', 'ros_observations.py', 'navigation_binding.py', 'mission_contract.py',
                  'observation_stream.py'):
         files[name] = (core / name).read_bytes()
-    files.update(core_members(core))
+    # Resolve the robot sources' absolute contract imports too. A fixed list
+    # alone missed robot_timing_profile when teleop_contract began importing it.
+    # This scans reviewed source, never client/model-provided module names.
+    required = set()
+    for name, data in files.items():
+        if not name.endswith('.py') or 'tests' in Path(name).parts:
+            continue
+        for node in ast.walk(ast.parse(data, filename=name)):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('twinpulse_core.'):
+                required.add(node.module.split('.')[1])
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith('twinpulse_core.'):
+                        required.add(alias.name.split('.')[1])
+    files.update(core_members(core, required))
     return {name: data.replace(b'\r\n', b'\n') if name.endswith('.sh') else data
             for name, data in files.items()}
 

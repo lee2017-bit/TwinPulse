@@ -951,6 +951,7 @@ describe('Chat-first product workspace',()=> {
   });
   it('generation chosen here prepares its polled preview; restored history never rearms it',async()=>{
     const api=harness();
+    api.runtimeState.mockResolvedValue({status:'ready',message:'Engine ready'} as never);
     const snapshot={project_id:'chat-test',engine_session_id:'engine',stage_epoch:'epoch',applied_revision:'scene',runtime_state:'built',run_id:null,safety_state:null,
       permitted_commands:['build_site_scene'],capabilities:['site_scene_build_v2','site_simulation_v1','site_simulation_preview_v1']};
     const operations=[{command_id:'build',command_type:'build_site_scene',status:'succeeded',receipt:null}];

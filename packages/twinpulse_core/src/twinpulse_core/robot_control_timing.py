@@ -14,6 +14,12 @@ NATIVE_RECEIPT_S = .35
 ICP_COMPUTE_S = .08
 ROS_SERVICE_S = .5
 TRACKING_RESULT_S = .6
+# Fixed per-operation lossless recording budget, not a motion timeout. The
+# 2026-10-20 all-load capture used 268MB in 524s; 900s at that rate is 461MB.
+# 768MiB keeps a finite ~1.7x allowance for that observed session rate. It is
+# not a guarantee for arbitrary workloads. Producer, PC and cold reader agree.
+EVENT_ARCHIVE_BYTES = 768 * 1024 * 1024
+EVENT_ARCHIVE_SEGMENTS = 256
 TIMING_POLICY = {
     'schema': 'robot-control-timing-1.1',
     'revision': '2026-10-20-input350-odom300',

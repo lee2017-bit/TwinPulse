@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -34,6 +35,67 @@ def _arguments() -> argparse.Namespace:
 
 ARGS = _arguments()
 APP = None
+
+
+def _finish_engine(result,app,probe,viewport,manager,path):
+    """Persist before Kit's normal fast shutdown, which may never return.
+
+    This is an inner-resource handoff, not proof of process exit. The owning
+    launcher independently observes the process handle and Job close.
+    """
+    errors=[]
+    def attempt(name,action):
+        try:return action()
+        except Exception as exc:errors.append(dict(owner=name,error=type(exc).__name__))
+    def disable():
+        if manager is not None:
+            manager.set_extension_enabled_immediate('twinpulse.extension',False)
+            for _ in range(8):app.update()
+    try:
+        result['host_phase_diagnostics']=attempt('host_diagnostics',probe.snapshot)
+        attempt('update_probe',probe.close)
+        if viewport is not None:
+            attempt('viewport_stop',viewport.stop)
+            result['viewport_phase_diagnostics']=attempt('viewport_diagnostics',viewport.diagnostic_snapshot)
+            result['live_viewport']=dict(sent=viewport.sent,dropped=viewport.dropped,
+                capture_timeouts=viewport.capture_timeouts,capture_recoveries=viewport.capture_recoveries,
+                error=viewport.last_error or viewport.transport_error)
+            joins=(result.get('viewport_phase_diagnostics') or {}).get('join_status') or {}
+            if joins.get('cleanup_errors'):errors.append(dict(owner='viewport_http',error='CHANNEL_CLEANUP_INCOMPLETE'))
+            if any(joins.get(k) is not False for k in ('viewport_alive','fleet_alive','diagnostic_alive')):
+                errors.append(dict(owner='viewport_join',error='JOIN_INCOMPLETE_OR_UNKNOWN'))
+            scan=joins.get('scan_worker') or {}
+            if scan.get('worker_alive') is not False or scan.get('cleanup_errors'):
+                errors.append(dict(owner='scan_worker',error='JOIN_OR_CLEANUP_INCOMPLETE_OR_UNKNOWN'))
+        attempt('extension_disable',disable)
+        result['cleanup_errors']=errors
+        result['cleanup_status']='PRE_CLOSE_FAILED' if errors else 'PRE_CLOSE_COMPLETE'
+        result['app_close']=dict(state='PREPARED_FOR_ISAAC_CLOSE',may_not_return=True,
+            external_confirmation_required=True,verification='Owned launcher process-handle/Job exit observation, not exit-code0 alone')
+        attempt('handoff_result_write',lambda:_write_json_atomic(path,result))
+        if errors:result['cleanup_status']='PRE_CLOSE_FAILED'
+        attempt('handoff_stdout',lambda:print('TWINPULSE_ENGINE_HOST_RESULT='+json.dumps(result,ensure_ascii=False,sort_keys=True),flush=True))
+        if errors:
+            result['cleanup_status']='PRE_CLOSE_FAILED'
+            attempt('handoff_error_write',lambda:_write_json_atomic(path,result))
+    finally:
+        # Keep the existing SDK cleanup path. Supplying a nonzero exit_code
+        # under fast shutdown would call os._exit BEFORE normal stage cleanup.
+        try:app.close()
+        except Exception as exc:
+            errors.append(dict(owner='simulation_app',error=type(exc).__name__))
+            result['cleanup_errors']=errors;result['cleanup_status']='PRE_CLOSE_FAILED'
+            result['app_close']=dict(state='RAISED',error=type(exc).__name__,external_confirmation_required=True)
+        else:
+            # Only a returning SDK reaches this branch. No return is expected
+            # in current fast shutdown; the pre-close record is already durable.
+            result['app_close']=dict(state='RETURNED',external_confirmation_required=True)
+        attempt('close_return_result_write',lambda:_write_json_atomic(path,result))
+        if errors:result['cleanup_status']='PRE_CLOSE_FAILED'
+        attempt('close_return_stdout',lambda:print('TWINPULSE_ENGINE_HOST_RESULT='+json.dumps(result,ensure_ascii=False,sort_keys=True),flush=True))
+        if errors:
+            result['cleanup_status']='PRE_CLOSE_FAILED'
+            attempt('close_return_error_write',lambda:_write_json_atomic(path,result))
 
 
 def _mission_visual_marker(stage):
@@ -121,6 +183,7 @@ def _start_simulation_app() -> bool:
     except Exception as error:
         result = {
             "schema_version": "1.0", "status": "FAIL",
+            "launch_id": os.environ.get("TWINPULSE_LAUNCH_ID"),
             "startup_phase": phase, "error_type": type(error).__name__,
             "startup_profile": _startup_profile(),
             "error": f"{type(error).__name__}: {error}",
@@ -206,6 +269,7 @@ def _inspect_capture(path: Path) -> dict[str, object]:
 def main() -> int:
     result: dict[str, object] = {
         "schema_version": "1.0", "status": "FAIL", "capture": {"status": "NOT_RUN"},
+        "launch_id": os.environ.get("TWINPULSE_LAUNCH_ID"),
         "trajectory": [], "observed_states": [], "max_movement_m": 0.0,
     }
     manager = extension = None
@@ -227,7 +291,7 @@ def main() -> int:
     maximum_movement = 0.0
     live_viewport = None
     from twinpulse_update_probe import UpdateProbe
-    update_probe=UpdateProbe()
+    update_probe=UpdateProbe(record_gc_cycles=True)
 
     def capture_report(current: dict[str, object], *, final_path: Path | None = None) -> dict[str, object]:
         report = dict(current)
@@ -369,10 +433,12 @@ def main() -> int:
                 break
             if time.monotonic() - started > ARGS.maximum_runtime_s:
                 raise TimeoutError("Owned Isaac host exceeded its finite maximum runtime")
-            update_probe.begin();app_update_started=time.monotonic()
-            APP.update()
-            app_update_elapsed=time.monotonic()-app_update_started
-            update_diagnostic=update_probe.finish(app_update_elapsed)
+            update_probe.begin();app_update_started=time.monotonic();app_update_error=None
+            try:APP.update()
+            except BaseException as error:app_update_error=type(error).__name__;raise
+            finally:
+                app_update_elapsed=time.monotonic()-app_update_started
+                update_diagnostic=update_probe.finish(app_update_elapsed,error=app_update_error)
             frame += 1
             viewport_started=time.monotonic()
             try:
@@ -381,93 +447,105 @@ def main() -> int:
                 prior_host=live_viewport.fleet_runtime.host_timing
                 live_viewport.fleet_runtime.host_timing=dict(app_update_s=app_update_elapsed,
                     previous_viewport_s=prior_host.get('_viewport_s',0.),previous_tail_s=prior_host.get('_tail_s',0.),**update_diagnostic)
-                live_viewport.update(bridge.adapter.snapshot())
+                with update_probe.phase('adapter_snapshot'):
+                    display_snapshot=bridge.adapter.snapshot()
+                with update_probe.phase('viewport_update'):
+                    live_viewport.update(display_snapshot)
             except Exception as error:
                 live_viewport.last_error = "viewport_update_" + type(error).__name__[:60]
             viewport_elapsed=time.monotonic()-viewport_started
             tail_started=time.monotonic()
-            state = extension.runtime.state
-            observed_states.add(state)
-            # Inspect only owned visual content. It is not robot telemetry and
-            # must never make the timeline play or create a driven articulation.
-            from pxr import Usd, UsdGeom, UsdPhysics
-            preview_stage = extension.runtime.compiler.stage
-            active = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/AutomaticMission') if preview_stage else None
-            if active:
-                active_identity = (active.GetCustomDataByKey('displayStatus'),
-                                   str(UsdGeom.Imageable(active).ComputeVisibility()))
-                if active_identity != last_mission_visual_identity and len(mission_visual_observations) < 64:
-                    last_mission_visual_identity = active_identity
-                    mission_visual_observations.append({'status':active_identity[0], 'visibility':active_identity[1],
-                        'cursor':getattr(bridge.adapter,'_mission_visual_cursor',None)})
-            preview = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/BurgerPhotoPreview') if preview_stage else None
-            if preview and preview.GetCustomDataByKey('simulationPlanId'):
-                visible = str(UsdGeom.Imageable(preview).ComputeVisibility())
-                identity = (preview.GetCustomDataByKey('simulationPlanId'), visible,
-                            bool(extension.runtime.site_plan), state)
-                if identity != last_preview_identity and len(preview_observations) < 32:
-                    last_preview_identity = identity
-                    prims = list(Usd.PrimRange(preview, Usd.TraverseInstanceProxies()))
-                    preview_observations.append({
-                        'plan_id':identity[0], 'visibility':visible, 'runtime_state':state,
-                        'timeline_playing':extension.runtime._timeline.is_playing(),
-                        'site_plan_present':identity[2],
-                        'sim_burger_present':bool(preview_stage.GetPrimAtPath('/World/TwinPulse/SimBurger')),
-                        'position_m':list(preview.GetAttribute('xformOp:translate').Get()),
-                        'scene_revision':preview.GetCustomDataByKey('sceneRevision'),
-                        'motion_authorized':preview.GetCustomDataByKey('motionAuthorized'),
-                        'mesh_count':sum(p.IsA(UsdGeom.Mesh) for p in prims),
-                        'physics_schema_count':sum(p.HasAPI(UsdPhysics.CollisionAPI) or p.HasAPI(UsdPhysics.RigidBodyAPI)
-                            or p.HasAPI(UsdPhysics.ArticulationRootAPI) for p in prims),
-                    })
-            try:
-                # v2 room builds intentionally have no driven Robot prim. The
-                # visual Burger is not physical position telemetry. Still fail
-                # loudly for a missing robot in a compiled v1 driven scene.
-                position: tuple[float, float, float] | None = (
-                    extension.runtime.robot_position()
-                    if extension.runtime.compiler.bundle is not None or extension.runtime.site_plan is not None else None
-                )
-            except RuntimeError as error:
-                if str(error) != "Scene has not been compiled":
-                    raise
-                position = None
-            if state == "running" and start_position is None and position is not None:
-                start_position = position
-            if start_position is not None and position is not None:
-                movement = math.hypot(position[0] - start_position[0], position[1] - start_position[1])
-                maximum_movement = max(maximum_movement, movement)
-            if frame % 10 == 0:
-                snapshot = bridge.adapter.snapshot()
-                latest_snapshot = snapshot
-                # Bounded diagnostic history must not disable capture lifecycle
-                # or leave every later robot permanently waiting for warmup.
-                if len(trajectory) < 2_000:
-                    trajectory.append({
-                        "sequence": snapshot.sequence, "runtime_state": snapshot.runtime_state,
-                        "sim_time_s": snapshot.sim_time_s,
-                        "position_m": list(position) if position is not None else None,
-                        "distance_to_goal_m": snapshot.distance_to_goal_m,
-                        "cross_track_error_m": snapshot.cross_track_error_m,
-                        "applied_revision": snapshot.applied_revision,
-                    })
-                if (
-                    snapshot.applied_revision is not None and capture_attempt is None
-                    and not capture_finished and not stop_requested
-                    and result["capture"] == {"status": "NOT_RUN"}
-                    and capture_requested_frame is None
-                ):
-                    capture_requested_frame = frame
-                if (
-                    capture_requested_frame is not None
-                    and frame - capture_requested_frame >= 30
-                    and not stop_requested
-                ):
-                    start_capture(snapshot, frame)
-                    capture_requested_frame = None
-            if capture_attempt is not None and latest_snapshot is not None:
-                update_capture(latest_snapshot, allow_retry=not stop_requested)
-            time.sleep(0.005)
+            with update_probe.phase('host_tail',context=dict(frame=frame,frame_mod10=frame%10,capture_finished=capture_finished,
+                    compiled_bundle=extension.runtime.compiler.bundle is not None,site_plan=extension.runtime.site_plan is not None)):
+                with update_probe.phase('tail_state'):
+                    state = extension.runtime.state
+                    observed_states.add(state)
+                # Inspect only owned visual content. It is not robot telemetry and
+                # must never make the timeline play or create a driven articulation.
+                with update_probe.phase('tail_visual_lookup'):
+                    from pxr import Usd, UsdGeom, UsdPhysics
+                    preview_stage = extension.runtime.compiler.stage
+                    active = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/AutomaticMission') if preview_stage else None
+                    if active:
+                        active_identity = (active.GetCustomDataByKey('displayStatus'),
+                                           str(UsdGeom.Imageable(active).ComputeVisibility()))
+                        if active_identity != last_mission_visual_identity and len(mission_visual_observations) < 64:
+                            last_mission_visual_identity = active_identity
+                            mission_visual_observations.append({'status':active_identity[0], 'visibility':active_identity[1],
+                                'cursor':getattr(bridge.adapter,'_mission_visual_cursor',None)})
+                    preview = preview_stage.GetPrimAtPath('/World/TwinPulse/Presentation/BurgerPhotoPreview') if preview_stage else None
+                    if preview and preview.GetCustomDataByKey('simulationPlanId'):
+                        visible = str(UsdGeom.Imageable(preview).ComputeVisibility())
+                        identity = (preview.GetCustomDataByKey('simulationPlanId'), visible,
+                                    bool(extension.runtime.site_plan), state)
+                        if identity != last_preview_identity and len(preview_observations) < 32:
+                            last_preview_identity = identity
+                            prims = list(Usd.PrimRange(preview, Usd.TraverseInstanceProxies()))
+                            preview_observations.append({
+                                'plan_id':identity[0], 'visibility':visible, 'runtime_state':state,
+                                'timeline_playing':extension.runtime._timeline.is_playing(),
+                                'site_plan_present':identity[2],
+                                'sim_burger_present':bool(preview_stage.GetPrimAtPath('/World/TwinPulse/SimBurger')),
+                                'position_m':list(preview.GetAttribute('xformOp:translate').Get()),
+                                'scene_revision':preview.GetCustomDataByKey('sceneRevision'),
+                                'motion_authorized':preview.GetCustomDataByKey('motionAuthorized'),
+                                'mesh_count':sum(p.IsA(UsdGeom.Mesh) for p in prims),
+                                'physics_schema_count':sum(p.HasAPI(UsdPhysics.CollisionAPI) or p.HasAPI(UsdPhysics.RigidBodyAPI)
+                                    or p.HasAPI(UsdPhysics.ArticulationRootAPI) for p in prims),
+                            })
+                with update_probe.phase('tail_robot_position'):
+                    # v2 room builds intentionally have no driven Robot prim. The
+                    # visual Burger is not physical position telemetry. Still fail
+                    # loudly for a missing robot in a compiled v1 driven scene.
+                    try:
+                        position: tuple[float, float, float] | None = (
+                            extension.runtime.robot_position()
+                            if extension.runtime.compiler.bundle is not None or extension.runtime.site_plan is not None else None
+                        )
+                    except RuntimeError as error:
+                        if str(error) != "Scene has not been compiled":
+                            raise
+                        position = None
+                if state == "running" and start_position is None and position is not None:
+                    start_position = position
+                if start_position is not None and position is not None:
+                    movement = math.hypot(position[0] - start_position[0], position[1] - start_position[1])
+                    maximum_movement = max(maximum_movement, movement)
+                if frame % 10 == 0:
+                    with update_probe.phase('tail_snapshot'):
+                        snapshot = bridge.adapter.snapshot()
+                    latest_snapshot = snapshot
+                    # Bounded diagnostic history must not disable capture lifecycle
+                    # or leave every later robot permanently waiting for warmup.
+                    if len(trajectory) < 2_000:
+                        trajectory.append({
+                            "sequence": snapshot.sequence, "runtime_state": snapshot.runtime_state,
+                            "sim_time_s": snapshot.sim_time_s,
+                            "position_m": list(position) if position is not None else None,
+                            "distance_to_goal_m": snapshot.distance_to_goal_m,
+                            "cross_track_error_m": snapshot.cross_track_error_m,
+                            "applied_revision": snapshot.applied_revision,
+                        })
+                    if (
+                        snapshot.applied_revision is not None and capture_attempt is None
+                        and not capture_finished and not stop_requested
+                        and result["capture"] == {"status": "NOT_RUN"}
+                        and capture_requested_frame is None
+                    ):
+                        capture_requested_frame = frame
+                    if (
+                        capture_requested_frame is not None
+                        and frame - capture_requested_frame >= 30
+                        and not stop_requested
+                    ):
+                        with update_probe.phase('tail_start_capture'):
+                            start_capture(snapshot, frame)
+                        capture_requested_frame = None
+                if capture_attempt is not None and latest_snapshot is not None:
+                    with update_probe.phase('tail_capture_poll'):
+                        update_capture(latest_snapshot, allow_retry=not stop_requested)
+                with update_probe.phase('tail_idle'):
+                    time.sleep(0.005)
             live_viewport.fleet_runtime.host_timing.update(_viewport_s=viewport_elapsed,_tail_s=time.monotonic()-tail_started)
 
         for _ in range(10):
@@ -496,25 +574,9 @@ def main() -> int:
         result["error"] = f"{type(error).__name__}: {error}"
         result["traceback"] = traceback.format_exc()
     finally:
-        update_probe.close()
-        if live_viewport is not None:
-            live_viewport.stop()
-            result['live_viewport'] = {'sent':live_viewport.sent,'dropped':live_viewport.dropped,
-                                       'capture_timeouts':live_viewport.capture_timeouts,
-                                       'capture_recoveries':live_viewport.capture_recoveries,
-                                       'error':live_viewport.last_error or live_viewport.transport_error}
-        try:
-            if manager is not None:
-                extension = None
-                manager.set_extension_enabled_immediate("twinpulse.extension", False)
-                for _ in range(8):
-                    APP.update()
-        except Exception:
-            pass
-        _write_json_atomic(ARGS.result_file, result)
-        print("TWINPULSE_ENGINE_HOST_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
-        APP.close()
-    return 0 if result.get("status") == "PASS" else 1
+        extension=None
+        _finish_engine(result,APP,update_probe,live_viewport,manager,ARGS.result_file)
+    return 0 if result.get('status')=='PASS' and result.get('cleanup_status')=='PRE_CLOSE_COMPLETE' else 1
 
 
 if __name__ == "__main__":

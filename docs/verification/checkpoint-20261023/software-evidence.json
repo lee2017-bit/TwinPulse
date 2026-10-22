@@ -1,0 +1,89 @@
+{
+  "schema": "shared-software-checkpoint-evidence-1.0",
+  "scope": "PC_SIM_SOFTWARE_ENTRY_NOT_PHYSICAL_OR_PHOTO_QUALIFICATION",
+  "release_id": "20261022T141522Z-633d315cfc23",
+  "source_manifest_sha256": "633d315cfc23729d905f4908d42492cf6a734206d5fd52ec42fe8e11117d6084",
+  "installed_files_verified": 1674,
+  "source_manifest_rechecked_after_analysis": true,
+  "build_git_base": "79da0d9422d026dce135d45df6dd431387361435",
+  "built_from_then_dirty_worktree": true,
+  "gate": {
+    "status": "READY_FOR_SUPERVISED_POWERED_TEST",
+    "issues": [],
+    "original_local_path": "outputs/robot-continuous-repair-20261021/gate-result57.json",
+    "original_sha256": "07c9f8bc96f302d614bc3cc7e61a7ba54540f0a8e69c40a8bb8b71f34b6ea9b1",
+    "separate_recheck_local_path": "outputs/robot-continuous-repair-20261021/gate-final-recheck57.json",
+    "separate_recheck_sha256": "0672520ccdaa4d9bbeac8b2a5246723165074612f81f57339c2a20d43ffed5ff"
+  },
+  "whole_journeys": [
+    {"name": "fresh57", "status": "PASS", "steps": 39, "mode": "INSTALLED_TEST_BROWSERWINDOW", "project": "chat_mvjn02sn_f5805d3c", "result_sha256": "5b9ea226362e39befa1a516b65408283947c3a3052c1e3e2598ae029ab421500"},
+    {"name": "cold57", "status": "PASS", "steps": 14, "mode": "INSTALLED_TEST_BROWSERWINDOW", "result_sha256": "25cf48bad72ef6fa72e8430f4e4c61d29e137ae3df736febb5e421b0c386a836"},
+    {"name": "lineage57", "status": "PASS", "steps": 10, "mode": "INSTALLED_TEST_BROWSERWINDOW", "result_sha256": "0d788a8ebda99d24e8e015fced6d326893cc3039b682684df2fa1201bb0a68c5"},
+    {"name": "lineage_cold57", "status": "PASS", "steps": 5, "mode": "INSTALLED_TEST_BROWSERWINDOW", "result_sha256": "3cbbdc331ad9228fe1963c1afd8720595fc12e29e457a979192cec8d77da5a95"},
+    {"name": "saved_geometry58", "status": "PASS", "steps": 36, "mode": "SEPARATE_SAVED_GEOMETRY_JOURNEY_NOT_FRESH_OR_EXACT_POSE_REPLAY", "result_sha256": "a977b711df2c9e814fe4f1df7b56e53aea6eeca4005896241b9670819ee510c1"}
+  ],
+  "ordinary_lifecycle": {
+    "start_ready_seconds": 49.845,
+    "restart_ready_seconds": 56.859,
+    "entry": "IDENTICAL_ROOT_START_VIA_EXECUTION_TOOL_NOT_EXPLORER",
+    "native_home_authenticated_isaac_and_alt_f4_verified": true,
+    "runtime_archive_launches": 8,
+    "inner_worker_joins": "ALL_RECORDED_FALSE_NO_ERRORS",
+    "root_and_backend_exit": "NATURAL_ZERO",
+    "job_descendant_reaping_is_separate_from_graceful_exit": true,
+    "raw_runtime_receipt_sha256": "30b7a34a0777365f2467659d29d4b21bfb4c493bbb662d774c43a715c102cbb8"
+  },
+  "negative_gate_tests": {
+    "count": 13,
+    "status": "PASS_NEGATIVE_REJECTED",
+    "original_app_result_unchanged": true,
+    "result_sha256": "d5102b1b5d5e9e4ce017afd6eddf550e821041e069a564ec0d739285809b97fb"
+  },
+  "review": {
+    "independent_final_agent": "sol_catalog_final_review22",
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "scope": "READ_ONLY_SOFTWARE_AND_EVIDENCE_NO_PHYSICAL_QUALIFICATION",
+    "prior_astra_review_limited_by_usage": true,
+    "source_review_sha256": "c0a8fe1086ee0aa8807e8960b4a66954c768ef98a146819dfd705ad2a38f3c3f",
+    "report_formatter_only_addendum_sha256": "3dafaf4ee93d05bfb0bcb1edc13fa1ea5d359d06d635f391203f13cb05950b40"
+  },
+  "recordings_local_only": [
+    {"name": "fresh57", "duration_seconds": 436.2, "bytes": 7027167, "sha256": "65d01c7fade4a033e3e9f2f9776e206f48208068f5bc69943b79a631a7b73151"},
+    {"name": "saved_geometry58", "duration_seconds": 398.92, "bytes": 5884273, "sha256": "ed15ed52e95168cacf3e8b83639abb69a80fcee094a03c2326207ad87ae63eef"}
+  ],
+  "media_qa": "FULL_DECODE_AND_REPRESENTATIVE_ENCODED_VISUAL_REVIEW_NOT_FULL_HUMAN_PLAYBACK",
+  "pointer": "ACTUAL_RENDERER_POINTER_EVENTS_RECORDING_ANNOTATION_NOT_NATIVE_OS_CURSOR",
+  "budget": {
+    "additional_50_cumulative_usd": "4.6899930",
+    "additional_50_remaining_usd": "45.3100070",
+    "last_5_http_estimated_usd": "0.0443661",
+    "last_5_http_unknown_usd": "0",
+    "prior_20_separate_total_usd": "14.9450973",
+    "prior_20_included_unknown_usd": "0.4770432",
+    "this_analysis_new_calls_or_gpu_jobs": 0,
+    "invoice_verified": false
+  },
+  "preserved_failure_history": [
+    "Original47 shutdown gate NOT_READY despite UI passes",
+    "Original48 start-clearance navigation failure; later explicit preparation is separate",
+    "Original50 world-axis test assertion failure; body-frame correction and later whole journey separate",
+    "Original53 ordinary projects GET6.027s aborted; metadata and memory pressure overlapped, sole cause UNKNOWN",
+    "Original physical stationary/motion inconclusive and unknown native LiDAR bytes retained"
+  ],
+  "not_run": [
+    "NEW_PI_ROS_ARM_BUILD_AND_TARGET_READBACK",
+    "LIVE_SENSORS_PI_LOAD_STORAGE_BRAKING_DRIVING_WORLD_ALIGNMENT",
+    "THIS_ROOMPLAN_APP_IMPORT_COLLISION_NAVIGATION_SAVE_UNDO_COLD_REOPEN",
+    "NEW_PHOTO_FIDELITY_ACCEPTANCE_OR_TWO_PHOTO_FUSION",
+    "CLEAN_PC_FULL_NATIVE_EXPLORER_OS_PASTE_ACTUAL_DPI",
+    "FULL_OFFLINE_LLM_ENTERPRISE_DEPLOYMENT_INDUSTRIAL_DISPATCH_OPTIMIZATION"
+  ],
+  "raw_evidence_in_git": false,
+  "limitations": [
+    "This is a scoped transcription with original hashes, not a substitute raw dataset or independently reproducible hardware claim.",
+    "The frozen build predates this source checkpoint and was dirty; no clean rebuild is claimed.",
+    "Current pass does not establish a sole historical cause or guarantee no recurrence.",
+    "Historical photo-quality cohort retains complete PASS0/6; SIM/text checks do not supersede it."
+  ]
+}

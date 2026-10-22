@@ -68,17 +68,25 @@ class FleetTests(unittest.TestCase):
             telemetry_diagnostic=dict(reason='SENSOR_SOURCE_AGE',source_age_s=.223906317,
                 sensor_receipt_age_s=.000876351,guard_receipt_age_s=.020916754),
             native_diagnostic=dict(checksum_errors=0,unframed_bytes=191),
+            timing_values=dict(input_ttl_ms=350,output_timeout_ms=450),
+            timing_profile_sha256='a'*64,output_timing=dict(output_timeout_ms=450),
             unreviewed_field='must not be copied')
         self.fleet._physical_rows(([],[source]))
         self.assertEqual(row['telemetry_diagnostic'],source['telemetry_diagnostic'])
         self.assertEqual(row['native_diagnostic'],source['native_diagnostic'])
+        for name in ('timing_values','timing_profile_sha256','output_timing'):
+            self.assertEqual(row[name],source[name])
         self.assertFalse(row['capabilities']['drive'])
         self.assertNotIn('unreviewed_field',row)
         source['telemetry_diagnostic']['reason']='changed'
+        source['timing_values']['input_ttl_ms']=999
+        self.assertEqual(row['timing_values']['input_ttl_ms'],350)
         self.assertEqual(row['telemetry_diagnostic']['reason'],'SENSOR_SOURCE_AGE')
         self.fleet._physical_rows(([],[dict(robot_id=identity,project_id='test-project',
-            telemetry_diagnostic=None,native_diagnostic=None)]))
+            telemetry_diagnostic=None,native_diagnostic=None,timing_values=None,
+            timing_profile_sha256=None,output_timing=None)]))
         self.assertIsNone(row['telemetry_diagnostic']);self.assertIsNone(row['native_diagnostic'])
+        self.assertIsNone(row['timing_values']);self.assertIsNone(row['output_timing'])
     def test_sim_guard_uses_current_active_query_without_full_physical_journal(self):
         from types import SimpleNamespace
         robot=self.connected();row=self.fleet.robots[robot]

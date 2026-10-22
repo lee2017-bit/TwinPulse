@@ -175,6 +175,23 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(summary.textContent).not.toContain('Historical trial '+'b'.repeat(32));
     expect(summary.textContent).toContain('Unknown · not recorded');
   });
+  it('pins the original failed check above bounded recent observations and later clean cleanup',async()=>{
+    const fault={reason:'TELEMETRY_STALE',telemetry:{reason:'GUARD_RECEIPT_STALE',checked_monotonic_s:4.9,guard_receipt_age_s:.212418531}};
+    const {operation}=setup();operation.mockResolvedValue({schema_version:'robot-operation-1.0',operation_id:'operation-a',robot_id:'a',project_id:'project',
+      events:[{kind:'heartbeat',operation_id:'operation-a',sequence:10,robot_monotonic_s:5,data:{last_control_fault:fault}},
+        ...Array.from({length:70},(_,sequence)=>({kind:'heartbeat',operation_id:'operation-a',sequence:11+sequence,data:{last_control_fault:fault,telemetry_diagnostic:{reason:null,guard_receipt_age_s:.002}}})),
+        {kind:'cleanup',operation_id:'operation-a',data:{confirmed:true}},
+        {kind:'heartbeat',operation_id:'another-operation',data:{last_control_fault:{reason:'WRONG_OPERATION',telemetry:{reason:'DO_NOT_SHOW'}}}}],
+      manifest:{historical:true,complete:true}});
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));
+    const summary=await screen.findByLabelText('Operation summary');
+    await waitFor(()=>expect(summary.textContent).toContain('original failed control reason'));
+    expect(summary.textContent).toContain('GUARD_RECEIPT_STALE');
+    expect(summary.textContent).toContain('212.42 ms');
+    expect(screen.getByText('Fault-carrying report sequence').parentElement?.textContent).toContain('80');
+    expect(screen.getByText('Original failed check robot s').parentElement?.textContent).toContain('4.9');
+    expect(summary.textContent).not.toContain('DO_NOT_SHOW');
+  });
   it('uses the selected custom mapping or explicit voltage-only without changing protection',()=>{
     const r={...robot(),battery:{...robot().battery,voltage_v:11.34,percent:null,estimated_percent:67,
       estimate_method:'custom_voltage_table_v1',display_mode:'custom' as const,display_label:'My table',voltage_protection:'CLEAR' as const}};
@@ -838,6 +855,35 @@ describe('robot badge collision placement (supplementary geometry)',()=>{
 });
 
 describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
+  it.each([0,.25,.75])('expires the original scan at700ms independently of the100ms age interval (fraction %s)',async fraction=>{
+    vi.useFakeTimers();vi.setSystemTime(10000);
+    const h=viewportHarness(),stamp=Date.now()-51+fraction,current=fleet();
+    h.getState().frame!.lidar_overlay={robot_id:'a',connection_epoch:'connection-a',motion_epoch:'motion-a',origin_uv:[.25,.5],points_uv:[[.2,.3]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};
+    current.robots[0].scan={points:[[.1,.2]],source:'test'};
+    const component=render(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
+    await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).not.toBeNull();
+    await act(async()=>{await vi.advanceTimersByTimeAsync(648);});
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')?.getAttribute('data-scan-captured-at')).toBe(String(stamp));
+    await act(async()=>{await vi.advanceTimersByTimeAsync(fraction?2:1);});
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull();
+    expect(screen.getByText(/awaiting current scan/)).toBeTruthy();
+    expect(screen.getByRole('img',{name:'Current Isaac Digital Twin render'})).toBeTruthy();
+    expect(h.api.viewportCamera).not.toHaveBeenCalled();component.unmount();
+  });
+  it('does not relabel an old scan as current on a render before the next age tick',async()=>{
+    vi.useFakeTimers();vi.setSystemTime(10000);
+    const h=viewportHarness(),current=fleet();
+    h.getState().frame!.lidar_overlay={robot_id:'a',connection_epoch:'connection-a',motion_epoch:'motion-a',origin_uv:[.25,.5],points_uv:[[.2,.3]],captured_at_ms:10000,source:'isaac_usd_aabb_rays',physical_authority:false};
+    current.robots[0].scan={points:[[.1,.2]],source:'test'};
+    const component=render(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
+    await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).not.toBeNull();
+    vi.setSystemTime(10750);
+    fireEvent.change(screen.getByLabelText('LiDAR visualization'),{target:{value:'rays'}});
+    expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull();
+    expect(h.api.viewportCamera).not.toHaveBeenCalled();component.unmount();
+  });
   it('has no connection circle and clears old scan geometry/status on sensor Off and mismatched epochs',async()=>{
     const h=viewportHarness(),stamp=Date.now();
     h.getState().frame!.lidar_overlay={robot_id:'a',connection_epoch:'connection-a',motion_epoch:'motion-a',origin_uv:[.25,.5],points_uv:[[.2,.3],[.3,.4]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};

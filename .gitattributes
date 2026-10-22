@@ -19,3 +19,6 @@
 /apps/twinpulse-web/public/THIRD_PARTY_LICENSES.txt text eol=lf
 # These exact reviewed hashes are build inputs; checkout must not rewrite bytes.
 /assets/simulation/turtlebot3_burger/** -text
+# Preserve the creator-provided reference documents and their recorded SHA256.
+/docs/reference/creator-20261022/TWINPULSE_MASTER_NARRATIVE_CODEX_v0_3_2026-10-22.md -text
+/docs/reference/creator-20261022/TwinPulse_PhotoFidelity_Demo_Handoff_2026-10-22.md -text

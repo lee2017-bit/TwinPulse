@@ -58,6 +58,17 @@ def png(width: int = 2, height: int = 3) -> bytes:
 
 
 class R5ProductApiTests(unittest.TestCase):
+    def test_catalog_optional_probe_failure_preserves_success_and_typed_error(self):
+        from twinpulse_app.command_broker import BrokerError
+        for hook in ('begin','finish'):
+            with self.subTest(hook=hook),patch.object(self.server._request_latency,hook,side_effect=OSError('optional probe')):
+                self.assertEqual(self.request('/v1/product/projects',headers=self.product_headers)[0],200)
+                with patch.object(self.server.project_catalog,'snapshot',side_effect=BrokerError('original_catalog_failure','original',status=409)):
+                    status,value,_=self.request('/v1/product/projects',headers=self.product_headers)
+                self.assertEqual(status,409)
+                self.assertEqual(value['error']['code'],'original_catalog_failure')
+                self.assertEqual(self.server._request_latency.requests,{})
+
     def setUp(self) -> None:
         configured = os.environ.get("TWINPULSE_TEST_TMP")
         if configured:

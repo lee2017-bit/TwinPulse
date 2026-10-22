@@ -416,6 +416,7 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'CONFIRMATION'):owner._command(command('prepare'))
             prepare.assert_not_called()
             owner._command(command('prepare',payload={'confirmed':True}));prepare.assert_called_once()
+            self.assertEqual(prepare.call_args.args,(command()['request_id'],))
 
     def test_repeated_board_reads_parse_only_new_bytes_but_preserve_raw_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -448,6 +449,41 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(member['source_sha256'],hashlib.sha256(raw).hexdigest())
             self.assertNotIn('unlisted.txt',repr(events))
 
+    def test_guard_failure_diagnostics_keep_request_binding_log_bytes_and_fixed_exports(self):
+        import guard_runtime
+        events=[];exports=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)/'operation';directory.mkdir()
+            owner=RobotControl(context(),directory,lambda kind,data:events.append((kind,data)),SimpleNamespace(),clock=lambda:8.)
+            raw=b'loader: missing sibling .so\n'+b'\xff'*70000
+            def fail(command,log,env):
+                log.write_bytes(raw)
+                raise FileNotFoundError(2,'No such file',str(log.parent/'build/libturtlebot3_node_lib.so'))
+            with self.assertRaises(FileNotFoundError):
+                guard_runtime.ensure(Path(guard_runtime.__file__).parent,Path(tmp)/'home',runner=fail,
+                    diagnostic=lambda row,log:owner._guard_diagnostic('request-build','EXPLICIT_PREPARE',row,log))
+            manifest=export_sources(directory,lambda kind,data:exports.append(data))
+            members={row['member']:row for row in manifest['members']}
+            chunks={}
+            for row in exports:
+                if row['kind']=='chunk':chunks.setdefault(row['member'],bytearray()).extend(base64.b64decode(row['base64']))
+            record=json.loads(bytes(chunks['output-guard-build.jsonl']).splitlines()[-1])
+            self.assertEqual(record['error']['exception_type'],'FileNotFoundError')
+            self.assertTrue(record['error']['filename'].endswith('/build/libturtlebot3_node_lib.so'))
+            self.assertEqual(record['active_step'],'CONFIGURE_GUARD')
+            self.assertEqual(record['binding']['operation_id'],context()['operation_id'])
+            self.assertEqual(record['binding']['worker_sha256'],SHA)
+            self.assertEqual(record['binding']['request_id'],'request-build')
+            tail=record['log_tail'];copied=bytes(chunks['output-guard-build.log'])
+            copied=copied[tail['operation_log_offset']:tail['operation_log_offset']+tail['exported_bytes']]
+            self.assertEqual(copied,raw[-65536:])
+            self.assertEqual(hashlib.sha256(copied).hexdigest(),tail['sha256'])
+            self.assertFalse(tail['source_complete']);self.assertGreater(tail['source_offset'],0)
+            self.assertEqual(events[-1][1]['build_diagnostic'],record)
+            self.assertTrue(members['output-guard-build.jsonl']['source_complete'])
+            self.assertFalse(owner.snapshot()['drive_ready'])
+            if owner.field_writer:owner.field_writer.close()
+
     def test_source_truncation_and_active_owner_never_claim_whole_file_sha(self):
         events=[]
         with tempfile.TemporaryDirectory() as tmp:
@@ -461,6 +497,31 @@ class ProtocolTests(unittest.TestCase):
             active=export_sources(tmp,lambda *_:None,owners_reaped=False)
             member=next(row for row in active['members'] if row['member']=='base.log')
             self.assertFalse(active['complete']);self.assertEqual(member['status'],'SOURCE_ACTIVE_OR_CHANGED')
+
+    def test_guard_diagnostic_storage_error_is_sticky_and_export_stays_incomplete(self):
+        events=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            owner=RobotControl(context(),tmp,lambda kind,data:events.append(data),SimpleNamespace(),clock=lambda:1.)
+            record=dict(schema='output-guard-diagnostic-1.0',attempt_id='a'*32,source_id=SHA,
+                status='RUNNING',active_step='CONFIGURE_GUARD',steps=[],motion_enabled=False)
+            original=Path.open
+            def fail(path,*args,**kwargs):
+                if path.name=='output-guard-build.jsonl':raise PermissionError('injected disk failure')
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'open',fail):owner._guard_diagnostic('request','EXPLICIT_PREPARE',record,None)
+            owner._guard_diagnostic('request','EXPLICIT_PREPARE',record,None)
+            state=owner.snapshot()
+            self.assertEqual(state['output_guard_diagnostic_evidence_error'],'PermissionError')
+            self.assertEqual(events[-1]['build_diagnostic']['evidence_error'],'PermissionError')
+            manifest=export_sources(tmp,lambda *_:None,required_members=('output-guard-build.jsonl',),
+                evidence_error=state['output_guard_diagnostic_evidence_error'])
+            self.assertFalse(manifest['complete'])
+            self.assertEqual(manifest['evidence_error'],'PermissionError')
+            (Path(tmp)/'output-guard-build.jsonl').unlink()
+            manifest=export_sources(tmp,lambda *_:None,required_members=('output-guard-build.jsonl',))
+            self.assertFalse(manifest['complete'])
+            member=next(v for v in manifest['members'] if v['member']=='output-guard-build.jsonl')
+            self.assertEqual(member['status'],'REQUIRED_SOURCE_MISSING')
 
     def test_final_cleanup_failure_cannot_be_promoted_by_thread_exit(self):
         class Control:

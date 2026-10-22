@@ -27,6 +27,7 @@ from .command_broker import BrokerError
 from .robot_adapters import checked_binding, require_adapter
 from twinpulse_core.robot_lineage import checked_twin_context
 from twinpulse_core.robot_control_timing import INPUT_TTL_S, INPUT_TTL_MS
+from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES
 from twinpulse_core.robot_timing_profile import values_of,checked_profile as checked_timing_profile,digest as timing_digest,TimingAccumulator
 
 SCHEMA = 'physical-live-event-1.0'
@@ -41,7 +42,14 @@ files=packet['files']
 if not isinstance(files,dict) or not 1<=len(files)<=160: raise ValueError('BOOTSTRAP_FILE_LIMIT')
 decoded={}
 for name,item in files.items():
- if not isinstance(name,str) or not (re.fullmatch(r'(?:twinpulse_core/)?[a-zA-Z0-9_.-]+\.(?:py|sh|json)',name) or name in {'LICENSE.txt','NOTICE.txt','THIRD_PARTY_NOTICES.txt'}): raise ValueError('BOOTSTRAP_PATH')
+ if not isinstance(name,str): raise ValueError('BOOTSTRAP_PATH')
+ flat=re.fullmatch(r'(?:twinpulse_core/)?[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.(?:py|sh|json)',name)
+ guard=re.fullmatch(r'(?:guard_base/(?:src|include)|include/twinpulse_robot_safety)/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.(?:cpp|hpp)',name)
+ fixed=name in {'LICENSE.txt','NOTICE.txt','THIRD_PARTY_NOTICES.txt','CMakeLists.txt',
+  'guard_base/CMakeLists.txt','guard_base/package.xml','guard_base/LICENSE','guard_base/NOTICE',
+  'tests/command_guard_test.cpp','tests/torque_off_test.cpp','tests/ros_guard_test.cpp',
+  'tests/fake_include/turtlebot3_node/dynamixel_sdk_wrapper.hpp'}
+ if not (flat or guard or fixed): raise ValueError('BOOTSTRAP_PATH')
  if not isinstance(item,dict) or set(item)!={'base64','sha256'}: raise ValueError('BOOTSTRAP_ITEM')
  data=base64.b64decode(item['base64'],validate=True)
  if len(data)>2*1024*1024 or hashlib.sha256(data).hexdigest()!=item['sha256']: raise ValueError('BOOTSTRAP_FILE_SHA')
@@ -50,14 +58,15 @@ digests={k:hashlib.sha256(v).hexdigest() for k,v in decoded.items()}
 digest=hashlib.sha256(json.dumps(digests,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 if digest!=packet['sha256']: raise ValueError('BOOTSTRAP_BUNDLE_SHA')
 root=pathlib.Path.home()/'.local/share/twinpulse/fleet/releases'
+if any(p.is_symlink() for p in [root,*root.parents]): raise ValueError('BOOTSTRAP_CACHE_SYMLINK')
 root.mkdir(parents=True,exist_ok=True,mode=0o700)
-if root.is_symlink() or any(p.is_symlink() for p in [root.parent,root.parent.parent]): raise ValueError('BOOTSTRAP_CACHE_SYMLINK')
 release=root/digest
+if release.is_symlink(): raise ValueError('BOOTSTRAP_CACHE_SYMLINK')
 release.mkdir(exist_ok=True,mode=0o700)
 for name,data in decoded.items():
  path=release/name
- path.parent.mkdir(exist_ok=True,mode=0o700)
- if path.is_symlink() or path.parent.is_symlink(): raise ValueError('BOOTSTRAP_MEMBER_SYMLINK')
+ if path.is_symlink() or any(p.is_symlink() for p in path.parents if p!=root): raise ValueError('BOOTSTRAP_MEMBER_SYMLINK')
+ path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
  if path.exists():
   if not path.is_file() or path.read_bytes()!=data: raise ValueError('BOOTSTRAP_CACHE_CHANGED')
  else:
@@ -133,7 +142,7 @@ def reviewed_bundle(root):
 
 class StreamEvidence:
     """Bounded async rotating bytes; disk/fsync never owns a Stop/state lock."""
-    def __init__(self, directory, *, segment_bytes=4*1024*1024, maximum_bytes=256*1024*1024):
+    def __init__(self, directory, *, segment_bytes=4*1024*1024, maximum_bytes=EVENT_ARCHIVE_BYTES):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=False)
         self.segment_bytes, self.maximum_bytes = segment_bytes, maximum_bytes
@@ -235,6 +244,7 @@ class PhysicalLiveSession:
         self.input_window=None;self.input_window_at=None;self.queued_at={}
         self.used_input_challenges={};self.pending_drive=None
         self.last_pause_id=None;self.last_robot_pause=None
+        self.terminal_motion_observation=None;self.motion_observation_projection_error=None
         self.authority_requested=False
         self.pending_profile=None
         self.pending_field_setup=None
@@ -424,6 +434,41 @@ class PhysicalLiveSession:
                 self.error=self.error or ('REMOTE_CLEANUP_REPORTED_INCOMPLETE' if self.terminal_cleanup is not None
                                          else 'REMOTE_EXIT_WITHOUT_CLEANUP')
 
+    def _observation_identity(self,value,*,terminal=False):
+        """Optional display identity only. Never a source of motion authority."""
+        if not isinstance(self.context,dict) or not isinstance(value,dict) or value.get('schema')!='robot-wheel-observation-1.0':return None
+        if any(value.get(k)!=self.context[k] for k in ('operation_id','robot_id')):return None
+        if value.get('source_twin_context_id')!=(self.context.get('source_twin_context') or {}).get('context_id'):return None
+        if any(not isinstance(value.get(k),str) or not 1<=len(value[k])<=100 for k in ('motion_epoch','request_id')):return None
+        started=value.get('started_s');ended=value.get('ended_s')
+        if type(started) not in (int,float) or not 0<=started<1e12 or not math.isfinite(started):return None
+        if not isinstance(value.get('state'),str) or value['state'] not in {'OBSERVING','ENDED'}:return None
+        if terminal or value['state']=='ENDED':
+            if (value['state']!='ENDED' or type(ended) not in (int,float) or not started<=ended<1e12 or not math.isfinite(ended)
+                    or value.get('result')!='INCONCLUSIVE_BODY_MOTION' or value.get('body_progress')!='UNKNOWN'):return None
+        return (started,value['operation_id'],value['robot_id'],value.get('source_twin_context_id'),value['motion_epoch'],value['request_id'])
+
+    def _retain_terminal_observation(self,event,data):
+        candidate=None
+        if event['kind']=='control_pause':candidate=data.get('motion_observation')
+        elif event['kind']=='command' and data.get('action')=='motion_observation' and data.get('status')=='ENDED':
+            candidate=data.get('motion_observation')
+        elif event['kind']=='cleanup' and data.get('subsystem') in ('devices','session'):
+            control=data.get('control');candidate=control.get('motion_observation') if isinstance(control,dict) else None
+        if candidate is None:return
+        identity=self._observation_identity(candidate,terminal=True)
+        if identity is None or candidate['ended_s']>event['robot_monotonic_s']:
+            self.motion_observation_projection_error='INVALID_OPTIONAL_TERMINAL_OBSERVATION';return
+        current=self.terminal_motion_observation
+        if current is not None:
+            prior=current['identity']
+            if identity[0]<prior[0] or identity[0]==prior[0] and identity!=prior:return
+            if identity==prior and candidate['ended_s']<current['observation']['ended_s']:return
+        # data is privately owned before this lock. Capture references only;
+        # copying the optional result must not stall Stop/input admission.
+        self.terminal_motion_observation=dict(identity=identity,observation=candidate,
+            receipt=dict(kind=event['kind'],sequence=event['sequence'],robot_monotonic_s=event['robot_monotonic_s']))
+
     def receive(self, event):
         """Identity/freshness boundary; callable by supplementary offline tests."""
         keys = {'schema','operation_id','robot_id','project_id','connection_epoch','sequence','kind','robot_monotonic_s','data'}
@@ -434,6 +479,13 @@ class PhysicalLiveSession:
                 or type(event['sequence']) is not int or not isinstance(event['data'], dict)
                 or type(event['robot_monotonic_s']) not in (int, float) or not math.isfinite(event['robot_monotonic_s'])
                 or event['robot_monotonic_s'] < 0): raise ValueError('SESSION_EVENT_SHAPE')
+        # The reader owns this incoming event. Prepare immutable-to-us copies
+        # before the admission lock; display/raw payload size must not pace
+        # Stop, held-input admission or the small input-window relay.
+        data = deepcopy(event['data'])
+        archived = None
+        if event['kind'] not in {'raw','raw_source'}:
+            archived = dict(event, data={k:v for k,v in data.items() if k not in {'challenge','watch_challenge'}})
         with self.lock:
             if self.closed or any(event[k] != self.context[k] for k in ('operation_id','robot_id','project_id','connection_epoch')):
                 raise ValueError('SESSION_EVENT_IDENTITY')
@@ -441,7 +493,7 @@ class PhysicalLiveSession:
                 raise ValueError('SESSION_TWIN_CONTEXT_IDENTITY')
             if event['sequence'] != self.sequence + 1: raise ValueError('SESSION_EVENT_SEQUENCE_GAP')
             self.sequence = event['sequence']
-            data = deepcopy(event['data'])
+            self._retain_terminal_observation(event,data)
             if event['kind'] == 'heartbeat':
                 if data.get('worker_sha256')!=self.context.get('worker_sha256') or not isinstance(data.get('worker_sha256'),str):
                     raise ValueError('SESSION_WORKER_SOURCE_MISMATCH')
@@ -492,7 +544,7 @@ class PhysicalLiveSession:
                         twin_reference_basis='OPERATION_START_REFERENCE_NOT_ACQUISITION_SYNC')
             elif event['kind'] == 'cleanup':
                 if data.get('subsystem')=='session':
-                    self.terminal_cleanup=deepcopy(data)
+                    self.terminal_cleanup=data
                     self.cleanup_confirmed=data.get('confirmed') is True
                 if data.get('subsystem')=='session' and data.get('recording_complete') is False and self.evidence is not None:
                     self.evidence.error=self.evidence.error or 'ROBOT_RECORDING_INCOMPLETE'
@@ -500,7 +552,7 @@ class PhysicalLiveSession:
                 pause_id=data.get('pause_id');reason=data.get('reason')
                 if not isinstance(pause_id,str) or not isinstance(reason,str):raise ValueError('CONTROL_PAUSE_SHAPE')
                 if pause_id!=self.last_pause_id:
-                    self.last_pause_id=pause_id;self.last_robot_pause=deepcopy(data)
+                    self.last_pause_id=pause_id;self.last_robot_pause=data
                     if reason!='OPERATOR_STOP' and not self.closing and (self.authority_requested or self.pending_drive is not None):
                         # A robot-side expiry/fault is an intent fence too.
                         # Never let a still-held old HTTP gesture attach to the
@@ -543,9 +595,8 @@ class PhysicalLiveSession:
                 if sent is not None and data.get('status')=='COMPLETED' and 0<=self.clock()-sent<=.5:
                     self.watch_ack_at=self.clock()
             elif event['kind']=='raw_source' and data.get('kind')=='manifest':
-                self.source_export=deepcopy(data)
-            if event['kind'] not in {'raw','raw_source'}:
-                archived=deepcopy(event);archived['data'].pop('challenge',None);archived['data'].pop('watch_challenge',None)
+                self.source_export=data
+            if archived is not None:
                 self.events.append(archived)
                 if len(self.events) > 100: del self.events[:-100]
 
@@ -640,7 +691,12 @@ class PhysicalLiveSession:
             except queue.Full:
                 raise BrokerError('physical_command_buffer', 'Command channel is congested; no movement was queued.', status=409) from None
             if token is not None:self.used_input_challenges[token]=now
-            if action in {'drive','task','qualify','field_test'}:self.authority_requested=True
+            # A zero-motion diagnostic deliberately pauses the robot at start.
+            # It creates no movement intent for that pause to revoke. Preserve
+            # an existing intent/pending drive: do not use collection to clear
+            # the fence for a held or queued old gesture.
+            motion_field_test=action=='field_test' and payload.get('case') not in {'stationary','soak'}
+            if action in {'drive','task','qualify'} or motion_field_test:self.authority_requested=True
             self.queued_at[request_id]=self.clock()
             if len(self.queued_at)>64:self.queued_at.pop(next(iter(self.queued_at)))
             return dict(status='accepted', request_id=request_id, operation_id=self.context['operation_id'])
@@ -648,39 +704,61 @@ class PhysicalLiveSession:
     def snapshot(self):
         with self.lock:
             age = None if self.at is None else max(0,(self.clock()-self.at)*1000)
-            value = deepcopy(self.last)
-            if self.closed:
-                value['last_reported_lidar_state']=value.get('lidar_state')
-                value['lidar_state']='OFF' if self.cleanup_confirmed else 'FAULT'
-                value['scan']=None
-                diagnostic=value.get('telemetry_diagnostic')
-                if isinstance(diagnostic,dict):
-                    diagnostic['last_check_values']=deepcopy(diagnostic)
-                    diagnostic.update(reason='SESSION_CLOSED_HISTORICAL',source_age_s=None,
-                        sensor_receipt_age_s=None,guard_receipt_age_s=None)
-            value['robot_recording']=deepcopy(value.get('recording'))
-            value['source_export']=deepcopy(getattr(self,'source_export',None))
+            # Production receive() replaces privately owned nested reports;
+            # capture their references and all scalar state atomically, then
+            # copy the large display/history bodies outside admission's lock.
+            last,scan=self.last,self.scan
+            source_export=getattr(self,'source_export',None)
+            terminal_cleanup,last_robot_pause=self.terminal_cleanup,self.last_robot_pause
+            terminal_observation=self.terminal_motion_observation
+            observation_error=self.motion_observation_projection_error
+            closed,cleanup_confirmed=self.closed,self.cleanup_confirmed
+            evidence=self.evidence
+            scan_age=None if self.scan_at is None else max(0,(self.clock()-self.scan_at)*1000)
             verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<2.5
-            if self.scan is not None and not self.closed:
-                value['scan']=deepcopy(self.scan)
-                # Robot acquisition/serial-age metadata is not a PC receipt.
-                # Keep unknown timing, completeness and source SHA unchanged.
-                value['scan_receipt']=dict(source=self.scan.get('source','physical_native_sensor_unaligned'),
-                    age_ms=max(0,(self.clock()-self.scan_at)*1000),age_basis='pc_scan_receipt',
-                    frame_id=self.scan.get('frame_id','native_sensor'),
-                    aligned=False)
-            value.update(connection_state='DISCONNECTED' if self.closed else 'DEGRADED' if self.context is None else 'CONNECTING' if age is None and not self.error else
+            status=dict(connection_state='DISCONNECTED' if closed else 'DEGRADED' if self.context is None else 'CONNECTING' if age is None and not self.error else
                          'CONNECTED' if verified and age is not None and age<2500 and not self.error else 'DEGRADED',
-                         live_heartbeat=verified and age is not None and age<2500 and not self.closed and not self.error,
+                         live_heartbeat=verified and age is not None and age<2500 and not closed and not self.error,
                          telemetry_age_ms=age, telemetry_sequence=self.sequence,
-                         cleanup_confirmed=self.cleanup_confirmed, transport_error=self.error,
-                         terminal_cleanup_received=self.terminal_cleanup is not None,
-                         terminal_cleanup=deepcopy(self.terminal_cleanup),remote_exit_code=self.remote_exit_code,
+                         cleanup_confirmed=cleanup_confirmed, transport_error=self.error,
+                         terminal_cleanup_received=terminal_cleanup is not None,remote_exit_code=self.remote_exit_code,
                          timing_measurement_save_error=getattr(self,'timing_save_error',None),
-                         pc_motion_epoch=self.motion_epoch,last_robot_pause=deepcopy(self.last_robot_pause),
-                         recording=self.evidence.snapshot() if self.evidence else None,
+                         pc_motion_epoch=self.motion_epoch,
                          expected_worker_sha256=self.context.get('worker_sha256') if self.context else None)
-            return value
+        value = deepcopy(last)
+        observation=value.get('motion_observation')
+        identity=self._observation_identity(observation) if observation is not None else None
+        if observation is not None and identity is None:
+            value.pop('motion_observation',None);observation_error=observation_error or 'INVALID_OPTIONAL_HEARTBEAT_OBSERVATION'
+        if terminal_observation is not None:
+            final=terminal_observation['identity']
+            if (identity is None or final[0]>identity[0] or final==identity and
+                    (observation.get('state')!='ENDED' or terminal_observation['observation']['ended_s']>=observation['ended_s'])):
+                value['motion_observation']=deepcopy(terminal_observation['observation'])
+                value['motion_observation_receipt']=deepcopy(terminal_observation['receipt'])
+        value['motion_observation_projection_error']=observation_error
+        if closed:
+            value['last_reported_lidar_state']=value.get('lidar_state')
+            value['lidar_state']='OFF' if cleanup_confirmed else 'FAULT'
+            value['scan']=None
+            diagnostic=value.get('telemetry_diagnostic')
+            if isinstance(diagnostic,dict):
+                diagnostic['last_check_values']=deepcopy(diagnostic)
+                diagnostic.update(reason='SESSION_CLOSED_HISTORICAL',source_age_s=None,
+                    sensor_receipt_age_s=None,guard_receipt_age_s=None)
+        value['robot_recording']=deepcopy(value.get('recording'))
+        value['source_export']=deepcopy(source_export)
+        if scan is not None and not closed:
+            value['scan']=deepcopy(scan)
+            # Robot acquisition/serial-age metadata is not a PC receipt.
+            # Keep unknown timing, completeness and source SHA unchanged.
+            value['scan_receipt']=dict(source=scan.get('source','physical_native_sensor_unaligned'),
+                age_ms=scan_age,age_basis='pc_scan_receipt',
+                frame_id=scan.get('frame_id','native_sensor'),
+                aligned=False)
+        value.update(status,terminal_cleanup=deepcopy(terminal_cleanup),last_robot_pause=deepcopy(last_robot_pause),
+            recording=evidence.snapshot() if evidence else None)
+        return value
 
     def close(self):
         with self.lock:

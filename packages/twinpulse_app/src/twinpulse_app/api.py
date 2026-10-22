@@ -18,11 +18,14 @@ import os
 from pathlib import Path
 import re
 import secrets
+import sys
 import tempfile
+import traceback
 from threading import Lock, RLock, Thread
 import time
 from typing import Mapping
 from urllib.parse import parse_qs, urlsplit
+from weakref import WeakKeyDictionary
 
 from twinpulse_core import CommandReceipt, SimulationSnapshot
 
@@ -54,6 +57,27 @@ class _LoopbackHTTPServer(ThreadingHTTPServer):
     # retransmission delays before tiny authenticated requests reach handlers.
     # Bound the accept queue without changing deadlines, auth or POST retries.
     request_queue_size = 64
+
+    def __init__(self,*args,**kwargs):
+        self._admission_lock=RLock();self._admissions=WeakKeyDictionary()
+        super().__init__(*args,**kwargs)
+
+    def get_request(self):
+        connection,address=super().get_request()
+        with self._admission_lock:
+            self._admissions[connection]=(time.perf_counter(),time.time()*1000,None)
+        return connection,address
+
+    def process_request_thread(self,connection,address):
+        with self._admission_lock:
+            accepted,wall,_=self._admissions[connection]
+            self._admissions[connection]=(accepted,wall,time.perf_counter())
+        try:return super().process_request_thread(connection,address)
+        finally:
+            with self._admission_lock:self._admissions.pop(connection,None)
+
+    def request_admission(self,connection):
+        with self._admission_lock:return self._admissions.get(connection)
 
 
 @dataclass(slots=True)
@@ -289,7 +313,13 @@ class LocalApiServer:
                 # Nothing pinned to a previous body/context/callback may leak.
                 for name in list(vars(self)):
                     if name.startswith('_twinpulse_'):delattr(self,name)
+                self._tp_connection_request_count=getattr(self,'_tp_connection_request_count',0)+1
+                self._tp_response_started=False
                 self.close_connection=True
+
+            def send_response(self,*args,**kwargs):
+                self._tp_response_started=True
+                return super().send_response(*args,**kwargs)
 
             def do_GET(self) -> None:  # noqa: N802
                 self._begin_request()
@@ -317,6 +347,8 @@ class LocalApiServer:
                         raise
         if self._httpd is not None:self._httpd.daemon_threads = True
         self._thread: Thread | None = None
+        from .request_latency import RequestLatencyProbe
+        self._request_latency = RequestLatencyProbe()
         if workspace_devices is not None:
             workspace_devices.attach(self)
 
@@ -362,6 +394,7 @@ class LocalApiServer:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._request_latency.start()
         self._thread = Thread(target=self._httpd.serve_forever, name="TwinPulseLocalApi", daemon=True)
         self._thread.start()
         self.manual_controller.start_watchdog()
@@ -395,8 +428,58 @@ class LocalApiServer:
         self._httpd.server_close()
         self._thread.join(timeout=5.0)
         self._thread = None
+        self._request_latency.stop()
 
     def _handle(self, request: BaseHTTPRequestHandler) -> None:
+        try:
+            self._request_latency.begin(request)
+        except Exception:
+            # Optional diagnosis must not turn a catalog read (or an original
+            # typed rejection) into an empty HTTP response.
+            with self._request_latency.lock:self._request_latency.requests.pop(id(request),None)
+            for name in ('_twinpulse_latency_started','_twinpulse_latency_phases','_twinpulse_latency_route'):
+                if hasattr(request,name):delattr(request,name)
+        request._twinpulse_project_id=self.broker.project_id
+        try:
+            return self._handle_bound(request)
+        except BrokerError as error:
+            bound=getattr(request,'_twinpulse_bound_api',self)
+            if not getattr(request,'_tp_response_started',False):
+                bound._error(request,error.status,error.code,str(error))
+            else:request.close_connection=True
+        except Exception as error:
+            # Preserve an explicit UNKNOWN outcome instead of dropping the
+            # socket. Never disclose exception prose/locals or replay an action.
+            bound=getattr(request,'_twinpulse_bound_api',self)
+            execution_id=secrets.token_hex(16)
+            references=getattr(request,'_twinpulse_error_references',{})
+            try:
+                store=getattr(getattr(bound.product_workflow,'_application',None),'diagnostics',None)
+                if store is not None:
+                    trace=store.begin('backend_request_failure',durable=False,component='backend',
+                        error_code='unexpected_backend_error',error_type=type(error).__name__,**references)
+                    trace.finish('unknown',error_code='unexpected_backend_error');execution_id=trace.execution_id
+            except Exception:pass
+            try:
+                print('TWINPULSE_REQUEST_FAILED '+json.dumps(dict(execution_id=execution_id,
+                    context_id=getattr(request,'_twinpulse_context_id',None),
+                    project_id=getattr(request,'_twinpulse_project_id',None),error_type=type(error).__name__,**references)),file=sys.stderr,flush=True)
+                stack=[dict(file=frame.f_code.co_filename,line=line,function=frame.f_code.co_name)
+                       for frame,line in traceback.walk_tb(error.__traceback__)]
+                for location in stack[-32:]:
+                    print('TWINPULSE_REQUEST_STACK '+json.dumps(location),file=sys.stderr,flush=True)
+            except Exception:pass
+            if not getattr(request,'_tp_response_started',False):
+                bound._error(request,500,'unexpected_backend_error',
+                    'Request outcome unconfirmed. Review execution '+execution_id+' before retrying.')
+            else:request.close_connection=True
+        finally:
+            try:self._request_latency.finish(request)
+            except Exception:pass
+            finally:
+                with self._request_latency.lock:self._request_latency.requests.pop(id(request),None)
+
+    def _handle_bound(self, request: BaseHTTPRequestHandler) -> None:
         if self.workspace is not None:
             return self.workspace.dispatch(request)
         request._twinpulse_context_id=self.context_id
@@ -420,6 +503,7 @@ class LocalApiServer:
                 return self._bootstrap_session(request, self._read_json(request))
             if parsed.path.startswith("/v1/product/"):
                 session = self._authenticate_product(request, require_csrf=request.command == "POST")
+                offline_motion_review=re.fullmatch(r'/v1/product/robot-fleet/operations/([a-f0-9]{32})/motion-review',parsed.path)
                 if (os.environ.get('TWINPULSE_SIM_ONLY') == '1' and
                         parsed.path.startswith('/v1/product/robot/') and request.command == 'POST'):
                     return self._error(request, 409, 'sim_alpha_only', 'This release supports Isaac simulation.')
@@ -456,7 +540,7 @@ class LocalApiServer:
                 # This is a mutation/startup check, not shutdown admission.
                 # GETs never use it. In particular status/lease renewal must
                 # not wait for a scene edit's shared robot/admission mutex.
-                runtime_status = None if request.command=='GET' or stopping or local_robot_settings_only else self._supervisor_status(inspect_shutdown=False).get("status")
+                runtime_status = None if request.command=='GET' or stopping or local_robot_settings_only or offline_motion_review else self._supervisor_status(inspect_shutdown=False).get("status")
                 if (request.command != "GET" and parsed.path not in {
                         "/v1/product/runtime/retry", "/v1/product/runtime/cancel", '/v1/product/runtime/shutdown',
                         "/v1/product/conversation",
@@ -471,7 +555,7 @@ class LocalApiServer:
                         '/v1/product/automatic-demo/comparison-start', '/v1/product/automatic-demo/comparison-stop',
                         '/v1/product/automatic-demo/comparison-reopen',
                     }
-                        and not stopping and not local_robot_settings_only and runtime_status in {"starting", "error"}):
+                        and not stopping and not local_robot_settings_only and not offline_motion_review and runtime_status in {"starting", "error"}):
                     code = "runtime_start_failed" if runtime_status == "error" else "runtime_not_ready"
                     raise BrokerError(code, "Launcher is not ready; review runtime status before editing or running", status=409)
                 if request.command == "GET" and parsed.path == "/v1/product/session":
@@ -542,14 +626,15 @@ class LocalApiServer:
                     return self._json(request, 200, self.broker.request_outcome(
                         session.session_id, parsed.path.removeprefix('/v1/product/simulation/request/')))
                 if request.command == "GET" and parsed.path == "/v1/product/viewport":
-                    return self._json(request, 200, self.viewport.status())
+                    return self._json(request, 200, self.viewport.status(probe=getattr(request,'_twinpulse_latency_phases',None)))
                 if request.command == 'GET' and parsed.path == '/v1/product/viewport/current':
-                    state,content=self.viewport.image_packet()
+                    state,content=self.viewport.image_packet(probe=getattr(request,'_twinpulse_latency_phases',None))
                     request.send_response(200 if content is not None else 204)
                     request.send_header('Content-Type','image/jpeg')
                     request.send_header('Content-Length',str(len(content) if content is not None else 0))
                     request.send_header('X-TwinPulse-Viewport',json.dumps(state,ensure_ascii=True,separators=(',',':')))
                     request.send_header('X-TwinPulse-Context',self.context_id)
+                    self._latency_header(request)
                     request.send_header('Cache-Control','no-store')
                     request.send_header('X-Content-Type-Options','nosniff')
                     request.end_headers()
@@ -588,7 +673,10 @@ class LocalApiServer:
                 if request.command == 'POST' and parsed.path == '/v1/product/viewport/observation':
                     return self._json(request,202,self.viewport.report_browser_failure(session.session_id,self._read_json(request)))
                 if request.command == "GET" and parsed.path == "/v1/product/workflow":
-                    return self._json(request, 200, self._workflow().snapshot())
+                    began=time.perf_counter()
+                    try:value=self._workflow().snapshot()
+                    finally:getattr(request,'_twinpulse_latency_phases',{})['tp_workflow_snapshot']=(time.perf_counter()-began)*1000
+                    return self._json(request, 200, value)
                 if request.command == 'POST' and parsed.path == '/v1/product/simulation/plan':
                     if self.conversation is not None and self.conversation.snapshot()['mode'] == 'REAL':
                         raise BrokerError('simulation_mode_required', 'Choose SIM in a new conversation before simulation')
@@ -613,7 +701,10 @@ class LocalApiServer:
                     if self.conversation is None:
                         raise BrokerError("conversation_unavailable", "Conversation service is unavailable", status=503)
                     if request.command == "GET":
-                        return self._json(request, 200, self.conversation.snapshot(session.session_id))
+                        began=time.perf_counter()
+                        try:value=self.conversation.snapshot(session.session_id)
+                        finally:getattr(request,'_twinpulse_latency_phases',{})['tp_conversation_snapshot']=(time.perf_counter()-began)*1000
+                        return self._json(request, 200, value)
                     return self._json(request, 200, self.conversation.dispatch(gated_body if gated_body is not None else self._read_json(request, maximum=MAX_UPLOAD_JSON_BYTES), session.session_id))
                 if request.command == 'POST' and parsed.path == '/v1/product/conversation/inspection/display':
                     body=self._read_json(request)
@@ -648,7 +739,10 @@ class LocalApiServer:
                 if request.command == "GET" and parsed.path == "/v1/product/projects":
                     if self.project_catalog is None:
                         raise BrokerError("project_catalog_unavailable", "Local project catalog is unavailable", status=409)
-                    return self._json(request, 200, self.project_catalog.snapshot())
+                    from .request_latency import observe_operation_phase
+                    with observe_operation_phase(request,'tp_project_catalog'):
+                        catalog=self.project_catalog.snapshot()
+                    return self._json(request, 200, catalog)
                 if parsed.path == '/v1/product/robot/diagnostic-retention':
                     if self.workspace_devices is None:
                         raise BrokerError('device_diagnostics_unavailable', 'Shared device diagnostics are unavailable.', status=409)
@@ -774,6 +868,12 @@ class LocalApiServer:
                     value=(self.robot_fleet.action(gated_body if gated_body is not None else self._read_json(request),session.session_id)
                            if request.command=='POST' else self.robot_fleet.snapshot())
                     return self._json(request,200,value)
+                if offline_motion_review and request.command in {'GET','POST'}:
+                    physical=self.robot_fleet.physical
+                    if physical is None:raise BrokerError('motion_review_unavailable','Offline motion review is unavailable.',status=409)
+                    body=self._read_json(request,maximum=4096) if request.command=='POST' else None
+                    return self._json(request,202 if body is not None else 200,physical.motion_review(
+                        offline_motion_review.group(1),session.session_id,self.broker.project_id,body))
                 if request.command=='GET' and parsed.path.startswith('/v1/product/robot-fleet/operations/'):
                     suffix=parsed.path.removeprefix('/v1/product/robot-fleet/operations/')
                     if '/evidence/' in suffix:
@@ -795,7 +895,10 @@ class LocalApiServer:
                         except (BrokenPipeError,ConnectionAbortedError,ConnectionResetError,TimeoutError):
                             request.close_connection=True
                         return
-                    return self._json(request,200,self.robot_fleet.operation(parsed.path.removeprefix('/v1/product/robot-fleet/operations/'),session.session_id))
+                    from .request_latency import observe_operation_phase
+                    with observe_operation_phase(request,'tp_operation_read'):
+                        value=self.robot_fleet.operation(parsed.path.removeprefix('/v1/product/robot-fleet/operations/'),session.session_id)
+                    return self._json(request,200,value)
                 if parsed.path == '/v1/product/robots' and request.command in ('GET', 'POST'):
                     if self.workspace_devices is None:
                         raise BrokerError('robot_registry_unavailable', 'Robot registry is unavailable', status=503)
@@ -1043,6 +1146,7 @@ class LocalApiServer:
                 if request.command == "POST" and parsed.path == "/v1/product/robot/readiness/start":
                     self._require_shape(body, {'request_id','confirmed_no_motion_deployment','expires_at_ms'})
                     with self._robot_start_lock:
+                        if self.workspace_devices is not None:self.workspace_devices.cancel_offline_motion_review()
                         self._scene_edit_physical_guard()
                         if (self.physical_controller is not None
                                 and (self.physical_controller.snapshot(session.session_id)['busy']
@@ -1071,6 +1175,7 @@ class LocalApiServer:
                         # Historical App reference only, never a room-to-odom transform.
                         app_context=self._capture_robot_app_context()
                         with self._robot_start_lock:
+                            if self.workspace_devices is not None:self.workspace_devices.cancel_offline_motion_review()
                             self._scene_edit_physical_guard()
                             if self.robot_readiness is not None and self.robot_readiness.blocks_robot_operation():
                                 raise BrokerError('readiness_busy_or_uncertain', 'No-motion collection is active or uncertain', status=409)
@@ -1096,6 +1201,7 @@ class LocalApiServer:
                 if request.command == "POST" and parsed.path == "/v1/product/robot/check":
                     self._require_shape(body, {"start_token", "confirmed_read_only"})
                     with self._robot_start_lock:
+                        if self.workspace_devices is not None:self.workspace_devices.cancel_offline_motion_review()
                         self._scene_edit_physical_guard()
                         if self.robot_readiness is not None and self.robot_readiness.blocks_read_only_observation():
                             raise BrokerError('readiness_busy_or_uncertain', 'No-motion collection is active', status=409)
@@ -2241,6 +2347,7 @@ class LocalApiServer:
         if hasattr(request,'_twinpulse_saved_json'):
             value=request._twinpulse_saved_json
             del request._twinpulse_saved_json
+            self._remember_error_references(request,value)
             return value
         lengths=(request.headers.get_all('Content-Length',[]) if hasattr(request.headers,'get_all')
                  else [request.headers['Content-Length']] if 'Content-Length' in request.headers else [])
@@ -2273,7 +2380,14 @@ class LocalApiServer:
         if not isinstance(value, Mapping):
             raise BrokerError("json_object_required", "JSON body must be an object", status=400)
         request._twinpulse_json_framed=True
+        self._remember_error_references(request,value)
         return value
+
+    @staticmethod
+    def _remember_error_references(request,value):
+        request._twinpulse_error_references={key:value[key] for key in ('request_id','operation_id')
+            if isinstance(value,dict) and isinstance(value.get(key),str) and
+            re.fullmatch(r'(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})',value[key])}
 
     @staticmethod
     def _require_shape(value: Mapping[str, object], expected: set[str]) -> None:
@@ -2306,6 +2420,21 @@ class LocalApiServer:
         return value in {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
 
     @staticmethod
+    def _latency_header(request):
+        began=getattr(request,'_twinpulse_latency_started',None)
+        observed=getattr(request,'_twinpulse_latency_phases',None)
+        if type(began) not in (int,float) or not math.isfinite(began) or not isinstance(observed,dict):return
+        if any(not isinstance(k,str) or not re.fullmatch(r'tp_[a-z_]{1,50}',k) or
+               type(v) not in (int,float) or not math.isfinite(v) for k,v in observed.items()):return
+        try:elapsed=(time.perf_counter()-began)*1000
+        except Exception:return
+        if not math.isfinite(elapsed):return
+        phases={**observed,'tp_handler':elapsed}
+        request.send_header('Server-Timing',','.join(name+';dur='+format(max(0,value),'.3f') for name,value in phases.items()))
+        accepted=getattr(request,'_twinpulse_accepted_at_ms',None)
+        if type(accepted) in (int,float) and math.isfinite(accepted):request.send_header('X-TwinPulse-Accepted-At',format(accepted,'.3f'))
+
+    @staticmethod
     def _json(
         request: BaseHTTPRequestHandler,
         status: int,
@@ -2325,7 +2454,9 @@ class LocalApiServer:
             value={'context_id':context,**value}
         if isinstance(value,dict) and value.get('schema_version')=='robot-operation-1.0':
             from .fleet_recorder import operation_json_bytes
-            payload=operation_json_bytes(value,separators=(',',':'))
+            from .request_latency import observe_operation_phase
+            with observe_operation_phase(request,'tp_operation_encode'):
+                payload=operation_json_bytes(value,separators=(',',':'))
         else:
             payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         try:
@@ -2334,6 +2465,7 @@ class LocalApiServer:
             request.send_header("Content-Length", str(len(payload)))
             request.send_header("Cache-Control", "no-store")
             request.send_header("X-Content-Type-Options", "nosniff")
+            LocalApiServer._latency_header(request)
             incoming=getattr(request,'headers',{})
             connection_values=incoming.get_all('Connection',[]) if hasattr(incoming,'get_all') else [incoming.get('Connection','')]
             client_close=any(token.strip().lower()=='close' for value in connection_values for token in value.split(','))

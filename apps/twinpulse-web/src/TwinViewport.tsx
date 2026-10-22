@@ -237,6 +237,13 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const [busy,setBusy]=useState(false);
   const [cameraReadyAt,setCameraReadyAt]=useState(0);
   const [displayAge,setDisplayAge]=useState(Date.now());
+  useEffect(()=>{
+    if(!displayed)return;
+    // Expire this exact decoded frame at its original deadline instead of
+    // waiting for the next age interval. Capture timestamps are never renewed.
+    const timer=setTimeout(()=>setDisplayAge(Date.now()),Math.max(0,Math.ceil(displayed.frame.captured_at_ms+1000-Date.now())));
+    return()=>clearTimeout(timer);
+  },[displayed]);
   const confirmedNow=preview?.scene_revision&&preview.state!=='building'?preview:null;
   const generationSnapshot=useRef(generation);generationSnapshot.current=generation;
   const savedSceneSnapshot=useRef({api,projectId,inputOrigin,seen:false,available:false,revision:null as string|null});
@@ -296,7 +303,26 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       let observed:ViewportState['frame']=null,attempted:ViewportFrame|null=null,code='viewport_http_error';
       try {
         let next:ViewportState;
-        try{next=await api.viewportState();}finally{timings.metadata_ms=performance.now()-started;}
+        let packet:{state:ViewportState;image:Blob|null}|null=null;
+        const initialJob=generationSnapshot.current;
+        const initialPreview=initialJob?.error?.diagnostics?.generation_preview??initialJob?.progress?.generation_preview;
+        const exactPreview=initialPreview?.state==='blocked'&&initialPreview.error_code==='PREVIEW_REBUILD_REQUIRED';
+        if(typeof api.viewportImageFrame==='function'&&!exactPreview){
+          // The current endpoint already atomically pairs metadata and JPEG.
+          // Do not serialize a second metadata GET ahead of every live frame.
+          const imageStarted=performance.now();
+          try{packet=await api.viewportImageFrame();}finally{timings.image_ms=performance.now()-imageStarted;}
+          next=packet.state;
+          if(!next.frame){
+            // Disk restoration is history-only. Metadata must never promote
+            // a JPEG-less atomic response into a current display receipt.
+            const restoreStarted=performance.now();
+            try{const history=await api.viewportState();next={...next,last_frame:history.last_frame};}
+            finally{timings.metadata_ms=performance.now()-restoreStarted;}
+          }
+        }else{
+          try{next=await api.viewportState();}finally{timings.metadata_ms=performance.now()-started;}
+        }
         if(closed)return;
         // A recovered metadata request retires only its unattributed transport
         // fault. Rollback may legitimately have no matching current frame, so
@@ -340,16 +366,11 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
                 !/^[a-f0-9]{64}$/.test(frame.sha256)||frame.url!==`/v1/product/viewport/preview/${frame.sha256}`||
                 typeof api.viewportPreviewImage!=='function')return;
               blob=await api.viewportPreviewImage(frame.sha256);
-            }else if(typeof api.viewportImageFrame==='function'){
-              const packet=await api.viewportImageFrame();if(closed)return;
-              next=packet.state;observed=next.frame;setState(next);
-              if(!next.frame){reported='';return;}
-              frame=next.frame;attempted=frame;key=frameKey(frame);
-              if(!acceptsFrame(frame))return;
+            }else if(packet){
               if(!packet.image){code='viewport_image_invalid';throw new Error('Viewer current receipt has no image');}
               blob=packet.image;
             }else blob=await api.viewportImage(frame.frame_id); // Legacy test/adaptor contract remains available.
-          }finally{timings.image_ms=performance.now()-imageStarted;}
+          }finally{timings.image_ms+=performance.now()-imageStarted;}
           if(closed)return;
           // Do not blame native decoding when an already stale JPEG arrived.
           // The read itself can be delayed while Isaac continues publishing.
@@ -471,12 +492,20 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const robotBadges=anchorFrame&&robotFleet?layoutRobotBadges((anchorFrame.robot_anchors??[]).filter(anchor=>robotFleet.robots.some(robot=>robot.robot_id===anchor.robot_id)),fitWidth,fitHeight):[];
   const selectedScan=anchorFrame?.lidar_overlay;
   const scanRobot=robotFleet?.robots.find(r=>r.robot_id===robotFleet.focused_robot_id);
+  useEffect(()=>{
+    if(!selectedScan||scanRobot?.lidar_state!=='STREAMING'||!Number.isFinite(selectedScan.captured_at_ms))return;
+    // Original scan700ms and image1000ms deadlines remain independent.
+    // Request a render at expiry; not a hard real-time event-loop guarantee.
+    const timer=setTimeout(()=>setDisplayAge(Date.now()),Math.max(0,Math.ceil(selectedScan.captured_at_ms+700-Date.now())));
+    return()=>clearTimeout(timer);
+  },[selectedScan?.captured_at_ms,selectedScan?.robot_id,selectedScan?.connection_epoch,selectedScan?.motion_epoch,scanRobot?.lidar_state]);
+  const scanNow=Date.now();
   // Display-only lifetime, not a control watchdog. Preserve original stamp;
   // never transform a scan using a later robot pose or imply localization.
   const shownScan=selectedScan&&scanRobot&&fleetRobotFresh(scanRobot)&&scanRobot.lidar_state==='STREAMING'&&!!scanRobot.scan&&
     selectedScan.connection_epoch===scanRobot.connection_epoch&&selectedScan.motion_epoch===scanRobot.motion_epoch&&
     selectedScan.robot_id===scanRobot.robot_id&&
-    displayAge-selectedScan.captured_at_ms>=0&&displayAge-selectedScan.captured_at_ms<700?selectedScan:null;
+    scanNow-selectedScan.captured_at_ms>=0&&scanNow-selectedScan.captured_at_ms<700?selectedScan:null;
   const camera=async(action:string)=>{
     if(busy||!fresh||!image||Date.now()-image.frame.captured_at_ms>=1000||Date.now()<cameraReadyAt)return;
     setBusy(true);setCameraError(null);
@@ -514,7 +543,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       }}/>
     {anchorFrame&&fitScale>0&&robotFleet&&onRobotSelect&&<div className="robot-anchor-layer" aria-label="Robots in current Isaac frame"
       style={{left:(slotSize.width-fitWidth)/2,top:(slotSize.height-fitHeight)/2,width:fitWidth,height:fitHeight}}>
-      {shownScan&&scanMode!=='off'&&<svg className="robot-lidar-overlay" viewBox={`0 0 ${fitWidth} ${fitHeight}`} aria-label="Latest frame-bound simulated LiDAR hits" data-scan-captured-at={shownScan.captured_at_ms} data-robot-id={shownScan.robot_id}>
+      {shownScan&&scanMode!=='off'&&<svg className="robot-lidar-overlay" viewBox={`0 0 ${fitWidth} ${fitHeight}`} aria-label="Latest frame-bound simulated LiDAR hits" data-scan-captured-at={shownScan.captured_at_ms} data-robot-id={shownScan.robot_id} data-connection-epoch={shownScan.connection_epoch} data-motion-epoch={shownScan.motion_epoch}>
         {scanMode==='rays'&&shownScan.points_uv.filter((_,i)=>i%8===0).map(([u,v],i)=><line key={`ray-${i}`} x1={shownScan.origin_uv[0]*fitWidth} y1={shownScan.origin_uv[1]*fitHeight} x2={u*fitWidth} y2={v*fitHeight}/>)}
         {shownScan.points_uv.map(([u,v],i)=><circle key={i} cx={u*fitWidth} cy={v*fitHeight} r="1.7"/>)}
       </svg>}

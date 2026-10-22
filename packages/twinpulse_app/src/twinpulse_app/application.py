@@ -265,9 +265,13 @@ class ApplicationService:
         return self._last_event
 
     def set_generation_gateway(self, value: GenerationGateway) -> None:
-        self._generation_gateway.cancel_active()
+        # Finish all fallible cancellation before changing the owned gateway,
+        # input, derived selection or approval epoch. A failed candidate must
+        # not leave a half-applied provider switch behind.
+        value.cancel_active()
+        if value is not self._generation_gateway:self._generation_gateway.cancel_active()
         self._generation_gateway = value
-        self.invalidate_input("provider_changed")
+        self._invalidate_input_state("provider_changed")
 
     def generation_diagnostics(self):
         return getattr(self._generation_gateway, 'diagnostic_snapshot', lambda: {})()
@@ -405,8 +409,11 @@ class ApplicationService:
         return self._last_event
 
     def invalidate_input(self, code: str = "input_changed") -> ApplicationEvent:
-        self.clear_derived_review()
         self._generation_gateway.cancel_active()
+        return self._invalidate_input_state(code)
+
+    def _invalidate_input_state(self, code: str) -> ApplicationEvent:
+        self.clear_derived_review()
         self._epoch += 1
         self._prepared = None
         self._phase = "cancelled" if code == "cancelled" else "input_ready"

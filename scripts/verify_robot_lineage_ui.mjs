@@ -9,7 +9,7 @@ const args=process.argv.slice(2),arg=n=>{const index=args.indexOf(n);return inde
 const endpoint=arg('--cdp'),out=arg('--output'),project=arg('--project'),phase=arg('--phase')??'run';
 if(!out||!project||!/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))throw Error('Explicit cdp/output/project required');
 if(phase==='cold'&&args.includes('--focused-acceptance')&&
-  ['--prior','--operation','--physical-history','--physical-project','--physical-prior'].some(n=>!arg(n)))
+  ['--prior','--operation','--physical-history','--physical-project','--physical-prior','--physical-receipt','--motion-review-prior'].some(n=>!arg(n)))
   throw Error('Focused cold acceptance requires the original closed SIM export and immutable powered-failure fixture before any UI action');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',started_at:new Date().toISOString(),classification:'INSTALLED_ELECTRON_ISAAC_SAVED_SCENE_TRACEABILITY',
@@ -29,7 +29,7 @@ const robot=()=>fleet?.robots.find(r=>r.label===label);
 const drawer=(targetLabel=label)=>page.getByRole('region',{name:'Control '+targetLabel,exact:true});
 const showProjects=async()=>{if(!await page.locator('.chat-sidebar-slot').isVisible())await page.getByRole('button',{name:'Toggle conversations and projects',exact:true}).click();};
 const openLinkage=async()=>{const panel=drawer().getByLabel('Robot Twin record linkage');
- const details=drawer().getByText('Setup, sensor details and logs',{exact:true});
+ const details=drawer().locator('.robot-fleet-diagnostics>summary');
  if(await details.locator('..').getAttribute('open')===null)await details.click();
  if(await panel.getAttribute('open')===null)await panel.locator('summary').click();
  await expect(panel).toHaveAttribute('open','');await expect(panel.locator('dl')).toBeVisible();return panel;};
@@ -302,17 +302,59 @@ try{
     hash(manifest.worker_sources)!==hash(original.worker_sources)||hash(manifest.source_twin_context)!==hash(original.source_twin_context)||
     manifest.cleanup_confirmed!==original.cleanup_confirmed||
     manifest.connection_restored||manifest.device_authority_restored||manifest.original_logs_rewritten)throw Error('Original cold evidence changed or incomplete');
-  const expectedTrial=prior.events.map(e=>e.data?.field?.active_trial).filter(Boolean).at(-1);
-  if(!expectedTrial?.trial_id||!['INCONCLUSIVE','CANCELLED','FAIL'].includes(expectedTrial.status)||!expectedTrial.reason||!Number.isFinite(expectedTrial.frames))throw Error('Original failed fixture trial missing');
+  const originalTrials=prior.events.flatMap(e=>[...(Array.isArray(e.data?.field?.trials)?e.data.field.trials:[]),...(e.data?.field?.active_trial?[e.data.field.active_trial]:[])]);
+  const expectedTrial=originalTrials.filter(t=>['INCONCLUSIVE','CANCELLED','FAIL'].includes(t.status)).at(-1)??originalTrials.at(-1);
+  const expectedControlFault=prior.events.map(e=>e.data?.last_control_fault).filter(e=>e?.reason&&e?.telemetry?.reason).at(-1);
+  if(!expectedTrial?.trial_id||!expectedTrial.reason||!Number.isFinite(expectedTrial.frames)||
+    (!['INCONCLUSIVE','CANCELLED','FAIL'].includes(expectedTrial.status)&&!expectedControlFault))throw Error('Original failed fixture evidence missing');
   const summary=drawer(target).getByLabel('Operation summary');
   await expect(summary).toContainText('Historical trial '+expectedTrial.trial_id);
   await expect(summary).toContainText(expectedTrial.status+' · '+expectedTrial.reason+' · frames '+expectedTrial.frames+' · not current qualification');
+  if(expectedControlFault){
+   await expect(summary).toContainText('original failed control reason');
+   await expect(summary).toContainText(expectedControlFault.telemetry.reason);
+  }
   const trial=summary.getByText('Historical trial '+expectedTrial.trial_id,{exact:true});
   await trial.scrollIntoViewIfNeeded();await expect(trial).toBeVisible();
   await shot('original-physical-cold-history');
   return {operation_id:record.operation_id,events:record.events.length,runtime_event_count:manifest.runtime_event_count,
     worker_sources:Object.keys(manifest.worker_sources).length,cleanup_confirmed:manifest.cleanup_confirmed,source_context:manifest.source_twin_context,
-    prior_fixture:priorPath,prior_sha256:createHash('sha256').update(priorBytes).digest('hex'),events_sha256:hash(record.events),expected_trial:expectedTrial,physical_activation:0};
+    prior_fixture:priorPath,prior_sha256:createHash('sha256').update(priorBytes).digest('hex'),events_sha256:hash(record.events),expected_trial:expectedTrial,expected_control_fault:expectedControlFault??null,physical_activation:0};
+ });
+ if(arg('--physical-history'))await step(phase==='cold'?'Saved physical motion review cold reopens without Analyze or restored authority':'Original physical recording motion review runs offline with exact IDs and no restored authority',async()=>{
+  const panel=drawer('Imported existing settings · unverified').getByLabel('Saved motion review');
+  const postsBefore=result.posts.filter(p=>p.path.endsWith('/motion-review')).length;
+  await panel.locator('summary').first().click();
+  let expectedJob;
+  if(phase!=='cold'){
+   const startResponse=page.waitForResponse(r=>new URL(r.url()).pathname===`/v1/product/robot-fleet/operations/${arg('--physical-history')}/motion-review`&&r.request().method()==='POST');
+   await panel.getByRole('button',{name:'Analyze recording',exact:true}).click();
+   const response=await startResponse;if(response.status()!==202)throw Error('Offline analysis was not accepted');
+   const started=await response.json();if(!started.job?.job_id)throw Error('Missing analysis job identity');expectedJob=started.job.job_id;
+   await expect(panel.getByRole('status')).toHaveText('Analysis: COMPLETED',{timeout:80000});
+  }
+  const details=panel.getByText('Review identities and exact evidence',{exact:true});await expect(details).toBeVisible({timeout:10000});await details.click();
+  const review=JSON.parse(await panel.locator('pre').innerText());
+  const prior=JSON.parse((await fs.readFile(arg('--physical-prior'),'utf8')).replace(/^\uFEFF/,'')),original=prior.manifest;
+  const receiptBytes=await fs.readFile(arg('--physical-receipt')),receiptSha=createHash('sha256').update(receiptBytes).digest('hex');
+  if((expectedJob&&review.job_id!==expectedJob)||review.operation_id!==arg('--physical-history')||review.project_id!==arg('--physical-project')||
+      review.input_rows!==result.steps.find(s=>s.name.startsWith('Original physical cold failure'))?.evidence?.runtime_event_count||
+      review.robot_id!==prior.robot_id||review.connection_epoch!==prior.events.find(e=>e.connection_epoch)?.connection_epoch||
+      hash(review.source_twin_context)!==hash(original.source_twin_context)||hash(review.input_segments)!==hash(original.stream.segments)||
+      review.original_complete!==original.stream.complete||review.original_error!==original.stream.error||review.input_receipt_sha256!==receiptSha||
+      review.physical_motion_verified!==false||review.authority_restored!==false||review.original_logs_rewritten!==false||!review.windows?.length)throw Error('Motion review binding or conservative result missing');
+  if(phase==='cold'){
+   const saved=JSON.parse(await fs.readFile(arg('--motion-review-prior'),'utf8'));
+   if(hash(review)!==hash(saved)||result.posts.filter(p=>p.path.endsWith('/motion-review')).length!==postsBefore)throw Error('Cold review changed or started a new analysis');
+  }
+  await fs.writeFile(path.join(out,'physical-motion-review.json'),JSON.stringify(review,null,2));
+  await expect(panel.getByRole('table',{name:'Command sensor comparison'})).toContainText('Body unqualified / unknown');
+  const r=fleet?.robots.find(v=>v.label==='Imported existing settings · unverified');if(!r||r.operation_id||r.connection_epoch||r.capabilities.drive)throw Error('Offline analysis restored authority');
+  await shot('original-physical-motion-review');
+  return {operation_id:review.operation_id,job_id:review.job_id,input_receipt_sha256:review.input_receipt_sha256,
+    review_sha256:hash(review),input_segments_sha256:hash(review.input_segments),input_rows:review.input_rows,windows:review.windows.length,
+    physical_activation:0,physical_motion_verified:false,analysis_post_count:result.posts.filter(p=>p.path.endsWith('/motion-review')).length-postsBefore,
+    raw_receipt_sha256_checked:true};
  });
  await step('Exit through installed App button',async()=>{
   await page.evaluate(()=>{window.__exitInputReceipt=[];for(const kind of ['pointerdown','pointerup','click'])document.addEventListener(kind,event=>{

@@ -292,9 +292,35 @@ describe("TwinPulse browser session recovery", () => {
       expect(request).toHaveBeenCalledTimes(1);expect(request.mock.calls[0][1].signal?.aborted).toBe(true);
     }finally{vi.useRealTimers();}
   });
-  it('handles an explicit no-current-frame receipt without reading an image body',async()=>{
-    const response=packetResponse({...packetState(),state:'stale',frame:null},204);vi.stubGlobal('fetch',vi.fn(async()=>response));
-    expect((await new TwinPulseApi().viewportImageFrame()).image).toBeNull();expect(response.arrayBuffer).not.toHaveBeenCalled();
+  it('finishes the bodyless no-current-frame stream without treating it as an image',async()=>{
+    const response=packetResponse({...packetState(),state:'stale',frame:null},204);response.arrayBuffer.mockResolvedValue(new ArrayBuffer(0));vi.stubGlobal('fetch',vi.fn(async()=>response));
+    expect((await new TwinPulseApi().viewportImageFrame()).image).toBeNull();expect(response.arrayBuffer).toHaveBeenCalledTimes(1);
+  });
+  it('rejects unexpected bytes in a no-current-frame receipt',async()=>{
+    vi.stubGlobal('fetch',vi.fn(async()=>packetResponse({...packetState(),state:'waiting',frame:null},204)));
+    await expect(new TwinPulseApi().viewportImageFrame()).rejects.toMatchObject({code:'viewport_image_invalid'});
+  });
+  it('keeps the original atomic timeout while finishing a bodyless response',async()=>{
+    vi.useFakeTimers();
+    try{
+      const response=packetResponse({...packetState(),state:'waiting',frame:null},204);response.arrayBuffer.mockImplementation(()=>new Promise(()=>{}));
+      const request=vi.fn(async(_path:string,_init:RequestInit)=>response);vi.stubGlobal('fetch',request);
+      const pending=new TwinPulseApi().viewportImageFrame();const outcome=expect(pending).rejects.toMatchObject({code:'viewport_http_error'});
+      await vi.advanceTimersByTimeAsync(2001);await outcome;expect(request).toHaveBeenCalledTimes(1);expect(request.mock.calls[0][1].signal?.aborted).toBe(true);
+    }finally{vi.useRealTimers();}
+  });
+  it('rechecks the project after the awaited bodyless stream finishes',async()=>{
+    const response=packetResponse({...packetState(),state:'waiting',frame:null},204);response.headers.set('X-TwinPulse-Context','ctx-a');
+    let finish!:(value:ArrayBuffer)=>void,sessions=0;
+    response.arrayBuffer.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+    const request=vi.fn(async(path:string)=>{
+      if(path==='/v1/product/session'){
+        const context=++sessions===1?'ctx-a':'ctx-b';return contextResponse(context,{context_id:context,csrf_token:'test',project_id:context});
+      }
+      return response;
+    });vi.stubGlobal('fetch',request);const api=new TwinPulseApi();await api.bootstrap();
+    const pending=api.viewportImageFrame();const outcome=expect(pending).rejects.toMatchObject({code:'context_changed'});
+    await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));await api.projectContext();finish(new ArrayBuffer(0));await outcome;
   });
   it.each(['fetch','body'])('bounds an unresponsive atomic %s read even if abort is ignored',async stage=>{
     vi.useFakeTimers();

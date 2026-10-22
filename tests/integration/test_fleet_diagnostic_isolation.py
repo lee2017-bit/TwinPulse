@@ -32,6 +32,24 @@ class FleetDiagnosticIsolationTests(unittest.TestCase):
         publisher._fleet_diagnostic('first',time.monotonic(),publisher.fleet_report)
         with patch('builtins.print',failed):publisher._fleet_diag_io()
         self.assertEqual(publisher.fleet_diag_write_errors,1)
+    def test_blocked_sink_also_cannot_block_viewport_frame_sender(self):
+        publisher=self.publisher();entered=Event();release=Event()
+        def blocked(*args,**kwargs):entered.set();release.wait(2)
+        with patch('builtins.print',blocked):
+            worker=Thread(target=publisher._fleet_diag_io,daemon=True);worker.start()
+            try:
+                publisher._fleet_diagnostic('first',time.monotonic(),publisher.fleet_report)
+                self.assertTrue(entered.wait(1))
+                meta=dict(frame_id=1,captured_at_ms=time.time()*1000-500,
+                    stage_epoch='stage',engine_session_id='engine')
+                publisher.raw=(meta,8,8,bytes(8*8*4),publisher.render_epoch)
+                def reply(*args):publisher.stop_event.set();return {'camera':None}
+                publisher.bridge._post=reply
+                sender=Thread(target=publisher._io,daemon=True);sender.start();sender.join(.6)
+                self.assertFalse(sender.is_alive())
+                self.assertEqual(publisher.sent,1)
+                self.assertTrue(any(v.get('diagnostic_kind')=='viewport' for v in publisher.fleet_diag_queue.queue))
+            finally:publisher.stop_event.set();release.set();worker.join(1)
     def test_same_sequence_early_return_does_not_retimestamp_produced_report(self):
         import sys
         publisher=self.publisher();publisher.fleet_runtime=SimpleNamespace(report=[dict(robot_id='r',sequence=1)],update=lambda _:None,

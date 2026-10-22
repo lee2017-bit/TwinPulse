@@ -28,6 +28,12 @@ function rowFor(event:Record<string,unknown>,index:number):DiagnosticRow|null{
   const value=(name:string,item:unknown)=>{if(item!==null&&item!==undefined)values.push([name,diagnosticText(item)]);};
   const numeric=(name:string,item:unknown,scale=1)=>{if(finite(item))values.push([name,`${(item*scale).toFixed(2)}${scale===1000?' ms':''}`]);};
   const diagnostic=diagnosticRecord(data.telemetry_diagnostic),callback=diagnosticRecord(raw?data.callback_timing:diagnostic.callback_timing);
+  const originalFailure=diagnosticRecord(data.last_control_fault),failedCheck=diagnosticRecord(originalFailure.telemetry);
+  if(Object.keys(originalFailure).length){categories.add('stop');categories.add('sensor');
+    value('original failed control reason',originalFailure.reason);value('original failed check reason',failedCheck.reason);
+    value('original failed check robot s',failedCheck.checked_monotonic_s);
+    numeric('original failed sensor receipt age',failedCheck.sensor_receipt_age_s,1000);
+    numeric('original failed guard receipt age',failedCheck.guard_receipt_age_s,1000);}
   const tracking=diagnosticRecord(diagnosticRecord(data.field).tracking??data.tracking),timing=diagnosticRecord(tracking.compute_timing);
   const epoch=diagnosticText(event.connection_epoch??data.connection_epoch,80);
   const robotTime=finite(event.robot_monotonic_s),pcSentTime=finite(event.pc_sent_monotonic_s),hostTime=finite(event.monotonic_s);
@@ -38,6 +44,14 @@ function rowFor(event:Record<string,unknown>,index:number):DiagnosticRow|null{
     const payload=diagnosticRecord(data.payload??data.parameters??event.payload);for(const key of ['direction','amount','sequence','expires_at_ms','source_age_ms'])value(`input ${key}`,payload[key]);
     value('input age ms',data.age_ms);value('accepted sequence',data.sequence);
   }
+  const delivery=diagnosticRecord(data.event_delivery);
+  if(Object.keys(delivery).length){categories.add('input');
+    numeric('event payload preparation',delivery.payload_prepare_s,1000);numeric('event order-lock wait',delivery.order_lock_wait_s,1000);
+    value('event payload original start s',delivery.payload_started_s);value('event ordered s',delivery.ordered_s);}
+  const motion=diagnosticRecord(data.motion_observation);
+  if(Object.keys(motion).length){categories.add('tracking');
+    for(const key of ['state','direction','result','reason','request_id','latest_request_id','sample_s','samples','body_progress','independent_comparison','basis','stop_readback_confirmed'])value(`wheel ${key}`,motion[key]);
+    if(finite(motion.centre_m))value('wheel centre mm',(motion.centre_m*1000).toFixed(2));numeric('wheel yaw rad',motion.yaw_rad);}
   let sourceAgeMs:number|null=null,sensorIdentity:string|null=null,callbackReceiptS:number|null=null,sensorStream:string|null=null;
   if(raw||Object.keys(diagnostic).length){categories.add('sensor');
     if(raw){value('topic',data.topic);value('ROS stream',data.stream_id);value('callback sequence',data.observation_sequence);

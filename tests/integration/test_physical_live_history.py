@@ -7,12 +7,26 @@ import sys
 import tempfile
 import unittest
 import base64
+from unittest.mock import patch
 from types import SimpleNamespace
 ROOT=Path(__file__).resolve().parents[2]
 for p in ('twinpulse_app','twinpulse_core','twinpulse_provider'):sys.path.insert(0,str(ROOT/'packages'/p/'src'))
 from twinpulse_app.physical_live_history import recover_live_history,checked_worker_sources
 
 class HistoryTests(unittest.TestCase):
+    def test_complete_current_bootstrap_manifest_survives_cold_reader(self):
+        from twinpulse_app.physical_live_session import reviewed_bundle
+        sha,_,files=reviewed_bundle(ROOT)
+        self.assertGreater(len(files),60)
+        self.assertIn('guard_base/CMakeLists.txt',files)
+        self.assertEqual(checked_worker_sources(files,sha),files)
+        for name in ('../bad.py','guard_base/../../bad.cpp','guard_base/src/unsafe.py',
+                     'guard_base/bin/tool.exe','tests/unreviewed.cpp','/absolute.cpp'):
+            altered={**files,name:'a'*64}
+            digest=hashlib.sha256(json.dumps(altered,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'WORKER_SOURCES_MEMBER'):
+                checked_worker_sources(altered,digest)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.path=Path(self.tmp.name)
         self.files={'fleet_worker.py':'a'*64,'twinpulse_core/__init__.py':'b'*64}
@@ -35,6 +49,37 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result['worker_sources'],self.files);self.assertEqual(result['runtime_event_count'],131)
         self.assertNotIn('challenge',result['events'][0]['data']);self.assertNotIn('watch_challenge',result['events'][0]['data'])
         self.assertNotIn('device_authority_restored',result)
+
+    def test_only_retained_tail_is_deepcopied_after_all_rows_are_verified(self):
+        import twinpulse_app.physical_live_history as history
+        with patch.object(history, 'deepcopy', wraps=history.deepcopy) as copied:
+            result = self.recover()
+        # One source manifest and exactly the final100 events, not every
+        # candidate that the bounded tail eventually discards.
+        self.assertEqual(copied.call_count, 101)
+        self.assertEqual(len(result['events']), 100)
+        self.assertEqual(result['events'][0]['sequence'], 31)
+
+    def test_retained_copy_redaction_does_not_change_cleanup_projection(self):
+        self.events[-1]['data']['challenge'] = 'ORIGINAL_CLEANUP_VALUE'
+        result = self.recover()
+        self.assertNotIn('challenge', result['events'][-1]['data'])
+        self.assertEqual(result['cleanup']['challenge'], 'ORIGINAL_CLEANUP_VALUE')
+        result['events'][-1]['data']['confirmed'] = False
+        self.assertTrue(result['cleanup']['confirmed'])
+
+    def test_discarded_tail_candidates_are_still_fully_checked(self):
+        # This row is older than the returned100; changing the receipt hashes
+        # cannot turn a sequence/context/worker violation into valid history.
+        for key, value in [('sequence', 99), ('source_twin_context_id', 'f'*64)]:
+            prior = self.events[1][key]
+            self.events[1][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.recover()
+            self.events[1][key] = prior
+        self.events[1]['data']['worker_sha256'] = 'f'*64
+        with self.assertRaisesRegex(ValueError, 'WORKER_CHANGED'):
+            self.recover()
 
     def test_actual_writer_ledger_is_resolved_through_product_cold_history(self):
         sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety'))
@@ -62,6 +107,38 @@ class HistoryTests(unittest.TestCase):
     def test_legacy_missing_sources_remains_unknown(self):
         del self.first['worker_sources'];result=self.recover();self.assertIsNone(result['worker_sources'])
         self.assertEqual(result['worker_sources_provenance'],'NOT_RECORDED')
+
+    def test_actual_failed_build_diagnostic_survives_export_and_cold_read_without_authority(self):
+        sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety'))
+        import guard_runtime
+        from fleet_control import RobotControl
+        from fleet_worker import export_sources
+        self.events=self.events[:1]
+        def emit(kind,data):
+            self.events.append(dict(schema='physical-live-event-2.0',
+                **{k:self.identity[k] for k in ('operation_id','robot_id','project_id','connection_epoch')},
+                source_twin_context_id='e'*64,sequence=len(self.events),robot_monotonic_s=1.,kind=kind,data=data))
+        directory=self.path/'diagnostic';directory.mkdir()
+        context=dict(self.identity,worker_sha256=self.sha)
+        owner=RobotControl(context,directory,emit,SimpleNamespace(),clock=lambda:1.)
+        def missing(command,log,env):
+            log.write_bytes(b'original compiler failure\n')
+            raise FileNotFoundError(2,'No such file',str(log.parent/'build/libturtlebot3_node_lib.so'))
+        with self.assertRaises(FileNotFoundError):
+            guard_runtime.ensure(Path(guard_runtime.__file__).parent,self.path/'home',runner=missing,
+                diagnostic=lambda row,log:owner._guard_diagnostic('original-prepare-request','EXPLICIT_PREPARE',row,log))
+        manifest=export_sources(directory,emit,required_members=('output-guard-build.jsonl','output-guard-build.log'))
+        emit('cleanup',dict(subsystem='session',confirmed=False))
+        recovered=self.recover()
+        diagnostic=next(e['data']['build_diagnostic'] for e in reversed(recovered['events'])
+            if e['data'].get('action')=='output_guard_diagnostic')
+        self.assertEqual(diagnostic['error']['exception_type'],'FileNotFoundError')
+        self.assertEqual(diagnostic['binding']['request_id'],'original-prepare-request')
+        self.assertEqual(diagnostic['binding']['operation_id'],self.identity['operation_id'])
+        self.assertEqual(diagnostic['binding']['worker_sha256'],self.sha)
+        self.assertEqual(recovered['source_export'],manifest)
+        self.assertFalse(recovered['cleanup_confirmed'])
+        self.assertFalse(recovered['field_trial_resolution']['authority_restored'])
     def test_missing_cleanup_is_unknown_not_false_success(self):
         self.events.pop();self.assertIsNone(self.recover()['cleanup_confirmed'])
     def test_identity_sequence_context_and_worker_changes_rejected(self):

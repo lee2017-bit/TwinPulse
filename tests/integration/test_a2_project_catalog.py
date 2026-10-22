@@ -28,6 +28,23 @@ from twinpulse_app.room_recipe import load_project_room_visual  # noqa: E402
 
 
 class ProjectCatalogTests(unittest.TestCase):
+    def test_unselected_listing_candidates_do_not_resolve_every_path(self):
+        import os
+        with TemporaryDirectory() as directory:
+            root=Path(directory);catalog=ProjectCatalog(root,'default')
+            for index in range(70):
+                project=root/'projects'/('chat_'+str(index).zfill(3));project.mkdir(parents=True)
+                os.utime(project,ns=(1_000_000_000+index,1_000_000_000+index))
+            resolved=[];original=Path.resolve
+            def checked(path,*args,**kwargs):
+                if path.parent==root/'projects':resolved.append(path.name)
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'resolve',checked):snapshot=catalog.snapshot()
+            self.assertTrue(snapshot['truncated'])
+            self.assertNotIn('chat_000',resolved)
+            self.assertIn('chat_069',resolved)
+            self.assertNotIn('chat_000',{row['project_id'] for row in snapshot['projects']})
+
     def test_listing_does_not_compile_scenes_but_selection_still_strictly_validates(self):
         with TemporaryDirectory() as directory:
             root=Path(directory);catalog=ProjectCatalog(root,'default')

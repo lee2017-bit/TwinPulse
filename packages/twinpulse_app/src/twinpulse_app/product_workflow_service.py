@@ -118,6 +118,17 @@ class ProductWorkflow:
         self._mode = mode
         self._generation_settings_getter = generation_settings_getter
         self._provider_state_getter = provider_state_getter or (lambda: {})
+        # Display-only observation, not authentication or generation identity.
+        # Never read credential/configuration files in the hot snapshot lock.
+        self._provider_refresh_serial = 0
+        self._provider_observation_error = None
+        try:
+            self._provider_state = dict(self._provider_state_getter())
+            self._provider_configuration_state = 'observed'
+        except Exception as error:
+            self._provider_state = {'configured':False,'label':'Provider state unavailable'}
+            self._provider_configuration_state = 'unconfirmed'
+            self._provider_observation_error = error
         self._gateway_factory = gateway_factory
         self.render_review_port_factory = None
         from .model_recipe_store import ModelRecipeStore
@@ -406,6 +417,9 @@ class ProductWorkflow:
 
     def start_generation(self, *, correlation=None, inference_scope=None, continuation_checkpoint=None, owner=None) -> dict[str, object]:
         with self._lock:
+            if self._provider_configuration_state != 'observed':
+                raise BrokerError('provider_configuration_unconfirmed',
+                    'Provider settings are not applied. Save or refresh them before starting a new model request.',status=409)
             if self._mode == "replay":
                 raise BrokerError("replay_generation_forbidden", "Stored replay cannot perform provider generation")
             if self._mode == "simulation_offline":
@@ -579,9 +593,33 @@ class ProductWorkflow:
     def provider_settings_changed(self) -> dict[str, object]:
         if self._gateway_factory is None:
             raise BrokerError("provider_gateway_unavailable", "Provider gateway cannot be refreshed", status=503)
-        gateway=self._gateway_factory()
         with self._lock:
-            self._application.set_generation_gateway(gateway)
+            self._provider_refresh_serial += 1
+            serial = self._provider_refresh_serial
+            self._provider_configuration_state = 'refreshing'
+        try:
+            gateway=self._gateway_factory()
+            provider_state=dict(self._provider_state_getter())
+        except Exception as error:
+            # Legacy settings save may already have changed the disk. Retain
+            # the original exception and old input/gateway, but do not execute
+            # a new model request as if the new configuration were confirmed.
+            with self._lock:
+                if serial == self._provider_refresh_serial:
+                    self._provider_configuration_state = 'unconfirmed'
+                    self._provider_observation_error = error
+            raise
+        with self._lock:
+            if serial != self._provider_refresh_serial:
+                raise BrokerError('provider_refresh_superseded','Newer provider settings superseded this refresh.',status=409)
+            try:self._application.set_generation_gateway(gateway)
+            except Exception as error:
+                self._provider_configuration_state = 'unconfirmed'
+                self._provider_observation_error = error
+                raise
+            self._provider_state = provider_state
+            self._provider_configuration_state = 'observed'
+            self._provider_observation_error = None
             self._input = None
             self._artifact = None
             self._site_artifact = None
@@ -790,10 +828,14 @@ class ProductWorkflow:
                 and (self._phase == "restore_review_required" or
                      selected is not None and selected.revision == site_record.input_revision.digest)
             ) else None
-            provider = dict(self._provider_state_getter())
+            provider = dict(self._provider_state)
+            provider['configuration_state'] = self._provider_configuration_state
+            provider['state_basis'] = 'startup_or_explicit_settings_refresh_not_authentication'
+            if self._provider_observation_error is not None:provider['observation_error_type'] = type(self._provider_observation_error).__name__[:80]
+            if self._provider_configuration_state != 'observed':provider['configured'] = False
             provider.setdefault("configured", False)
             provider.setdefault("label", "Explicit deterministic fixture" if self._mode == "explicit_fixture" else "Provider")
-            provider["connected"] = self._connected
+            provider["connected"] = self._connected and self._provider_configuration_state == 'observed'
             active_artifact = self._artifact or self._site_artifact
             identity = None if selected is None or active_artifact is None else (
                 selected.revision, active_artifact.revision,

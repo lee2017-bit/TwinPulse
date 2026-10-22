@@ -20,11 +20,11 @@ def run_finite(command,folder,token,*,timeout=60,external=True):
     out=Path(folder)/'stdout.log';err=Path(folder)/'stderr.log'
     from .process_manager import _WindowsJob
     owned=_WindowsJob('library-tool') if os.name=='nt' else None
-    with out.open('xb') as stdout,err.open('xb') as stderr,external_dll_search():
-        process=subprocess.Popen(command,cwd=folder,stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,
-            shell=False,env=child_environment(os.environ,external=external),creationflags=0x08000000 if os.name=='nt' else 0)
-    started=time.monotonic()
+    process=None;primary=None;started=time.monotonic()
     try:
+        with out.open('xb') as stdout,err.open('xb') as stderr,external_dll_search():
+            process=subprocess.Popen(command,cwd=folder,stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,
+                shell=False,env=child_environment(os.environ,external=external),creationflags=0x08000000 if os.name=='nt' else 0)
         if owned:owned.assign(process)
         while process.poll() is None:
             if token.is_cancelled:raise ValueError('LIBRARY_CANCELLED')
@@ -33,12 +33,23 @@ def run_finite(command,folder,token,*,timeout=60,external=True):
             time.sleep(.05)
         if process.returncode:raise ValueError('LIBRARY_TOOL_FAILED: '+err.read_text(encoding='utf-8',errors='replace')[-800:])
         return dict(exit_code=process.returncode,elapsed_s=round(time.monotonic()-started,3))
+    except BaseException as error:
+        primary=error;raise
     finally:
-        if owned:owned.close()
-        if process.poll() is None:
-            process.terminate()
-            try:process.wait(3)
-            except subprocess.TimeoutExpired:process.kill();process.wait(3)
+        errors=[]
+        if owned:
+            try:owned.close()
+            except Exception as error:errors.append(error)
+        if process is not None:
+            try:
+                if process.poll() is None:process.terminate()
+                try:process.wait(3)
+                except subprocess.TimeoutExpired:process.kill();process.wait(3)
+            except Exception as error:errors.append(error)
+        if errors:
+            if primary is not None:
+                for error in errors:primary.add_note('Library process cleanup also failed: '+type(error).__name__)
+            else:raise ExceptionGroup('Library process cleanup failed',errors)
 
 
 def call_csv_mcp(raw,inputs,folder,token,*,probe=False,timeout=20):

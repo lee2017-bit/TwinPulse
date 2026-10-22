@@ -22,6 +22,7 @@ import re
 from threading import RLock,Thread
 import time
 from uuid import UUID, uuid4
+from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_SEGMENTS
 
 from .command_broker import BrokerError
 from .robot_adapters import instance_binding, require_adapter
@@ -102,6 +103,8 @@ class PhysicalFleetAdapter:
         self.sessions, self.requests, self.focused, self.operations = {}, {}, {}, {}
         self.closed = False
         self.factory = services_factory or self._services
+        from .physical_motion_review import PhysicalMotionReview
+        self.motion_reviews=PhysicalMotionReview(devices,self.source_root,self.state_root)
 
     def _services(self, binding, archive_root):
         from .robot_diagnostics import RobotDiagnostics
@@ -247,6 +250,7 @@ class PhysicalFleetAdapter:
         # Legacy admission uses this same workspace start lock. Never hold the
         # pool lock while waiting for it or while invoking a service.
         with self.devices.lock, entry.lock:
+            self.motion_reviews.cancel_for_start()
             self._claim(entry, owner)
             if entry.disconnecting or entry.disconnected or entry.cleanup_uncertain or self.closed:
                 raise BrokerError('physical_fleet_closed', 'This instance is closing or closed.', status=409)
@@ -445,7 +449,33 @@ class PhysicalFleetAdapter:
             return result
 
     def prepare_control(self,robot_id,owner,**values):
+        self.motion_reviews.cancel_for_start()
         return self._live_command(robot_id,owner,'prepare',values.pop('payload',{'confirmed':True}),**values)
+
+    def motion_review(self,operation_id,owner,project_id,body=None):
+        identity=_uuid(operation_id,'operation ID');self._history_owner(owner,project_id)
+        # Small authorization descriptor only. Full segments are verified by
+        # the separate worker, not under an API/pool/Stop mutex.
+        path=self.state_root/'physical-live'/identity/'events-00000.jsonl'
+        if path.is_symlink() or not path.is_file():raise BrokerError('motion_review_missing','No original physical recording is available.',status=404)
+        from .physical_live_history import MAX_LINE,_json
+        with path.open('rb') as stream:line=stream.readline(MAX_LINE+1)
+        if len(line)>MAX_LINE:raise BrokerError('motion_review_invalid','Recording header exceeds its bound.',status=409)
+        try:first=_json(line)
+        except ValueError:raise BrokerError('motion_review_invalid','Recording header is not valid.',status=409) from None
+        if not isinstance(first,dict):raise BrokerError('motion_review_invalid','Recording header is not an object.',status=409)
+        if first.get('operation_id')!=identity or first.get('project_id')!=project_id:raise BrokerError('motion_review_project','Recording belongs to another project.',status=403)
+        if body is None:return self.motion_reviews.snapshot(identity,project_id)
+        if not isinstance(body,dict) or body.get('action') not in {'start','cancel'}:raise BrokerError('motion_review_action','Use Start or Cancel review.',status=400)
+        action=body['action'];fields={'action','request_id'}|({'job_id'} if action=='cancel' else set())
+        if set(body)!=fields:raise BrokerError('motion_review_action','Unexpected review fields.',status=400)
+        request=_uuid(body.get('request_id'),'request ID')
+        if action=='cancel':return self.motion_reviews.cancel(identity,project_id,_uuid(body.get('job_id'),'review job ID'))
+        receipt=path.parent/'receipt.json'
+        # File is created only after local stream finalization, even when that
+        # final receipt is incomplete. Never require complete/cleanup PASS.
+        if not receipt.is_file() or receipt.is_symlink():raise BrokerError('motion_review_open','Disconnect and finalize the local recording first.',status=409)
+        return self.motion_reviews.start(identity,project_id,request)
 
     def qualify(self,robot_id,owner,**values):
         return self._live_command(robot_id,owner,'qualify',values.pop('payload',{}),**values)
@@ -597,6 +627,7 @@ class PhysicalFleetAdapter:
                 scan_receipt=None if ended else deepcopy(live.get('scan_receipt')),
                 lidar_state=('OFF' if live.get('cleanup_confirmed') else 'FAULT') if ended else live.get('lidar_state','OFF'),
                 telemetry_diagnostic=deepcopy(live.get('telemetry_diagnostic')),native_diagnostic=deepcopy(live.get('lidar')),
+                motion_observation=deepcopy(live.get('motion_observation')),
                 timing_policy=deepcopy(live.get('timing_policy')),odom_interval=deepcopy(live.get('odom_interval')),field_evidence=deepcopy(live.get('field_evidence')),
                 timing_values=deepcopy(live.get('timing_values')),timing_profile_sha256=live.get('timing_profile_sha256'),
                 output_timing=deepcopy(live.get('output_timing')),
@@ -889,7 +920,7 @@ class PhysicalFleetAdapter:
         if receipt_path.is_file() and not receipt_path.is_symlink() and receipt_path.stat().st_size<=128*1024:
             try:
                 stream=json.loads(receipt_path.read_text(encoding='utf-8'))
-                if stream.get('schema')!='physical-live-recording-1.0' or not isinstance(stream.get('segments'),list) or len(stream['segments'])>128:
+                if stream.get('schema')!='physical-live-recording-1.0' or not isinstance(stream.get('segments'),list) or len(stream['segments'])>EVENT_ARCHIVE_SEGMENTS:
                     raise ValueError('STREAM_RECEIPT_SHAPE')
                 for segment in stream['segments']:
                     name=segment.get('path')
@@ -1017,8 +1048,17 @@ class PhysicalFleetAdapter:
                     except Exception as error:
                         self._event(entry, 'stop_delivery_error', error_type=type(error).__name__)
                 entry.disconnecting = True
+        errors=[]
         for entry in entries:
-            thread=getattr(entry,'close_thread',None)
-            if thread is not None:
-                thread.join(timeout=36)
-            else:self._finish_close(entry)
+            try:
+                thread=getattr(entry,'close_thread',None)
+                if thread is not None:
+                    thread.join(timeout=36)
+                else:self._finish_close(entry)
+            except Exception as error:errors.append(error)
+        # Stops have already been requested and joined independently. Offline
+        # comparison cannot prevent any of the physical Stop attempts above.
+        try:
+            if not self.motion_reviews.close()['closed']:raise RuntimeError('Offline review cleanup unconfirmed')
+        except Exception as error:errors.append(error)
+        if errors:raise ExceptionGroup('Physical owners cleanup failed',errors)

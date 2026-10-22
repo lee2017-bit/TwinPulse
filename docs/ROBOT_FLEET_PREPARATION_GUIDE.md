@@ -2,6 +2,14 @@
 
 이 문서는 소프트웨어 사용 순서이며 실물 인수 PASS 증명서가 아닙니다. 로봇이 꺼져 있을 때는 등록·측정 프로필 검토·저장·이전 로그 열기까지 가능합니다. 충전 중에는 바퀴 시험을 하지 않습니다.
 
+## ROS 빌드와 앱 준비
+
+PC의 TwinPulse 실행에는 별도의 ROS SDK 설치가 필수는 아닙니다. 이전 전체 ARM64/ROS 빌드는 Pi의 기존 ROS Humble 도구로 수행했고, PC의 순수 C++ 보호 로직 시험과는 다른 검증입니다. PC에 SDK가 없다는 사실을 Pi의 ROS가 삭제됐다는 의미로 해석하지 않습니다.
+
+명시적인 `Prepare`는 앱이 보낸 고정 source-SHA의 제어 노드를 Pi 사용자 영역에 빌드·검사하고, 실제 출력 설정 readback을 확인한 뒤 준비 상태를 갱신합니다. 빌드 단계는 장치 lease와 모터 준비보다 먼저이며, 소스와 실행파일 SHA가 일치하는 검증 캐시는 재사용합니다. 캐시가 있다는 사실이 현재 SDK·실물 인수를 뜻하지는 않습니다. 실패 시 옛 고정 설정 바이너리로 자동 우회하지 않습니다. 시스템 ROS·드라이버·기본 launch를 교체하거나 임의의 모델 작성 shell을 실행하지 않습니다. 창에는 `Building output guard…` → `Checking output guard…` → `Verifying applied settings…`가 표시됩니다.
+
+새 로봇/새 제어 소스의 최초 실제 타깃 컴파일과 readback은 로봇 전원 후 확인할 사항입니다. PC 재생·단위시험이나 빌드 버튼의 존재를 실제 타깃 성공으로 표시하지 않습니다. 현장 화면은 현재 세션의 입력 만료값과 확인된 출력 timeout을 구분하며, 적용 readback이 없으면 `not confirmed`로 남깁니다. 등록값·추천값의 재계산/적용은 `Robots → Timing settings`에서 별도로 수행합니다. 아래 v546의 250ms/400ms 등 수치는 당시 경로 설명이며 현재 세션의 등록/적용값을 대체하지 않습니다.
+
 ## 일반 시작
 
 저장소의 `Start-TwinPulse.cmd`도 설치본이 있으면 `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd`와 같은 활성 Electron 설치본을 실행합니다. 개발 소스를 직접 실행하려면 별도의 `Start-TwinPulse-Development.cmd`를 사용합니다. Test 시작은 같은 설치본의 명시적인 디버그 창이며 일반 시작과 성적을 구분합니다.

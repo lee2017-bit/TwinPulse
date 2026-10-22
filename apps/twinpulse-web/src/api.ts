@@ -56,6 +56,12 @@ export class TwinPulseApi {
   robotFleetOperation(id:string):Promise<import('./robot-fleet-types').RobotFleetOperation>{
     return this.readState(`/v1/product/robot-fleet/operations/${encodeURIComponent(id)}`);
   }
+  robotMotionReview(id:string):Promise<import('./RobotMotionReview').MotionReviewState>{
+    return this.readState(`/v1/product/robot-fleet/operations/${encodeURIComponent(id)}/motion-review`);
+  }
+  robotMotionReviewAction(id:string,body:{action:'start';request_id:string}|{action:'cancel';request_id:string;job_id:string}):Promise<import('./RobotMotionReview').MotionReviewState>{
+    return this.boundedProjectAction(`/v1/product/robot-fleet/operations/${encodeURIComponent(id)}/motion-review`,body);
+  }
   async robotFleetEvidence(id:string,file:string):Promise<Blob>{
     if(!/^[a-zA-Z0-9_-]{1,100}$/.test(id)||!/^(?:events-[0-9]{5}\.jsonl|receipt\.json|ssh-stderr\.log)$/.test(file))
       throw new ApiError('fleet_evidence_invalid','Select an original runtime evidence filename from this operation.');
@@ -191,7 +197,16 @@ export class TwinPulseApi {
         (state.camera_result!==null&&(!state.camera_result||!['completed','failed'].includes(state.camera_result.state)||
           ![state.camera_result.request_id,state.camera_result.code].every(value=>typeof value==='string'&&value.length<=80))))throw invalid();
       const frame=state.frame;
-      if(response.status===204){if(frame!==null||['live','degraded'].includes(state.state))throw invalid();return {state,image:null};}
+      if(response.status===204){
+        if(frame!==null||['live','degraded'].includes(state.state))throw invalid();
+        // Complete even a bodyless fetch. The installed Electron Chromium
+        // otherwise reports an unconsumed 204 stream as ERR_ABORTED. Keep the
+        // original 2-second bound and recheck context after the awaited drain.
+        const empty=await response.arrayBuffer();
+        if(!this.responseMatches(response,this.contextId))throw this.contextChanged();
+        if(empty.byteLength!==0)throw invalid();
+        return {state,image:null};
+      }
       if(!frame||!['live','degraded'].includes(state.state)||!Number.isSafeInteger(frame.frame_id)||frame.frame_id<0||
         !Number.isFinite(frame.captured_at_ms)||!Number.isInteger(frame.width)||!Number.isInteger(frame.height)||
         frame.width<64||frame.width>1280||frame.height<64||frame.height>960||
@@ -540,6 +555,7 @@ export class TwinPulseApi {
       method: body === undefined ? "GET" : "POST",
       credentials: "same-origin",
       headers: {
+        ...(body === undefined ? {'X-TwinPulse-Read-ID':crypto.randomUUID()} : {}),
         ...(context ? {'X-TwinPulse-Context': context} : {}),
         ...(body === undefined ? {} : {
         "Content-Type": "application/json",

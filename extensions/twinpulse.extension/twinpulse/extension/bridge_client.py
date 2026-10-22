@@ -54,6 +54,8 @@ class BridgeClient:
         self._thread: Thread | None = None
         self._lock = Lock()
         self._robot_http=local()
+        self._viewport_http=local()
+        self._viewport_cleanup_error=None
         self._incoming: deque[CommandEnvelope] = deque()
         self._activity_records = deque(maxlen=120)
         self._outgoing: deque[CommandReceipt] = deque()
@@ -430,6 +432,7 @@ class BridgeClient:
     def _post(
         self, path: str, body: Mapping[str, Any], *, authenticated: bool = True,
     ) -> Mapping[str, Any]:
+        if path=='/v1/engine/viewport':self._viewport_http.last_error=None
         headers = {"Content-Type": "application/json", "Host": self.base_url.removeprefix("http://")}
         if authenticated:
             with self._lock:
@@ -440,6 +443,8 @@ class BridgeClient:
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         if path=='/v1/engine/robots':
             return self._post_robot_report(payload,headers)
+        if path=='/v1/engine/viewport':
+            return self._post_viewport(payload,headers)
         request = Request(self.base_url + path, data=payload, headers=headers, method="POST")
         try:
             with urlopen(request, timeout=2.0) as response:
@@ -454,6 +459,64 @@ class BridgeClient:
         if not isinstance(value, Mapping):
             raise BridgeProtocolError("Backend response is not an object")
         return value
+
+    def close_viewport_channel(self):
+        """Only the display I/O owner closes its own socket; never a retry."""
+        connection=getattr(self._viewport_http,'connection',None)
+        self._viewport_http.connection=None
+        if connection is not None:
+            try:connection.close()
+            except Exception as error:
+                with self._lock:self._viewport_cleanup_error=type(error).__name__
+                raise
+
+    def viewport_cleanup_error(self):
+        with self._lock:return self._viewport_cleanup_error
+
+    def viewport_transport_error(self):
+        value=getattr(self._viewport_http,'last_error',None)
+        return dict(value) if value else None
+
+    def _post_viewport(self,payload,headers):
+        from http.client import HTTPConnection
+        from urllib.parse import urlsplit
+        connection=getattr(self._viewport_http,'connection',None)
+        reused=connection is not None
+        if connection is None:
+            address=urlsplit(self.base_url)
+            if (address.hostname!='127.0.0.1' or address.path or address.query or address.fragment
+                    or address.username is not None or address.password is not None):
+                raise BridgeProtocolError('Viewport channel requires exact loopback origin')
+            connection=HTTPConnection(address.hostname,address.port,timeout=2.0)
+            self._viewport_http.connection=connection
+        phase='request_connect_or_send'
+        try:
+            # Separate from control/heartbeat. Exactly one exchange on this
+            # owner's socket; errors discard it without replaying this POST.
+            connection.request('POST','/v1/engine/viewport',body=payload,headers=headers)
+            phase='headers';response=connection.getresponse()
+            phase='body';raw=response.read()
+            phase='decode'
+            if response.status!=200:
+                try:
+                    value=json.loads(raw.decode('utf-8'));detail=value.get('error',{}) if isinstance(value,Mapping) else {}
+                    code=detail.get('code','http_error') if isinstance(detail,Mapping) else 'http_error'
+                except Exception:code='http_error'
+                raise BridgeProtocolError(f'Backend rejected request: {code}')
+            value=json.loads(raw.decode('utf-8'))
+            if not isinstance(value,Mapping):raise BridgeProtocolError('Backend response is not an object')
+            if response.will_close:
+                try:self.close_viewport_channel()
+                except Exception:pass # Preserve successful response; sticky cleanup still vetoes final handoff.
+            self._viewport_http.last_error=None
+            return value
+        except Exception as error:
+            self._viewport_http.last_error=dict(phase=phase,reused=reused,error_type=type(error).__name__[:80],
+                errno=getattr(error,'errno',None) if type(getattr(error,'errno',None)) is int else None,
+                winerror=getattr(error,'winerror',None) if type(getattr(error,'winerror',None)) is int else None)
+            try:self.close_viewport_channel()
+            except Exception:pass # Sticky cleanup error retained; preserve original exchange exception.
+            raise
 
     def close_robot_channel(self):
         """Called by its owning FleetIO thread; never shared with BridgeIO."""

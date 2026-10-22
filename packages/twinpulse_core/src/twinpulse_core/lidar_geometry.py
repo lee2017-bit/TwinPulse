@@ -23,33 +23,43 @@ def slice_triangle(triangle, height):
     return [(unique[0],unique[1])]
 
 
+def _build_section_index(items):
+    # Module recursion does not create a self-referencing closure per index.
+    if not items:return None
+    bounds=(min(min(a[0],b[0]) for a,b in items),min(min(a[1],b[1]) for a,b in items),
+            max(max(a[0],b[0]) for a,b in items),max(max(a[1],b[1]) for a,b in items))
+    if len(items)<=8:return bounds,items,None,None
+    axis=0 if bounds[2]-bounds[0]>=bounds[3]-bounds[1] else 1
+    items=sorted(items,key=lambda s:s[0][axis]+s[1][axis]);mid=len(items)//2
+    return bounds,None,_build_section_index(items[:mid]),_build_section_index(items[mid:])
+
+
 class SectionIndex:
     def __init__(self,segments):
         if len(segments)>100000:raise ValueError('LIDAR_SECTION_BUDGET')
-        def build(items):
-            if not items:return None
-            bounds=(min(min(a[0],b[0]) for a,b in items),min(min(a[1],b[1]) for a,b in items),
-                    max(max(a[0],b[0]) for a,b in items),max(max(a[1],b[1]) for a,b in items))
-            if len(items)<=8:return bounds,items,None,None
-            axis=0 if bounds[2]-bounds[0]>=bounds[3]-bounds[1] else 1
-            items=sorted(items,key=lambda s:s[0][axis]+s[1][axis]);mid=len(items)//2
-            return bounds,None,build(items[:mid]),build(items[mid:])
-        self.count=len(segments);self.root=build(segments)
+        self.count=len(segments);self.root=_build_section_index(segments)
 
-    def cast(self,origin,direction,maximum=8.):
+    def cast(self,origin,direction,maximum=8.,*,cancel=None):
         best=maximum
-        def visit(node):
-            nonlocal best
-            if node is None:return
+        # A nested recursive visit function kept a function/cell cycle alive
+        # for every ray. Preserve left-first DFS without per-ray cycles or any
+        # GC scheduling changes; first-hit geometry/epsilons remain identical.
+        nodes=[self.root]
+        while nodes:
+            node=nodes.pop()
+            if cancel is not None and cancel():raise ValueError('LIDAR_SCAN_CANCELLED')
+            if node is None:continue
             (x0,y0,x1,y1),items,left,right=node;enter,leave=0.,best
+            intersects=True
             for o,d,lo,hi in zip(origin,direction,(x0,y0),(x1,y1)):
                 if abs(d)<1e-12:
-                    if not lo-1e-9<=o<=hi+1e-9:return
+                    if not lo-1e-9<=o<=hi+1e-9:intersects=False;break
                 else:
                     a,b=(lo-o)/d,(hi-o)/d
                     enter=max(enter,min(a,b));leave=min(leave,max(a,b))
-                    if leave+1e-9<enter:return
-            if items is None:visit(left);visit(right);return
+                    if leave+1e-9<enter:intersects=False;break
+            if not intersects:continue
+            if items is None:nodes.append(right);nodes.append(left);continue
             dx,dy=direction
             for a,b in items:
                 sx,sy=b[0]-a[0],b[1]-a[1];den=dx*sy-dy*sx
@@ -57,14 +67,14 @@ class SectionIndex:
                 ax,ay=a[0]-origin[0],a[1]-origin[1]
                 t=(ax*sy-ay*sx)/den;u=(ax*dy-ay*dx)/den
                 if 1e-7<t<best and -1e-9<=u<=1+1e-9:best=t
-        visit(self.root)
         return best
 
-    def scan(self,pose,maximum=8.,samples=180):
+    def scan(self,pose,maximum=8.,samples=180,*,cancel=None):
         x,y,yaw=pose;points=[]
         for index in range(samples):
+            if cancel is not None and cancel():raise ValueError('LIDAR_SCAN_CANCELLED')
             angle=index*math.tau/samples
             direction=(math.cos(angle+yaw),math.sin(angle+yaw))
-            distance=self.cast((x,y),direction,maximum)
+            distance=self.cast((x,y),direction,maximum,cancel=cancel)
             if distance<maximum:points.append([round(distance*math.cos(angle),4),round(distance*math.sin(angle),4)])
         return points

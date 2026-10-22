@@ -239,6 +239,8 @@ class RobotRegistryService:
                     self.preparation.check(binding,expected)
                 else:
                     self._admission()
+                    pool=getattr(self.devices,'physical_fleet',None)
+                    if pool is not None:pool.motion_reviews.cancel_for_start('REGISTRY_CONNECT')
                     try:row=self.registry.active_at_revision(expected)
                     except ValueError:
                         raise BrokerError('robot_registry_changed','Robot selection changed. Refresh before connecting.',status=409) from None

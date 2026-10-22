@@ -5,15 +5,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
+import {installRecordingPointer} from './recording_pointer.mjs';
 const {chromium}=createRequire(import.meta.url)('../apps/twinpulse-web/node_modules/.pnpm/playwright-core@1.63.0/node_modules/playwright-core');
 
-export async function attachPoweredSession(output,endpoint='http://127.0.0.1:19222') {
+export async function attachPoweredSession(output,endpoint='http://127.0.0.1:19222',{interactive=false}={}) {
   await fs.mkdir(output,{recursive:false});
   await fs.mkdir(path.join(output,'frames'));
   let browser;const connectUntil=Date.now()+45000;
   // A passive recorder must not replace the interactive client's download
   // directory/focus emulation in the same default BrowserWindow context.
-  while(!browser){try{browser=await chromium.connectOverCDP(endpoint,{timeout:2000,noDefaults:true});}
+  // When this is the sole interactive client, initialize those defaults so
+  // actual UI downloads have an owned destination and Playwright events.
+  while(!browser){try{browser=await chromium.connectOverCDP(endpoint,{timeout:2000,noDefaults:!interactive});}
     catch(error){if(Date.now()>=connectUntil)throw error;await new Promise(r=>setTimeout(r,500));}}
   let pages;const pageUntil=Date.now()+30000;
   do{pages=browser.contexts().flatMap(c=>c.pages()).filter(p=>p.url().startsWith('http://127.0.0.1:8765/'));
@@ -49,6 +52,7 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
     }
   }catch(e){session.errors.push({at:Date.now(),stage:session.stage,observer_error:redact(e)});}});
   const cdp=await page.context().newCDPSession(page);session.cdp=cdp;
+  const finishPointer=await installRecordingPointer(page);
   let lastFrame=0;
   session.capture_policy={format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:4,saved_min_interval_ms:450,
     scope:'Renderer screencast sampling only. Not application frame cadence, a load benchmark, native capture or a startup-cause repair.'};
@@ -59,18 +63,25 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
     const at=Date.now();if(!session.recording||at-lastFrame<450){session.capture_discarded++;return;}lastFrame=at;
     const name=String(session.frames.length).padStart(6,'0')+'.jpg';
     session.frames.push({file:'frames/'+name,at,stage:session.stage});
-    session.pending=session.pending.then(()=>fs.writeFile(path.join(output,'frames',name),Buffer.from(event.data,'base64')));
+    // Retain original capture times even if the automation runtime resets.
+    // A partial recording is not reconstructed from filesystem timestamps.
+    const frameMeta=session.frames.at(-1);
+    session.pending=session.pending.then(async()=>{
+      await fs.writeFile(path.join(output,'frames',name),Buffer.from(event.data,'base64'));
+      await fs.appendFile(path.join(output,'frame-times.jsonl'),JSON.stringify(frameMeta)+'\n');
+    });
   });
   // Discarding a received base64 frame cannot undo its renderer-side encoding
   // and transfer. Request a sampled stream as well as bounding saved frames.
-  await cdp.send('Page.startScreencast',{format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:4});
+  try{await cdp.send('Page.startScreencast',{format:'jpeg',quality:78,maxWidth:1600,maxHeight:1100,everyNthFrame:4});}
+  catch(error){await finishPointer();throw error;}
   session.text=()=>page.locator('body').innerText();
   session.shot=async name=>{await page.screenshot({path:path.join(output,name+'.png'),timeout:8000});await session.save();};
   session.note=async(name,evidence={})=>{session.stage=name;session.events.push({at:Date.now(),name,evidence});await session.save();};
   session.download=async(button,name)=>{const pending=page.waitForEvent('download',{timeout:20000});await button.click();const download=await pending;await download.saveAs(path.join(output,name));const bytes=await fs.readFile(path.join(output,name));const receipt={name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};await session.note('DOWNLOAD',receipt);return receipt;};
   session.finishVideo=async()=>{
     session.recording=false;await cdp.send('Page.stopScreencast').catch(error=>session.errors.push({at:Date.now(),stage:session.stage,recorder_stop:redact(error)}));await session.pending;
-    const end=Date.now();await fs.writeFile(path.join(output,'frame-times.json'),JSON.stringify({began:session.began,end,frames:session.frames},null,2));
+    const end=Date.now();session.pointer=await finishPointer();await fs.writeFile(path.join(output,'frame-times.json'),JSON.stringify({began:session.began,end,frames:session.frames,pointer:session.pointer},null,2));
     await fs.writeFile(path.join(output,'fleet-http-receipts.json'),JSON.stringify({requests:session.fleet_requests,samples:session.fleet_samples},null,2));
     if(!session.frames.length)throw Error('No actual screencast frames received');
     const lines=['ffconcat version 1.0'];
@@ -86,6 +97,6 @@ export async function attachPoweredSession(output,endpoint='http://127.0.0.1:192
     await session.note('VIDEO_ENCODE',{code,frames:session.frames.length,wall_ms:end-session.began,no_audio:true,source:'Actual same installed Electron renderer CDP screencast; not native desktop or robot camera.'});
     if(code!==0)throw Error('Video encode failed');return path.join(output,'app-screen.mp4');
   };
-  await session.note('ATTACHED_RECORDING',{native:'NOT_RUN_RENDERER_RECORDING_ONLY',path:'Same installed explicit Test BrowserWindow',robot_authority:'Only public UI, no API mutation'});
+  await session.note('ATTACHED_RECORDING',{native:'NOT_RUN_RENDERER_RECORDING_ONLY',path:'Same installed explicit Test BrowserWindow',interactive,robot_authority:'Only public UI, no API mutation'});
   return session;
 }

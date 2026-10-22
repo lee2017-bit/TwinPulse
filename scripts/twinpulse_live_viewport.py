@@ -9,6 +9,7 @@ never renew a control lease, issue a motion command, or change bridge watchdogs.
 import base64
 import asyncio
 import ctypes
+from copy import deepcopy
 from collections import deque
 from io import BytesIO
 import math
@@ -16,6 +17,8 @@ import json
 from queue import Queue,Full,Empty
 from threading import Event, Lock, Thread
 import time
+
+_FLEET_DIAGNOSTIC_STOP = object()
 
 
 class LiveViewportPublisher:
@@ -46,6 +49,21 @@ class LiveViewportPublisher:
         self.fleet_diag_queue=Queue(maxsize=16);self.fleet_diag_thread=None
         self.fleet_diag_dropped=0;self.fleet_diag_write_errors=0
         self.render_identity = None; self.render_updates = 0; self.render_epoch = 0
+        self.capture_phases={};self.viewport_diag_count=0;self.viewport_diag_at=-math.inf
+        try:
+            from twinpulse_update_probe import UpdateProbe
+        except ModuleNotFoundError:
+            from scripts.twinpulse_update_probe import UpdateProbe
+        self.phase_probe=UpdateProbe();self.viewport_worst=None;self.viewport_latest=None
+        self.viewport_active=None;self.io_join_status=None
+        self.viewport_cleanup_failure=None
+
+    def diagnostic_snapshot(self):
+        value=self.phase_probe.snapshot()
+        with self.lock:
+            value.update(deepcopy(dict(latest_io=self.viewport_latest,worst_io=self.viewport_worst,
+                active_io=self.viewport_active,join_status=self.io_join_status)))
+        return value
 
     def _begin_render_epoch(self, identity):
         with self.lock:
@@ -60,6 +78,8 @@ class LiveViewportPublisher:
                 return False  # A callback scheduled before Build/camera transition.
             if self.raw is not None: self.dropped += 1
             self.raw = (metadata,width,height,data,epoch)
+            phase=self.capture_phases.get(metadata.get('frame_id'))
+            if phase is not None:phase['callback_s']=time.monotonic()
             return True
 
     def start(self):
@@ -71,13 +91,40 @@ class LiveViewportPublisher:
         self.fleet_thread.start()
 
     def stop(self):
-        self.stop_event.set()
-        if self.thread: self.thread.join(timeout=3.)
-        if self.fleet_thread:self.fleet_thread.join(timeout=3.)
-        if self.fleet_diag_thread:self.fleet_diag_thread.join(timeout=.1)
+        cleanup_errors=[]
+        try:self.phase_probe.close()
+        except Exception as exc:cleanup_errors.append(dict(owner='viewport_probe',error=type(exc).__name__))
+        try:self.stop_event.set()
+        except Exception as exc:cleanup_errors.append(dict(owner='viewport_stop_signal',error=type(exc).__name__))
+        # Event.set does not wake Queue.get. Do not race its100ms timeout
+        # against the unchanged100ms diagnostic join. A full queue cannot be
+        # an empty-get wait; do not block Stop trying to append a sentinel.
+        try:self.fleet_diag_queue.put_nowait(_FLEET_DIAGNOSTIC_STOP)
+        except Full:pass
+        except Exception as exc:cleanup_errors.append(dict(owner='viewport_diagnostic_wake',error=type(exc).__name__))
+        for owner,thread,timeout in (('viewport',self.thread,3.),('fleet',self.fleet_thread,3.),('diagnostic',self.fleet_diag_thread,.1)):
+            if thread:
+                try:thread.join(timeout=timeout)
+                except Exception as exc:cleanup_errors.append(dict(owner=owner+'_join',error=type(exc).__name__))
+        close=getattr(self.fleet_runtime,'close',None)
+        try:scan_join=close() if close else None
+        except Exception as exc:scan_join=dict(closed=False,worker_alive=None,cleanup_errors=[dict(owner='fleet_runtime',error=type(exc).__name__)])
+        def alive(thread,owner):
+            try:return bool(thread and thread.is_alive())
+            except Exception as exc:
+                cleanup_errors.append(dict(owner=owner+'_alive',error=type(exc).__name__));return None
+        states={owner:alive(thread,owner) for owner,thread in
+                (('viewport',self.thread),('fleet',self.fleet_thread),('diagnostic',self.fleet_diag_thread))}
+        if self.viewport_cleanup_failure is not None:cleanup_errors.append(dict(owner='viewport_http',error=self.viewport_cleanup_failure))
+        with self.lock:
+            self.io_join_status=dict(viewport_alive=states['viewport'],fleet_alive=states['fleet'],
+                diagnostic_alive=states['diagnostic'],scan_worker=scan_join,cleanup_errors=cleanup_errors)
         self.thread = None
         self.fleet_thread=None
-        if self.capture_wait and not self.capture_wait.done():self.capture_wait.cancel()
+        try:
+            if self.capture_wait and not self.capture_wait.done():self.capture_wait.cancel()
+        except Exception as exc:
+            with self.lock:self.io_join_status['cleanup_errors'].append(dict(owner='viewport_capture_cancel',error=type(exc).__name__))
 
     def _retire_completed_capture(self, now):
         """Recover a consumed delegate whose GPU callback never arrived.
@@ -97,13 +144,15 @@ class LiveViewportPublisher:
 
     def update(self, snapshot):
         from omni.kit.viewport.utility import capture_viewport_to_buffer, get_active_viewport
-        with self.lock:
-            fleets=list(self.fleet_pending);self.fleet_pending.clear()
-            rendered=list(self.fleet_render_completed);self.fleet_render_completed.clear()
-        for identity,tokens in rendered:self.fleet_runtime.rendered(identity,tokens)
-        for fleet,received_at in fleets:self.fleet_runtime.receive(fleet,received_at=received_at)
+        with self.phase_probe.phase('pending_lock'):
+            with self.lock:
+                fleets=list(self.fleet_pending);self.fleet_pending.clear()
+                rendered=list(self.fleet_render_completed);self.fleet_render_completed.clear()
+        with self.phase_probe.phase('pending_receive'):
+            for identity,tokens in rendered:self.fleet_runtime.rendered(identity,tokens)
+            for fleet,received_at in fleets:self.fleet_runtime.receive(fleet,received_at=received_at)
         try:
-            self.fleet_runtime.update(snapshot)
+            with self.phase_probe.phase('fleet_update'):self.fleet_runtime.update(snapshot)
             with self.lock:
                 self.fleet_report=dict(applied_revision=snapshot.applied_revision,robots=self.fleet_runtime.report,
                     scene_geometry=self.fleet_runtime.navigation_scene,produced_monotonic_s=self.fleet_runtime.scene_produced_at)
@@ -126,7 +175,7 @@ class LiveViewportPublisher:
             if ((camera['engine_session_id'],camera['stage_epoch'],camera['applied_revision']) ==
                     (snapshot.engine_session_id,snapshot.stage_epoch,snapshot.applied_revision)):
                 try:
-                    self._camera_action(camera['action'])
+                    with self.phase_probe.phase('camera_action'):self._camera_action(camera['action'])
                     self.camera_sequence += 1
                     self._begin_render_epoch(identity); transition = True
                     result.update(state='completed',code='camera_applied')
@@ -137,24 +186,31 @@ class LiveViewportPublisher:
         if not transition: self.render_updates += 1
         # A single pending GPU capture: no accumulating futures or render jobs.
         if self.capture is not None:
-            if not self._retire_completed_capture(now):return
+            with self.phase_probe.phase('capture_retirement'):
+                if not self._retire_completed_capture(now):return
         if len(self.retired_captures)>=2:
             self.last_error='viewport_capture_stalled';return
         if transition or self.render_updates < self.RENDER_WARMUP_UPDATES:
             return
         if now-self.last_capture < .14 or snapshot.applied_revision is None or not self.bridge.connected:
             return
-        viewport = get_active_viewport()
+        with self.phase_probe.phase('viewport_lookup'):viewport = get_active_viewport()
         if viewport is None: self.last_error = 'viewport_missing'; return
-        viewport.resolution = (960,640)
+        # Avoid redundant native viewport/texture reconfiguration on every
+        # capture. Dimensions and the original frame clock remain unchanged.
+        with self.phase_probe.phase('viewport_resolution'):
+            if tuple(getattr(viewport,'resolution',())) != (960,640):viewport.resolution = (960,640)
         self.sequence += 1
         metadata = {'frame_id':self.sequence,'engine_session_id':snapshot.engine_session_id,
                     'stage_epoch':snapshot.stage_epoch,'applied_revision':snapshot.applied_revision,
                     'captured_at_ms':time.time()*1000,'camera_sequence':self.camera_sequence}
-        metadata['robot_anchors']=self.fleet_runtime.frame_anchors(viewport)
+        with self.phase_probe.phase('frame_anchors'):metadata['robot_anchors']=self.fleet_runtime.frame_anchors(viewport)
         metadata['lidar_overlay']=self.fleet_runtime.frame_scan
         fleet_render_tokens=self.fleet_runtime.render_tokens()
         self.started_capture = self.last_capture = now
+        with self.lock:
+            self.capture_phases[metadata['frame_id']]={'scheduled_s':now}
+            while len(self.capture_phases)>32:self.capture_phases.pop(next(iter(self.capture_phases)))
         # Mark pending before schedule_capture; callback may be synchronous.
         self.capture = True
         self.capture_ticket += 1
@@ -182,7 +238,8 @@ class LiveViewportPublisher:
                     if self.capture_wait and not self.capture_wait.done():self.capture_wait.cancel()
                     self.capture_wait=None
         try:
-            handle=capture_viewport_to_buffer(viewport,on_capture,is_hdr=False)
+            with self.phase_probe.phase('capture_schedule'):
+                handle=capture_viewport_to_buffer(viewport,on_capture,is_hdr=False)
             # Keep the public capture handle alive and observe completion.
             # A synchronous callback may already have cleared this ticket.
             if self.capture is not None and ticket==self.capture_ticket:
@@ -249,7 +306,9 @@ class LiveViewportPublisher:
         while not self.stop_event.is_set():
             try:value=self.fleet_diag_queue.get(timeout=.1)
             except Empty:continue
-            try:print('TWINPULSE_FLEET_IO '+json.dumps(value,separators=(',',':')),flush=True)
+            if value is _FLEET_DIAGNOSTIC_STOP or self.stop_event.is_set():break
+            prefix='TWINPULSE_VIEWPORT_IO' if value.get('diagnostic_kind')=='viewport' else 'TWINPULSE_FLEET_IO'
+            try:print(prefix+' '+json.dumps(value,separators=(',',':')),flush=True)
             except Exception:self.fleet_diag_write_errors+=1
 
     def _fleet_diagnostic(self,state,started,report=None,*,produced_at=None,attempt_at=None,production_error=None,error=None):
@@ -295,12 +354,31 @@ class LiveViewportPublisher:
             return
 
     def _io(self):
+        try:self._io_loop()
+        finally:
+            close=getattr(self.bridge,'close_viewport_channel',None)
+            try:
+                if close:close()
+            except Exception as error:self.viewport_cleanup_failure=type(error).__name__
+            check=getattr(self.bridge,'viewport_cleanup_error',None)
+            try:
+                if check:self.viewport_cleanup_failure=self.viewport_cleanup_failure or check()
+            except Exception as error:self.viewport_cleanup_failure=self.viewport_cleanup_failure or type(error).__name__
+
+    def _io_loop(self):
         from PIL import Image
         while not self.stop_event.wait(.08):
             if not self.bridge.connected: continue
+            began=time.monotonic();jpeg_s=0.;http_s=0.;meta=None;phase={};http_completed=False
+            iteration_error=None;transport_detail=None;post_attempted=False
             with self.lock:
                 raw = self.raw; self.raw = None
                 result = self.camera_result
+                if raw:phase=self.capture_phases.pop(raw[0].get('frame_id'),{})
+                self.viewport_active=dict(entered_monotonic_s=began,stage='dequeued',
+                    frame_id=None if not raw else raw[0].get('frame_id'),
+                    captured_at_ms=None if not raw else raw[0].get('captured_at_ms'))
+            dequeued=time.monotonic()
             try:
                 # snapshot() touches USD; use only the shared identity on this thread.
                 with self.bridge._lock:
@@ -312,15 +390,24 @@ class LiveViewportPublisher:
                         self.dropped += 1;continue
                     if time.time()*1000-meta['captured_at_ms']>900 or meta['stage_epoch']!=epoch:
                         self.dropped += 1; continue
+                    jpeg_began=time.monotonic()
                     image = Image.frombytes('RGBA',(width,height),data).convert('RGB')
                     output = BytesIO(); image.save(output,format='JPEG',quality=75)
                     encoded = output.getvalue()
                     if len(encoded)>180000: raise ValueError('frame byte budget')
                     frame = {k:v for k,v in meta.items() if k not in {'engine_session_id','stage_epoch'}}
                     frame.update(width=width,height=height,jpeg_base64=base64.b64encode(encoded).decode('ascii'))
-                response = self.bridge._post('/v1/engine/viewport',{
-                    'engine_session_id':self.bridge.adapter.engine_session_id,'stage_epoch':epoch,
-                    'frame':frame,'camera_result':result})
+                    jpeg_s=time.monotonic()-jpeg_began
+                http_began=time.monotonic()
+                with self.lock:self.viewport_active.update(stage='http',http_entered_monotonic_s=http_began)
+                try:
+                    post_attempted=True
+                    response = self.bridge._post('/v1/engine/viewport',{
+                        'engine_session_id':self.bridge.adapter.engine_session_id,'stage_epoch':epoch,
+                        'frame':frame,'camera_result':result})
+                    http_completed=True
+                finally:
+                    http_s=time.monotonic()-http_began
                 if frame: self.sent += 1
                 with self.lock:
                     if self.camera_result == result: self.camera_result = None
@@ -328,5 +415,38 @@ class LiveViewportPublisher:
                     if command and (not result or command['request_id']!=result['request_id']): self.camera = command
                 self.transport_error = None
             except Exception as exc:
-                self.transport_error = 'viewport_transport_'+type(exc).__name__[:60]
+                iteration_error='viewport_transport_'+type(exc).__name__[:60]
+                self.transport_error=iteration_error
+                try:
+                    detail=self.bridge.viewport_transport_error() if post_attempted else None
+                    transport_detail=detail if isinstance(detail,dict) else None
+                except Exception:pass
                 # Display I/O has no access to heartbeat success or lease renewal.
+            finally:
+                ended=time.monotonic()
+                callback=phase.get('callback_s');scheduled=phase.get('scheduled_s')
+                age=None if meta is None else time.time()*1000-meta['captured_at_ms']
+                # Keep terminal/latest/worst even after the bounded stdout
+                # diagnostic budget is spent. Never refresh a frame clock.
+                observation=dict(frame_id=None if meta is None else meta.get('frame_id'),
+                    captured_at_ms=None if meta is None else meta.get('captured_at_ms'),
+                    at_ms=time.time()*1000,total_ms=(ended-began)*1000,jpeg_ms=jpeg_s*1000,
+                    http_ms=http_s*1000,http_completed=http_completed,
+                    callback_ms=None if callback is None or scheduled is None else (callback-scheduled)*1000,
+                    raw_wait_ms=None if callback is None else (dequeued-callback)*1000,
+                    frame_age_ms=age,error=iteration_error,transport_detail=transport_detail)
+                with self.lock:
+                    self.viewport_active=None
+                    self.viewport_latest=observation
+                    if self.viewport_worst is None or observation['total_ms']>self.viewport_worst['total_ms']:self.viewport_worst=observation
+                if (ended-began>.15 or age is not None and age>350) and ended-self.viewport_diag_at>1 and self.viewport_diag_count<32:
+                    self.viewport_diag_at=ended;self.viewport_diag_count+=1
+                    try:
+                        self.fleet_diag_queue.put_nowait(dict(diagnostic_kind='viewport',frame_id=None if meta is None else meta.get('frame_id'),
+                            captured_at_ms=None if meta is None else meta.get('captured_at_ms'),at_ms=time.time()*1000,
+                            total_ms=(ended-began)*1000,jpeg_ms=jpeg_s*1000,http_ms=http_s*1000,
+                            callback_ms=None if callback is None or scheduled is None else (callback-scheduled)*1000,
+                            raw_wait_ms=None if callback is None else (dequeued-callback)*1000,
+                            frame_age_ms=age,error=iteration_error,transport_detail=transport_detail))
+                    except Full:self.fleet_diag_dropped+=1
+                    except Exception:pass

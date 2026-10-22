@@ -8,7 +8,10 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'twinpulse_core/src'))
 from stop_policy import assess_stop, MM_PER_TICK, POLICY_SHA256
+from stop_policy import assess_field_stop,field_stop_policy,POLICY
+from twinpulse_core.robot_timing_profile import values_of
 
 
 def trace(fn=lambda t:0):
@@ -77,6 +80,36 @@ class PolicyTests(unittest.TestCase):
         for ticks,status in ((5,'PASS'),(6,'FAIL')):
             rows=trace(lambda t:ticks if t>=1.7 else 0)
             self.assertEqual(self.assess(rows)['status'],status)
+
+    def test_separate_field_coverage_uses_pinned_wheel_setting_without_rewriting_strict(self):
+        values=values_of();values['wheel_interval_ms']=225
+        rows=trace();del rows[8:10]
+        self.assertEqual(self.assess(rows)['reason'],'SENSOR_COVERAGE_INVALID')
+        result=assess_field_stop(rows,1.,.6,values)
+        self.assertEqual(result['status'],'PASS')
+        self.assertEqual(result['limits']['max_sample_gap_s'],.225)
+        self.assertEqual(result['policy_id'],'supervised-field-stop-coverage-1.0')
+        self.assertNotEqual(result['policy_sha256'],POLICY_SHA256)
+        self.assertEqual(POLICY['max_sample_gap_s'],.1)
+        self.assertEqual(self.assess(trace())['policy_sha256'],POLICY_SHA256)
+        self.assertEqual(result['chassis_stop'],'NOT_MEASURED')
+        for key in POLICY.keys()-{'id','max_sample_gap_s','scope'}:
+            self.assertEqual(result['limits'][key],POLICY[key])
+
+    def test_field_coverage_keeps_original_negative_cases_and_selected_setting(self):
+        values=values_of();values['wheel_interval_ms']=225
+        cases=[]
+        rows=trace();del rows[6:11];cases.append(rows)
+        rows=trace();rows[8]['source_age_s']=.2;cases.append(rows)
+        rows=trace();rows[-2]['torque']=False;cases.append(rows)
+        cases.append(trace()[:14]);cases.append(trace(lambda t:300*max(0,1-abs(t-1.2)/.2)))
+        cases.append(trace(lambda t:20 if 1.55<=t<=1.65 else 0))
+        for rows in cases:
+            with self.subTest(rows=rows):self.assertNotEqual(assess_field_stop(rows,1.,.6,values)['status'],'PASS')
+        short=dict(values,wheel_interval_ms=100);rows=trace();del rows[8:10]
+        self.assertEqual(assess_field_stop(rows,1.,.6,short)['reason'],'SENSOR_COVERAGE_INVALID')
+        with self.assertRaisesRegex(ValueError,'FIELD_STOP_SAMPLE_GAP_EXCEEDS_VERIFICATION_WINDOW'):
+            field_stop_policy(dict(values,wheel_interval_ms=1000))
 
 
 if __name__=='__main__':unittest.main()

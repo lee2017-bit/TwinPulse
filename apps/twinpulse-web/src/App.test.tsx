@@ -179,7 +179,7 @@ describe('TwinPulse exit contract UI',()=>{
     const button=await screen.findByRole('button',{name:'Exit TwinPulse'});
     await waitFor(()=>expect(button).toHaveProperty('disabled',false));
     expect(button.closest('header')).toHaveProperty('className','chat-appbar');
-    expect(screen.getByText(/Browser close only closes this screen/)).toBeTruthy();
+    expect(button.getAttribute('title')).toContain('Browser close only closes this screen');
     expect(api.shutdownRuntime).not.toHaveBeenCalled();fireEvent.click(button);fireEvent.click(button);
     expect(button).toHaveProperty('disabled',true);expect(api.shutdownRuntime).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/waiting for acknowledgement/)).toBeTruthy();

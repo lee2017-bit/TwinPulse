@@ -2,28 +2,58 @@
 """Bounded append-only operation evidence; never performs device operations."""
 import json
 import hashlib
+import time
+import sys
 from queue import Queue, Empty, Full
 from threading import Thread, Lock, Condition
 from uuid import uuid4
+
+
+def _event_json_parts(events,encoder):
+    """Canonical list bytes, encoded one admitted event at a time.
+
+    No event identity cache: every submitted value is encoded and hashed anew.
+    Avoid both a multi-MB C call and hundreds of thousands of tiny Python
+    iterencode fragments for a whole history. Yield between event batches;
+    this is background CPU scheduling, not a sensor/control lease extension.
+    """
+    yield '['
+    for index,event in enumerate(events):
+        if index:yield encoder.item_separator
+        yield encoder.encode(event)
+        if (index+1)%32==0:time.sleep(0)
+    yield ']'
 
 
 def materialize_operation(record):
     # Event objects are immutable after admission. Only the list/manifest are
     # captured under the fleet lock; expensive serialization happens outside it.
     digest=hashlib.sha256()
-    # CPython's single C encoder holds the GIL for the entire event history.
-    # Background threads alone do not isolate that pause from control I/O.
-    # iterencode preserves the original canonical bytes, with bounded chunks
-    # and regular interpreter scheduling instead of one multi-MB C call.
-    for part in json.JSONEncoder(sort_keys=True,ensure_ascii=False,allow_nan=False).iterencode(record['events']):
+    encoder=json.JSONEncoder(sort_keys=True,ensure_ascii=False,allow_nan=False)
+    parts=_event_json_parts(record['events'],encoder) if isinstance(record['events'],list) else encoder.iterencode(record['events'])
+    for part in parts:
         digest.update(part.encode('utf-8'))
     record['manifest'].update(event_count=len(record['events']),events_sha256=digest.hexdigest())
     return record
 
 
 def operation_json_bytes(record,*,separators=None):
-    return b''.join(part.encode('utf-8') for part in json.JSONEncoder(
-        ensure_ascii=False,allow_nan=False,separators=separators).iterencode(record))
+    encoder=json.JSONEncoder(ensure_ascii=False,allow_nan=False,separators=separators)
+    if not isinstance(record,dict) or not isinstance(record.get('events'),list) or any(type(k) is not str for k in record):
+        return b''.join(part.encode('utf-8') for part in encoder.iterencode(record))
+    def parts():
+        yield '{'
+        for index,(key,value) in enumerate(record.items()):
+            if index:yield encoder.item_separator
+            if key=='events':
+                yield encoder.encode(key);yield encoder.key_separator
+                yield from _event_json_parts(value,encoder)
+            else:
+                # Preserve the exact top-level insertion order and encoder
+                # key/value spelling without manually reimplementing JSON.
+                yield encoder.encode({key:value})[1:-1]
+        yield '}'
+    return b''.join(part.encode('utf-8') for part in parts())
 
 
 class FleetRecorder:
@@ -89,18 +119,35 @@ class FleetSnapshotWriter:
             self.pending[path]=(content,size);self.condition.notify()
 
     def _write(self):
+        observations=0
         try:
             while True:
                 with self.condition:
                     self.condition.wait_for(lambda:self.pending or self.closed)
                     if not self.pending:break
                     path=next(iter(self.pending));content,_=self.pending.pop(path)
+                began=time.perf_counter();at_ms=time.time()*1000
+                operation_id=content.get('operation_id') if isinstance(content,dict) else None
+                events=len(content.get('events',[])) if isinstance(content,dict) else None
                 if isinstance(content,dict):
-                    content=operation_json_bytes(materialize_operation(content))
+                    materialized=materialize_operation(content)
+                    after_materialize=time.perf_counter()
+                    content=operation_json_bytes(materialized)
+                else:after_materialize=time.perf_counter()
+                after_encode=time.perf_counter()
                 if len(content)>33*1024*1024:raise OSError('SNAPSHOT_RECORD_CAPACITY')
                 path.parent.mkdir(parents=True,exist_ok=True)
                 temp=path.with_suffix('.'+uuid4().hex+'.tmp')
                 temp.write_bytes(content);temp.replace(path)
+                end=time.perf_counter()
+                if end-began>.15 and observations<32:
+                    observations+=1
+                    try:
+                        print('TWINPULSE_SNAPSHOT_IO '+json.dumps(dict(operation_id=operation_id,events=events,
+                            bytes=len(content),at_ms=at_ms,elapsed_ms=(end-began)*1000,
+                            materialize_ms=(after_materialize-began)*1000,encode_ms=(after_encode-after_materialize)*1000,
+                            file_ms=(end-after_encode)*1000),separators=(',',':')),file=sys.stderr,flush=True)
+                    except Exception:pass
         except Exception:
             with self.condition:self.error='SNAPSHOT_WRITE_FAILED'
 

@@ -123,7 +123,10 @@ async function start() {
     await app.whenReady();
     window = new BrowserWindow({width:1440,height:960,minWidth:800,minHeight:600,title:'TwinPulse',
       backgroundColor:'#f6f8fb',show:false,webPreferences:{preload:path.join(directory,'preload.cjs'),
-        contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false}});
+        contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false,
+        // Keep observation/session clocks active while occluded. Focus loss
+        // still releases held input; this setting grants no motion authority.
+        backgroundThrottling:false}});
     window.removeMenu();
     window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
     window.webContents.on('will-navigate', (event, target) => {

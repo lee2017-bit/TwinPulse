@@ -32,7 +32,13 @@ class RosGuard {
       throw std::runtime_error("Physical command guard rejects use_sim_time");
     if (!guard_.stop()) throw std::runtime_error("Startup zero write failed");
     status_ = node_->create_publisher<std_msgs::msg::String>("motion_guard/status", 1);
-    timing_ = node_->create_publisher<std_msgs::msg::String>("motion_guard/timing", rclcpp::QoS(1).reliable().transient_local());
+    // The base enables intra-process transport, which Humble cannot combine
+    // with transient-local durability. Keep the latched configuration for a
+    // later ROS observer, disabling intra-process only for this publisher.
+    rclcpp::PublisherOptions timing_options;
+    timing_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    timing_ = node_->create_publisher<std_msgs::msg::String>(
+        "motion_guard/timing", rclcpp::QoS(1).reliable().transient_local(), timing_options);
     // Immutable startup configuration, latched once. Do not add a new 50Hz
     // diagnostic stream to the already loaded control executor.
     std_msgs::msg::String timing;

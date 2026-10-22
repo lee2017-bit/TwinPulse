@@ -8,11 +8,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
+import {waitForScanDisplay} from './scan_display_observation.mjs';
 
 export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sendChat,shot,result,demoRecorder}){
  await select('Alpha');
  const command=async text=>{await drawer('Alpha').getByRole('textbox',{name:'Robot command',exact:true}).fill(text);
-  await drawer('Alpha').getByRole('button',{name:'Send command',exact:true}).click();};
+  const [request]=await Promise.all([page.waitForRequest(r=>{
+   if(new URL(r.url()).pathname!=='/v1/product/robot-fleet'||r.method()!=='POST')return false;
+   try{const body=r.postDataJSON();return body.action==='command'&&body.robot_id===robot('Alpha')?.robot_id&&body.payload?.text===text;}catch{return false;}
+  },{timeout:5000}),drawer('Alpha').getByRole('button',{name:'Send command',exact:true}).click()]);
+  return request.postDataJSON().request_id;};
  await step('Frame-bound selected LiDAR points and optional sparse rays, no localization claim',async()=>{
   const picker=page.getByRole('combobox',{name:'LiDAR visualization',exact:true});
   await picker.selectOption('points');const svg=page.locator('.robot-lidar-overlay');
@@ -20,26 +25,38 @@ export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sen
   const points=await svg.locator('circle').count();if(!points||points>90)throw Error('Unbounded or missing real scan points');
   const actual=robot('Alpha').scan;
   if(actual.source!=='isaac_usd_surface_rays'||Math.abs(actual.height_m-.182)>1e-6||actual.point_frame!=='sensor_local'||actual.sensor_xy_yaw_world?.length!==3)throw Error('Model sensor height / original sensor pose / surface source not applied');
-  await expect(page.getByText('sensor 18.2 cm · surface hits',{exact:false})).toBeVisible();
+  const details=page.locator('.lidar-display-help');
+  if(await details.getAttribute('open')===null)await details.locator('summary').click();
+  await expect(details.getByText('sensor 18.2 cm · surface hits',{exact:false})).toBeVisible();
   if(await svg.getAttribute('data-robot-id')!==robot('Alpha').robot_id)throw Error('Wrong selected scan');
-  await picker.selectOption('rays');await expect(svg.locator('line').first()).toBeVisible();
-  const rays=await svg.locator('line').count();if(rays>12)throw Error('Too many ray lines');
-  const stamp=Number(await svg.getAttribute('data-scan-captured-at'));
-  if(Date.now()-stamp>700)throw Error('Stale scan displayed as current');
-  await expect(page.getByText('SIM geometry · Isaac pose · no correction applied',{exact:false})).toBeVisible();
+  await picker.selectOption('rays');
+  // Replace, not append to, the old line-visibility5s wait. Only explicit
+  // absence may be reobserved; a visible invalid sample terminates the run.
+  const start=Date.now(),selected=robot('Alpha');
+  const scanWindow={started_at_ms:start,deadline_ms:start+5000,timeout_ms:5000,
+   expected:{robot_id:selected.robot_id,connection_epoch:selected.connection_epoch,motion_epoch:selected.motion_epoch}};
+  result.scan_display_window=scanWindow;result.scan_display_observations=[];
+  const scanDisplay=await waitForScanDisplay(page,scanWindow,{record:sample=>result.scan_display_observations.push(sample)});
+  const rays=scanDisplay.rays_count;
+  await expect(details.getByText('Isaac pose · no correction applied',{exact:false})).toBeVisible();
   await shot('lidar-sparse-rays');await picker.selectOption('off');await expect(svg).toHaveCount(0);
-  await picker.selectOption('points');return {points,rays,sensor:actual,source:'actual current captured SIM surface scan',localization:'NOT_APPLIED'};
+  await picker.selectOption('points');await details.locator('summary').click();
+  return {points,rays,sensor:actual,scan_display:scanDisplay,scan_display_window:scanWindow,source:'actual current captured SIM surface scan',localization:'NOT_APPLIED'};
  });
  await step('Missing scene destination fails explicitly; command receipt is not arrival',async()=>{
   await command('Go to the nearest wardrobe');await poll(()=>robot('Alpha')?.command?.target_kind==='wardrobe');
   await poll(()=>robot('Alpha')?.command?.state==='FAILED');const row=structuredClone(robot('Alpha'));
   if(row.reason!=='NAVIGATION_TARGET_MISSING')throw Error('Missing destination not explicitly rejected: '+row.reason);
   const receipt=drawer('Alpha').getByLabel('Robot command progress',{exact:true});
-  await expect(receipt).toContainText('FAILED');await expect(receipt).toContainText(row.command.request_id);
+  await expect(receipt).toContainText('FAILED');await expect(receipt).toHaveAttribute('title','Request '+row.command.request_id);
   await shot('destination-missing');return {command:row.command,pose:row.pose};
  });
  await step('Destination Stop cancels planning or travel and never replays old route',async()=>{
-  await command('Go to the nearest bed');await poll(()=>robot('Alpha')?.command?.target_kind==='bed'&&['PLANNING','RUNNING'].includes(robot('Alpha')?.command?.state));
+  const requestId=await command('Go to the nearest bed');await poll(()=>{
+   const current=robot('Alpha')?.command;if(current?.request_id!==requestId)return false;
+   if(['FAILED','CANCELLED','ARRIVED'].includes(current.state))throw Error('Destination cancellation precondition ended before Stop: '+JSON.stringify(current));
+   return current.target_kind==='bed'&&['PLANNING','RUNNING'].includes(current.state);
+  });
   await sleep(600);await drawer('Alpha').getByRole('button',{name:'Stop',exact:true}).click();
   await poll(()=>robot('Alpha')?.control_state==='PAUSED'&&robot('Alpha')?.motion_epoch===robot('Alpha')?.applied_motion_epoch);
   const stopped=structuredClone(robot('Alpha'));await sleep(800);const after=structuredClone(robot('Alpha'));
@@ -55,7 +72,7 @@ export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sen
   const after=structuredClone(robot('Alpha')),c=after.command;
   if(c.state!=='ARRIVED'||after.reason!=='NAVIGATION_ARRIVED'||!c.target_id||!c.goal_xy||Math.hypot(after.pose.position_m[0]-c.goal_xy[0],after.pose.position_m[1]-c.goal_xy[1])>.016)throw Error('No actual measured destination arrival: '+JSON.stringify(c));
   if(c.request_id!==id||after.operation_id!==before.operation_id||after.connection_epoch!==before.connection_epoch)throw Error('Destination identity changed');
-  const receipt=drawer('Alpha').getByLabel('Robot command progress',{exact:true});await expect(receipt).toContainText('ARRIVED');await expect(receipt).toContainText(c.request_id);
+  const receipt=drawer('Alpha').getByLabel('Robot command progress',{exact:true});await expect(receipt).toContainText('ARRIVED');await expect(receipt).toHaveAttribute('title','Request '+c.request_id);
   const view=await currentControlView(page,'Alpha');checkControlView(view);await shot('destination-'+kind+'-arrived');
   return {before,after,motion,source,criteria:'Current scene target and exterior standoff; original collision guard and low speed unchanged. Not physical navigation.'};
  });
@@ -71,7 +88,7 @@ export async function sceneRobotUx({page,step,select,robot,drawer,poll,sleep,sen
  await step('Actual saved native scan imported via UI and shown by the shared renderer without world alignment',async()=>{
   const inputPath=fileURLToPath(new URL('../artifacts/photo-scan-review-20260927/native-scan-bundle.json',import.meta.url));
   const bytes=await fs.readFile(inputPath),original=JSON.parse(bytes);
-  const setup=drawer('Alpha').getByText('Setup, sensor details and logs',{exact:true});
+  const setup=drawer('Alpha').locator('.robot-fleet-diagnostics>summary');
   if(await setup.locator('..').getAttribute('open')===null)await setup.click();
   await expect(setup.locator('..')).toHaveAttribute('open','');
   await drawer('Alpha').getByRole('button',{name:'Review LiDAR scans',exact:true}).click();

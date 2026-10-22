@@ -9,6 +9,7 @@ from hashlib import sha256
 from heapq import nlargest
 import json
 import os
+import stat
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -343,13 +344,27 @@ class ProjectCatalog:
             def candidates():
                 nonlocal truncated
                 count=0
-                for entry in folder.iterdir():
-                    if (entry.is_dir() and not entry.is_symlink() and
-                            PROJECT_ID_PATTERN.fullmatch(entry.name) and entry.name!='default'
-                            and entry.resolve()==folder/entry.name):
-                        count+=1
-                        if count>64:truncated=True
-                        try:yield (entry.stat().st_mtime_ns,entry.name,entry)
+                # DirEntry caches directory metadata on Windows. Ranking an
+                # unselected chat must not repeatedly resolve/open its path.
+                # This is presentation only: selected rows below and opening
+                # a project still use the original fresh containment checks.
+                with os.scandir(folder) as listing:
+                    for item in listing:
+                        try:
+                            if (not PROJECT_ID_PATTERN.fullmatch(item.name) or item.name=='default'
+                                    or item.is_symlink() or not item.is_dir(follow_symlinks=False)):
+                                continue
+                            metadata=item.stat(follow_symlinks=False)
+                            entry=folder/item.name
+                            # Preserve nonredirecting reparse directories that
+                            # the previous resolve check allowed; reject links
+                            # and junction redirects before they affect paging.
+                            if (getattr(metadata,'st_file_attributes',0)&stat.FILE_ATTRIBUTE_REPARSE_POINT
+                                    and entry.resolve()!=entry):
+                                continue
+                            count+=1
+                            if count>64:truncated=True
+                            yield (metadata.st_mtime_ns,item.name,entry)
                         except OSError:continue
             entries=nlargest(64,candidates(),key=lambda row:(row[0],row[1]))
             for _,_,entry in entries:

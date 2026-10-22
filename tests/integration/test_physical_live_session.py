@@ -58,6 +58,104 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         self.assertEqual(self.session.snapshot()['connection_state'],'DEGRADED')
         self.assertNotIn('challenge',self.session.events[0]['data'])
 
+    def motion(self,**changes):
+        return dict(schema='robot-wheel-observation-1.0',state='OBSERVING',
+            operation_id=self.context['operation_id'],robot_id=self.context['robot_id'],
+            source_twin_context_id=None,motion_epoch=self.context['motion_epoch'],request_id='first-request',
+            started_s=8.,result='NOT_ESTABLISHED',body_progress='UNKNOWN',**changes)
+
+    def report_motion(self,observation):
+        self.session.receive(self.event(boot_id='b'*32,release_id='c'*64,worker_sha256='a'*64,
+            motion_observation=observation,last_control_fault={'reason':'ORIGINAL_FAILED_CHECK'}))
+
+    def test_terminal_observation_without_final_heartbeat_projects_only_result_and_preserves_raw(self):
+        for kind in ('command','control_pause','cleanup'):
+            with self.subTest(kind=kind):
+                observed=self.motion();self.report_motion(observed)
+                original=deepcopy(self.session.last);at=self.session.at;watch=self.session.watch_ack_at
+                ended={**observed,'state':'ENDED','ended_s':10.,'reason':'SESSION_CLOSED',
+                    'result':'INCONCLUSIVE_BODY_MOTION','centre_m':.012}
+                payload=({'action':'motion_observation','status':'ENDED','motion_observation':ended} if kind=='command' else
+                    {'pause_id':'pause-'+kind,'reason':'OPERATOR_STOP','motion_observation':ended} if kind=='control_pause' else
+                    {'subsystem':'session','confirmed':True,'control':{'motion_observation':ended}})
+                self.session.receive(self.event(kind,**payload));ended['centre_m']=999
+                self.session.closed=True;value=self.session.snapshot();self.session.closed=False
+                self.assertEqual(value['motion_observation']['state'],'ENDED')
+                self.assertEqual(value['motion_observation']['centre_m'],.012)
+                self.assertEqual(value['last_control_fault'],{'reason':'ORIGINAL_FAILED_CHECK'})
+                self.assertEqual(self.session.last,original);self.assertEqual(self.session.at,at)
+                self.assertEqual(self.session.watch_ack_at,watch);self.assertFalse(value['live_heartbeat'])
+                value['motion_observation']['centre_m']=888
+                self.assertEqual(self.session.snapshot()['motion_observation']['centre_m'],.012)
+
+    def test_old_heartbeat_cannot_reopen_ended_interval_and_new_gesture_is_not_overwritten(self):
+        observed=self.motion();self.report_motion(observed)
+        ended={**observed,'state':'ENDED','ended_s':10.,'reason':'OPERATOR_STOP','result':'INCONCLUSIVE_BODY_MOTION'}
+        self.session.motion_epoch='new-pc-stop-epoch'
+        self.session.receive(self.event('control_pause',pause_id='stop',reason='OPERATOR_STOP',motion_observation=ended))
+        self.report_motion(observed)
+        self.assertEqual(self.session.snapshot()['motion_observation']['state'],'ENDED')
+        newer={**observed,'request_id':'second-request','started_s':11.}
+        self.report_motion(newer)
+        self.assertEqual(self.session.snapshot()['motion_observation']['request_id'],'second-request')
+        self.assertEqual(self.session.snapshot()['motion_observation']['state'],'OBSERVING')
+        self.session.receive(self.event('cleanup',subsystem='devices',control={'motion_observation':ended}))
+        self.assertEqual(self.session.snapshot()['motion_observation']['request_id'],'second-request')
+
+    def test_malformed_optional_observation_never_blocks_cleanup_or_changes_authority(self):
+        observed=self.motion();self.report_motion(observed)
+        for invalid in ({'operation_id':'other'},{'source_twin_context_id':'wrong-twin'},
+                        {'ended_s':float('nan')},{'started_s':100.},{'request_id':None},
+                        {'state':[]},{'state':{}},{'started_s':10**1000},{'ended_s':10**1000}):
+            ended={**observed,'state':'ENDED','ended_s':10.,'result':'INCONCLUSIVE_BODY_MOTION',**invalid}
+            self.session.receive(self.event('cleanup',subsystem='session',confirmed=True,control={'motion_observation':ended}))
+            self.assertTrue(self.session.cleanup_confirmed)
+            self.assertEqual(self.session.snapshot()['motion_observation']['state'],'OBSERVING')
+            self.assertFalse(self.session.snapshot()['live_heartbeat'])
+            self.assertIsNotNone(self.session.snapshot().get('motion_observation_projection_error'))
+        for subsystem in ([],{}):
+            self.session.receive(self.event('cleanup',subsystem=subsystem,control={'motion_observation':[]}))
+        for state in ([],{}):
+            self.report_motion({**observed,'state':state})
+            self.assertNotIn('motion_observation',self.session.snapshot())
+
+    def test_slow_display_copy_cannot_hold_stop_admission_lock(self):
+        self.heartbeat();self.session.last['large_display']={'rows':[[1,2]]}
+        entered=Event();release=Event();stopped=Event();original=deepcopy;errors=[]
+        def copying(value,*args,**kwargs):
+            if isinstance(value,dict) and 'large_display' in value:
+                entered.set();release.wait(2)
+            return original(value,*args,**kwargs)
+        def stop():
+            try:self.session.command('stop',{},motion_epoch=uuid4().hex,request_id=uuid4().hex)
+            except Exception as error:errors.append(error)
+            finally:stopped.set()
+        with patch('twinpulse_app.physical_live_session.deepcopy',side_effect=copying):
+            reader=threading.Thread(target=self.session.snapshot,daemon=True);reader.start()
+            self.assertTrue(entered.wait(1));writer=threading.Thread(target=stop,daemon=True);writer.start()
+            try:completed=stopped.wait(.2)
+            finally:release.set();reader.join(1);writer.join(1)
+        self.assertTrue(completed,'Display copy held the Stop/input admission lock')
+        self.assertEqual(errors,[]);self.assertEqual(self.session.writes.get_nowait()['action'],'stop')
+
+    def test_incoming_report_and_public_snapshot_do_not_alias(self):
+        self.heartbeat();row=self.event(scan_state={'rows':[[1,2]]},boot_id='b'*32,release_id='c'*64,worker_sha256='a'*64)
+        self.session.receive(row);row['data']['scan_state']['rows'][0][0]=999
+        result=self.session.snapshot();result['scan_state']['rows'][0][0]=888
+        self.assertEqual(self.session.snapshot()['scan_state']['rows'],[[1,2]])
+
+    def test_large_recording_manifest_copy_cannot_hold_stop_admission_lock(self):
+        self.heartbeat();entered=Event();release=Event();stopped=Event()
+        def report():entered.set();release.wait(2);return {'segments':[]}
+        self.session.evidence=SimpleNamespace(snapshot=report,error=None)
+        reader=threading.Thread(target=self.session.snapshot,daemon=True);reader.start()
+        self.assertTrue(entered.wait(1))
+        writer=threading.Thread(target=lambda:(self.session.command('stop',{},motion_epoch=uuid4().hex,request_id=uuid4().hex),stopped.set()),daemon=True)
+        writer.start()
+        try:completed=stopped.wait(.2)
+        finally:release.set();reader.join(1);writer.join(1)
+        self.assertTrue(completed,'Recording manifest copy held Stop/input admission lock')
+
     def test_closed_session_never_reports_streaming_scan_or_current_diagnostic(self):
         self.heartbeat();self.session.last.update(lidar_state='STREAMING',
             telemetry_diagnostic=dict(reason='CURRENT',source_age_s=.01))
@@ -224,6 +322,54 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         self.assertEqual(self.session.writes.qsize(),1)
         self.assertEqual(self.session.writes.get_nowait()['action'],'field_setup')
         self.assertFalse(self.session.authority_requested)
+
+    def test_zero_motion_collection_pause_does_not_cancel_its_own_request(self):
+        for case in ('stationary','soak'):
+            with self.subTest(case=case):
+                self.heartbeat();self.session.used_input_challenges.clear()
+                epoch=self.context['motion_epoch'];self.session.motion_epoch=epoch
+                request=uuid4().hex
+                self.session.command('field_test',dict(case=case,confirmed=True),motion_epoch=epoch,request_id=request)
+                self.assertFalse(self.session.authority_requested)
+                self.session.receive(self.event('control_pause',pause_id=uuid4().hex,
+                    reason='FIELD_ZERO_MOTION_COLLECTION',motion_generation=2))
+                packet=self.session.writes.get_nowait()
+                self.assertEqual(packet['action'],'field_test');self.assertEqual(packet['request_id'],request)
+                self.assertTrue(self.session.writes.empty());self.assertEqual(self.session.motion_epoch,epoch)
+
+    def test_motion_field_tests_and_prior_gesture_keep_the_pause_stop_fence(self):
+        for case,prior in (('bootstrap_stop',False),('forward',False),('full_turn',False),('stationary',True),('soak',True)):
+            with self.subTest(case=case,prior_gesture=prior):
+                self.heartbeat();self.session.used_input_challenges.clear()
+                epoch=self.context['motion_epoch'];self.session.motion_epoch=epoch
+                self.session.authority_requested=prior
+                self.session.command('field_test',dict(case=case,confirmed=True),motion_epoch=epoch,request_id=uuid4().hex)
+                self.assertTrue(self.session.authority_requested)
+                self.session.receive(self.event('control_pause',pause_id=uuid4().hex,
+                    reason='FIELD_ZERO_MOTION_COLLECTION' if prior else 'INPUT_DEADLINE_EXPIRED',motion_generation=3))
+                self.assertNotEqual(self.session.motion_epoch,epoch)
+                self.assertEqual(self.session.writes.get_nowait()['action'],'stop')
+                self.assertTrue(self.session.writes.empty());self.assertFalse(self.session.authority_requested)
+
+    def test_zero_motion_collection_never_clears_pending_drive_stop_fence(self):
+        self.heartbeat();epoch=self.context['motion_epoch'];self.session.motion_epoch=epoch
+        self.session.pending_drive=dict(request_id=uuid4().hex)
+        self.session.command('field_test',dict(case='stationary',confirmed=True),motion_epoch=epoch,request_id=uuid4().hex)
+        self.assertIsNotNone(self.session.pending_drive)
+        self.session.receive(self.event('control_pause',pause_id=uuid4().hex,
+            reason='FIELD_ZERO_MOTION_COLLECTION',motion_generation=2))
+        self.assertIsNone(self.session.pending_drive)
+        self.assertEqual(self.session.writes.get_nowait()['action'],'stop')
+
+    def test_explicit_stop_still_cancels_zero_motion_collection_without_loop(self):
+        self.heartbeat();epoch=self.context['motion_epoch']
+        self.session.command('field_test',dict(case='stationary',confirmed=True),motion_epoch=epoch,request_id=uuid4().hex)
+        stop=uuid4().hex
+        self.session.command('stop',{},motion_epoch=uuid4().hex,request_id=stop)
+        packet=self.session.writes.get_nowait()
+        self.assertEqual(packet['action'],'stop');self.assertEqual(packet['request_id'],stop)
+        self.session.receive(self.event('control_pause',pause_id=uuid4().hex,reason='OPERATOR_STOP',motion_generation=3))
+        self.assertTrue(self.session.writes.empty());self.assertFalse(self.session.authority_requested)
 
     def test_continuous_ten_hz_writer_keeps_matching_watch_ack_and_ack_loss_degrades(self):
         """Real session threads, injected local pipes only; no SSH or robot."""

@@ -33,7 +33,13 @@ class RobotJournal:
         if reason: raise ValueError(reason)
 
     def append(self, event):
-        line = json.dumps(event,allow_nan=False)+'\n'; size = len(line.encode('utf-8'))
+        self.append_prepared(json.dumps(event,allow_nan=False)+'\n',event.get('kind'))
+
+    def append_prepared(self,line,kind):
+        """Only owned fixed-code JSON; serialization happens before order locks."""
+        if not isinstance(line,str) or not line.endswith('\n') or line.count('\n')!=1:
+            raise ValueError('SESSION_JOURNAL_PREPARED_LINE')
+        size = len(line.encode('utf-8'))
         self.check()
         with self.lock:
             if self.closed: raise ValueError('SESSION_JOURNAL_CLOSED')
@@ -41,7 +47,7 @@ class RobotJournal:
                 self.error = self.error or 'SESSION_LOG_BYTE_BUDGET'; raise ValueError(self.error)
             index = self.accepted+1
             self.pending[index] = self.clock()
-            try: self.queue.put_nowait((index,line,event.get('kind')))
+            try: self.queue.put_nowait((index,line,kind))
             except queue.Full:
                 del self.pending[index]
                 self.error = self.error or 'SESSION_JOURNAL_QUEUE_FULL'; raise ValueError(self.error)

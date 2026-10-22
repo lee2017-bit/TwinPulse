@@ -21,8 +21,9 @@ do{
  }catch{$tpReady=$false}
 }while(-not $tpReady -and [DateTime]::UtcNow -lt $tpUntil)
 $tpMs=([DateTime]::UtcNow-$tpStarted).TotalMilliseconds
-$tpDebug=@(Get-NetTCPConnection -State Listen -LocalPort 19222 -ErrorAction SilentlyContinue)
-$tpApp=@(Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue)
+$tpListeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+$tpDebug=@($tpListeners | Where-Object {$_.LocalPort -ge 19222 -and $_.LocalPort -le 19231})
+$tpApp=@($tpListeners | Where-Object {$_.LocalPort -eq 8765})
 Start-Process -FilePath $tpEntry -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 2
 $tpAgain=Get-Content -LiteralPath (Join-Path $tpRuntime 'launcher.lock') -Raw | ConvertFrom-Json

@@ -18,6 +18,21 @@ from tests.integration.test_robot_readiness_app import precollection_fixture
 
 
 class WorkspaceDevicesTests(unittest.TestCase):
+    def test_shared_bind_operation_cancels_review_without_waiting(self):
+        from unittest.mock import Mock
+        devices=WorkspaceDevices();review=Mock();devices.physical_fleet=SimpleNamespace(motion_reviews=review)
+        devices.bind_operation(SimpleNamespace(product_workflow=None))
+        review.cancel_for_start.assert_called_once_with('PHYSICAL_START');review.close.assert_not_called()
+
+    def test_cleanup_attempts_every_owner_after_an_earlier_failure(self):
+        from unittest.mock import Mock
+        devices=WorkspaceDevices();services=[Mock() for _ in range(6)];original=OSError('original owner failure')
+        services[0].close.side_effect=original
+        for name,service in zip(('physical_fleet','controller','diagnostics','readiness','registry_service','owner_lease'),services):setattr(devices,name,service)
+        with self.assertRaises(ExceptionGroup) as raised:devices.close()
+        self.assertIs(raised.exception.exceptions[0],original)
+        for service in services:service.close.assert_called_once_with()
+
     def test_past_failed_missing_and_corrupt_records_do_not_lock_documents(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
