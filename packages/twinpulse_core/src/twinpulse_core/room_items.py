@@ -21,8 +21,12 @@ def room_item_kinds():
 def checked_room_item(args):
     fields = {'id', 'kind', 'label', 'catalog_version', 'position_m', 'dimensions_m',
               'yaw_deg', 'observation_time_utc'}
-    if not isinstance(args, dict) or set(args) != fields:
+    # Optional presentation colour (2026-10-26: photo-based upgrade). Display only: it never
+    # changes geometry, collision or any hash of items that do not carry it.
+    if not isinstance(args, dict) or set(args) - {'display_color'} != fields:
         raise SceneToolPlanError('ROOM_ITEM_ARGUMENTS_INVALID')
+    if 'display_color' in args and not _valid_display_color(args['display_color']):
+        raise SceneToolPlanError('ROOM_ITEM_DISPLAY_COLOR_INVALID')
     _object_id(args['id'], maximum_length=42)
     if not isinstance(args['kind'], str) or args['kind'] not in _PARTS or args['catalog_version'] != room_item_catalog_version(args['kind']):
         raise SceneToolPlanError('ROOM_ITEM_CATALOG_UNSUPPORTED')
@@ -63,6 +67,26 @@ def room_item_risk(args):
     return 'collision'
 
 
+def _valid_display_color(value):
+    return (isinstance(value, list) and len(value) == 3
+            and all(type(v) in (int, float) and 0. <= v <= 1. for v in value))
+
+
+def display_color_tag(color):
+    """Presentation-only colour carried in the optional asset_id slot: 'color:r,g,b' (0-1)."""
+    return 'color:%.3f,%.3f,%.3f' % tuple(float(v) for v in color)
+
+
+def parse_display_color_tag(asset_id):
+    if not isinstance(asset_id, str) or not asset_id.startswith('color:'):
+        return None
+    try:
+        parts = [float(v) for v in asset_id[6:].split(',')]
+    except ValueError:
+        return None
+    return tuple(parts) if len(parts) == 3 and all(0. <= v <= 1. for v in parts) else None
+
+
 def expand_room_item(args):
     checked_room_item(args)
     risk = room_item_risk(args)
@@ -78,7 +102,8 @@ def expand_room_item(args):
         x, y = x*sx, y*sy
         objects.append(SceneObject(f"{args['id']}_visual_{i}", 'equipment',
             Transform((px+x*c-y*s, py+x*s+y*c, pz-sz/2+z*sz), (0., 0., yaw)),
-            ShapeSpec('box', (dx*sx, dy*sy, dz*sz)), collision=risk == 'collision'))
+            ShapeSpec('box', (dx*sx, dy*sy, dz*sz)), collision=risk == 'collision',
+            asset_id=display_color_tag(args['display_color']) if args.get('display_color') else None))
     if risk in {'entanglement', 'unknown'}:
         # Deliberately synthetic blocking envelope, not a scan return or real volume.
         objects.append(SceneObject(f"{args['id']}_keepout", 'equipment',

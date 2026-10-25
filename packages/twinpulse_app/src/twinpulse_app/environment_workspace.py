@@ -29,6 +29,24 @@ from .library_process import run_finite
 from .runtime_paths import resource_root
 
 
+def photo_crop_color(raw,bbox):
+    """Median RGB (0-1) of the candidate's normalized [left,top,right,bottom] crop; None when unusable."""
+    try:
+        import io
+        from PIL import Image
+        if not (isinstance(bbox,(list,tuple)) and len(bbox)==4 and all(type(v) in (int,float) for v in bbox)):return None
+        with Image.open(io.BytesIO(raw)) as image:
+            image=image.convert('RGB');w,h=image.size
+            l,t,r,b=[max(0.,min(1.,float(v))) for v in bbox]
+            box=(int(l*w),int(t*h),max(int(l*w)+1,int(r*w)),max(int(t*h)+1,int(b*h)))
+            crop=image.crop(box).resize((8,8))
+            pixels=sorted(crop.getdata(),key=lambda p:sum(p))
+            mid=pixels[len(pixels)//2]
+            return [round(v/255.,3) for v in mid]
+    except Exception:
+        return None
+
+
 class EnvironmentWorkspace:
     def __init__(self,workflow,registry=None):
         workflow._application._project_store._check_location()
@@ -353,6 +371,8 @@ class EnvironmentWorkspace:
                         if body['duplicate_reviewed'] is not True:raise ValueError('PHOTO_DUPLICATE_REVIEW_REQUIRED')
                         job,candidate=self.photos.reference(body['candidate_ref'],original_environment)
                         if candidate['kind']!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
+                        color=photo_crop_color(self.photos._check_photo(job['photo'])[0],candidate.get('bbox'))
+                        if color:item['display_color']=color  # display only: the box takes the photo's dominant colour
                         base=original_environment
                         if replace_object_id:
                             # Only an added estimate (LiDAR outline, manual or earlier photo box) can be replaced; scanned meshes never.

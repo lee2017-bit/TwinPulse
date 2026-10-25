@@ -619,6 +619,29 @@ class ModelFirstRouteTests(unittest.TestCase):
         self.assertEqual(cards[-1]['kind'],'declared_route_run');self.assertIn('Operator stops · no model call',cards[-1]['question'])
 
 
+class PhotoColorTest(unittest.TestCase):
+    def test_room_item_display_color_reaches_the_visual_parts_and_the_compiler_parses_it(self):
+        from twinpulse_core.room_items import expand_room_item, room_item_catalog_version, parse_display_color_tag, SceneToolPlanError
+        item=dict(id='Added_'+'a'*20,kind='box',label='Box',catalog_version=room_item_catalog_version('box'),position_m=[1.,1.,.15],
+            dimensions_m=[.3,.3,.3],yaw_deg=0.,observation_time_utc=None)
+        plain=expand_room_item(item);self.assertTrue(all(o.asset_id is None for o in plain))
+        colored=expand_room_item(dict(item,display_color=[.52,.31,.2]))
+        visual=[o for o in colored if '_visual_' in o.id];self.assertTrue(visual)
+        self.assertEqual(parse_display_color_tag(visual[0].asset_id),(.52,.31,.2))
+        self.assertEqual([o.shape for o in colored],[o.shape for o in plain])  # geometry identical
+        with self.assertRaises(SceneToolPlanError):expand_room_item(dict(item,display_color=[2,0,0]))
+        self.assertIsNone(parse_display_color_tag('burger_v1'))
+
+    def test_photo_crop_color_is_the_crop_median(self):
+        import io
+        from PIL import Image
+        from twinpulse_app.environment_workspace import photo_crop_color
+        image=Image.new('RGB',(100,100),(10,10,10));box=Image.new('RGB',(40,40),(200,60,30));image.paste(box,(50,50))
+        buf=io.BytesIO();image.save(buf,'PNG')
+        self.assertEqual(photo_crop_color(buf.getvalue(),[.5,.5,.9,.9]),[round(200/255,3),round(60/255,3),round(30/255,3)])
+        self.assertIsNone(photo_crop_color(buf.getvalue(),None))
+
+
 class DeclaredRouteChatMessageTests(unittest.TestCase):
     def _service(self):
         import threading

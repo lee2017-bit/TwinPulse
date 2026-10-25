@@ -42,9 +42,15 @@ _FURNITURE_COLORS = {
 }
 
 
+from twinpulse_core.room_items import parse_display_color_tag
+
+
 def _display_color(item: "SceneObject") -> Gf.Vec3f:
     if item.kind == 'equipment' and item.id.endswith('_keepout'):
         return Gf.Vec3f(.95, .35, .12)
+    tagged = parse_display_color_tag(getattr(item, 'asset_id', None))
+    if tagged is not None:  # photo-based presentation colour of an added estimate (display only)
+        return Gf.Vec3f(*tagged)
     # Only the new local furniture IDs get presentation colors. Older scene
     # objects retain their exact authored geometry and material behavior.
     if item.kind == "equipment" and item.id.startswith("furn_"):
