@@ -498,7 +498,10 @@ class FieldGuard:
         return frame,partial
 
     def _progress_check(self,v,w,now):
-        if self.started is None:self.started=now
+        if self.started is None:
+            # A new drive window: keys from the previous command must not
+            # survive into this one. Final reports read progress before reset.
+            self.started=now;self.progress={}
         if self.bootstrap and (v != CAP_V or w != 0. or now-self.started > .65):
             raise ValueError('FIELD_BOOTSTRAP_OUTPUT_BOUND')
         sensor = self.link.sensor
@@ -524,7 +527,11 @@ class FieldGuard:
             if min(distances) < .001:raise ValueError('FIELD_WHEEL_STALL_OBSERVED')
             self.progress = dict(wheel_progress='MOVING', body_progress='UNQUALIFIED', wheel_delta_m=distances)
         tracking=self.tracker.snapshot() if self.tracker else None
-        if tracking and tracking['status']=='ESTIMATED':
+        if tracking and tracking['status']=='ESTIMATED' and tracking['sample_s']<self.started:
+            # Estimated before this output window began (robot still at rest):
+            # it cannot measure progress of this command. Not evidence either way.
+            self.progress.update(body_progress='AWAITING_IN_WINDOW_SAMPLE')
+        elif tracking and tracking['status']=='ESTIMATED':
             if self.body_samples and self.body_samples[0]['epoch']!=tracking['epoch']:self.body_samples=[]
             if not self.body_samples or self.body_samples[-1]['sample_s']!=tracking['sample_s']:
                 self.body_samples.append(tracking)
