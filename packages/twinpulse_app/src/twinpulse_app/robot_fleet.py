@@ -333,8 +333,21 @@ class RobotFleet:
             values.append(public)
         return dict(schema_version='robot-fleet-1.0',revision=self.revision,focused_robot_id=self.focused,
             robots=values,last_command=deepcopy(self.last_command),capabilities=dict(sim=True,physical=self.physical is not None),
-            navigation_scene=self._navigation_summary(engine),
+            navigation_scene=self._navigation_summary(engine),route=self._route_summary(),
             policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=INPUT_TTL_MS))
+
+    def _route_summary(self):
+        """Declared-route progress for the web UI (display only; the chat card owns the decision)."""
+        route=getattr(self,'route_overlay',None)
+        if not route:return None
+        scene=self.navigation_scene
+        keys=('plan_id','robot_id','kind','state','reason','reached','reached_stops','skipped_stops','completed_steps','planned_steps',
+              'current_step','recoveries','started_at','finished_at','revision','label','start','waypoints','polyline','pose','keepouts')
+        summary={k:deepcopy(route.get(k)) for k in keys}
+        summary.update(total_stops=len(route.get('waypoints') or []),trace=list(route.get('trace') or [])[-200:],
+            candidates=len(route.get('candidates') or []),
+            scene_current=bool(scene and scene['binding'][2]==route.get('scene_revision')))
+        return summary
 
     def _navigation_summary(self,engine):
         scene=self.navigation_scene;geometry=scene['geometry'] if scene else {}
@@ -844,6 +857,7 @@ class RobotFleet:
                     pose=row['display_pose']
                     route=getattr(self,'route_overlay',None)
                     if (pose['scene_revision']==binding[2] and route and route['robot_id']==row['robot_id'] and route.get('pose')
+                            and route.get('state')=='RUNNING'  # a finished route must not freeze the ghost at its last pose
                             and route['scene_revision']==binding[2] and route['connection_epoch']==row.get('connection_epoch')):
                         # Declared start + wheel odometry from the route runner: display only, never localization.
                         if row.get('field') is not None:row['field']['twin_tracking']=dict(status='ESTIMATED',position_m=list(route['pose']),
@@ -921,6 +935,10 @@ class RobotFleet:
         if already:
             self.close_done.wait()
             return self.persistence_receipt
+        cancel_route=getattr(self,'declared_route_cancel',None)
+        if cancel_route is not None:
+            try:cancel_route()  # a running declared route must not send another step to a closing fleet
+            except Exception:pass
         try:
             with self.lock:
                 rows=[]
@@ -935,6 +953,9 @@ class RobotFleet:
             self.persistence_receipt=self.snapshot_writer.close()
         except Exception:
             self.persistence_receipt=dict(complete=False,error='SIM_RETIRE_FAILED')
+            # The writer thread must still end, or the next project open waits on it forever.
+            try:self.snapshot_writer.close()
+            except Exception:pass
         finally:self.close_done.set()
         return self.persistence_receipt
 

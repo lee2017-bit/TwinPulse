@@ -272,3 +272,148 @@ class RouteOverlayCoreTest(unittest.TestCase):
         out=cluster_candidates(discs)
         self.assertEqual(len(out),1);self.assertEqual(out[0]['returns'],3)
         self.assertAlmostEqual(out[0]['position_xy_m'][0],2.05,places=2)
+
+
+class DeclaredRouteRobustnessTests(unittest.TestCase):
+    """2026-10-26 quality review: disk-full paths, stop numbering, progress events."""
+
+    def test_disk_full_at_start_leaves_no_phantom_running_route(self):
+        import tempfile
+        from twinpulse_app.command_broker import BrokerError
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet([])
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker=Path(tmp,'not-a-dir');blocker.write_text('x')  # declared-routes/ cannot be created under a file
+            runner=DeclaredRouteRunner(fleet,blocker,clock=lambda:0.,sleep=lambda s:None,poll_s=1.)
+            plan=runner.plan(fleet.row['robot_id'])
+            with self.assertRaises(BrokerError) as caught:runner.start(plan,'owner')
+            self.assertEqual(caught.exception.code,'declared_route_record_failed')
+            self.assertFalse(runner.active());self.assertIsNone(runner.current)
+            self.assertEqual(fleet.sent,[])  # nothing moved
+            runner.root=Path(tmp)  # disk freed: the same runner accepts the next route
+            runner.start(runner.plan(fleet.row['robot_id']),'owner')
+            for _ in range(2000):
+                if not runner.active():break
+                time.sleep(.001)
+            self.assertFalse(runner.active());self.assertEqual(runner.current['state'],'COMPLETED')
+
+    def test_disk_full_during_the_route_halts_stops_and_still_reports(self):
+        import tempfile
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet([]);results=[];clock=[0.]
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:clock[0],sleep=lambda s:clock.__setitem__(0,clock[0]+s),poll_s=1.,on_result=results.append)
+            saves=[0];original=runner._save
+            def failing_save():
+                saves[0]+=1
+                if saves[0]>2:raise OSError(28,'No space left on device')
+                original()
+            runner._save=failing_save
+            runner.start(runner.plan(fleet.row['robot_id']),'owner')
+            for _ in range(2000):
+                if results:break
+                time.sleep(.001)
+        result=results[0]
+        self.assertEqual(result['state'],'FAILED');self.assertTrue(result['reason'].startswith('ROUTE_RECORD_WRITE_FAILED:OSError:STOP_'),result['reason'])
+        self.assertEqual(result['save_error'],'OSError')
+        self.assertEqual(fleet.sent[-1]['action'],'stop');self.assertFalse(runner.active())
+        self.assertEqual(fleet.route_overlay['state'],'FAILED')
+
+    def test_stop_numbers_and_progress_events_follow_the_plan(self):
+        import tempfile
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='FIELD_PROXIMITY_10CM'
+        results=[];events=[];clock=[0.]
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:clock[0],sleep=lambda s:clock.__setitem__(0,clock[0]+s),poll_s=1.,
+                on_result=results.append,on_progress=events.append)
+            runner.start(runner.plan(fleet.row['robot_id']),'owner')
+            for _ in range(4000):
+                if results:break
+                time.sleep(.001)
+        result=results[0];total=len(result['plan']['waypoints'])
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        reached,skipped=result['reached_stops'],result['skipped_stops']
+        # Every planned stop is either reached under its own number or reported as skipped; never renumbered.
+        self.assertEqual(sorted(reached+skipped),list(range(total)));self.assertEqual(reached,sorted(reached))
+        stops=[s for s in result['waypoint_scans'] if not s['is_return']]
+        self.assertEqual([s['stop'] for s in stops],reached)
+        returns=[s for s in result['waypoint_scans'] if s['is_return']]
+        self.assertEqual(len(returns),1);self.assertEqual(returns[0]['stop'],total)
+        kinds=[e['event'] for e in events]
+        self.assertEqual(kinds.count('recovery'),1);self.assertEqual(kinds.count('return_reached'),1)
+        self.assertEqual([e['stop'] for e in events if e['event']=='stop_reached'],reached)
+        overlay=fleet.route_overlay
+        self.assertEqual(overlay['reached_stops'],reached);self.assertEqual(overlay['skipped_stops'],skipped)
+        self.assertEqual(overlay['completed_steps'],result['completed_steps']);self.assertGreater(overlay['revision'],0)
+
+    def test_skipped_stop_is_not_counted_as_reached_by_the_runner_bookkeeping(self):
+        # Direct check of the recovery filter: a pending stop inside the new keepout is skipped, the start is kept.
+        goals=[([1.,1.],0),([2.,1.],1),([3.,1.],2),([.6,.6],None)]
+        discs=[(2.05,1.,.25)];reached=1
+        pending=goals[reached:-1]
+        remaining=[g for g in pending if all(math.dist(g[0],d[:2])>d[2]+.65 for d in discs)]+[goals[-1]]
+        skipped=[g[1] for g in pending if g not in remaining]
+        self.assertEqual(skipped,[1]);self.assertEqual([g[1] for g in remaining],[2,None])
+
+
+class DeclaredRouteChatMessageTests(unittest.TestCase):
+    def _service(self):
+        import threading
+        from types import SimpleNamespace
+        messages=[];events=[]
+        s=SimpleNamespace(_lock=threading.Lock(),_state=dict(session_id='s',messages=[],cards=[]),add_route_obstacles=None,
+            _message=lambda role,content,**kw:messages.append((role,content,kw)),_event=lambda name,**kw:events.append((name,kw)),_persist=lambda:None)
+        return s,messages,events
+
+    def test_finish_message_counts_only_reached_stops_and_names_skipped_ones(self):
+        from twinpulse_app.conversation_service import ConversationService
+        s,messages,_=self._service()
+        plan=dict(plan_id='p'*32,waypoints=[[1,1],[2,1],[3,1]])
+        result=dict(plan=plan,state='COMPLETED',reason='ALL_STOPS_AND_RETURN_COMPLETED',completed_steps=17,context=dict(session_id='s'),
+            waypoint_scans=[dict(stop=0,is_return=False),dict(stop=2,is_return=False),dict(stop=3,is_return=True)],reached_stops=[0,2],skipped_stops=[1],candidates=[])
+        ConversationService.declared_route_finished(s,result)
+        text=messages[0][1]
+        self.assertIn('reached 2 of 3 stops (skipped stop 2 after a proximity stop) and returned to the start; 17 finite moves',text)
+        self.assertEqual(messages[0][2]['status'],'completed')
+        # Another chat session never receives the result.
+        s._state['session_id']='other';ConversationService.declared_route_finished(s,result)
+        self.assertEqual(len(messages),1)
+
+    def test_progress_messages_name_the_stop_and_moves(self):
+        from twinpulse_app.conversation_service import ConversationService
+        s,messages,_=self._service()
+        base=dict(plan_id='p'*32,robot_id='r',total_stops=4,context=dict(session_id='s'))
+        ConversationService.declared_route_progress(s,dict(base,event='stop_reached',stop=1,reached=2,completed_steps=7,unexplained=5))
+        ConversationService.declared_route_progress(s,dict(base,event='recovery',at=[1.234,0.5],recoveries=1,completed_steps=8))
+        ConversationService.declared_route_progress(s,dict(base,event='return_reached',stop=None,reached=4,completed_steps=20,unexplained=0))
+        self.assertEqual(messages[0][1],'Stop 2 of 4 reached · 7 moves so far · LiDAR: 5 returns not in the Twin')
+        self.assertIn('Proximity stop at (1.23, 0.50) m',messages[1][1])
+        self.assertIn('Back at the start after 4 of 4 stops · 20 moves',messages[2][1])
+
+
+class ReplanDemoTest(unittest.TestCase):
+    def test_box_on_leg_one_becomes_a_candidate_and_the_next_plan_avoids_it(self):
+        """Morning demo: box on leg 1 -> LiDAR 'not in model' candidate -> Add to Twin -> different route."""
+        from twinpulse_core.declared_route import unexplained_scan_discs, cluster_candidates
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0] for ix in range(40) for iy in range(30)]
+        geometry=dict(bounds=[0.,0.,4.,3.],obstacles=[],targets=[]);start=[.6,.6,0.]
+        first=plan_survey(start,geometry,cells,kind='physical',budget_m=8.)
+        leg=first['legs'][0];a=start[:2];b=leg[len(leg)//2] if len(leg)>1 else first['waypoints'][0]
+        # A 30 cm box in the middle of leg 1, seen from the start as a ring of returns (sensor frame = world here, yaw 0).
+        box=[(a[0]+b[0])/2,(a[1]+b[1])/2];half=.15
+        ring=[(box[0]+half*math.cos(t)-start[0],box[1]+half*math.sin(t)-start[1]) for t in [i*math.tau/16 for i in range(16)]]
+        walls=[(3.95-start[0],y*.1-start[1]) for y in range(1,30)]+[(x*.1-start[0],2.95-start[1]) for x in range(1,40)]+[(x*.1-start[0],.05-start[1]) for x in range(1,40)]
+        review=unexplained_scan_discs(start,walls+ring,cells)
+        self.assertTrue(review['used'],review)
+        candidates=cluster_candidates(review['discs'])
+        self.assertEqual(len(candidates),1,candidates)
+        self.assertLess(math.dist(candidates[0]['position_xy_m'],box),.12)
+        # Add to Twin: the candidate becomes an obstacle in the model (as the Twin edit + Isaac rebuild would).
+        c=candidates[0];r=max(.2,c['radius_m'])
+        added=dict(geometry,obstacles=[[c['position_xy_m'][0]-r,c['position_xy_m'][1]-r,c['position_xy_m'][0]+r,c['position_xy_m'][1]+r]])
+        blocked_cells=[[x,y,'occupied' if math.dist((x,y),box)<=r+.05 else k,*rest] for x,y,k,*rest in cells]
+        second=plan_survey(start,added,blocked_cells,kind='physical',budget_m=8.)
+        self.assertNotEqual(second['polyline'],first['polyline'])
+        clearance=min(math.dist(p[:2],box) for p in second['polyline'])
+        self.assertGreater(clearance,r+.3,clearance)  # the new route keeps the physical berth from the box

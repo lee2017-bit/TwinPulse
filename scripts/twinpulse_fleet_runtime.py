@@ -543,12 +543,20 @@ class FleetRuntime:
         if not route:
             if getattr(self,'route_key',None) is not None and stage.GetPrimAtPath(path):stage.RemovePrim(path)
             self.route_key=None;return
-        key=(route['plan_id'],route.get('state'),route.get('reached'),len(route.get('trace') or []),len(route.get('scans') or []),
+        # The revision changes on every runner update (the trace length alone stops
+        # changing at its cap); the key is adopted only after a complete draw so a
+        # mid-draw exception cannot freeze a partial overlay.
+        key=(route['plan_id'],route.get('revision'),route.get('state'),route.get('reached'),str(route.get('reached_stops')),
+             len(route.get('trace') or []),len(route.get('scans') or []),
              str(route.get('candidates')),len(route.get('polyline') or []),str(route.get('keepouts')))
         if key==getattr(self,'route_key',None) and stage.GetPrimAtPath(path):return
         if getattr(self,'route_key',None) is None or self.route_key[0]!=route['plan_id'] or not stage.GetPrimAtPath(path):
             if stage.GetPrimAtPath(path):stage.RemovePrim(path)
-        self.route_key=key
+        self._draw_route_prims(stage,route,path)
+        self.route_key=key;self.route_error=None
+
+    def _draw_route_prims(self,stage,route,path):
+        from pxr import Gf, UsdGeom
         root=UsdGeom.Xform.Define(stage,path).GetPrim()
         for k,v in (('planId',route['plan_id']),('poseStatus',route.get('label') or 'NOT_LOCALIZED'),('state',str(route.get('state')))):
             root.SetCustomDataByKey(k,v)
@@ -574,15 +582,18 @@ class FleetRuntime:
                     out.append([(bx+a*w,y+b*h/2-h/2),(bx+c*w,y+d*h/2-h/2)])
             return out
         reached=route.get('reached') or 0
+        done_set=set(route['reached_stops']) if isinstance(route.get('reached_stops'),list) else set(range(reached))
+        skipped_set=set(route.get('skipped_stops') or [])
         curves('Path',[route.get('polyline') or []],(1.,.72,.15),.06,.02)
         curves('Trace',[route.get('trace') or []],(.1,.85,.45),.05,.03)
-        stops_todo=[];stops_done=[];labels=[]
+        stops_todo=[];stops_done=[];stops_skipped=[];labels=[]
         for i,(x,y) in enumerate(route.get('waypoints') or []):
-            (stops_done if i<reached else stops_todo).append(ring(x,y,.2))
+            (stops_done if i in done_set else stops_skipped if i in skipped_set else stops_todo).append(ring(x,y,.2))
             labels+=digit(str(i+1),x,y+.5)
         sx,sy=route['start'][:2]
         curves('Stops',stops_todo,(1.,.55,.1),.06,.025)
         curves('StopsReached',stops_done,(.1,.85,.45),.06,.026)
+        curves('StopsSkipped',stops_skipped,(.6,.6,.6),.04,.026)
         curves('StopNumbers',labels,(.1,.1,.1),.06,.04)
         curves('Start',[ring(sx,sy,.2),[(sx,sy),(sx+.3*math.cos(route['start'][2]),sy+.3*math.sin(route['start'][2]))]],(.9,.9,.9),.035,.025)
         curves('Keepouts',[ring(d[0],d[1],d[2]) for d in route.get('keepouts') or []],(.9,.25,.25),.02,.02)

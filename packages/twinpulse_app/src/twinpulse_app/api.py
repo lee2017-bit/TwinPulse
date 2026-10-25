@@ -210,7 +210,7 @@ class LocalApiServer:
             self.conversation.robot_tasks=RobotTaskService(product_workflow,self.robot_fleet,key_registry,clock=clock)
             from .declared_route_runner import DeclaredRouteRunner
             self.conversation.declared_routes=DeclaredRouteRunner(self.robot_fleet,self.robot_fleet.root,
-                on_result=self.conversation.declared_route_finished)
+                on_result=self.conversation.declared_route_finished,on_progress=self.conversation.declared_route_progress)
             self.conversation.add_route_obstacles=self._add_route_obstacles
         if workspace_devices is not None:
             robot_diagnostics = workspace_devices.diagnostics
@@ -1647,7 +1647,9 @@ class LocalApiServer:
         from uuid import uuid4
         if not _re.fullmatch('[a-f0-9]{32}',str(plan_id)):raise BrokerError('route_candidates_invalid','Route record is invalid.',status=409)
         record=self.robot_fleet.root/'declared-routes'/(plan_id+'.json')
-        raw=record.read_bytes();sha=hashlib.sha256(raw).hexdigest()
+        try:raw=record.read_bytes()
+        except OSError:raise BrokerError('route_record_missing','The saved route record is unavailable; run the route again.',status=409) from None
+        sha=hashlib.sha256(raw).hexdigest()
         if candidates is None:candidates=json.loads(raw.decode('utf-8')).get('candidates') or []
         if not candidates:raise BrokerError('route_candidates_empty','The saved route has no LiDAR candidates.',status=409)
         obstacles=[]

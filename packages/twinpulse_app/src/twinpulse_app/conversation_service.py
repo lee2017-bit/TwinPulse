@@ -1071,19 +1071,44 @@ class ConversationService:
         except BrokerError as error:
             self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,plan_id=plan['plan_id'])
             return
-        self._message('assistant','Route started: %d finite moves.'%len(plan['steps']),operation_id=plan['plan_id'])
+        self._message('assistant','Route started: %d stops, about %d planned moves. Each move is re-aimed from wheel odometry, so the final count can be higher. '
+            'I will report each stop here; Stop ends the route at any time.'%(len(plan['waypoints']),len(plan['steps'])),operation_id=plan['plan_id'])
         self._event('declared_route_started',plan_id=plan['plan_id'],robot_id=plan['robot_id'])
+
+    def declared_route_progress(self,progress):
+        """Per-stop progress from the runner thread (display only; never authority)."""
+        with self._lock:
+            if (progress.get('context') or {}).get('session_id')!=self._state['session_id']:return
+            event=progress['event'];total=progress['total_stops'];moves=progress['completed_steps']
+            if event=='stop_reached':
+                text='Stop %d of %d reached · %d moves so far'%(progress['stop']+1,total,moves)
+                if progress.get('unexplained'):text+=' · LiDAR: %d returns not in the Twin'%progress['unexplained']
+            elif event=='return_reached':
+                text='Back at the start after %d of %d stops · %d moves · restoring the start heading'%(progress['reached'],total,moves)
+            elif event=='recovery':
+                text='Proximity stop at (%.2f, %.2f) m · backing off %d cm and re-planning around it (recovery %d of %d). Any stop inside the new keepout is skipped.'%(
+                    progress['at'][0],progress['at'][1],25,progress['recoveries'],2)
+            else:return
+            self._message('assistant',text,operation_id=progress['plan_id'])
+            self._event('declared_route_progress',plan_id=progress['plan_id'],event=event,stop=progress.get('stop'),completed_steps=moves)
+            self._persist()
 
     def declared_route_finished(self,result):
         with self._lock:
             plan=result['plan']
             # The run is bound to the chat that confirmed it; a later chat never gets its result.
             if (result.get('context') or {}).get('session_id')!=self._state['session_id']:return
-            stops=[s for s in result['waypoint_scans'] if s['stop']<len(plan['waypoints'])]
+            total=len(plan['waypoints'])
+            reached=result.get('reached_stops')
+            if reached is None:reached=[s['stop'] for s in result['waypoint_scans'] if not s.get('is_return') and s['stop']<total]
+            skipped=result.get('skipped_stops') or []
             returned=result['reason']=='ALL_STOPS_AND_RETURN_COMPLETED'
-            self._message('assistant','Route '+result['state'].lower()+': reached %d of %d stops%s; %d finite moves completed, including odometry re-aims (%s). '
-                'Twin shows the path, trace and LiDAR at each stop from the declared start + wheel odometry; not verified localization.'
-                %(len(stops),len(plan['waypoints']),' and returned to the start' if returned else '',result['completed_steps'],result['reason']),operation_id=plan['plan_id'])
+            self._message('assistant','Route '+result['state'].lower()+': reached %d of %d stops%s%s; %d finite moves completed, including odometry re-aims (%s). '
+                'Twin shows the path, trace and LiDAR at each stop from the declared start + wheel odometry; not verified localization.%s'
+                %(len(reached),total,(' (skipped stop%s %s after a proximity stop)'%('s' if len(skipped)>1 else '',', '.join(str(s+1) for s in skipped))) if skipped else '',
+                  ' and returned to the start' if returned else '',result['completed_steps'],result['reason'],
+                  ' The route record could not be saved to disk (%s); free disk space before the next route.'%result['save_error'] if result.get('save_error') else ''),
+                operation_id=plan['plan_id'],status='failed' if result['state']=='FAILED' else 'completed')
             self._event('declared_route_finished',plan_id=plan['plan_id'],state=result['state'],reason=result['reason'],
                 completed_steps=result['completed_steps'],waypoint_scans=result['waypoint_scans'],candidates=result.get('candidates') or [])
             candidates=result.get('candidates') or []
