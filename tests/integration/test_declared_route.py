@@ -163,4 +163,23 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
             self.assertEqual(len(cancelled),2)
 
 
+
+
+
+class DeclaredRouteChatRoutingTests(unittest.TestCase):
+    def test_survey_and_return_routes_to_declared_route_only_on_imported_twin(self):
+        # 2026-10-25 installed SIM run: a corrupted regex never matched and the
+        # request silently fell through to the common planner card.
+        from types import SimpleNamespace
+        from twinpulse_app.conversation_service import ConversationService
+        fleet=SimpleNamespace(focused='r',robots={'r':{'kind':'sim'}},
+            navigation_scene=dict(geometry=dict(schema='scene-navigation-2.0')))
+        self_=SimpleNamespace(declared_routes=object(),robot_fleet=fleet)
+        route=lambda text:ConversationService._declared_route_request(self_,text)
+        self.assertTrue(route('Survey the room and come back'))
+        self.assertTrue(route('방을 둘러보고 돌아와'))
+        self.assertFalse(route('Create a room the robot can survey and return in'))
+        self.assertFalse(route('Survey the room'))
+        fleet.navigation_scene=dict(geometry=dict(schema='scene-navigation-1.0'))
+        self.assertFalse(route('Survey the room and come back'))
 if __name__=='__main__':unittest.main()

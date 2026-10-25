@@ -998,8 +998,8 @@ class ConversationService:
         value=text.strip().lower()
         # Same scene-edit/creation exclusions as the common task hint.
         if not task_request(value,(fleet.robots.get(fleet.focused) or {}).get('kind')):return False
-        return bool(re.search(r'둘러|탐색|순회|(?:survey|explore|patrol|look around)',value)
-                    and re.search(r'돌아와|복귀|(?:return|come back|go back)',value))
+        return bool(re.search(r'둘러|탐색|순회|\b(?:survey|explore|patrol|look around)\b',value)
+                    and re.search(r'돌아와|복귀|\b(?:return|come back|go back)\b',value))
 
     def _start_declared_route(self,body):
         if any(c['state']=='waiting' for c in self._state['cards']):
