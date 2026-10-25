@@ -543,7 +543,15 @@ class FieldGuard:
             if tracking['sample_s']-first_body['sample_s']>=1.:
                 progress=math.dist(tracking['pose'][:2],first_body['pose'][:2]) if v else abs(tracking['pose'][2]-first_body['pose'][2])
                 self.progress.update(body_progress='ESTIMATED_NOT_QUALIFIED',body_delta=progress,tracking_epoch=tracking['epoch'])
-                if progress<(.002 if v else .01):raise ValueError('FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP')
+                if progress<(.002 if v else .01):
+                    # User decision 2026-10-25 (explicitly_unverified_supervised for
+                    # supervised finite commands): the relative tracker followed
+                    # ~25% of a 0.58 m odom move in the living room, so a low
+                    # estimate is recorded as unverified rather than stopping.
+                    # Commands that require body evidence (routes, stall trials)
+                    # still stop; wheel stall/proximity/Stop/timeouts are unchanged.
+                    self.progress.update(body_progress='UNVERIFIED_LOW_TRACKER_PROGRESS_SUPERVISED')
+                    if getattr(self,'require_body',False):raise ValueError('FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP')
         else:
             self.body_samples=[];self.progress.update(body_progress='INCONCLUSIVE',tracking_reason=(tracking or {}).get('reason'))
             if getattr(self,'require_body',False):raise ValueError('FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP')
