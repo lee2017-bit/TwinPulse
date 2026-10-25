@@ -3,7 +3,7 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {TwinPulseApi} from './api';
+import {ApiError,TwinPulseApi} from './api';
 import {RobotFleet} from './RobotFleet';
 import {TwinViewport,layoutRobotBadges,pickRobotAnchor,type RobotBadgePlacement} from './TwinViewport';
 import type {ViewportState} from './viewport-types';
@@ -71,9 +71,19 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     fireEvent.submit(input.closest('form')!);
     expect(input.value).toBe('Go to the nearest bed');
     expect(screen.getByLabelText('Robot command progress').textContent).toContain('SENDING');
-    await act(async()=>{reject(new Error('Destination unavailable'));});
+    await act(async()=>{reject(new ApiError('fleet_rejected','Destination unavailable'));});
     expect(input.value).toBe('Go to the nearest bed');
     expect(screen.getByLabelText('Robot command progress').textContent).toContain('FAILED');
+  });
+  it('shows a network failure as delivery unknown instead of FAILED, so the user checks before resending',async()=>{
+    let reject!:(error:Error)=>void;
+    setup(fleet(),()=>new Promise((_,no)=>{reject=no;}));
+    const input=screen.getByLabelText('Robot command') as HTMLInputElement;
+    fireEvent.change(input,{target:{value:'Go to the nearest bed'}});
+    fireEvent.submit(input.closest('form')!);
+    await act(async()=>{reject(new TypeError('Failed to fetch'));});
+    expect(screen.getByLabelText('Robot command progress').textContent).toContain('DELIVERY UNKNOWN');
+    expect(screen.getByLabelText('Robot command progress').textContent).not.toContain('FAILED');
   });
   it.each(['Go to the nearest chair','Go to the nearest bed'])('does not erase a newer draft on late ACK: %s',async value=>{
     let resolve!:(next:RobotFleetState)=>void;

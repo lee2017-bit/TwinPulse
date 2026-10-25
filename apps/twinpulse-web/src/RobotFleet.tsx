@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Source: https://github.com/lee2017-bit/TwinPulse
 import {useEffect,useMemo,useRef,useState} from 'react';
+import {ApiError} from './api';
 import type {TwinPulseApi} from './api';
 import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
 import {isRobotTaskRequest} from './robot-task-intent';
@@ -437,16 +438,20 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           setSubmitted({request_id:body.request_id,text:text.trim(),state:'SENDING',prior_command_id});
           const dispatch=async()=>{
             if(!commandIsStop)setBusy(true);setError(null);
+            const viaChat=isRobotTaskRequest(commandText,robot?.kind);
             try{
-              if(isRobotTaskRequest(commandText,robot?.kind))await api.conversationAction({action:'message',request_id:body.request_id,text:commandText,attachment:null,mode:'new'});
+              if(viaChat)await api.conversationAction({action:'message',request_id:body.request_id,text:commandText,attachment:null,mode:'new'});
               else await send(body);
               if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId){
-              setSubmitted({request_id:body.request_id,text:commandText,state:'ACCEPTED',prior_command_id});
+              // A chat-routed task never becomes robot.command; say where to follow it instead of ACCEPTED forever.
+              setSubmitted({request_id:body.request_id,text:commandText,state:viaChat?'SENT TO CHAT · answer the route card there':'ACCEPTED',prior_command_id});
               // Only clear the acknowledged draft. A late reply must not erase
               // newer typing, even when the user has typed the same text again.
               if(commandDraftVersion.current===draftVersion)setText('');}}
-            catch(caught){reportError(caught);if(owner.current===captured||owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId)
-              setSubmitted({request_id:body.request_id,text:commandText,state:'FAILED',prior_command_id});}
+            catch(caught){reportError(caught);if(owner.current===captured||owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId){
+              // A network error or delivery_unknown may still have been accepted: never invite a resend as FAILED.
+              const unknown=!(caught instanceof ApiError)||caught.code==='delivery_unknown';
+              setSubmitted({request_id:body.request_id,text:commandText,state:unknown?'DELIVERY UNKNOWN · check chat before sending again':'FAILED',prior_command_id});}}
             finally{if(owner.current.api===captured.api&&owner.current.context===captured.context)setBusy(false);}
           };void dispatch();
         }}}>
