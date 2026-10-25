@@ -56,7 +56,7 @@ class DeclaredRouteRunner:
         if not _pose3(start):raise BrokerError('declared_route_pose_required','A current SIM pose is required.',status=409)
         return list(start),'sim_engine_pose'
 
-    def plan(self,robot_id,*,budget_m=6.):
+    def plan(self,robot_id,*,budget_m=None):
         scene=self.fleet.navigation_scene
         if not scene:raise BrokerError('declared_route_scene_required','Display the imported Twin before planning a route.',status=409)
         row=self._row(robot_id)
@@ -65,7 +65,7 @@ class DeclaredRouteRunner:
             raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
         start,basis=self._start_pose(row,scene)
         try:
-            plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],budget_m=budget_m)
+            plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],budget_m=budget_m or (8. if row['kind']=='physical' else 6.))
             steps=compile_moves(start,plan['polyline'],final_yaw=start[2])
         except (ValueError,KeyError,TypeError) as exc:
             raise BrokerError('declared_route_unplannable',str(exc)[:160],status=409) from None

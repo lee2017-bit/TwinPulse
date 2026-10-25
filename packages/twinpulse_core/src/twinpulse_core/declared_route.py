@@ -13,6 +13,9 @@ SCOPE='DECLARED_START_MODEL_PLAN_NOT_LOCALIZED'
 MAX_LEG_M=1.0      # 1 m finite forward completed on the physical robot (2026-10-25)
 MIN_TURN_RAD=.02
 MIN_LEG_M=.01
+# Declared start + odometry accumulate heading error and the scan omits small
+# furniture: physical routes keep a wider berth (more conservative only).
+PHYSICAL_ROUTE_CLEARANCE_M=.35
 
 
 def _wrap(a):return math.atan2(math.sin(a),math.cos(a))
@@ -54,7 +57,7 @@ def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,cleara
 
 def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6):
     """Bounded, spread-out observation stops on the model, then back to the declared start."""
-    clearance=task_clearance(kind,planning=True)
+    clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
     reachable=_reachable(start,geometry,observed_cells,clearance)
     pose=list(start);visited=[list(start)];polyline=[];waypoints=[];remaining=budget_m;reason=None
     while len(waypoints)<max_waypoints:
