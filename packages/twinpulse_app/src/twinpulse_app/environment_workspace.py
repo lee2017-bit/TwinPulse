@@ -291,19 +291,26 @@ class EnvironmentWorkspace:
                 history=self.workflow._application.scene_change_store().load();plan,site=history.replay(source)
                 environment=site.scene.environment;evidence=dict(basis='lidar_estimate',alignment_verified=False,
                     source_name=body['evidence']['source_name'],sha256=body['evidence']['sha256'])
+                added=0
                 for index,obstacle in enumerate(body['obstacles'][:8]):
                     xy=obstacle['position_xy_m'];size=obstacle['dimensions_m']
                     identity='Added_'+hashlib.sha256((request+':%d'%index).encode('utf-8')).hexdigest()[:20]
-                    item=dict(id=identity,kind='unknown',label=obstacle['label'],catalog_version=room_item_catalog_version('unknown'),
-                        position_m=[*xy,size[2]/2],dimensions_m=size,yaw_deg=0.,observation_time_utc=None)
-                    environment=add_overlay(environment,dict(item=item,uncertainty_m=obstacle['uncertainty_m'],evidence=dict(evidence)))
+                    # A return seen through a doorway or near a wall can sit off the scanned floor:
+                    # shrink to the floor if possible, otherwise leave that candidate out.
+                    for side,margin in ((size[0],obstacle['uncertainty_m']),(min(size[0],.3),.1),(.2,.05)):
+                        item=dict(id=identity,kind='unknown',label=obstacle['label'],catalog_version=room_item_catalog_version('unknown'),
+                            position_m=[*xy,size[2]/2],dimensions_m=[side,side,size[2]],yaw_deg=0.,observation_time_utc=None)
+                        try:environment=add_overlay(environment,dict(item=item,uncertainty_m=margin,evidence=dict(evidence)));added+=1;break
+                        except ValueError as exc:
+                            if 'OUTSIDE_FLOOR' not in str(exc) and 'FLOOR' not in str(exc):raise
+                if not added:raise ValueError('ENVIRONMENT_OVERLAY_OUTSIDE_FLOOR')
                 call=SceneToolCall('imported_space','import_environment',dict(id='imported_space',environment=environment)).to_dict()
                 operation_id='environment_edit_'+hashlib.sha256(request.encode('utf-8')).hexdigest()[:32]
                 preview=self.workflow.preview_scene_edit(operation_id=operation_id,mode='change',target_call_id='imported_space',tool_call=call)
                 with self.lock:
                     self.previews[operation_id]=dict(owner=session_id,preview=deepcopy(preview))
                     while len(self.previews)>8:self.previews.popitem(last=False)
-                return self.snapshot(preview=preview)
+                return self.snapshot(preview=preview,lidar_added=added)
             if action in {'move_preview','undo_preview','add_overlay_preview','remove_overlay_preview','photo_candidate_preview'}:
                 expected={'action','request_id','expected_scene_revision'}|(
                     {'object_id','translation_m'} if action=='move_preview' else

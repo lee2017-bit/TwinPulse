@@ -1661,7 +1661,7 @@ class LocalApiServer:
         identity=preview['operation']['operation_id']
         operation,digest=workspace.pinned_environment_operation(identity,preview['preview_digest'],owner,claim=True)
         self._workflow().scene_edit_transaction.start(owner,operation,digest)
-        return identity,len(obstacles)
+        return identity,result.get('lidar_added',len(obstacles))
 
     def _workflow(self) -> ProductWorkflow:
         if self.product_workflow is None:

@@ -1001,6 +1001,31 @@ class ConversationService:
         return bool(re.search(r'둘러|탐색|순회|\b(?:survey|explore|patrol|look around)\b',value)
                     and re.search(r'돌아와|복귀|\b(?:return|come back|go back)\b',value))
 
+    def _route_candidates_request(self,text):
+        value=text.strip().lower()
+        return getattr(self,'add_route_obstacles',None) is not None and bool(
+            re.search(r'lidar',value) and re.search(r'(?:add|put|reflect|apply)',value) and re.search(r'twin',value))
+
+    def _offer_saved_route_candidates(self,body):
+        """Re-offer the LiDAR candidates of the latest finished route (e.g. after an App restart)."""
+        if any(c['state']=='waiting' for c in self._state['cards']):
+            raise BrokerError('choice_required','Finish the current question before requesting another task.',status=409)
+        self._message('user',body['text'])
+        folder=self.robot_fleet.root/'declared-routes';latest=None
+        for path in sorted(folder.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:20]:
+            try:record=json.loads(path.read_text(encoding='utf-8'))
+            except (OSError,ValueError):continue
+            if record.get('state')=='COMPLETED' and record.get('candidates'):latest=record;break
+        if latest is None:
+            self._message('assistant','No finished route with LiDAR candidates was found. Run "Survey the room and come back" first.');return
+        candidates=latest['candidates'];plan=latest['plan']
+        listing='; '.join('#%d at (%.2f, %.2f) m, %d returns'%(i+1,*c['position_xy_m'],c['returns']) for i,c in enumerate(candidates))
+        card=self._card('declared_route_obstacles','The last route\'s LiDAR saw %d object%s the Twin does not have: %s. '
+            'Positions come from the declared start + wheel odometry (not localized). Add them to the Twin as unknown obstacles? '
+            'This edits the Twin (Undo available); no robot moves.'%(len(candidates),'' if len(candidates)==1 else 's',listing),
+            [self._choice('add','Add to Twin'),self._choice('skip','Skip')])
+        card['operation_id']=plan['plan_id'];self._route_candidates=dict(plan_id=plan['plan_id'],candidates=candidates)
+
     def _start_declared_route(self,body):
         if any(c['state']=='waiting' for c in self._state['cards']):
             raise BrokerError('choice_required','Finish the current question before requesting another task.',status=409)
@@ -1139,6 +1164,9 @@ class ConversationService:
         if self.robot_fleet is not None and body['attachment'] is None and body['mode']=='new':
             from twinpulse_core.robot_task_plan import task_request
             focused_kind=(self.robot_fleet.robots.get(self.robot_fleet.focused) or {}).get('kind')
+            if self._route_candidates_request(text):
+                self._offer_saved_route_candidates(body)
+                return
             if self._declared_route_request(text):
                 self._start_declared_route(body)
                 return
