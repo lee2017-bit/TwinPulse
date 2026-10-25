@@ -1015,8 +1015,9 @@ class ConversationService:
             start=plan['start'],start_basis=plan['start_basis'],waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'])
         card=self._card('declared_route_run','Route planned once on the Twin from the '
             +('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
-            +': %d stops, %.2f m, %d finite moves, then back to the start heading. Moves: %s. Each move keeps the normal robot checks; Stop ends the route. Run it?'
-            %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),', '.join(s['text'] for s in plan['steps'])),
+            +': %d stops, %.2f m, about %d finite moves, then back to the start heading.%s Moves are re-aimed from wheel odometry; a proximity stop backs off and re-plans. Each move keeps the normal robot checks; Stop ends the route. Run it?'
+            %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),
+              (' Start LiDAR: %d unmodeled returns kept out.'%len(plan.get('keepouts') or [])) if (plan.get('scan_keepouts') or {}).get('used') else ''),
             [self._choice('run','Run route'),self._choice('cancel','Cancel')])
         card['operation_id']=plan['plan_id']
         card['route_preview']=self._route_preview(plan)
@@ -1030,6 +1031,7 @@ class ConversationService:
               if c[2]=='free' and box[0]<=c[0]<=box[2] and box[1]<=c[1]<=box[3]][:4000]
         r=lambda v:[round(x,3) for x in v]
         return dict(bounds=r(box),free_cells=free,cell_m=.1,start=r(plan['start']),waypoints=[r(w) for w in plan['waypoints']],
+            keepouts=[r(d[:2]) for d in plan.get('keepouts') or []][:200],
             polyline=[r(p) for p in plan['polyline']],basis=plan['start_basis'],scope=plan['scope'])
 
     def _answer_declared_route(self,card,choice):

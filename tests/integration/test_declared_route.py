@@ -47,6 +47,21 @@ class DeclaredRouteTests(unittest.TestCase):
             self.assertEqual(parsed['action'],'task');self.assertEqual(parsed['direction'],s['direction'])
             self.assertAlmostEqual(parsed['amount'],s['amount'],delta=.001)
 
+    def test_start_scan_keeps_unmodeled_returns_out_and_picks_the_lateral_sign(self):
+        from twinpulse_core.declared_route import unexplained_scan_discs
+        # 4 x 3 m room: border cells occupied, inside free.
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0]
+               for ix in range(40) for iy in range(30)]
+        start=[1.,1.,0.]
+        walls=[(2.95,y*.1) for y in range(-9,19)]+[(x*.1,1.95) for x in range(-9,29)]+[(x*.1,-.95) for x in range(-9,29)]
+        plant=[(1.5,.6)]  # 1.5 m ahead, 0.6 m to the robot's left
+        native=[(x,-y) for x,y in walls+plant]  # native stream reports the lateral axis mirrored
+        review=unexplained_scan_discs(start,native,cells)
+        self.assertTrue(review['used']);self.assertEqual(review['lateral_sign'],-1)
+        self.assertEqual(len(review['discs']),1)
+        self.assertLess(math.dist(review['discs'][0][:2],[2.5,1.6]),.05)
+        self.assertFalse(unexplained_scan_discs(start,[(.5,.0)]*10,cells)['used'])  # nothing agrees with the model
+
     def test_no_reachable_waypoint_is_an_error_not_an_empty_route(self):
         boxed=dict(bounds=[0.,0.,.5,.5],obstacles=[],targets=[])
         with self.assertRaisesRegex(ValueError,'DECLARED_ROUTE_NO_REACHABLE_WAYPOINT'):

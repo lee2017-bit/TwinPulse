@@ -22,7 +22,7 @@ export interface QuestionCard {
   choices: { id: string; label: string; enabled: boolean; disabled_reason: string | null }[];
   generation_approval?: GenerationApprovalPreview;
   scene_feedback?: boolean;
-  route_preview?: {bounds:number[];free_cells:number[][];cell_m:number;start:number[];waypoints:number[][];polyline:number[][];basis:string;scope:string};
+  route_preview?: {bounds:number[];free_cells:number[][];cell_m:number;start:number[];waypoints:number[][];polyline:number[][];basis:string;scope:string;keepouts?:number[][]};
 }
 export interface GenerationApprovalPreview {
   schema_version:'ordinary-generation-preview-1.0';input_sha256:string;input_revision:string;preview_sha256:string;

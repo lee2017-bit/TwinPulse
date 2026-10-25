@@ -115,6 +115,7 @@ export function RoutePreview({preview}:{preview:NonNullable<QuestionCard['route_
     viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6}}>
     {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
     <polyline points={`${X(sx)},${Y(sy)} ${path}`} fill="none" stroke="#5fd3a6" strokeWidth={0.04} strokeLinejoin="round"/>
+    {(preview.keepouts??[]).map(([x,y],i)=><circle key={'k'+i} cx={X(x)} cy={Y(y)} r={0.06} fill="#e5534b"/>)}
     {preview.waypoints.map(([x,y],i)=><g key={i}><circle cx={X(x)} cy={Y(y)} r={0.09} fill="#f2b84b"/>
       <text x={X(x)+0.12} y={Y(y)-0.1} fontSize={0.22} fill="#f2b84b">{i+1}</text></g>)}
     <circle cx={X(sx)} cy={Y(sy)} r={0.1} fill="#ffffff"/>

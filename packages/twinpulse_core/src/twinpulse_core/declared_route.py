@@ -30,7 +30,7 @@ def _wrap(a):return math.atan2(math.sin(a),math.cos(a))
 def _key(x,y):return (math.floor(x/.1),math.floor(y/.1))
 
 
-def _clear_of(p,blocked,geometry,radius):
+def _clear_of(p,blocked,geometry,radius,discs=()):
     """No non-free cell or model obstacle within radius of p (stop placement only)."""
     k=math.ceil(radius/.1);cx,cy=_key(*p)
     for ix in range(cx-k,cx+k+1):
@@ -38,7 +38,7 @@ def _clear_of(p,blocked,geometry,radius):
             if (ix,iy) in blocked and math.dist(p,((ix+.5)*.1,(iy+.5)*.1))<radius:return False
     for x0,y0,x1,y1 in geometry.get('obstacles') or []:
         if math.dist(p,(min(max(p[0],x0),x1),min(max(p[1],y0),y1)))<radius:return False
-    return True
+    return all(math.dist(p,d[:2])>=radius+d[2] for d in discs)
 
 
 def _candidates(geometry,observed_cells):
@@ -53,7 +53,7 @@ def _candidates(geometry,observed_cells):
     return sorted(out)[:2048]
 
 
-def _reachable(start,geometry,observed_cells,clearance,stop_clearance=0.,max_distance_m=math.inf):
+def _reachable(start,geometry,observed_cells,clearance,stop_clearance=0.,max_distance_m=math.inf,discs=()):
     """Observation stops reachable from the start, with their path length (one A* each)."""
     free=None if observed_cells is None else {_key(c[0],c[1]) for c in observed_cells if c[2]=='free'}
     blocked=set() if observed_cells is None else {_key(c[0],c[1]) for c in observed_cells if c[2]!='free'}
@@ -65,8 +65,8 @@ def _reachable(start,geometry,observed_cells,clearance,stop_clearance=0.,max_dis
         # open-plan area behind it.
         if (p[0]-start[0])*heading[0]+(p[1]-start[1])*heading[1]<0:continue
         if math.dist(start[:2],p)*2+.25>max_distance_m:continue  # cannot go and come back
-        if stop_clearance and not _clear_of(p,blocked,geometry,stop_clearance):continue
-        try:length=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,clearance_m=clearance))
+        if stop_clearance and not _clear_of(p,blocked,geometry,stop_clearance,discs):continue
+        try:length=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance))
         except NoBoundedPath:continue
         # Same open space as the start: the path is nearly straight. Stops behind
         # doorways (other rooms, unscanned clutter) are excluded from a room survey.
@@ -74,7 +74,7 @@ def _reachable(start,geometry,observed_cells,clearance,stop_clearance=0.,max_dis
     return reachable
 
 
-def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m):
+def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m,discs=()):
     """Farthest reachable stop from every visited point that still leaves the return budget.
 
     Nearest-first (robot_survey.next_observation) circles the start; survey stops
@@ -86,19 +86,19 @@ def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,cleara
                        and math.dist(pose[:2],p)+reachable[p]+.25<=remaining),key=lambda p:(-spread(p),p))
     for goal in candidates[:12]:
         if math.dist(pose[:2],goal)+reachable[goal]+.25>remaining:continue  # cheap lower bound
-        try:route=route_to(pose,list(goal),geometry,observed_cells=observed_cells,clearance_m=clearance)
+        try:route=route_to(pose,list(goal),geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
         except NoBoundedPath:continue
         if route_length(pose,route)+reachable[goal]+.25<=remaining:return route,list(goal)
     return None,None
 
 
-def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6):
+def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6,discs=()):
     """Bounded, spread-out observation stops on the model, then back to the declared start."""
     clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
-    reachable=_reachable(start,geometry,observed_cells,clearance,PHYSICAL_STOP_CLEARANCE_M if kind=='physical' else 0.,budget_m)
+    reachable=_reachable(start,geometry,observed_cells,clearance,PHYSICAL_STOP_CLEARANCE_M if kind=='physical' else 0.,budget_m,discs)
     pose=list(start);visited=[list(start)];polyline=[];legs=[];waypoints=[];remaining=budget_m;reason=None
     while len(waypoints)<max_waypoints:
-        route,goal=_spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m)
+        route,goal=_spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m,discs)
         if route is None:reason='NO_REACHABLE_STOP_WITH_RETURN_BUDGET';break
         remaining-=route_length(pose,route)
         polyline+=route;legs.append([list(q) for q in route]);waypoints.append(list(goal))
@@ -107,10 +107,10 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
         visited.append(pose)
     else:reason='WAYPOINT_LIMIT'
     if not waypoints:raise ValueError('DECLARED_ROUTE_NO_REACHABLE_WAYPOINT:'+str(reason))
-    returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,clearance_m=clearance)
+    returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
     polyline+=returning;legs.append([list(q) for q in returning])
     return dict(start=list(start),waypoints=waypoints,polyline=[list(p) for p in polyline],legs=legs,
-        length_m=route_length(start,polyline),stop_reason=reason,scope=SCOPE,clearance_m=clearance)
+        length_m=route_length(start,polyline),stop_reason=reason,scope=SCOPE,clearance_m=clearance,keepouts=[list(d) for d in discs])
 
 
 def compile_moves(start,polyline,*,final_yaw=None,max_leg_m=MAX_LEG_M):
@@ -131,6 +131,53 @@ def compile_moves(start,polyline,*,final_yaw=None,max_leg_m=MAX_LEG_M):
         x,y=gx,gy
     if final_yaw is not None:turn(final_yaw)
     return steps
+
+
+def _scan_world(start,points,flip):
+    c,s=math.cos(start[2]),math.sin(start[2])
+    for px,py in points:
+        py=-py if flip else py
+        yield px,py,start[0]+px*c-py*s,start[1]+px*s+py*c
+
+
+def unexplained_scan_discs(start,points,observed_cells,*,wall_margin_m=.2,radius_m=.06,max_range_m=4.,
+                           cell_m=.15,max_discs=120,min_agreement=.5):
+    """Stationary LiDAR returns the scan model cannot explain, as keepout discs.
+
+    Points are sensor-frame XY at the declared start (sensor at the base origin).
+    The native stream's lateral sign is not part of the row contract, so both
+    signs are scored by how many returns land on scanned walls/furniture; the
+    better one must explain at least min_agreement of the in-range returns or
+    the scan is not used. A return on scanned free floor, away from walls by
+    wall_margin_m (declared-pose/heading error), is something the model lacks
+    (plant leaves, a fan base, a basket) and is kept out of the plan as unknown.
+    A free model cell is never evidence of free space.
+    """
+    review=dict(used=False,discs=[],agreement=None,lateral_sign=None)
+    if not observed_cells or not points:return review
+    free={_key(c[0],c[1]) for c in observed_cells if c[2]=='free'}
+    blocked={_key(c[0],c[1]) for c in observed_cells if c[2]!='free'}
+    k=math.ceil(wall_margin_m/.1)
+    def near_blocked(cx,cy):return any((ix,iy) in blocked for ix in range(cx-k,cx+k+1) for iy in range(cy-k,cy+k+1))
+    scored=[]
+    for flip in (False,True):
+        inside=[(x,y) for px,py,x,y in _scan_world(start,points,flip) if .1<math.hypot(px,py)<=max_range_m]
+        hits=sum(1 for x,y in inside if near_blocked(*_key(x,y)))
+        scored.append((hits/len(inside) if inside else 0.,flip,inside))
+    agreement,flip,inside=max(scored,key=lambda v:v[0])
+    review.update(agreement=round(agreement,3),lateral_sign=-1 if flip else 1,
+        alternative_agreement=round(min(scored,key=lambda v:v[0])[0],3))
+    if agreement<min_agreement:return review
+    seen=set();out=[]
+    for x,y in inside:
+        cx,cy=_key(x,y)
+        if (cx,cy) not in free or near_blocked(cx,cy):continue
+        g=(round(x/cell_m),round(y/cell_m))
+        if g in seen:continue
+        seen.add(g);out.append((round(x,3),round(y,3),radius_m))
+        if len(out)>=max_discs:break
+    review.update(used=True,discs=out)
+    return review
 
 
 def plan_pose(start,odom_origin,odom):
@@ -182,4 +229,4 @@ def integrate(start,steps):
     return [x,y,yaw]
 
 
-__all__=['SCOPE','plan_survey','compile_moves','move_text','integrate','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']
+__all__=['SCOPE','plan_survey','compile_moves','move_text','integrate','unexplained_scan_discs','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']

@@ -14,7 +14,7 @@ import threading
 import time
 from uuid import uuid4
 
-from twinpulse_core.declared_route import plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs
+from twinpulse_core.declared_route import plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs, unexplained_scan_discs
 from .command_broker import BrokerError
 
 DONE_REASONS={'TASK_COMPLETED','TASK_WHEEL_ODOM_TARGET_REACHED'}
@@ -69,12 +69,21 @@ class DeclaredRouteRunner:
         if row.get('control_state') not in {'READY','PAUSED'}:
             raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
         start,basis=self._start_pose(row,scene)
+        # Physical: one stationary LiDAR ring at the declared start adds returns
+        # the scanned model cannot explain (leaves, fan base, basket) as keepouts.
+        scan_review=dict(used=False,discs=[],reason='NOT_PHYSICAL_OR_NO_SCAN')
+        points=((row.get('scan') or {}).get('points') or []) if row['kind']=='physical' and row.get('lidar_state')=='STREAMING' else []
+        if points:
+            scan_review=unexplained_scan_discs(start,points,scene.get('observed_cells'))
+            scan_review.update(stream_id=(row.get('scan') or {}).get('stream_id'),frame_sequence=(row.get('scan') or {}).get('frame_sequence'),points=len(points))
         try:
-            plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],budget_m=budget_m or (8. if row['kind']=='physical' else 6.))
+            plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],
+                budget_m=budget_m or (8. if row['kind']=='physical' else 6.),discs=scan_review['discs'])
             steps=compile_moves(start,plan['polyline'],final_yaw=start[2])
         except (ValueError,KeyError,TypeError) as exc:
             raise BrokerError('declared_route_unplannable',str(exc)[:160],status=409) from None
         return dict(plan_id=uuid4().hex,robot_id=robot_id,kind=row['kind'],start_basis=basis,
+            scan_keepouts={k:v for k,v in scan_review.items() if k!='discs'},
             scene_revision=scene['binding'][2],steps=[dict(s,text=move_text(s)) for s in steps],**plan)
 
     def start(self,plan,owner,*,context=None):
@@ -184,7 +193,7 @@ class DeclaredRouteRunner:
             row=self._row(robot_id);origin=self._measured(row)
             start=plan['start'];goals=[*plan['waypoints'],start[:2]]
             queue=[(list(q),i) for i,leg in enumerate(plan.get('legs') or [plan['polyline']]) for q in leg]
-            reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[];recoveries=0
+            reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[tuple(d) for d in plan.get('keepouts') or []];recoveries=0
             while True:
                 pose=plan_pose(start,origin,self._measured(row));step=None
                 while queue and step is None:
