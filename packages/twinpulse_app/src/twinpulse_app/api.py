@@ -1646,7 +1646,9 @@ class LocalApiServer:
         import hashlib,re as _re
         if not _re.fullmatch('[a-f0-9]{32}',str(plan_id)):raise BrokerError('route_candidates_invalid','Route record is invalid.',status=409)
         record=self.robot_fleet.root/'declared-routes'/(plan_id+'.json')
-        sha=hashlib.sha256(record.read_bytes()).hexdigest()
+        raw=record.read_bytes();sha=hashlib.sha256(raw).hexdigest()
+        if candidates is None:candidates=json.loads(raw.decode('utf-8')).get('candidates') or []
+        if not candidates:raise BrokerError('route_candidates_empty','The saved route has no LiDAR candidates.',status=409)
         obstacles=[]
         for index,candidate in enumerate(candidates[:8]):
             size=round(min(1.2,max(.2,2*candidate['radius_m'])),3)
@@ -1659,7 +1661,7 @@ class LocalApiServer:
         identity=preview['operation']['operation_id']
         operation,digest=workspace.pinned_environment_operation(identity,preview['preview_digest'],owner,claim=True)
         self._workflow().scene_edit_transaction.start(owner,operation,digest)
-        return identity
+        return identity,len(obstacles)
 
     def _workflow(self) -> ProductWorkflow:
         if self.product_workflow is None:

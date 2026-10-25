@@ -1266,12 +1266,13 @@ class ConversationService:
             pending=getattr(self,'_route_candidates',None);self._route_candidates=None
             if choice['id']!='add':return
             if not pending or pending['plan_id']!=card.get('operation_id'):
-                raise BrokerError('route_candidates_expired','These LiDAR candidates are no longer current; run the route again.',status=409)
+                # After an App restart the saved route record is the source of the candidates.
+                pending=dict(plan_id=card.get('operation_id'),candidates=None)
             try:
-                operation=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'])
+                operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'])
                 self._message('assistant','Adding %d LiDAR obstacle%s to the Twin (unknown, lidar estimate, not aligned). Follow the Twin update; Undo is available. Ask for the route again to plan around them.'
-                    %(len(pending['candidates']),'' if len(pending['candidates'])==1 else 's'),operation_id=operation)
-                self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=len(pending['candidates']),operation_id=operation)
+                    %(count,'' if count==1 else 's'),operation_id=operation)
+                self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation)
             except (BrokerError,ValueError) as error:
                 self._message('assistant','The LiDAR obstacles were not added: '+str(error)[:200])
             return
