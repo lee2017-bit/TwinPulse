@@ -69,7 +69,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
       <button type="button" disabled={!valid||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate)}>Preview obstacle</button>
     </fieldset>
     {added.length>0&&<ul style={{paddingInlineStart:20,overflowWrap:'anywhere'}}>{added.map(o=><li key={o.id}>
-      {o.label} · {o.category} · {o.evidence?.basis==='photo_estimate'?'photo estimate':'manual estimate'} · not aligned
+      {o.label} · {o.category} · {o.evidence?.basis==='photo_estimate'?'photo estimate':o.evidence?.basis==='lidar_estimate'?'LiDAR estimate':'manual estimate'} · not aligned
       <small>Center: {o.position_m.map(v=>v.toFixed(2)).join(', ')} m · uncertainty ±{o.uncertainty_m} m · {o.risk}</small>
       {o.evidence?.source_name&&<small>Reference: {o.evidence.source_name} · SHA {o.evidence.sha256}</small>}
       <button type="button" disabled={disabled} onClick={()=>remove(o.id)}>Remove {o.label} · preview</button>

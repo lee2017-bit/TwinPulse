@@ -180,6 +180,40 @@ def unexplained_scan_discs(start,points,observed_cells,*,wall_margin_m=.2,radius
     return review
 
 
+def scan_world_points(pose,points,lateral_sign,*,max_range_m=4.,max_points=240):
+    """Sensor-frame returns placed on the Twin at an odometry pose (display only, not registration)."""
+    flip=lateral_sign==-1
+    out=[[round(x,3),round(y,3)] for px,py,x,y in _scan_world(pose,points,flip) if .12<math.hypot(px,py)<=max_range_m]
+    step=max(1,math.ceil(len(out)/max_points))
+    return out[::step]
+
+
+def cluster_candidates(discs,*,cell_m=.3,min_returns=3,max_candidates=8):
+    """Group per-stop unexplained returns into object candidates (centre, radius, support).
+
+    A candidate needs several returns in one cell neighbourhood; isolated returns
+    are pose/heading noise. Candidates are suggestions for the user, never keepouts
+    or scene changes by themselves.
+    """
+    cells={}
+    for x,y,*_ in discs:cells.setdefault((round(x/cell_m),round(y/cell_m)),[]).append((x,y))
+    seen=set();out=[]
+    for key in sorted(cells,key=lambda k:-len(cells[k])):
+        if key in seen:continue
+        group=[];stack=[key]
+        while stack:
+            k=stack.pop()
+            if k in seen or k not in cells:continue
+            seen.add(k);group+=cells[k]
+            stack+=[(k[0]+dx,k[1]+dy) for dx in (-1,0,1) for dy in (-1,0,1)]
+        if len(group)<min_returns:continue
+        cx=sum(p[0] for p in group)/len(group);cy=sum(p[1] for p in group)/len(group)
+        radius=max(.1,max(math.dist((cx,cy),p) for p in group))
+        out.append(dict(position_xy_m=[round(cx,3),round(cy,3)],radius_m=round(min(radius,.6),3),returns=len(group)))
+        if len(out)>=max_candidates:break
+    return out
+
+
 def plan_pose(start,odom_origin,odom):
     """Odometry pose expressed in the plan frame, anchored at the declared start."""
     dx,dy=odom[0]-odom_origin[0],odom[1]-odom_origin[1];c,s=math.cos(-odom_origin[2]),math.sin(-odom_origin[2])
@@ -229,4 +263,4 @@ def integrate(start,steps):
     return [x,y,yaw]
 
 
-__all__=['SCOPE','plan_survey','compile_moves','move_text','integrate','unexplained_scan_discs','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']
+__all__=['SCOPE','plan_survey','compile_moves','move_text','integrate','unexplained_scan_discs','scan_world_points','cluster_candidates','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']

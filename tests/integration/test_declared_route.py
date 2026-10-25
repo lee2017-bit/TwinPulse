@@ -257,3 +257,18 @@ class DeclaredRouteChatRoutingTests(unittest.TestCase):
         fleet.navigation_scene=dict(geometry=dict(schema='scene-navigation-1.0'))
         self.assertFalse(route('Survey the room and come back'))
 if __name__=='__main__':unittest.main()
+
+
+class RouteOverlayCoreTest(unittest.TestCase):
+    def test_stop_scan_projects_with_pose_and_sign(self):
+        from twinpulse_core.declared_route import scan_world_points
+        out=scan_world_points([1.,2.,math.pi/2],[(1.,0.),(0.,1.)],1)
+        self.assertEqual(out,[[1.,3.],[0.,2.]])
+        self.assertEqual(scan_world_points([1.,2.,math.pi/2],[(0.,1.)],-1),[[2.,2.]])
+
+    def test_candidates_need_several_returns(self):
+        from twinpulse_core.declared_route import cluster_candidates
+        discs=[(2.,2.,.06),(2.05,2.02,.06),(2.1,1.98,.06),(4.,4.,.06)]
+        out=cluster_candidates(discs)
+        self.assertEqual(len(out),1);self.assertEqual(out[0]['returns'],3)
+        self.assertAlmostEqual(out[0]['position_xy_m'][0],2.05,places=2)

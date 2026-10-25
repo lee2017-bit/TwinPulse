@@ -284,6 +284,26 @@ class EnvironmentWorkspace:
                     artifact_id=artifact.artifact_id,expected_applied_revision=artifact.revision))
                 self.build_command=operation['command_id'];self.build_owner=session_id
                 return self.snapshot(workflow=self.workflow.snapshot(),operation=operation)
+            if action=='lidar_route_preview':
+                # Server-side only (route-candidate card): unknown obstacles from the
+                # declared-route LiDAR record, bound to that record's SHA-256.
+                if set(body)!={'action','request_id','obstacles','evidence'}:raise ValueError('ENVIRONMENT_EDIT_SHAPE')
+                history=self.workflow._application.scene_change_store().load();plan,site=history.replay(source)
+                environment=site.scene.environment;evidence=dict(basis='lidar_estimate',alignment_verified=False,
+                    source_name=body['evidence']['source_name'],sha256=body['evidence']['sha256'])
+                for index,obstacle in enumerate(body['obstacles'][:8]):
+                    xy=obstacle['position_xy_m'];size=obstacle['dimensions_m']
+                    identity='Added_'+hashlib.sha256((request+':%d'%index).encode('utf-8')).hexdigest()[:20]
+                    item=dict(id=identity,kind='unknown',label=obstacle['label'],catalog_version=room_item_catalog_version('unknown'),
+                        position_m=[*xy,size[2]/2],dimensions_m=size,yaw_deg=0.,observation_time_utc=None)
+                    environment=add_overlay(environment,dict(item=item,uncertainty_m=obstacle['uncertainty_m'],evidence=dict(evidence)))
+                call=SceneToolCall('imported_space','import_environment',dict(id='imported_space',environment=environment)).to_dict()
+                operation_id='environment_edit_'+hashlib.sha256(request.encode('utf-8')).hexdigest()[:32]
+                preview=self.workflow.preview_scene_edit(operation_id=operation_id,mode='change',target_call_id='imported_space',tool_call=call)
+                with self.lock:
+                    self.previews[operation_id]=dict(owner=session_id,preview=deepcopy(preview))
+                    while len(self.previews)>8:self.previews.popitem(last=False)
+                return self.snapshot(preview=preview)
             if action in {'move_preview','undo_preview','add_overlay_preview','remove_overlay_preview','photo_candidate_preview'}:
                 expected={'action','request_id','expected_scene_revision'}|(
                     {'object_id','translation_m'} if action=='move_preview' else

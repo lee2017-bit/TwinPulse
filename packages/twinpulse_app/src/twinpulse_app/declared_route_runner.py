@@ -14,7 +14,8 @@ import threading
 import time
 from uuid import uuid4
 
-from twinpulse_core.declared_route import plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs, unexplained_scan_discs
+from twinpulse_core.declared_route import (plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs,
+    unexplained_scan_discs, scan_world_points, cluster_candidates)
 from .command_broker import BrokerError
 
 DONE_REASONS={'TASK_COMPLETED','TASK_WHEEL_ODOM_TARGET_REACHED'}
@@ -25,6 +26,9 @@ MAX_RECOVERIES=2
 RECOVERY_BACKOFF_M=.25
 RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
 MAX_STEPS_FACTOR=3
+TRACE_SPACING_M=.04
+MAX_TRACE_POINTS=800
+OVERLAY_LABEL='DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED'
 
 
 def step_timeout_s(step):
@@ -44,6 +48,9 @@ class DeclaredRouteRunner:
         # Any Stop/drive/focus/disconnect through the fleet (UI button, chat, API) cancels the route.
         fleet.declared_route_cancel=self.cancel
         self.used_declarations=set()  # a declared start is valid for one run only
+        # Display-only Twin overlay (route, odometry trace, per-stop LiDAR, candidates).
+        # Replaced as a whole on each change so the fleet can read it without our lock.
+        self.anchor=None;fleet.route_overlay=None
 
     def active(self):
         with self.lock:return bool(self.current and self.current['state']=='RUNNING')
@@ -108,6 +115,12 @@ class DeclaredRouteRunner:
             self.current=dict(plan=plan,state='RUNNING',completed_steps=0,reason=None,waypoint_scans=[],
                 started_at=time.time(),context=context)
             self._save()
+            self.anchor=None
+            self.fleet.route_overlay=dict(plan_id=plan['plan_id'],robot_id=plan['robot_id'],kind=plan['kind'],
+                scene_revision=plan['scene_revision'],connection_epoch=row.get('connection_epoch'),label=OVERLAY_LABEL,
+                state='RUNNING',start=[round(v,4) for v in plan['start']],waypoints=[[round(v,4) for v in w[:2]] for w in plan['waypoints']],
+                polyline=[[round(v,4) for v in plan['start'][:2]]]+[[round(v,4) for v in p[:2]] for p in plan['polyline']],
+                reached=0,pose=None,trace=[],scans=[],candidates=[])
         threading.Thread(target=self._run,args=(owner,),daemon=True,name='DeclaredRoute').start()
         return plan
 
@@ -116,9 +129,46 @@ class DeclaredRouteRunner:
         path=folder/(self.current['plan']['plan_id']+'.json')
         tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(self.current,indent=1,sort_keys=True),encoding='utf-8');tmp.replace(path)
 
+    def _overlay(self,**changes):
+        overlay=self.fleet.route_overlay
+        if overlay and self.current and overlay['plan_id']==self.current['plan']['plan_id']:
+            self.fleet.route_overlay={**overlay,**changes}
+
+    def _track(self,row):
+        """Move the Twin ghost along the odometry pose in the plan frame (display only)."""
+        if self.anchor is None or not row:return
+        try:pose=plan_pose(*self.anchor,self._measured(row))
+        except ValueError:return
+        overlay=self.fleet.route_overlay or {};trace=overlay.get('trace') or []
+        pose=[round(v,4) for v in pose]
+        if not trace or math.dist(trace[-1],pose[:2])>=TRACE_SPACING_M:trace=(trace+[pose[:2]])[-MAX_TRACE_POINTS:]
+        self._overlay(pose=pose,trace=trace)
+
+    def _observe_stop(self,stop,pose,row):
+        """Project this stop's LiDAR ring onto the Twin and collect returns the model lacks."""
+        scan=(row or {}).get('scan') or {};points=scan.get('points') or []
+        if not points:return dict(points_world=0,unexplained=0)
+        scene=self.fleet.navigation_scene or {}
+        review=unexplained_scan_discs(pose,points,scene.get('observed_cells'))
+        sign=review.get('lateral_sign') if review.get('used') else (self.current['plan'].get('scan_keepouts') or {}).get('lateral_sign') or 1
+        world=scan_world_points(pose,points,sign)
+        overlay=self.fleet.route_overlay or {}
+        scans=(overlay.get('scans') or [])+[dict(stop=stop,points=world,lateral_sign=sign,agreement=review.get('agreement'))]
+        discs=[d for s in self.current.setdefault('_unexplained',[]) for d in s]+[list(d) for d in review['discs']]
+        self.current['_unexplained'].append([list(d) for d in review['discs']])
+        candidates=cluster_candidates(discs)
+        self._overlay(scans=scans,candidates=candidates)
+        return dict(points_world=len(world),unexplained=len(review['discs']),agreement=review.get('agreement'),lateral_sign=sign)
+
     def _finish(self,state,reason):
         with self.lock:
             if self.current['state']!='RUNNING':return
+            overlay=self.fleet.route_overlay
+            if overlay and overlay['plan_id']==self.current['plan']['plan_id']:
+                self.current['candidates']=overlay.get('candidates') or []
+                self.current['stop_scans']=overlay.get('scans') or []
+            self._overlay(state=state)
+            self.current.pop('_unexplained',None)
             self.current.update(state=state,reason=reason,finished_at=time.time());self._save()
             result=json.loads(json.dumps(self.current))
         if self.on_result:
@@ -173,6 +223,7 @@ class DeclaredRouteRunner:
             self.sleep(self.poll_s)
             row=self._row(robot_id);command=(row or {}).get('command') or {}
             if row:epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
+            self._track(row)
             if command.get('request_id')==request:acknowledged=True
             if command.get('request_id')==request and command.get('state') in TERMINAL:break
             # 2026-10-25: a step sent the instant the previous one completed was
@@ -186,6 +237,7 @@ class DeclaredRouteRunner:
         if command['state']!='COMPLETED':return ('STEP_'+command['state'],str(command.get('reason'))),row,epochs
         if row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)  # robot finishes its zero/readback
         after=self._row(robot_id) or row
+        self._track(after)
         # The completion's own zero/readback may rotate the epoch during settle;
         # adopt it unless a user Stop (cancel hook) happened meanwhile.
         if after.get('kind')=='physical' and not self.cancelled.is_set() and ((after.get('command') or {}).get('request_id')==request):
@@ -205,6 +257,7 @@ class DeclaredRouteRunner:
         try:
             row=self._row(robot_id);origin=self._measured(row)
             start=plan['start'];goals=[*plan['waypoints'],start[:2]]
+            self.anchor=(start,origin);self._track(row)
             queue=[(list(q),i) for i,leg in enumerate(plan.get('legs') or [plan['polyline']]) for q in leg]
             reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[tuple(d) for d in plan.get('keepouts') or []];recoveries=0
             steps_left=MAX_STEPS_FACTOR*len(plan['steps'])+10
@@ -217,9 +270,11 @@ class DeclaredRouteRunner:
                         if not queue or queue[0][1]!=leg:
                             reached=leg+1;scan=(row or {}).get('scan') or {}
                             with self.lock:
+                                observed=self._observe_stop(leg,pose,row)
                                 self.current['waypoint_scans'].append(dict(stop=leg,pose=[round(v,4) for v in pose],
-                                    scan_sha256=scan.get('raw_sha256') or scan.get('sha256'),frame_sequence=scan.get('frame_sequence')))
+                                    scan_sha256=scan.get('raw_sha256') or scan.get('sha256'),frame_sequence=scan.get('frame_sequence'),**observed))
                                 self._save()
+                            self._overlay(reached=reached)
                 if step is None:
                     step=heading_move(pose,start[2])
                     if step is None:break
@@ -249,6 +304,8 @@ class DeclaredRouteRunner:
                     try:legs=replan_legs(pose,remaining,scene.get('geometry') or {},scene.get('observed_cells'),kind=plan['kind'],discs=discs)
                     except (ValueError,KeyError,TypeError) as exc:return self._finish('STOPPED','RECOVERY_REPLAN_FAILED:'+str(exc)[:80])
                     goals=goals[:reached]+remaining
+                    self._overlay(polyline=[[round(pose[0],4),round(pose[1],4)]]+[[round(q[0],4),round(q[1],4)] for leg in legs for q in leg],
+                        keepouts=[[round(d[0],3),round(d[1],3),d[2]] for d in discs])
                     queue=[(list(q),reached+i) for i,leg in enumerate(legs) for q in leg]
                     continue
                 if outcome[0]!='COMPLETED':

@@ -842,7 +842,16 @@ class RobotFleet:
                         lidar=row['lidar_state'] in {'STARTING','STREAMING'},control_state=row['control_state']))
                 elif row['kind']=='physical' and len(desired)<16 and row.get('display_pose') is not None:
                     pose=row['display_pose']
-                    if pose['scene_revision']==binding[2]:
+                    route=getattr(self,'route_overlay',None)
+                    if (pose['scene_revision']==binding[2] and route and route['robot_id']==row['robot_id'] and route.get('pose')
+                            and route['scene_revision']==binding[2] and route['connection_epoch']==row.get('connection_epoch')):
+                        # Declared start + wheel odometry from the route runner: display only, never localization.
+                        if row.get('field') is not None:row['field']['twin_tracking']=dict(status='ESTIMATED',position_m=list(route['pose']),
+                            source='declared_start_wheel_odometry',aligned=False,accuracy='UNQUALIFIED',scene_revision=binding[2])
+                        desired.append(dict(robot_id=row['robot_id'],label=row['label'],visual_only=True,
+                            connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
+                            position_m=list(route['pose']),intent=None,task=None,lidar=False,control_state='UNPREPARED'))
+                    elif pose['scene_revision']==binding[2]:
                         position=list(pose['position_m'])
                         tracking=(row.get('field') or {}).get('tracking') or {}
                         key=(row.get('operation_id'),row.get('connection_epoch'),tracking.get('epoch'),pose['visual_epoch'],binding)
@@ -867,7 +876,9 @@ class RobotFleet:
                         desired.append(dict(robot_id=row['robot_id'],label=row['label'],visual_only=True,
                             connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
                             position_m=position,intent=None,task=None,lidar=False,control_state='UNPREPARED'))
-            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired))
+            route=getattr(self,'route_overlay',None)
+            route=dict(route) if route and route['scene_revision']==binding[2] else None
+            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route))
 
     def operation(self,identity,owner=None):
         if not _id(identity):raise BrokerError('fleet_operation_invalid','Invalid operation ID.',status=400)

@@ -211,6 +211,7 @@ class LocalApiServer:
             from .declared_route_runner import DeclaredRouteRunner
             self.conversation.declared_routes=DeclaredRouteRunner(self.robot_fleet,self.robot_fleet.root,
                 on_result=self.conversation.declared_route_finished)
+            self.conversation.add_route_obstacles=self._add_route_obstacles
         if workspace_devices is not None:
             robot_diagnostics = workspace_devices.diagnostics
             robot_readiness = workspace_devices.readiness
@@ -1636,6 +1637,29 @@ class LocalApiServer:
                 # A lookup failure is not an empty App scene or a physical gate.
                 pass
         return context
+
+    def _add_route_obstacles(self,owner,plan_id,candidates):
+        """User clicked "Add to Twin" on a route card: preview + Apply through the normal Twin edit transaction.
+
+        Unknown obstacles, lidar_estimate bound to the saved route record, never aligned.
+        """
+        import hashlib,re as _re
+        if not _re.fullmatch('[a-f0-9]{32}',str(plan_id)):raise BrokerError('route_candidates_invalid','Route record is invalid.',status=409)
+        record=self.robot_fleet.root/'declared-routes'/(plan_id+'.json')
+        sha=hashlib.sha256(record.read_bytes()).hexdigest()
+        obstacles=[]
+        for index,candidate in enumerate(candidates[:8]):
+            size=round(min(1.2,max(.2,2*candidate['radius_m'])),3)
+            obstacles.append(dict(label='LiDAR unknown #%d (route stop scan)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
+                dimensions_m=[size,size,.4],uncertainty_m=.3))
+        workspace=self._environment_workspace()
+        result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+plan_id,obstacles=obstacles,
+            evidence=dict(source_name=plan_id+'.json',sha256=sha)),owner)
+        preview=result['preview']
+        identity=preview['operation']['operation_id']
+        operation,digest=workspace.pinned_environment_operation(identity,preview['preview_digest'],owner,claim=True)
+        self._workflow().scene_edit_transaction.start(owner,operation,digest)
+        return identity
 
     def _workflow(self) -> ProductWorkflow:
         if self.product_workflow is None:

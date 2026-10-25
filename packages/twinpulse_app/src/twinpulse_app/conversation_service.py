@@ -221,7 +221,7 @@ class ConversationService:
                    'robot_goal_confirm':{'confirm','cancel'},'robot_goal_loop':{'loop','finish'},
                    'generation_approval':{'approve','cancel'},'scene_edit_clarify':{'cancel'},
                    'scene_sensor_policy':{'align_only','correct_walls','cancel'},
-                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'},'declared_route_run':{'run','cancel'}}
+                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'},'declared_route_run':{'run','cancel'},'declared_route_obstacles':{'add','skip'}}
         card_ids = set()
         for card in stored["cards"]:
             # SIM-alpha emits a single SIM choice; historical full-product
@@ -1054,10 +1054,21 @@ class ConversationService:
             plan=result['plan']
             # The run is bound to the chat that confirmed it; a later chat never gets its result.
             if (result.get('context') or {}).get('session_id')!=self._state['session_id']:return
-            self._message('assistant','Route '+result['state'].lower()+': %d of %d moves completed (%s). Odometry-based; not verified localization.'
-                %(result['completed_steps'],len(plan['steps']),result['reason']),operation_id=plan['plan_id'])
+            stops=[s for s in result['waypoint_scans'] if s['stop']<len(plan['waypoints'])]
+            returned=result['reason']=='ALL_STOPS_AND_RETURN_COMPLETED'
+            self._message('assistant','Route '+result['state'].lower()+': reached %d of %d stops%s; %d finite moves completed, including odometry re-aims (%s). '
+                'Twin shows the path, trace and LiDAR at each stop from the declared start + wheel odometry; not verified localization.'
+                %(len(stops),len(plan['waypoints']),' and returned to the start' if returned else '',result['completed_steps'],result['reason']),operation_id=plan['plan_id'])
             self._event('declared_route_finished',plan_id=plan['plan_id'],state=result['state'],reason=result['reason'],
-                completed_steps=result['completed_steps'],waypoint_scans=result['waypoint_scans'])
+                completed_steps=result['completed_steps'],waypoint_scans=result['waypoint_scans'],candidates=result.get('candidates') or [])
+            candidates=result.get('candidates') or []
+            if candidates and getattr(self,'add_route_obstacles',None) and not any(c['state']=='waiting' for c in self._state['cards']):
+                listing='; '.join('#%d at (%.2f, %.2f) m, %d returns'%(i+1,*c['position_xy_m'],c['returns']) for i,c in enumerate(candidates))
+                card=self._card('declared_route_obstacles','LiDAR at the stops saw %d object%s the Twin does not have: %s. '
+                    'Positions come from the declared start + wheel odometry (not localized). Add them to the Twin as unknown obstacles? '
+                    'This edits the Twin (Undo available); no robot moves.'%(len(candidates),'' if len(candidates)==1 else 's',listing),
+                    [self._choice('add','Add to Twin'),self._choice('skip','Skip')])
+                card['operation_id']=plan['plan_id'];self._route_candidates=dict(plan_id=plan['plan_id'],candidates=candidates)
             self._persist()
 
     def _offer_robot_task(self,body):
@@ -1248,6 +1259,21 @@ class ConversationService:
             raise BrokerError('chat_shape_invalid', 'A spending limit is accepted only for this generation approval.', status=400)
         if card['kind']=='declared_route_run':
             self._answer_declared_route(card,choice)
+            return
+        if card['kind']=='declared_route_obstacles':
+            card.update(state='answered',selected_choice_id=choice['id'])
+            self._message('user',choice['label'])
+            pending=getattr(self,'_route_candidates',None);self._route_candidates=None
+            if choice['id']!='add':return
+            if not pending or pending['plan_id']!=card.get('operation_id'):
+                raise BrokerError('route_candidates_expired','These LiDAR candidates are no longer current; run the route again.',status=409)
+            try:
+                operation=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'])
+                self._message('assistant','Adding %d LiDAR obstacle%s to the Twin (unknown, lidar estimate, not aligned). Follow the Twin update; Undo is available. Ask for the route again to plan around them.'
+                    %(len(pending['candidates']),'' if len(pending['candidates'])==1 else 's'),operation_id=operation)
+                self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=len(pending['candidates']),operation_id=operation)
+            except (BrokerError,ValueError) as error:
+                self._message('assistant','The LiDAR obstacles were not added: '+str(error)[:200])
             return
         if card['kind'] in {'robot_task_plan','robot_task_run'}:
             if not self.robot_tasks:raise BrokerError('robot_task_unavailable','Robot task service is unavailable.',status=409)
