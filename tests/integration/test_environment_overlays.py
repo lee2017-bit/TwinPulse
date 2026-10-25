@@ -126,6 +126,18 @@ class EnvironmentOverlayTests(unittest.TestCase):
             body['expected_scene_revision']='0'*64
             with self.assertRaisesRegex(ValueError,'SCENE_CHANGED'):workspace.action(body,'owner')
 
+    def test_workspace_lidar_route_preview_is_unknown_and_unaligned(self):
+        with self.reviewed_workspace() as (workspace,app,workflow,draft):
+            o=overlay()['item']
+            body=dict(action='lidar_route_preview',request_id='lidar-route-'+'a'*32,
+                obstacles=[dict(label='LiDAR unknown #1 (route stop scan)',position_xy_m=o['position_m'][:2],dimensions_m=[.3,.3,.4],uncertainty_m=.3)],
+                evidence=dict(source_name='a'*32+'.json',sha256='b'*64))
+            preview=workspace.action(body,'owner')['preview']
+            added=preview['operation']['tool_call']['arguments']['environment']['overlays'][0]
+            self.assertEqual(added['item']['kind'],'unknown')
+            self.assertEqual(added['evidence'],dict(basis='lidar_estimate',alignment_verified=False,source_name='a'*32+'.json',sha256='b'*64))
+            workspace.pinned_environment_operation(preview['operation']['operation_id'],preview['preview_digest'],'owner')
+
     def test_local_photo_original_hash_checked_again_at_commit(self):
         from PIL import Image
         stream=io.BytesIO();Image.new('RGB',(10,10),(1,2,3)).save(stream,format='PNG');raw=stream.getvalue()
