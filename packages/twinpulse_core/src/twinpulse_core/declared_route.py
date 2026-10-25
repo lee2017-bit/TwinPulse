@@ -7,7 +7,7 @@ finite command that keeps every robot-side guard and admission check.
 """
 import math
 from .bounded_grid_plan import NoBoundedPath
-from .robot_survey import next_observation, route_to, route_length, task_clearance
+from .robot_survey import observation_candidates, route_to, route_length, task_clearance
 
 SCOPE='DECLARED_START_MODEL_PLAN_NOT_LOCALIZED'
 MAX_LEG_M=1.0      # 1 m finite forward completed on the physical robot (2026-10-25)
@@ -18,18 +18,45 @@ MIN_LEG_M=.01
 def _wrap(a):return math.atan2(math.sin(a),math.cos(a))
 
 
-def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4):
-    """Bounded observation stops on the model, then back to the declared start."""
+def _reachable(start,geometry,observed_cells,clearance):
+    """Observation stops reachable from the start, with their path length (one A* each)."""
+    free=None if observed_cells is None else {(math.floor(c[0]/.1),math.floor(c[1]/.1)) for c in observed_cells if c[2]=='free'}
+    reachable={}
+    for p in observation_candidates(geometry):
+        if free is not None and (math.floor(p[0]/.1),math.floor(p[1]/.1)) not in free:continue
+        try:reachable[tuple(p)]=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,clearance_m=clearance))
+        except NoBoundedPath:continue
+    return reachable
+
+
+def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m):
+    """Farthest reachable stop from every visited point that still leaves the return budget.
+
+    Nearest-first (robot_survey.next_observation) circles the start; survey stops
+    should spread out so they sample different parts of the room.
+    """
+    def spread(p):return min(math.dist(p,q[:2]) for q in visited)
+    candidates=sorted((p for p in reachable if spread(p)>=min_spacing_m),key=lambda p:(-spread(p),p))
+    for goal in candidates[:12]:
+        if math.dist(pose[:2],goal)+reachable[goal]+.25>remaining:continue  # cheap lower bound
+        try:route=route_to(pose,list(goal),geometry,observed_cells=observed_cells,clearance_m=clearance)
+        except NoBoundedPath:continue
+        if route_length(pose,route)+reachable[goal]+.25<=remaining:return route,list(goal)
+    return None,None
+
+
+def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6):
+    """Bounded, spread-out observation stops on the model, then back to the declared start."""
     clearance=task_clearance(kind,planning=True)
+    reachable=_reachable(start,geometry,observed_cells,clearance)
     pose=list(start);visited=[list(start)];polyline=[];waypoints=[];remaining=budget_m;reason=None
     while len(waypoints)<max_waypoints:
-        step=next_observation(pose,start,visited,geometry,remaining,return_required=True,
-            observed_cells=observed_cells,clearance_m=clearance)
-        if step['route'] is None:reason=step['reason'];break
-        remaining-=route_length(pose,step['route'])
-        polyline+=step['route'];waypoints.append(list(step['goal']))
-        last=step['route'][-2] if len(step['route'])>1 else pose
-        pose=[*step['goal'],math.atan2(step['goal'][1]-last[1],step['goal'][0]-last[0])]
+        route,goal=_spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m)
+        if route is None:reason='NO_REACHABLE_STOP_WITH_RETURN_BUDGET';break
+        remaining-=route_length(pose,route)
+        polyline+=route;waypoints.append(list(goal))
+        last=route[-2] if len(route)>1 else pose
+        pose=[*goal,math.atan2(goal[1]-last[1],goal[0]-last[0])]
         visited.append(pose)
     else:reason='WAYPOINT_LIMIT'
     if not waypoints:raise ValueError('DECLARED_ROUTE_NO_REACHABLE_WAYPOINT:'+str(reason))
