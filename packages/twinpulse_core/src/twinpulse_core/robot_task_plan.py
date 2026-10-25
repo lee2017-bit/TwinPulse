@@ -46,6 +46,11 @@ def request_capabilities(text):
                  'survey' not in explicit_requirements(value) or relative)
 
 
+def without_in_place(value):
+    """'in place'/'in-place' describes robot motion, not the scene verb 'place'."""
+    return re.sub(r'\bin[\s-]+place\b', ' ', value)
+
+
 def task_request(text,robot_kind=None):
     """Routing hint only; never interprets or authorizes a task.
 
@@ -54,7 +59,7 @@ def task_request(text,robot_kind=None):
     """
     value = text.strip().lower()
     if immediate_stop(value):return False
-    if re.search(r'만들|생성|배치|옮겨|크기|\b(?:create|build|generate|place|resize|edit)\b', value):
+    if re.search(r'만들|생성|배치|옮겨|크기|\b(?:create|build|generate|place|resize|edit)\b', without_in_place(value)):
         return False
     if re.fullmatch(r'(?:정지|멈춰|stop|pause|all robots stop)[.!?]*', value):
         return False

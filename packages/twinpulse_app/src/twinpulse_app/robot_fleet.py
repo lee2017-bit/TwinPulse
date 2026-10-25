@@ -37,12 +37,12 @@ def parse_robot_command(text):
     if not isinstance(text, str) or len(text) > 2000:
         raise BrokerError('robot_text_invalid', 'Use a short robot instruction.', status=400)
     value=text.strip().lower()
-    from twinpulse_core.robot_task_plan import immediate_stop
+    from twinpulse_core.robot_task_plan import immediate_stop, without_in_place
     if immediate_stop(value):return {'action':'stop'}
     # A scene brief can mention robots, room dimensions and left/right furniture.
     # Those words are not a request to drive the focused robot.
     if (re.search(r'방|환경|가구|공간|장면|\b(?:room|environment|scene|furniture)\b',value)
-            and re.search(r'만들|생성|배치|놓아|놓고|create|build|generate|place|arrange',value)):
+            and re.search(r'만들|생성|배치|놓아|놓고|create|build|generate|place|arrange',without_in_place(value))):
         return None
     from twinpulse_core.sim_fleet_navigation import destination_intent
     try:destination=destination_intent(value)
