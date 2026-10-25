@@ -67,7 +67,7 @@ class BudgetedFixtureTransport(RecordingTransport):
         room={'width_m':6,'length_m':6,'height_m':2.6}
         if name=='twinpulse_room_observation':value={'summary':'Offline estimated empty room','ambiguities':['Unmeasured fixture']}
         elif name=='twinpulse_semantic_room':value={'summary':'Offline estimated empty room','room':room}
-        elif name=='twinpulse_image_observation':value={'schema_version':'1.0','summary':'Offline fixture no entities',
+        elif name=='twinpulse_image_observation':value={'schema_version':'1.5','summary':'Offline fixture no entities',
             'entities':[],'relations':[],'dimensions':[],'ambiguities':['Unmeasured fixture']}
         elif name=='twinpulse_semantic_structure':value={'summary':'Offline empty room','room':room,'inventory':[]}
         else:raise AssertionError('Unexpected fixture stage '+name)
@@ -76,6 +76,31 @@ class BudgetedFixtureTransport(RecordingTransport):
 
 
 class ModelHarnessIntegrationTests(unittest.TestCase):
+    def test_environment_move_reaches_real_configured_router_and_feedback_harness(self):
+        self.routes.save(self.route,lambda:None)
+        service,transport,recorder=self.transport()
+        body=self.body(name='twinpulse_environment_move')
+        asyncio.run(transport.complete(body,CancellationToken(),service._config))
+        self.assertEqual(len(recorder.bodies),1)
+        wire=recorder.bodies[0]
+        self.assertEqual(wire['model'],PLANNER)
+        profile=transport.harness_bindings['planner']['profile']
+        self.assertIn(profile['instructions']['feedback'],wire['messages'][0]['content'])
+        self.assertEqual(wire['response_format']['json_schema']['name'],'twinpulse_environment_move')
+        # Explicit recognition of one data schema must not open arbitrary stages.
+        with self.assertRaisesRegex(ProviderConfigurationError,'Unknown configured stage'):
+            asyncio.run(transport.complete(self.body(name='unreviewed_program'),CancellationToken(),service._config))
+        self.assertEqual(len(recorder.bodies),1)
+
+    def test_environment_move_router_rejects_images_before_final_transport(self):
+        self.routes.save(self.route,lambda:None)
+        service,transport,recorder=self.transport()
+        body=self.body(name='twinpulse_environment_move')
+        body['messages'][1]['content']=[{'type':'image_url','image_url':{'url':'data:image/png;base64,AA=='}}]
+        with self.assertRaisesRegex(ProviderConfigurationError,'Images cannot be dispatched'):
+            asyncio.run(transport.complete(body,CancellationToken(),service._config))
+        self.assertFalse(recorder.bodies)
+
     def test_library_schemas_use_the_existing_model_bound_recipe_and_observation_profiles(self):
         from twinpulse_provider.harness_profiles import apply_profile
         for role,model,name,stage in (

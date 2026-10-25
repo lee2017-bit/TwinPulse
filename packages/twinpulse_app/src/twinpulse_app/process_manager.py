@@ -568,7 +568,8 @@ class TwinPulseProcessManager:
                 suspect=False
             elif decision=='failed':
                 self._note_engine_liveness('confirmed_or_physical_not_idle',engine_status)
-                message = "engine heartbeat is stale while its PID is still running"
+                message = ("engine status file could not be read or validated; heartbeat freshness was not established"
+                           if engine_status is None else "engine heartbeat is stale while its PID is still running")
                 message += "; see local engine log"
                 self._terminal_error = ("engine_unresponsive", message)
                 self._write_status("error", "engine_unresponsive", message)
@@ -1255,6 +1256,59 @@ def _validated_loopback_url(value: object) -> str:
     return f"http://127.0.0.1:{parsed.port}"
 
 
+def _engine_status_win_api():
+    """Exact local-file API; no process or desktop automation."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    kernel.ReadFile.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    return kernel
+
+
+def _status_file_win_error(phase):
+    error = ctypes.WinError(ctypes.get_last_error())
+    error.status_read_phase = phase
+    return error
+
+
+def _read_engine_status_bytes(path: Path, limit: int):
+    """One bounded immutable publication read, with replace-compatible sharing.
+
+    CRT readers can deny DELETE sharing while the writer atomically replaces
+    the filename. A pinned Win32 handle permits READ/WRITE/DELETE sharing and
+    reads only that original file's bytes. No cache, restamp, extra health grace
+    or fallback to a previously observed physical-idle value is introduced.
+    """
+    if os.name != 'nt':
+        with path.open('rb') as stream:
+            return stream.read(limit)
+    kernel = _engine_status_win_api()
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1 | 2 | 4, None, 3, 128, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise _status_file_win_error('open_shared_delete')
+    primary = None
+    try:
+        buffer = ctypes.create_string_buffer(limit)
+        count = wintypes.DWORD()
+        if not kernel.ReadFile(handle, buffer, limit, ctypes.byref(count), None):
+            raise _status_file_win_error('read_file')
+        return buffer.raw[:count.value]
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if not kernel.CloseHandle(handle):
+            close_error = _status_file_win_error('close_handle')
+            if primary is None:
+                raise close_error
+            primary.status_close_winerror = close_error.winerror
+
+
 def _read_engine_status(path: Path):
     """Retry only transient local read/parse errors, never a health decision.
 
@@ -1263,8 +1317,9 @@ def _read_engine_status(path: Path):
     """
     failures=[]
     for attempt in range(1,4):
+        began=time.monotonic()
         try:
-            with path.open('rb') as stream:raw=stream.read(1024*1024+1)
+            raw=_read_engine_status_bytes(path,1024*1024+1)
             if len(raw)>1024*1024:
                 return None,dict(attempt=attempt,reason='oversized_status',failures=failures)
             value=json.loads(raw.decode('utf-8'))
@@ -1274,7 +1329,9 @@ def _read_engine_status(path: Path):
             info=dict(attempt=attempt,reason='missing_health_fields' if missing else 'read_recovered',missing_fields=missing,failures=failures) if missing or failures else None
             return value,info
         except (OSError,UnicodeError,json.JSONDecodeError) as error:
-            failures.append(dict(attempt=attempt,type=type(error).__name__,errno=getattr(error,'errno',None),winerror=getattr(error,'winerror',None)))
+            failures.append(dict(attempt=attempt,type=type(error).__name__,errno=getattr(error,'errno',None),
+                                 winerror=getattr(error,'winerror',None),phase=getattr(error,'status_read_phase','read_or_decode'),
+                                 elapsed_s=max(0.,time.monotonic()-began),close_winerror=getattr(error,'status_close_winerror',None)))
     return None,dict(attempt=3,reason='status_read_failed',failures=failures)
 
 

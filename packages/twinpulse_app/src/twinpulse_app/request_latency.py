@@ -37,6 +37,7 @@ def observe_operation_phase(request, name):
 class RequestLatencyProbe:
     ROUTES = {'GET /v1/product/viewport', 'GET /v1/product/viewport/current',
               'POST /v1/engine/viewport','GET /v1/product/workflow','GET /v1/product/conversation',
+              'GET /v1/product/robot-fleet','POST /v1/product/robot-fleet',
               'GET /v1/product/robot-fleet/operations/:id','GET /v1/product/projects'}
 
     def __init__(self, *, clock=time.perf_counter, emit=None, dump=None):
@@ -44,6 +45,7 @@ class RequestLatencyProbe:
         self.lock=RLock();self.collections=deque(maxlen=32);self.started={}
         self.active=False;self.observations=0
         self.observations_by_route={};self.stacks_by_route={}
+        self.route_windows={}
         self.requests={};self.stop_event=Event();self.thread=None
         self.stack_count=0;self.last_stack=-float('inf')
         self.dump=dump or (lambda:faulthandler.dump_traceback(file=sys.stderr,all_threads=True))
@@ -90,7 +92,7 @@ class RequestLatencyProbe:
                 self.collections.append((self.started.pop(generation),now,generation))
 
     def begin(self, request):
-        for name in ('_twinpulse_latency_started','_twinpulse_latency_phases','_twinpulse_read_id','_twinpulse_latency_route'):
+        for name in ('_twinpulse_latency_started','_twinpulse_latency_phases','_twinpulse_read_id','_twinpulse_latency_route','_twinpulse_error_references','_twinpulse_accepted_at_ms'):
             if hasattr(request,name):delattr(request,name)
         request._tp_probe_sequence=getattr(request,'_tp_probe_sequence',0)+1
         route=request.command+' '+request.path
@@ -117,6 +119,8 @@ class RequestLatencyProbe:
     def _watch_once(self):
         with self.lock:
             now=self.clock()
+            for route in {row['route'] for row in self.requests.values()}:
+                self._renew_route_window(route,now)
             ready=next((row for row in self.requests.values() if not row['diagnosed'] and now-row['began']>.2
                         and self.stacks_by_route.get(row['route'],0)<2),None)
             if not ready or now-self.last_stack<5:return
@@ -144,6 +148,7 @@ class RequestLatencyProbe:
         if end-began<.15:return
         with self.lock:
             route=request._twinpulse_latency_route
+            self._renew_route_window(route,end)
             if self.observations_by_route.get(route,0)>=16:return
             self.observations+=1
             self.observations_by_route[route]=self.observations_by_route.get(route,0)+1
@@ -155,6 +160,19 @@ class RequestLatencyProbe:
                 at_ms=round(time.time()*1000),elapsed_ms=round((end-began)*1000,3),
                 context_id=getattr(request,'_twinpulse_context_id',None),
                 project_id=getattr(request,'_twinpulse_project_id',None),
+                references={key:value for key,value in getattr(request,'_twinpulse_error_references',{}).items()
+                            if key in {'request_id','operation_id'} and isinstance(value,str)
+                            and re.fullmatch(r'(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})',value)},
                 phases_ms=request._twinpulse_latency_phases,gc=collections))
         except Exception:
             pass  # Optional diagnosis cannot reject a response or renew authority.
+
+    def _renew_route_window(self,route,now):
+        # Bound the sink to the existing 16 rows/2 stacks per route, per minute
+        # rather than exhausting all future diagnostics during cold startup.
+        # Called under self.lock; never sleep, write or affect request admission.
+        began=self.route_windows.setdefault(route,now)
+        if now-began>=60:
+            self.route_windows[route]=now
+            self.observations_by_route[route]=0
+            self.stacks_by_route[route]=0

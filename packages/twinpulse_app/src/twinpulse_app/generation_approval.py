@@ -92,6 +92,18 @@ class GenerationApprovals:
         self.prices = deepcopy(REVIEWED_PRICES if prices is None else prices)
         self.custom_prices=prices is not None
         self.lock = RLock()
+        # Display-only startup observation. Actual prepare/scope/dispatch still
+        # reload and validate routes; a chat poll must not walk the model and
+        # harness files on every heartbeat.
+        try:self._enabled_observation = self.enabled()
+        except Exception:self._enabled_observation = False
+
+    def observed_enabled(self):
+        return bool(self._enabled_observation and
+                    getattr(self.workflow, '_provider_configuration_state', 'unconfirmed') == 'observed')
+
+    def publish_enabled_observation(self, value):
+        self._enabled_observation = value is True
 
     def enabled(self):
         route = self.routes.load()

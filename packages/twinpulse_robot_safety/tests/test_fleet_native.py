@@ -24,7 +24,7 @@ ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'packages/twinpulse_robot_safety'))
 sys.path.insert(0,str(ROOT/'packages/twinpulse_core/src'))
 sys.path.insert(0,str(ROOT/'packages/twinpulse_core/tests'))
-from native_stream import NativeDecoder,NativeStream
+from native_stream import NativeDecoder,NativeStream,NativeCaptureSink
 from physical_profile import checked_profile,profile_objects,profile_sha256
 from fleet_control import RobotControl,NativeOutputGuard
 from fleet_worker import checked_context,checked_command,SegmentedWriter,InputLines,FleetWorker,export_sources
@@ -61,6 +61,143 @@ def packet(*,count=2,first=20.,last=22.,ring=False):
 
 
 class DecoderTests(unittest.TestCase):
+    def test_native_manifest_write_failure_cannot_emit_complete_or_restart(self):
+        events=[]
+        class Channel:
+            cleanup=staticmethod(nullcontext)
+            def __init__(self):self.n=0
+            def configure(self):pass
+            def write(self,v):return len(v)
+            def read(self,_):
+                self.n+=1
+                if self.n<=2:return packet(count=40,ring=True)+packet(count=40)
+                stream.stop();return b''
+            def drain(self,_):return 0
+            def restore(self):return True
+            def close(self):pass
+        original=Path.write_text
+        def failed_manifest(path,*args,**kwargs):
+            if path.name=='manifest.json':raise OSError('TEST_NATIVE_MANIFEST_STORAGE')
+            return original(path,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as tmp,patch.object(Path,'write_text',failed_manifest):
+            stream=NativeStream(tmp,lambda k,v:events.append((k,v)),channel_factory=Channel)
+            stream.start();stream.thread.join(2.);result=stream.close()
+            self.assertEqual(result['lidar_state'],'FAULT')
+            self.assertFalse(result['manifest']['complete'])
+            self.assertEqual(result['archive_failure'],'NATIVE_FINALIZE_OSError')
+            self.assertTrue(any(k=='fault' and v['subsystem']=='native_archive' for k,v in events))
+            self.assertFalse(next(v for k,v in events if k=='cleanup')['complete'])
+            with self.assertRaisesRegex(ValueError,'PREVIOUS_FAILURE_RECONNECT_REQUIRED'):stream.start()
+
+    def test_native_disk_stall_does_not_hold_reader_decode_or_stop_and_exact_bytes_close(self):
+        entered,release,port_restored=threading.Event(),threading.Event(),threading.Event();events=[]
+        raw=packet(count=40,ring=True)+packet(count=40)
+        class Channel:
+            cleanup=staticmethod(nullcontext)
+            def __init__(self):self.n=0
+            def configure(self):pass
+            def write(self,v):return len(v)
+            def read(self,_):
+                self.n+=1
+                if self.n==2:self.assert_entered=entered.wait(1.)
+                if self.n<=4:return raw
+                time.sleep(.005);return b''
+            def drain(self,_):return 0
+            def restore(self):port_restored.set();return True
+            def close(self):pass
+        original=NativeCaptureSink.write;channel=Channel()
+        def blocked(sink,line):
+            entered.set()
+            if not release.wait(3.):raise RuntimeError('TEST_WRITER_RELEASE_TIMEOUT')
+            return original(sink,line)
+        with tempfile.TemporaryDirectory() as tmp:
+            stream=NativeStream(tmp,lambda k,v:events.append((k,v)),channel_factory=lambda:channel,
+                segment_bytes=1024,maximum_bytes=4096)
+            try:
+                with patch.object(NativeCaptureSink,'write',blocked):
+                    stream.start();self.assertTrue(entered.wait(1.))
+                    until=time.monotonic()+1.
+                    while stream.snapshot()['frame_count']<3 and time.monotonic()<until:time.sleep(.005)
+                    self.assertGreaterEqual(stream.snapshot()['frame_count'],3)
+                    self.assertEqual(stream.snapshot()['archive']['saved'],0)
+                    stream.stop();self.assertTrue(port_restored.wait(1.))
+                    self.assertTrue(stream.thread.is_alive()) # Waiting for archive, not serial STOP.
+                    release.set();result=stream.close()
+                self.assertEqual(result['lidar_state'],'OFF');manifest=result['manifest']
+                self.assertTrue(manifest['complete']);self.assertFalse(manifest['archive']['writer_alive'])
+                self.assertEqual((manifest['archive']['accepted'],manifest['archive']['saved']),(4,4))
+                directory=Path(tmp)/manifest['stream_id']
+                self.assertEqual(b''.join(p.read_bytes() for p in sorted(directory.glob('raw-*.bin'))),raw*4)
+                stored=[json.loads(line) for p in sorted(directory.glob('chunks-*.jsonl')) for line in p.read_text().splitlines()]
+                emitted=[{k:v for k,v in value.items() if k!='base64'} for kind,value in events if kind=='raw']
+                self.assertEqual(stored,emitted)
+                for member in manifest['segments']:
+                    self.assertEqual(hashlib.sha256((directory/('raw-%06d.bin'%member['index'])).read_bytes()).hexdigest(),member['raw_sha256'])
+                    self.assertEqual(hashlib.sha256((directory/('chunks-%06d.jsonl'%member['index'])).read_bytes()).hexdigest(),member['chunks_sha256'])
+            finally:release.set();stream.close()
+
+    def test_native_archive_failure_stays_incomplete_after_serial_stop(self):
+        entered=threading.Event();events=[]
+        class Channel:
+            cleanup=staticmethod(nullcontext)
+            def configure(self):pass
+            def write(self,v):return len(v)
+            def read(self,_):
+                if entered.is_set():time.sleep(.01);return b''
+                return packet(count=40,ring=True)+packet(count=40)
+            def drain(self,_):return 0
+            def restore(self):return True
+            def close(self):pass
+        def fail(*_):entered.set();raise OSError('TEST_NATIVE_DISK_FAILURE')
+        with tempfile.TemporaryDirectory() as tmp,patch.object(NativeCaptureSink,'write',fail):
+            stream=NativeStream(tmp,lambda k,v:events.append((k,v)),channel_factory=Channel)
+            stream.start();stream.thread.join(2.)
+            result=stream.close()
+            self.assertEqual(result['lidar_state'],'FAULT')
+            self.assertFalse(result['manifest']['complete'])
+            self.assertEqual(result['manifest']['archive']['error'],'SESSION_JOURNAL_WRITE_FAILED')
+            self.assertTrue(result['manifest']['cleanup']['port_restored'])
+            self.assertIsNone(stream.control_frames()[0])
+            self.assertTrue(any(k=='fault' and v['subsystem']=='native_archive' for k,v in events))
+            with self.assertRaisesRegex(ValueError,'PREVIOUS_FAILURE_RECONNECT_REQUIRED'):stream.start()
+
+    def test_native_archive_timeout_keeps_owner_and_refuses_restart_even_after_late_exit(self):
+        from robot_journal import RobotJournal
+        entered,release=threading.Event(),threading.Event();events=[]
+        class Channel:
+            cleanup=staticmethod(nullcontext)
+            def __init__(self):self.n=0
+            def configure(self):pass
+            def write(self,v):return len(v)
+            def read(self,_):
+                self.n+=1
+                if self.n==1:return packet(count=40,ring=True)+packet(count=40)
+                self.assert_entered=entered.wait(1.);stream.stop();return b''
+            def drain(self,_):return 0
+            def restore(self):return True
+            def close(self):pass
+        original_write=NativeCaptureSink.write;original_close=RobotJournal.close
+        def blocked(sink,line):
+            entered.set()
+            if not release.wait(3.):raise RuntimeError('TEST_WRITER_RELEASE_TIMEOUT')
+            return original_write(sink,line)
+        def injected_deadline(journal,**kwargs):return original_close(journal,timeout=.01)
+        with tempfile.TemporaryDirectory() as tmp:
+            stream=NativeStream(tmp,lambda k,v:events.append((k,v)),channel_factory=Channel)
+            try:
+                with patch.object(NativeCaptureSink,'write',blocked),patch.object(RobotJournal,'close',injected_deadline):
+                    stream.start();stream.thread.join(2.)
+                    owner=stream.archive;result=stream.snapshot()
+                    self.assertFalse(result['manifest']['complete']);self.assertTrue(result['archive']['writer_alive'])
+                    with self.assertRaisesRegex(ValueError,'PREVIOUS_OWNER_NOT_REAPED'):stream.start()
+                    self.assertIs(stream.archive,owner)
+                release.set();original_close(owner,timeout=2.)
+                with self.assertRaisesRegex(ValueError,'PREVIOUS_FAILURE_RECONNECT_REQUIRED'):stream.start()
+                self.assertIs(stream.archive,owner);self.assertFalse(stream.snapshot()['manifest']['complete'])
+            finally:
+                release.set()
+                if stream.archive:original_close(stream.archive,timeout=2.)
+
     def test_saved_full_recordings_match_corrected_vendor_every_node(self):
         saved=ROOT/'outputs/robot-obstacle-prior-20261017'
         expected=ROOT/'outputs/robot-fleet-20261017/decoder-results-03'
@@ -216,6 +353,37 @@ class ProfileAndGuardTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_native_archive_failure_stays_sticky_in_operation_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worker=FleetWorker(context(),tmp,lambda *_:None)
+            try:
+                worker.emit('fault',dict(subsystem='native_archive',reason='NATIVE_ARCHIVE_ORIGINAL_FAILURE'))
+                self.assertTrue(worker.recording_failed)
+                self.assertTrue(worker.control.cancel.is_set());self.assertTrue(worker.control.stop_requested.is_set())
+                worker.emit('heartbeat',dict(lidar_state='STREAMING'))
+                self.assertEqual(worker.recording_failure_reason,'NATIVE_ARCHIVE_ORIGINAL_FAILURE')
+            finally:worker.journal.close();worker.protocol.close()
+
+    def test_fleet_disk_queue_does_not_fail_at_2048_below_declared_16mib_budget(self):
+        entered,release=threading.Event(),threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker=FleetWorker(context(),tmp,lambda *_:None)
+            original=worker.disk.write
+            def blocked(line):
+                entered.set()
+                if not release.wait(3.):raise RuntimeError('TEST_WRITER_RELEASE_TIMEOUT')
+                return original(line)
+            worker.disk.write=blocked
+            try:
+                worker.journal.append(dict(kind='first'));self.assertTrue(entered.wait(1.))
+                for i in range(2050):worker.journal.append(dict(kind='native',sequence=i))
+                self.assertEqual(worker.journal.queue.maxsize,16384)
+                self.assertEqual(worker.journal.max_pending_bytes,16*1024*1024)
+                self.assertIsNone(worker.journal.status()['error'])
+                self.assertGreater(worker.journal.status()['queued'],2048)
+            finally:release.set();status=worker.journal.close(timeout=2.);worker.protocol.close()
+            self.assertEqual(status['accepted'],status['saved']);self.assertIsNone(status['error'])
+
     def test_binding_replay_and_stop_after_dropped_sequence(self):
         c=context();self.assertEqual(checked_context(c),c)
         self.assertEqual(checked_command(command(sequence=20),c,1)['sequence'],20)
@@ -542,6 +710,32 @@ class ProtocolTests(unittest.TestCase):
             self.assertFalse(events[-1]['data']['confirmed'])
             self.assertFalse(json.loads((Path(tmp)/'receipt.json').read_text())['complete'])
 
+    def test_final_journal_drain_follows_device_stop_and_has_storage_budget(self):
+        order=[];events=[]
+        class Control:
+            def __init__(self,*_,**__):self.stop_requested=threading.Event()
+            def start(self):pass
+            def close(self):
+                order.append('CONTROL_STOPPED')
+                return dict(control_state='CLOSED',worker_reaped=True,cleanup_confirmed=True)
+        class Native:
+            def __init__(self,*_):pass
+            def stop(self):order.append('SENSOR_STOP_REQUESTED')
+            def close(self):order.append('SENSOR_CLOSED');return {'lidar_state':'OFF'}
+        with tempfile.TemporaryDirectory() as tmp:
+            worker=FleetWorker(context(),tmp,events.append,control_factory=Control,native_factory=Native)
+            worker._idle_board=lambda:None
+            original=worker.journal.close
+            def drain(**kwargs):
+                self.assertEqual(order,['SENSOR_STOP_REQUESTED','CONTROL_STOPPED','SENSOR_CLOSED'])
+                self.assertEqual(kwargs,dict(timeout=15.))
+                return original(**kwargs)
+            worker.journal.close=drain
+            incoming=InputLines(io.BytesIO(b''));incoming.failed.wait(1)
+            worker.run(incoming)
+            self.assertTrue(events[-1]['data']['recording_complete'])
+            self.assertFalse(events[-1]['data']['journal']['writer_alive'])
+
     def test_final_disk_flush_failure_reaches_pc_terminal_ack(self):
         class Control:
             def __init__(self,*_,**__):self.stop_requested=threading.Event()
@@ -562,7 +756,35 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(events[-1]['data']['subsystem'],'session')
             self.assertTrue(events[-1]['data']['confirmed'])
             self.assertFalse(events[-1]['data']['recording_complete'])
-            self.assertFalse(json.loads((Path(tmp)/'receipt.json').read_text())['complete'])
+            receipt=json.loads((Path(tmp)/'receipt.json').read_text())
+            self.assertFalse(receipt['complete'])
+            self.assertEqual(receipt['recording_failure_reason'],'FINAL_FLUSH_FIXTURE')
+            self.assertEqual(events[-1]['data']['recording_failure_reason'],'FINAL_FLUSH_FIXTURE')
+
+    def test_first_recording_fault_survives_secondary_export_and_final_flush(self):
+        class Control:
+            def __init__(self,*_,**__):self.stop_requested=threading.Event()
+            def start(self):pass
+            def close(self):return dict(control_state='CLOSED',worker_reaped=True,cleanup_confirmed=True)
+        class Native:
+            def __init__(self,*_):pass
+            def stop(self):pass
+            def close(self):return {'lidar_state':'OFF'}
+        events=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            worker=FleetWorker(context(),tmp,events.append,control_factory=Control,native_factory=Native)
+            worker._idle_board=lambda:None
+            worker._recording_fault('ORIGINAL_DISK_FAILURE')
+            original=worker.journal.close
+            worker.journal.close=lambda **kwargs:dict(original(**kwargs),error='LATER_FLUSH_FAILURE')
+            incoming=InputLines(io.BytesIO(b''));incoming.failed.wait(1)
+            worker.run(incoming)
+            receipt=json.loads((Path(tmp)/'receipt.json').read_text())
+            self.assertFalse(receipt['complete'])
+            self.assertEqual(receipt['recording_failure_reason'],'ORIGINAL_DISK_FAILURE')
+            cleanup=[e['data'] for e in events if e['kind']=='cleanup']
+            self.assertTrue(cleanup)
+            self.assertTrue(all(e['recording_failure_reason']=='ORIGINAL_DISK_FAILURE' for e in cleanup))
 
     def test_finite_360_task_unwraps_yaw_and_never_resumes_after_pause(self):
         now=[1.];events=[]

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import asdict
 import math
 from pathlib import Path
 from uuid import uuid4
@@ -135,7 +136,11 @@ class IsaacSimulationAdapter:
 
     def mission_objects_revision(self):
         scene=self.runtime.compiler.site_scene
-        return canonical_sha256(scene.to_dict()['objects']) if scene else None
+        # This is an object-only identity on every Kit update. to_dict() also
+        # computes the full scene revision, needlessly copying/hashing imported
+        # mesh data before discarding it. Retain the exact same object digest;
+        # scene Build/matches still validate the full source separately.
+        return canonical_sha256([asdict(item) for item in scene.objects]) if scene else None
 
     def update_mission_geometry(self,value):
         """Compose immutable corrected geometry only, never a transported pose."""

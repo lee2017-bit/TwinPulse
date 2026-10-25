@@ -13,6 +13,8 @@ import { ApiKeySettings } from './ApiKeySettings';
 import {RobotRegistry} from './RobotRegistry';
 import { ModelLibrary } from './ModelLibrary';
 import {isLibrarySource} from './library-workspace-types';
+import {isEnvironmentSource} from './environment-types';
+import {EnvironmentImport} from './EnvironmentImport';
 import { TwinViewport, generationActivityLabel, generationIsIncomplete, generationRetentionRevalidationLabel, inventoryCheckpointSaved, savedGenerationScene, type ViewerFault } from './TwinViewport';
 import {RobotFleet} from './RobotFleet';
 import type {RobotFleetState} from './robot-fleet-types';
@@ -173,6 +175,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const [mode, setMode] = useState<'new' | 'add' | 'change'>('new');
   const [file, setFile] = useState<File | null>(null);
   const [librarySource,setLibrarySource]=useState<File|null>(null);
+  const [usdPurposeSource,setUsdPurposeSource]=useState<File|null>(null);
+  const [environmentSource,setEnvironmentSource]=useState<File|null>(null);
+  const [showEnvironment,setShowEnvironment]=useState(false);
   const [imageRole,setImageRole]=useState<'environment_reference'|'asset_reference'>('environment_reference');
   const composerRevisions=useRef({text:0,attachment:0});
   const composerValues=useRef({text,file,imageRole});composerValues.current={text,file,imageRole};
@@ -353,7 +358,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     setState(null);setProduct(null);setWorkflow(null);setWorkflowObservation(null);setRuntime(null);setConnected(false);
     setSimulationReview(null);setRealBuild(null);setInspectionBuild(null);setViewerFault(null);
     setError(null);setConnectionError(null);setDismissed(null);setDelivery(null);
-    composerSubmissions.current.clear();editComposerText('');editComposerFile(null);setLibrarySource(null);editImageRole('environment_reference');setShowLibrary(false);setMode('new');setNewUpdates(false);setHome(false);
+    composerSubmissions.current.clear();editComposerText('');editComposerFile(null);setLibrarySource(null);setUsdPurposeSource(null);setEnvironmentSource(null);setShowEnvironment(false);editImageRole('environment_reference');setShowLibrary(false);setMode('new');setNewUpdates(false);setHome(false);
     setShowChecks(false);setShowDiagnostics(false);setShowKeys(false);setDiagnosticExecution(null);
     setSimOperationBusy(false);setRecoveringEdit(false);
     nearBottom.current=scrollPositions.current.get(selection.project_id)?.nearBottom??true;
@@ -427,6 +432,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
 
   const attachment = (candidate?: File) => {
     if (!candidate) return;
+    if(isEnvironmentSource(candidate)){
+      if(candidate.size>50*1024*1024){setError('Choose a USD source up to 50 MiB. Your scene draft has been kept.');return;}
+      setUsdPurposeSource(candidate);setShowEnvironment(false);setShowLibrary(false);setError(null);return;
+    }
     if(isLibrarySource(candidate)){
       if(candidate.size>50*1024*1024){setError('Choose a Library asset source up to 50 MiB. Your scene draft has been kept.');return;}
       setLibrarySource(candidate);setShowLibrary(true);setError(null);return;
@@ -438,7 +447,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     editComposerFile(candidate);editImageRole('environment_reference');setError(null);
   };
   useEffect(()=>{
-    if(home||showKeys||showRobots||showLibrary||showDiagnostics)return;
+    if(home||showKeys||showRobots||showLibrary||showEnvironment||usdPurposeSource||showDiagnostics)return;
     const paste=(event:ClipboardEvent)=>{
       if(event.defaultPrevented||!event.clipboardData)return;
       const target=event.target instanceof Element?event.target:document.activeElement;
@@ -450,7 +459,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     };
     document.addEventListener('paste',paste);
     return()=>document.removeEventListener('paste',paste);
-  },[file,home,showKeys,showRobots,showLibrary,showDiagnostics]);
+  },[file,home,showKeys,showRobots,showLibrary,showEnvironment,usdPurposeSource,showDiagnostics]);
 
   const acknowledge = (next: ConversationState, action: ConversationAction | ResumeSceneAction | RobotCheckAction) => {
     // A response from a retired project/session cannot acknowledge this draft.
@@ -689,10 +698,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const simulationHasOrigin=!!(simulationReview?.origin_message_id||state?.simulation_review?.origin_message_id);
   const simulationCard=state?.mode!=='REAL'&&!storageError&&workflow?.site_draft?.artifact_id&&workflow.phase==='draft_ready'?
     <section ref={simulationPanel} id="current-twin-sim-controls" aria-label="Current Twin and SIM preparation" tabIndex={-1}>
-    <SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
+    {workflow.site_draft.provider_name==='local-environment-import'?<p>Imported space · use the Twin robot controls to add a SIM robot, choose a destination and inspect its scans. Source units and real-world alignment remain uncalibrated.</p>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
       artifactId={workflow.site_draft.artifact_id} product={product} report={setError} review={simulationReview} stopHandle={simStop} showActions={!pendingChoice&&!editLocked&&!feedbackBusy} browserBlocked={!!viewerFault} chatPending={busy||!!delivery||editLocked||feedbackBusy||!sceneObservationFresh} fresh={sceneObservationFresh} sceneWriterActive={showLibrary||editLocked||feedbackBusy}
       operationBusyChanged={simOperationChanged}
-      taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/></section>:null;
+      taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/>}</section>:null;
   const restartLauncher = async (cancel: boolean) => {
     if (launcherRequest) return;
     setLauncherRequest(cancel ? 'Cancelling startup…' : 'Requesting an owned restart…');
@@ -710,6 +719,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <button onClick={()=>setShowKeys(true)} aria-expanded={showKeys}>API keys</button>
       <button onClick={()=>setShowRobots(true)} aria-expanded={showRobots}>Robots</button>
       <button onClick={()=>setShowLibrary(true)} aria-expanded={showLibrary}>Library</button>
+      <button type="button" onClick={()=>{setShowEnvironment(!showEnvironment);setUsdPurposeSource(null);setHome(false);}} aria-expanded={showEnvironment}>Import space</button>
       <button onClick={() => setShowChecks(!showChecks)} aria-expanded={showChecks} aria-label={`Readiness · ${engineReady?'Engine connected':'Needs attention'}`} title={engineReady?'Engine connected · inspect readiness checks':'Needs attention · inspect readiness checks'}>Readiness</button>
       <button onClick={() => {setDiagnosticExecution(null);setShowDiagnostics(!showDiagnostics);}} aria-expanded={showDiagnostics}>Diagnostics</button>
       <button onClick={() => {if(home){setHome(false);setShowTwin(true);}else setShowTwin(!showTwin);}} aria-expanded={showTwin&&!home}>{showTwin&&!home ? 'Hide Twin' : 'Show Twin'}</button>
@@ -722,6 +732,15 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     <Activity mode={projectActivity.busy?'hidden':'visible'}>
     {showKeys&&<ApiKeySettings api={api} close={()=>setShowKeys(false)}/>}
     {showRobots&&<RobotRegistry api={api} close={()=>setShowRobots(false)} runtimeReady={connected&&runtime?.status==='ready'}/>}
+    {usdPurposeSource&&<section className="chat-question" aria-label="USD import purpose" style={{margin:'8px 16px'}}>
+      <strong>{usdPurposeSource.name}</strong><p>How will you use this USD file?</p>
+      <button type="button" onClick={()=>{setEnvironmentSource(usdPurposeSource);setUsdPurposeSource(null);setShowEnvironment(true);setHome(false);}}>Import space</button>
+      <button type="button" onClick={()=>{setLibrarySource(usdPurposeSource);setUsdPurposeSource(null);setShowLibrary(true);}}>Library asset</button>
+      <button type="button" onClick={()=>setUsdPurposeSource(null)}>Cancel USD attachment</button>
+    </section>}
+    {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)}
+      enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
+      onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
     {showLibrary&&<ModelLibrary key={contextVersion} api={api} close={()=>setShowLibrary(false)}
       initialImport={librarySource} initialReference={imageRole==='asset_reference'?file:null} initialPrompt={text}
       sceneRevision={workflowFresh?workflow?.site_draft?.revision??null:null} placementEnabled={idleFlow&&connected&&engineReady&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
@@ -1042,7 +1061,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         <header className="chat-twin-heading"><h2>Digital Twin</h2><small>{engineReady ? 'Isaac connected' : 'Waiting for Isaac'}</small></header>
         {state?.project_id ? <TwinViewport api={api} projectId={state.project_id} generation={job} appConnected={connected}
           controlView={controlView}
-          robotFleet={fleet??undefined} onRobotSelect={selectFleetRobot}
+          robotFleet={fleet??undefined} fleetAvailable={fleetAvailable} onRobotSelect={selectFleetRobot}
           savedScene={acceptedSavedScene}
           sourcePhoto={sourceAttachment?.preview_url?{url:sourceAttachment.preview_url,name:sourceAttachment.name}:null}
           report={setViewerFault} diagnose={id=>{setDiagnosticExecution(id);setShowDiagnostics(true);}}/> : <p role="status">Connecting to the App before starting viewer reception…</p>}

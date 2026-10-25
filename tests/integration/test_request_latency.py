@@ -95,11 +95,32 @@ class RequestLatencyTests(unittest.TestCase):
         now=[0.]
         def failed(_):raise OSError('optional unavailable')
         probe=RequestLatencyProbe(clock=lambda:now[0],emit=failed,dump=lambda:None)
-        unrelated=SimpleNamespace(command='POST',path='/v1/product/robot-fleet')
+        unrelated=SimpleNamespace(command='POST',path='/v1/product/unrelated')
         probe.begin(unrelated);self.assertFalse(hasattr(unrelated,'_twinpulse_latency_started'))
         request=SimpleNamespace(command='GET',path='/v1/product/viewport/current')
         probe.begin(request);now[0]=1.;probe._watch_once();probe.finish(request)
         self.assertEqual(probe.requests,{})
+
+    def test_fleet_diagnostics_renew_bounded_window_without_copying_payload(self):
+        now=[0.];events=[];dumps=[]
+        probe=RequestLatencyProbe(clock=lambda:now[0],emit=events.append,dump=lambda:dumps.append(True))
+        for method in ('GET','POST'):
+            for _ in range(20):
+                request=SimpleNamespace(command=method,path='/v1/product/robot-fleet',
+                    headers={'Authorization':'NEVER_COPY_SECRET'},body='NEVER_COPY_BODY')
+                probe.begin(request)
+                request._twinpulse_error_references={'request_id':'b'*32,'private':'NEVER_COPY_PRIVATE','operation_id':'NOT_AN_ID'}
+                now[0]+=.3;probe.finish(request);probe._write_once()
+            self.assertEqual(probe.observations_by_route[method+' /v1/product/robot-fleet'],16)
+        self.assertEqual(len(events),32)
+        now[0]=80.;probe.begin(request)
+        self.assertFalse(hasattr(request,'_twinpulse_error_references'))
+        request._twinpulse_error_references={'request_id':'b'*32}
+        now[0]+=.3;probe._watch_once();probe.finish(request)
+        while not probe.records.empty():probe._write_once()
+        self.assertEqual(probe.observations_by_route['POST /v1/product/robot-fleet'],1)
+        self.assertEqual(events[-1]['references'],{'request_id':'b'*32})
+        self.assertTrue(dumps);self.assertNotIn('NEVER_COPY',str(events))
 
     def test_first_connection_accept_and_read_are_not_relabelled_on_keepalive(self):
         now=[2.]
@@ -109,8 +130,10 @@ class RequestLatencyTests(unittest.TestCase):
         probe.begin(request)
         self.assertAlmostEqual(request._twinpulse_latency_phases['tp_accept_wait'],200)
         self.assertAlmostEqual(request._twinpulse_latency_phases['tp_first_read'],800)
+        self.assertEqual(request._twinpulse_accepted_at_ms,1000.)
         probe.finish(request);now[0]=3.;probe.begin(request)
         self.assertEqual(request._twinpulse_latency_phases,{})
+        self.assertFalse(hasattr(request,'_twinpulse_accepted_at_ms'))
         probe.finish(request)
         request.path='/v1/product/unrelated';probe.begin(request)
         self.assertFalse(hasattr(request,'_twinpulse_latency_started'));probe.finish(request)

@@ -35,7 +35,9 @@ def _checked_box(box):
 def checked_scene_geometry(value):
     """Copied current USD geometry, usable for planning, not physical truth."""
     from copy import deepcopy
-    if (not isinstance(value,dict) or set(value)!={'epoch','targets','bounds','obstacles'}
+    legacy={'epoch','targets','bounds','obstacles'}
+    imported=legacy|{'schema','source_sha256','scene_revision','units_basis','meters_per_unit','grid'}
+    if (not isinstance(value,dict) or set(value) not in (legacy,imported)
             or type(value['epoch']) is not int or value['epoch']<0 or not _checked_box(value['bounds'])
             or not isinstance(value['targets'],list) or len(value['targets'])>128
             or not isinstance(value['obstacles'],list) or len(value['obstacles'])>128
@@ -44,16 +46,27 @@ def checked_scene_geometry(value):
         if (not isinstance(target,dict) or set(target)!={'id','kind','label','bounds'}
                 or any(not isinstance(target[k],str) or len(target[k])>160 for k in ('id','kind','label'))
                 or not _checked_box(target['bounds'])):return None
+    if set(value)==imported:
+        if (value['schema']!='scene-navigation-2.0' or value['units_basis'] not in {'authored','selected_for_sim'}
+                or type(value['meters_per_unit']) not in (int,float) or value['meters_per_unit'] not in {1.,.01,.001}
+                or any(not isinstance(value[k],str) or not re.fullmatch('[a-f0-9]{64}',value[k])
+                    for k in ('source_sha256','scene_revision'))):return None
+        try:
+            from .navigation_grid import checked_navigation_grid
+            checked_navigation_grid(value['grid'],value['bounds'])
+        except (ValueError,TypeError,KeyError):return None
     return deepcopy(value)
 
 
-def approach_plan(start,kind,targets,bounds,obstacles,discs=()):
+def approach_plan(start,kind,targets,bounds,obstacles,discs=(),*,observed_cells=None,clearance_m=.25):
     """Nearest semantic object, reachable exterior standoff, exact goal endpoint.
 
     No fallback to a farther object if the nearest is blocked. Fixed candidate,
     grid, expansion and waypoint budgets. Unknown/missing geometry is rejected.
     """
-    if (kind not in KINDS or not isinstance(start,(list,tuple)) or len(start)!=3
+    # Explicit task callers may use the user-selected 15cm envelope. Retain the
+    # existing 25cm default for standalone callers and all other validation.
+    if (type(clearance_m) not in (int,float) or not .15<=clearance_m<=.50 or kind not in KINDS or not isinstance(start,(list,tuple)) or len(start)!=3
             or any(type(n) not in (int,float) or not math.isfinite(n) for n in start)
             or not _checked_box(bounds) or not isinstance(targets,list) or len(targets)>128
             or not isinstance(obstacles,list) or len(obstacles)>128 or any(not _checked_box(b) for b in obstacles)):
@@ -66,7 +79,7 @@ def approach_plan(start,kind,targets,bounds,obstacles,discs=()):
     candidates.sort(key=lambda t:(gap(t),t['id']))
     if len(candidates)>1 and abs(gap(candidates[0])-gap(candidates[1]))<.01:
         raise ValueError('NAVIGATION_TARGET_AMBIGUOUS')
-    target=candidates[0];a,b,c,d=target['bounds'];margin=.28
+    target=candidates[0];a,b,c,d=target['bounds'];margin=clearance_m+.03
     goals=[]
     for f in (.5,.25,.75,.0,1.):
         goals.extend([(a-margin,b+(d-b)*f),(c+margin,b+(d-b)*f),
@@ -76,13 +89,13 @@ def approach_plan(start,kind,targets,bounds,obstacles,discs=()):
     for goal in goals:
         try:
             route=plan_bounded_grid(start[:2],goal,(bounds[0],bounds[2],bounds[1],bounds[3]),
-                boxes,discs,resolution=.10,clearance=.25)
+                boxes,discs,resolution=.10,clearance=clearance_m,observed_cells=observed_cells)
         except NoBoundedPath:continue
         length=sum(math.dist(x,y) for x,y in zip([start[:2],*route],route))
         if length>5.:continue  # Bounded SIM instruction, never an unbounded mission.
         return dict(target_id=target['id'],target_label=target.get('label',kind),target_kind=kind,
                     target_bounds=list(target['bounds']),goal_xy=list(goal),waypoints=[list(p) for p in route],
-                    path_length_m=length,clearance_m=.25,source='current_isaac_usd_geometry',physical_authority=False)
+                    path_length_m=length,clearance_m=clearance_m,source='current_isaac_usd_geometry',physical_authority=False)
     raise ValueError('NAVIGATION_NO_REACHABLE_APPROACH')
 
 

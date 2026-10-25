@@ -88,7 +88,7 @@ class PolicyTests(unittest.TestCase):
         result=assess_field_stop(rows,1.,.6,values)
         self.assertEqual(result['status'],'PASS')
         self.assertEqual(result['limits']['max_sample_gap_s'],.225)
-        self.assertEqual(result['policy_id'],'supervised-field-stop-coverage-1.0')
+        self.assertEqual(result['policy_id'],'supervised-field-stop-coverage-1.1')
         self.assertNotEqual(result['policy_sha256'],POLICY_SHA256)
         self.assertEqual(POLICY['max_sample_gap_s'],.1)
         self.assertEqual(self.assess(trace())['policy_sha256'],POLICY_SHA256)
@@ -108,8 +108,26 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(rows=rows):self.assertNotEqual(assess_field_stop(rows,1.,.6,values)['status'],'PASS')
         short=dict(values,wheel_interval_ms=100);rows=trace();del rows[8:10]
         self.assertEqual(assess_field_stop(rows,1.,.6,short)['reason'],'SENSOR_COVERAGE_INVALID')
-        with self.assertRaisesRegex(ValueError,'FIELD_STOP_SAMPLE_GAP_EXCEEDS_VERIFICATION_WINDOW'):
-            field_stop_policy(dict(values,wheel_interval_ms=1000))
+        wide=field_stop_policy(dict(values,wheel_interval_ms=1000))
+        self.assertEqual(wide['motion_sample_gap_s'],1.)
+        self.assertEqual(wide['max_sample_gap_s'],.225)
+
+    def test_longer_motion_budget_does_not_relax_stop_sample_coverage_or_strict_policy(self):
+        values=dict(values_of(),input_ttl_ms=1000,output_timeout_ms=1200,
+                    operator_presence_ms=1500,wheel_interval_ms=500)
+        policy=field_stop_policy(values)
+        self.assertEqual(policy['max_sample_gap_s'],.225)
+        self.assertEqual(policy['motion_sample_gap_s'],.5)
+        self.assertAlmostEqual(policy['guard_observation_limit_s'],1.45)
+        self.assertEqual(POLICY['guard_observation_limit_s'],.7)
+        self.assertEqual(POLICY['max_sample_gap_s'],.1)
+        result=assess_field_stop(trace(),1.,-.2,values)
+        self.assertEqual(result['status'],'PASS')
+        rows=trace();del rows[6:11]
+        self.assertEqual(assess_field_stop(rows,1.,-.2,values)['reason'],'SENSOR_COVERAGE_INVALID')
+        self.assertEqual(assess_field_stop(trace(),1.,-.5,values)['reason'],'COMMAND_CUTOFF_LATE')
+        self.assertEqual(assess_field_stop(trace(lambda t:20 if 1.55<=t<=1.65 else 0),1.,-.2,values)['reason'],
+                         'RESIDUAL_MOTION_EXCEEDED')
 
 
 if __name__=='__main__':unittest.main()

@@ -81,6 +81,11 @@ class RobotRegistry:
     def __init__(self, state_root):
         self.path = Path(state_root) / 'robot-registry.json'
         self.lock = RLock()
+        # Presentation only. Never used for endpoint, timing or motion admission.
+        self._display_cache = {}
+        self._display_lock = RLock()
+        self._presentation_generation = 0
+        self._display_refresh_ticket = 0
         from .robot_timing_store import RobotTimingStore
         self.timing_store=RobotTimingStore(self.path.parent)
         self._migrate_candidate_battery_settings()
@@ -146,20 +151,63 @@ class RobotRegistry:
             raise ValueError('ROBOT_REGISTRY_INVALID')
         return value
 
-    def snapshot(self):
+    def registration_snapshot(self):
+        """Fresh validated registrations, without optional sidecar I/O."""
         with self.lock:
             value = deepcopy(self._read())
             for row in value['robots']:
                 row.pop('credential_ref')
-                row['battery_display']=self._battery_config(row)
-                row['battery_display_sha256']=battery_display_sha256(row['battery_display'])
-                from .robot_adapters import instance_binding
-                try:row['timing_settings']=self.timing_store.read(row['id'],instance_binding(row)['sha256'])
-                except (ValueError,KeyError,OSError):
-                    row['timing_settings']=None
-                    row['timing_settings_error']='Saved adapter/binding or timing data needs review; no settings or authority restored.'
                 row.update(connection_state='unverified', motion_authorized=False)
             return value
+
+    def registered(self, robot_id):
+        return next((row for row in self.registration_snapshot()['robots'] if row['id']==robot_id), None)
+
+    def battery_display_for_view(self, robot_id, binding_sha256):
+        """No disk access: a settings-view projection, not a control cache."""
+        with self._display_lock:
+            return deepcopy(self._display_cache.get((robot_id, binding_sha256)))
+
+    def snapshot(self):
+        from .robot_adapters import instance_binding
+        with self.lock:
+            value = self.registration_snapshot()
+            registered = deepcopy(value)
+            with self._display_lock:
+                generation = self._presentation_generation
+                self._display_refresh_ticket += 1
+                ticket = self._display_refresh_ticket
+        # A slow/missing settings disk must not own the registration mutex or
+        # delay a pinned session's Stop. Explicit settings GET still validates
+        # the sidecars; control and telemetry snapshots do not read them.
+        displays = {}
+        for row in value['robots']:
+            row['battery_display']=self._battery_config(row)
+            row['battery_display_sha256']=battery_display_sha256(row['battery_display'])
+            try:
+                binding=instance_binding(row)['sha256']
+                displays[(row['id'],binding)]=deepcopy(row['battery_display'])
+                row['timing_settings']=self.timing_store.read(row['id'],binding)
+            except (ValueError,KeyError,OSError):
+                row['timing_settings']=None
+                row['timing_settings_error']='Saved adapter/binding or timing data needs review; no settings or authority restored.'
+        with self.lock:
+            same_registration = self.registration_snapshot() == registered
+            # Timing cleanup publishes without registry.lock. Compare and
+            # publish under the same presentation lock as invalidation; a
+            # later explicit refresh also supersedes any slow older refresh.
+            with self._display_lock:
+                if (same_registration and generation == self._presentation_generation
+                        and ticket == self._display_refresh_ticket):
+                    self._display_cache.update(displays)
+        return value
+
+    def _invalidate_presentation(self):
+        # Also called by the lock-inversion-safe timing cleanup publisher.
+        # A partial sidecar write/CAS failure is not a successful refresh.
+        with self._display_lock:
+            self._presentation_generation += 1
+            self._display_cache.clear()
 
     def active(self):
         with self.lock:
@@ -223,6 +271,7 @@ class RobotRegistry:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
+            self._invalidate_presentation()
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -262,6 +311,7 @@ class RobotRegistry:
             # Config hash also catches a process crash between the two atomic
             # local publishes. A stale client never overwrites that saved edit.
             if battery_display_sha256(self._battery_config(row))!=expected_display_sha256:raise ValueError('ROBOT_REGISTRY_CHANGED')
+            self._invalidate_presentation()
             self._write_battery(robot_id,checked)
             self._publish_locked(value,expected_revision)
             return deepcopy(checked)

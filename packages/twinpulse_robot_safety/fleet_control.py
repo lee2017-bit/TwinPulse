@@ -163,6 +163,7 @@ class RobotControl:
     def __init__(self, context, directory, emit, native, *, clock=time.monotonic):
         self.context, self.directory, self.emit, self.native = context, Path(directory), emit, native
         self.clock = clock; self.lock = threading.RLock(); self.queue = queue.Queue(maxsize=32)
+        self.admission_lock=threading.RLock()
         self.cancel = threading.Event(); self.stop_requested = threading.Event()
         self.timing_values=values_of(context.get('timing_profile'))
         self.native.timing_values=deepcopy(self.timing_values)
@@ -205,7 +206,18 @@ class RobotControl:
         return value
 
     def submit(self, command):
-        if self.thread.ident is not None and not self.thread.is_alive() and command['action'] not in {'stop','close'}:
+        with self.admission_lock:return self._submit_locked(command)
+
+    def _submit_locked(self, command):
+        unavailable=self.cancel.is_set() or (self.thread.ident is not None and not self.thread.is_alive())
+        if unavailable and command['action']=='stop':
+            # A past finally/OFF is not execution of this new request.
+            self.stop_requested.set()
+            self.emit('command',dict(request_id=command['request_id'],action='stop',status='REJECTED',
+                reason='CONTROL_WORKER_EXITED_RECONNECT_REQUIRED',execution='NOT_EXECUTED'))
+            return
+        if unavailable and command['action']=='close':return
+        if unavailable:
             raise ValueError('CONTROL_WORKER_EXITED_RECONNECT_REQUIRED')
         if command['action'] in {'stop','close'}:
             self.stop_requested.set()
@@ -254,6 +266,61 @@ class RobotControl:
         if self.release is not None:
             from runtime import HOME
             if (HOME/'current').resolve(strict=True)!=self.release:raise ValueError('RELEASE_CHANGED')
+        if self._finite_execution():self._check_finite_execution()
+
+    def _finite_execution(self):
+        task=getattr(self,'task',None)
+        return bool(task and task.get('kind')!='estimated_object_route' and task.get('status')=='RUNNING'
+            and task.get('execution',{}).get('policy')=='ROBOT_LOCAL_FINITE_SUPERVISED_V1')
+
+    def _execution_binding(self):
+        return dict(**{key:self.context.get(key) for key in
+            ('operation_id','robot_id','project_id','connection_epoch','boot_id','release_id')},
+            twin_context_id=self.context.get('source_twin_context',{}).get('context_id'))
+
+    def _activate_finite_execution(self, request_source_s):
+        # Diagnostic field trials (including presence-gap/bootstrap), manual
+        # driving and estimated object routes retain their original policy.
+        if self.field_trial and self.field_trial.get('status')=='RUNNING':return
+        task=self.task;command=self.drive_command
+        if (not task or task.get('status')!='RUNNING' or not command or command['action']!='task'
+                or not self.link.enabled or not self.gate.active or self.gate.source_created is None):
+            raise ValueError('TASK_EXECUTION_NOT_ARMED')
+        self.gate.check() # The fresh post-arm/initial admission must still fit1s.
+        task['execution']=dict(policy='ROBOT_LOCAL_FINITE_SUPERVISED_V1',
+            binding=self._execution_binding(),request_id=command['request_id'],motion_epoch=command['motion_epoch'],
+            generation=self.gate.generation,request_source_s=request_source_s,
+            supervision_source_s=self.gate.source_created,deadline_s=task['deadline'],
+            direction=task['direction'],amount=task['amount'],origin=deepcopy(task['origin']),
+            decision_sequence=0,decision=None)
+        self.gate.hold_end=task['deadline']
+        receipt=self.state.get('command')
+        if receipt:self._update(command=dict(receipt,execution_policy=task['execution']['policy']))
+        self._update(task=task)
+
+    def _check_finite_execution(self, expected_task=None, expected_sequence=None):
+        task=self.task;command=self.drive_command
+        if not self._finite_execution() or (expected_task is not None and task is not expected_task):
+            raise ValueError('TASK_EXECUTION_REVOKED')
+        authority=task['execution'];now=self.clock()
+        if (not command or command.get('action')!='task' or not self.gate.active
+                or authority['binding']!=self._execution_binding()
+                or authority['request_id']!=command['request_id']
+                or authority['motion_epoch']!=command['motion_epoch']
+                or authority['generation']!=self.gate.generation
+                or authority['deadline_s']!=task['deadline'] or authority['direction']!=task['direction']
+                or authority['amount']!=task['amount'] or authority['origin']!=task['origin']
+                or expected_sequence is not None and authority['decision_sequence']!=expected_sequence):
+            raise ValueError('TASK_EXECUTION_BINDING_CHANGED')
+        if not math.isfinite(now) or not 0<=now-authority['supervision_source_s']:
+            raise ValueError('TASK_EXECUTION_CLOCK_INVALID')
+        if now>=authority['deadline_s']:raise MotionPaused('TASK_DEADLINE')
+        # Presence is measured from the ORIGINAL accepted source, not receipt.
+        # A delayed/rejected watch cannot grant a new five-second lifetime.
+        if now-authority['supervision_source_s']>=self.gate.presence_s:
+            raise MotionPaused('TASK_SUPERVISION_EXPIRED')
+        if self.field_mode and now>=self.field_until:raise MotionPaused('FIELD_SUPERVISION_EXPIRED')
+        self.gate.check(motion_input=False)
 
     def _qualification(self):
         from runtime import HOME
@@ -456,17 +523,21 @@ class RobotControl:
         self.emit('cleanup',result)
         return result
 
-    def _pause(self, reason, *, repeated_observation=False, fault_diagnostic=None, input_fault_diagnostic=None):
+    def _pause(self, reason, *, repeated_observation=False, fault_diagnostic=None, input_fault_diagnostic=None, force_readback=False, stop_request_id=None):
         # Capture only the exception-bound ORIGINAL failed check. release()
         # below services ROS and may replace the current check with a success.
         original_fault=deepcopy(fault_diagnostic)
         pause_requested_s=self.clock()
+        last_publish=getattr(self,'last_publish',None)
         input_diagnostic=dict(pause_requested_s=pause_requested_s,
+            task_execution=deepcopy(self.task.get('execution')) if self.task else None,
             gate_at_handler_last_admission=deepcopy(getattr(self.gate,'last_admission',None)),
             original_failed_gate=deepcopy(input_fault_diagnostic),
             source_created_s=getattr(self.gate,'source_created',None),
             deadline_s=getattr(self.gate,'deadline',None),
-            last_publish_s=getattr(self,'last_publish',None),
+            # -inf is the control-loop's NOT_YET_PUBLISHED sentinel, not a
+            # source timestamp. Keep it internally; strict JSON uses null.
+            last_publish_s=None if last_publish==-math.inf else last_publish,
             last_publication_source_s=getattr(self,'last_publication_source',None),
             publication_attempt=deepcopy(getattr(self.link,'publication_diagnostic',None)),
             scope='PRE_RELEASE_HANDLER_STATE_PLUS_EXCEPTION_BOUND_ORIGINAL_CHECK_WHEN_PRESENT')
@@ -484,7 +555,7 @@ class RobotControl:
         if self.guard:self.guard.reset()
         release_confirmed=False
         try:
-            if self.link is not None and (self.link.enabled or self.link.sensor and self.link.sensor.torque
+            if self.link is not None and (force_readback or self.link.enabled or self.link.sensor and self.link.sensor.torque
                     or command and command['state'] in {'COMPLETED','ESTIMATE_REACHED'}):
                 self.link.release();release_confirmed=True
         finally:
@@ -510,9 +581,11 @@ class RobotControl:
             self.emit('control_pause',dict(pause_id=f"{self.context.get('connection_epoch','local')}:{self.pause_sequence}",
                 reason=reason,observed_monotonic_s=self.clock(),motion_generation=self.gate.generation,
                 zero_off_readback_confirmed=release_confirmed,
+                stop_request_id=stop_request_id,
                 input_diagnostic=input_diagnostic,
                 motion_observation=observed,
                 **({'fault_diagnostic':original_fault} if original_fault is not None else {})))
+        return release_confirmed
 
     def _start_motion_observation(self,command,direction):
         """Bounded diagnostic only: wheel change is never independent body proof."""
@@ -575,8 +648,14 @@ class RobotControl:
         p=command['payload']
         if p.get('motion_generation') != self.gate.generation:raise ValueError('MOTION_GENERATION_CHANGED')
         previous=self.gate.source_created
-        result=self.gate.accept({'sequence':command['sequence'],'action':action,
-            'challenge':p.get('challenge'),'age_ms':p.get('source_age_ms')})
+        packet={'sequence':command['sequence'],'action':action,
+            'challenge':p.get('challenge'),'age_ms':p.get('source_age_ms')}
+        if action=='watch' and self._finite_execution():
+            self._check_finite_execution()
+            result=self.gate.accept(packet,motion_input=False)
+            authority=self.task['execution']
+            authority['supervision_source_s']=max(authority['supervision_source_s'],self.gate.source_created)
+        else:result=self.gate.accept(packet)
         if self.link is not None and hasattr(self.link,'timing_measurements'):
             probe=self.link.timing_measurements;now=self.clock();load=getattr(self.link,'timing_load','base')
             probe.observe('input_age_ms',result[1]*1000,now,load)
@@ -647,13 +726,21 @@ class RobotControl:
                 if pose is None:raise ValueError('FRESH_ODOM_TASK_PROGRESS_REQUIRED')
                 self.task['origin']=pose;self.task['previous_pose']=pose
                 self.task['status']='RUNNING';self.direction=self.task['direction']
+                self._activate_finite_execution(self.task['request_source_s'])
                 self._update(control_state='ACTIVE',reason=None)
             if self.task:self.gate.hold_end=self.task['deadline']
         elif action in {'stop','close'}:
             if action=='close':self.field_until=0.
-            self._pause('OPERATOR_STOP');self.stop_requested.clear()
+            confirmed=self._pause('OPERATOR_STOP',force_readback=True,stop_request_id=command['request_id']);self.stop_requested.clear()
             if self.field_trial and self.field_trial['status']=='RUNNING':self._finish_field('CANCELLED','OPERATOR_STOP')
-            self._update(applied_motion_epoch=command['motion_epoch'])
+            receipt=dict(request_id=command['request_id'],operation_id=self.context['operation_id'],
+                connection_epoch=self.context['connection_epoch'],motion_epoch=command['motion_epoch'],
+                observed_monotonic_s=self.clock(),zero_off_readback_confirmed=confirmed,
+                readback=deepcopy(getattr(self.link,'stop_diagnostic',None)))
+            self._update(stop_receipt=receipt)
+            self.emit('command',dict(action=action,status='COMPLETED' if confirmed else 'UNCONFIRMED',**receipt))
+            if confirmed:self._update(applied_motion_epoch=command['motion_epoch'])
+            else:raise ValueError('TASK_STOP_READBACK_UNCONFIRMED')
         elif action in {'drive','task'}:
             if self.task and self.task.get('kind')=='estimated_object_route':
                 self._pause('ROUTE_SUPERSEDED_NEW_INPUT_REQUIRED')
@@ -687,7 +774,8 @@ class RobotControl:
                 velocity=self._velocity(direction)
                 speed=abs(velocity[0] or velocity[1])
                 task=dict(direction=direction,amount=amount,origin=pose,deadline=self.clock()+min(120.,amount/speed+2.),
-                    progress_basis='wheel_odom_not_independent_body',status='RUNNING',rotation=0.,previous_pose=pose)
+                    progress_basis='wheel_odom_not_independent_body',status='RUNNING',rotation=0.,previous_pose=pose,
+                    request_source_s=self.gate.source_created)
                 self._update(command=dict(request_id=command['request_id'],text=p.get('text',f'{direction} {amount:g}'),
                     kind='finite',state='ACCEPTED',reason=None,result_basis='wheel_odom_not_independent_body'))
             self.drive_command=deepcopy(command)
@@ -706,6 +794,7 @@ class RobotControl:
             self.direction=direction
             if action=='task':
                 self.task=task
+                self._activate_finite_execution(task['request_source_s'])
             self._update(control_state='ACTIVE',reason=None)
         elif action=='qualify':self._qualify(command)
         else:raise ValueError('CONTROL_ACTION_INVALID')
@@ -815,9 +904,39 @@ class RobotControl:
             write_json(self.directory/'qualification.json',dict(result,cleanup=cleanup))
             raise ValueError('PHYSICAL_QUALIFICATION_FAILED')
 
+    def task_observation(self,status):
+        """Small source-bound observation, separate from displayed scan/ICP."""
+        from twinpulse_core.physical_task_observation import StationaryTaskCollector
+        if not hasattr(self,'task_collector') or getattr(self,'task_collector_link',None) is not self.link:
+            self.task_collector_link=self.link
+            self.task_collector=StationaryTaskCollector(self.context)
+        collector=self.task_collector;packet=None;reason=None
+        try:
+            collector.check_pose(status.get('pose'),self.clock(),self.timing_values)
+            receipt=status.get('stop_receipt') or {};command=status.get('command') or {}
+            verified=(receipt.get('zero_off_readback_confirmed') is True
+                and receipt.get('motion_epoch')==status.get('applied_motion_epoch')
+                or command.get('state')=='COMPLETED' and command.get('stop_readback_confirmed') is True)
+            disabled=status.get('control_state')=='PAUSED' and self.link is not None and not getattr(self.link,'enabled',True) and verified
+            frame=self.native.latest_frame() if disabled else None
+            points=frame_points(frame,self.field_config,self.clock(),timing_values=self.timing_values) if disabled and self.field_config else []
+            packet=collector.sample(status.get('pose'),frame,points,list(self.link.rows) if self.link else [],self.field_config,self.clock(),
+                status.get('applied_motion_epoch'),disabled=disabled,timing_values=self.timing_values,stop_generation=status.get('motion_generation',0))
+        except (ValueError,KeyError,TypeError) as exc:reason=reason_code(exc)
+        return dict(task_local_observation=packet,task_local_state=dict(collector.status(),waiting_reason=reason))
+
     def _tick(self):
         if self.link is None:return
         began=self.clock()
+        execution_task=self.task if self._finite_execution() else None
+        decision_sequence=None
+        if execution_task is not None:
+            authority=execution_task['execution'];authority['decision_sequence']+=1
+            decision_sequence=authority['decision_sequence']
+            # A genuinely NEW robot-local controller decision starts before
+            # sensor/progress computation, never immediately before publish.
+            authority['decision']=dict(sequence=decision_sequence,started_s=began,
+                source_basis='ROBOT_LOCAL_FINITE_CONTROLLER',request_source_s=authority['request_source_s'])
         if hasattr(self.link,'timing_measurements'):
             self.link.timing_load=('tracking_recording' if self.tracker is not None else
                 'lidar' if self.native.snapshot().get('lidar_state')=='STREAMING' else 'base')
@@ -856,7 +975,9 @@ class RobotControl:
                 if now-self.last_timing_summary>=1.:
                     self.last_timing_summary=now
                     self._update(timing_measurement=probe.snapshot(),output_timing=deepcopy(getattr(self.link,'output_timing',None)))
-        self._safety();self.gate.check()
+        self._safety()
+        if execution_task is None:self.gate.check()
+        else:self._check_finite_execution(execution_task,decision_sequence)
         route_active=bool(self.task and self.task.get('kind')=='estimated_object_route')
         if route_active:self._route_tick()
         if self.direction is None:
@@ -896,35 +1017,46 @@ class RobotControl:
                     remaining=max(0.,self.task['amount']-progress),unit='m' if direction in {'forward','backward'} else 'rad'))
         if self.gate.source_created is None:raise MotionPaused('FRESH_INPUT_REQUIRED')
         if self.clock()-self.last_publish<.05:return
+        source_created=began if execution_task is not None else self.gate.source_created
         # C++ requires strictly increasing original source stamps. Re-sending
         # one still-valid lease every 50ms makes ROS/steady-clock conversion
         # jitter replay/backdate the same input. Wait for a new admitted input;
         # never restamp the old one or renew its watchdog lifetime.
-        if self.last_publication_source is not None and self.gate.source_created<=self.last_publication_source:
+        if self.last_publication_source is not None and source_created<=self.last_publication_source:
             # The prior C++ output can still be active. Skipping a duplicate
             # publication must not skip a newer obstacle/progress/age veto.
             self.guard(*self._velocity(self.direction),self.gate.source_created)
             self.gate.check();self._safety()
             return
         v,w=self._velocity(self.direction)
-        decision=self.link.publish(v,w,self.clock()-self.gate.source_created,before_publish=self._safety)
+        def before_publish():
+            self._safety()
+            if execution_task is not None:
+                self._check_finite_execution(execution_task,decision_sequence)
+                diagnostic=getattr(self.link,'publication_diagnostic',None)
+                if diagnostic is not None:
+                    diagnostic['task_decision']=dict(execution_task['execution']['decision'],
+                        request_id=execution_task['execution']['request_id'],
+                        generation=execution_task['execution']['generation'])
+        decision=self.link.publish(v,w,self.clock()-source_created,before_publish=before_publish)
         if self.last_publication_source is not None and hasattr(self.link,'timing_measurements'):
             self.link.timing_measurements.observe('output_pressure_ms',(self.clock()-self.last_publication_source)*1000,
                 self.clock(),self.link.timing_load)
         if self.field_trial and self.field_trial['status']=='RUNNING':
             self.field_trial['publications']=self.field_trial.get('publications',0)+1
         self.last_publish=self.clock()
-        self.last_publication_source=self.gate.source_created
+        self.last_publication_source=source_created
         observation=getattr(self,'motion_observation',None)
         if observation and observation['state']=='OBSERVING':
             observation.update(published_count=observation['published_count']+1,
-                last_published_request_id=self.drive_command['request_id'],last_publication_source_s=self.gate.source_created,
+                last_published_request_id=self.drive_command['request_id'],last_publication_source_s=source_created,
                 last_generation=self.gate.generation,last_published_generation=self.gate.generation)
             self._observe_motion()
         self._update(applied_motion_epoch=self.drive_command['motion_epoch'])
         self.emit('command',{'request_id':self.drive_command['request_id'],'action':self.drive_command['action'],
             'status':'PUBLISHED','direction':self.direction,'linear_m_s':v,
-            'angular_rad_s':w,'source_created_s':self.gate.source_created,
+            'angular_rad_s':w,'source_created_s':source_created,
+            'source_basis':'ROBOT_LOCAL_FINITE_CONTROLLER' if execution_task is not None else 'ORIGINAL_REMOTE_INPUT',
             'applied_motion_epoch':self.drive_command['motion_epoch'],'guard':self.guard.last_result,
             'progress':self.guard.progress,'publisher_decision':decision})
 
@@ -966,11 +1098,23 @@ class RobotControl:
             self._update(control_state='FAULT',reason=reason_code(exc))
             self.emit('fault',{'subsystem':'control','reason':reason_code(exc)})
         finally:
+            # Serialize the final queue boundary with submit: a Stop accepted
+            # just before cancellation must receive its own terminal result.
+            with self.admission_lock:
+                self.cancel.set();pending_stops=[]
+                while True:
+                    try:pending=self.queue.get_nowait()
+                    except queue.Empty:break
+                    if pending['action']=='stop':pending_stops.append(pending)
             self.field_until=0.
             self.direction=None;self.task=None;self.drive_command=None;self.gate.pause('SESSION_CLOSED')
             try:
                 if self.lease is not None:self._cleanup()
             finally:
+                for pending in pending_stops:
+                    try:self.emit('command',dict(request_id=pending['request_id'],action='stop',status='REJECTED',
+                        reason='CONTROL_WORKER_EXITED_RECONNECT_REQUIRED',execution='NOT_EXECUTED'))
+                    except Exception as error:self._update(stop_terminal_delivery_error=reason_code(error))
                 # A cancel can skip the loop's Stop branch. No observation may
                 # remain live after the owner ends, including no-device exits.
                 ended=self._observe_motion(reason=self.state.get('reason') or 'SESSION_CLOSED',ended=True,
@@ -1009,7 +1153,14 @@ class RobotControl:
         # nonce checks, and always give the control cycle/Stop their turn.
         began=self.clock();processed=0
         while command is not None:
-            if self.stop_requested.is_set() or self.cancel.is_set():break
+            # A Stop arriving during queue.get already set stop_requested.
+            # Do not discard its own epoch/ACK; all motion still stays blocked.
+            if self.cancel.is_set():
+                if command['action']=='stop':
+                    self.emit('command',dict(request_id=command['request_id'],action='stop',status='REJECTED',
+                        reason='CONTROL_WORKER_EXITED_RECONNECT_REQUIRED',execution='NOT_EXECUTED'))
+                break
+            if self.stop_requested.is_set() and command['action']!='stop':break
             generation=self.gate.generation
             try:
                 self._command(command)

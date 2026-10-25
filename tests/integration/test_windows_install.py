@@ -79,6 +79,27 @@ class WindowsInstallTests(unittest.TestCase):
         self.assertEqual(marker.read_bytes(),original)
         self.assertFalse((self.installed/'active-release.json').exists())
 
+    def test_required_feature_barrier_rejects_legacy_install_before_pointer_change(self):
+        from twinpulse_app.release_contract import require_data_capability
+        state=self.root/'profile/TwinPulse/runtime'
+        require_data_capability(state,'environment-static-1.1')
+        marker=(state/'data-compatibility.json').read_bytes()
+        # No contract must not inherit the new installer's feature support.
+        with self.assertRaisesRegex(ValueError,'DATA_CAPABILITY'):
+            install_package(self.source,self.installed)
+        self.assertFalse((self.installed/'active-release.json').exists())
+        self.manifest['data_contract']=dict(DATA_CONTRACT)
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        self.assertEqual(install_package(self.source,self.installed)['build_id'],'build_1')
+        self.assertEqual((state/'data-compatibility.json').read_bytes(),marker)
+        self.manifest['build_id']='old_compatible_epoch_only'
+        self.manifest['data_contract']={k:v for k,v in DATA_CONTRACT.items() if k!='read_capabilities'}
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        active=(self.installed/'active-release.json').read_bytes()
+        with self.assertRaisesRegex(ValueError,'DATA_CAPABILITY'):
+            install_package(self.source,self.installed)
+        self.assertEqual((self.installed/'active-release.json').read_bytes(),active)
+
     def test_kernel_maintenance_lock_excludes_concurrent_installer_without_stale_lock(self):
         state=self.root/'profile/TwinPulse/runtime'
         with MaintenanceLock(state):

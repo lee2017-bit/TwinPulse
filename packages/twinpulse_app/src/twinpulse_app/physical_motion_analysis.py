@@ -16,6 +16,7 @@ import time
 
 from .physical_live_history import MAX_LINE, _json
 from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES, EVENT_ARCHIVE_SEGMENTS
+from .scan_fit_diagnostics import uniform_ring,segment_fit
 
 SCHEMA='physical-motion-review-1.0'
 MAX_SCANS=12000
@@ -94,7 +95,8 @@ def read_archive(directory,operation,project,deadline):
                         continue
                     key=(d.get('stream_id'),d.get('frame_sequence'))
                     if not isinstance(key[0],str) or type(key[1]) is not int or not re.fullmatch('[a-f0-9]{64}',str(d.get('raw_sha256',''))):continue
-                    item=dict(start=start,end=end,points=points[::max(1,len(points)//120)][:120],stream_id=key[0],frame_sequence=key[1],raw_sha256=d['raw_sha256'])
+                    item=dict(start=start,end=end,points=uniform_ring(points,120),points_full=points,
+                        input_point_count=len(points),stream_id=key[0],frame_sequence=key[1],raw_sha256=d['raw_sha256'])
                     if key in scans and scans[key]!=item:raise ValueError('REVIEW_CONFLICTING_SCAN')
                     scans[key]=item
                     if len(scans)>MAX_SCANS:raise ValueError('REVIEW_SCAN_BOUND')
@@ -236,6 +238,34 @@ def analyse(archive,fit,deadline):
         selected=scans[before:after+1] if before is not None and after is not None and after>before else []
         covered=bool(selected and 0<=w['start']-selected[0]['end']<=EDGE_GAP_S and 0<=selected[-1]['start']-w['end']<=EDGE_GAP_S)
         w['lidar']=chain(selected) if covered else dict(status='INSUFFICIENT_WINDOW_EDGE_COVERAGE')
+        # An independent endpoint method is diagnostic only. It must not bypass
+        # the strict interval/baseline verdict above or certify a 360-degree turn:
+        # identical endpoints cannot distinguish no turn from a full revolution.
+        diagnostics=dict(status='INSUFFICIENT_WINDOW_EDGE_COVERAGE',control_authority=False,
+            body_motion_verified=False,endpoint_cannot_measure_full_revolution=True)
+        if covered and selected[0]['stream_id']==selected[-1]['stream_id']:
+            first,last=selected[0],selected[-1];nominal=configured_before(first['start'])
+            pa=first.get('points_full',first['points']);pb=last.get('points_full',last['points'])
+            if nominal:pa,pb=transform(pa,config),transform(pb,config)
+            variants=[]
+            for phase in (0,1):
+                try:
+                    shifted=pb[phase:]+pb[:phase]
+                    variants.append(segment_fit(pa,shifted,deadline=min(deadline,time.monotonic()+.5)))
+                except ValueError as error:variants.append(dict(status='INCONCLUSIVE',reason=str(error)[:80]))
+            diagnostics.update(status='LOCAL_HYPOTHESES_ONLY',method='POINT_TO_SEGMENT_OFFLINE_1',variants=variants,
+                original_interval_qualified=w['lidar'].get('status')=='ESTIMATED_UNQUALIFIED',
+                first_frame=first['frame_sequence'],last_frame=last['frame_sequence'],
+                first_raw_sha256=first['raw_sha256'],last_raw_sha256=last['raw_sha256'],
+                start_s=first['start'],end_s=last['end'],
+                first_input_points=len(pa),last_input_points=len(pb))
+            if all('delta' in v for v in variants):
+                diagnostics['sampling_phase_delta_m']=math.dist(variants[0]['delta'][:2],variants[1]['delta'][:2])
+                diagnostics['sampling_phase_yaw_rad']=abs(math.remainder(variants[0]['delta'][2]-variants[1]['delta'][2],math.tau))
+            if 'delta' in variants[0] and 'dx_m' in w['lidar']:
+                diagnostics['endpoint_chain_delta_m']=math.dist(variants[0]['delta'][:2],[w['lidar']['dx_m'],w['lidar']['dy_m']])
+                diagnostics['endpoint_chain_yaw_rad']=abs(math.remainder(variants[0]['delta'][2]-w['lidar']['yaw_rad'],math.tau))
+        w['diagnostics']=diagnostics
         noise=[]
         if w['lidar'].get('status')=='ESTIMATED_UNQUALIFIED':
             span=w['lidar']['end_s']-w['lidar']['start_s']
@@ -259,6 +289,9 @@ def analyse(archive,fit,deadline):
             elif abs(v)<=baseline:comparison='CHANGE_OVERLAPS_OBSERVED_BASELINE'
             elif abs(v-wheel)>baseline:comparison='ESTIMATES_DIFFER_OUTSIDE_OBSERVED_BASELINE'
             else:comparison='ESTIMATED_CHANGE_OUTSIDE_OBSERVED_BASELINE_NOT_BODY_PROOF'
+        if comparison=='ESTIMATED_CHANGE_OUTSIDE_OBSERVED_BASELINE_NOT_BODY_PROOF' and (
+                diagnostics.get('endpoint_chain_delta_m',0.)>.025 or diagnostics.get('endpoint_chain_yaw_rad',0.)>.04):
+            comparison='SCAN_METHODS_DISAGREE_UNQUALIFIED'
         w['comparison']=comparison;w['body_motion']='UNQUALIFIED_UNKNOWN';w.pop('terminal',None)
     return dict(schema=SCHEMA,status='COMPLETED_WITH_LIMITS',operation_id=archive['first']['operation_id'],project_id=archive['first']['project_id'],
         robot_id=archive['first']['robot_id'],connection_epoch=archive['first']['connection_epoch'],source_twin_context=archive['first'].get('source_twin_context'),
@@ -266,7 +299,10 @@ def analyse(archive,fit,deadline):
         original_complete=archive['receipt'].get('complete'),original_error=archive['receipt'].get('error'),
         config_sha256=config_sha,rejected_scan_reasons=archive.get('rejected_scans',{}),comparison_frame='RECORDED_NOMINAL_BASE_EXTRINSICS_UNQUALIFIED' if extrinsics else 'SENSOR_LOCAL_UNCONFIRMED',
         windows=rows,truncated=truncated,physical_motion_verified=False,authority_restored=False,original_logs_rewritten=False,
+        analysis_revision='2026-10-24.2',sampling='FULL_RING_UNIFORM_120_NO_PREFIX_TRUNCATION',
         limits=['Offline saved summaries, not measured chassis motion or live robot/world registration.',
             'Fit is independent of wheel input but unqualified; correlated zero-output windows are observed noise, not a confidence bound.',
             'Missing rings/edge coverage/configuration remain inconclusive; no timeouts, permissions or scene state are changed.',
+            'Endpoint segment fits are local diagnostic hypotheses, not world registration or full-revolution evidence; phase and chain disagreement remain visible.',
+            'Legacy live point-to-point fit is unchanged and its residual is not recomputed at its returned transform; use it only as an unqualified estimate.',
             'Legacy publication windows cannot establish a missing gesture/request/epoch; no identities are fabricated.'])

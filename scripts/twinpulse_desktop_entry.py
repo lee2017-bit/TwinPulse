@@ -22,7 +22,7 @@ def apply_packaged_capabilities(package,role,environment):
     if physical:environment.pop('TWINPULSE_SIM_ONLY',None)
     else:
         environment['TWINPULSE_SIM_ONLY']='1'
-        if role not in {'launcher','backend','install','library-tool','motion-review'}:
+        if role not in {'launcher','backend','install','library-tool','motion-review','alignment-archive'}:
             raise ValueError('PACKAGE_PHYSICAL_ROLE_DISABLED')
     if capabilities.get('robot_observation') is True:
         environment['TWINPULSE_ROBOT_OBSERVATION']='1'

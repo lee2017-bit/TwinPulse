@@ -53,6 +53,9 @@ def scene_section(stage,height):
     for root in (environment,presentation):
         if not root:continue
         for prim in Usd.PrimRange(root,Usd.TraverseInstanceProxies()):
+            # Uncertainty/entanglement keepouts are deliberate safety geometry,
+            # not visible surfaces or fabricated range measurements.
+            if prim.GetCustomDataByKey('syntheticKeepout'):continue
             if root==environment:
                 relative=str(prim.GetPath()).removeprefix(str(root.GetPath())+'/').split('/')[0]
                 if relative in replaced:continue

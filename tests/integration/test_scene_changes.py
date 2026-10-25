@@ -80,6 +80,23 @@ def rack(call_id: str, x: float, *, bays: int = 1, levels: int = 1) -> dict:
 
 
 class SceneChangeTests(unittest.TestCase):
+    def test_load_validates_one_full_chain_not_every_saved_prefix(self):
+        source=room_source();history=SceneChangeHistory.empty('project',source)
+        for index in range(4):
+            raw=sofa();raw['arguments']['center_m']=[0.,1.+index*.1]
+            preview=history.preview(source,operation_id='edit'+str(index),mode='add' if index==0 else 'change',
+                target_call_id=None if index==0 else 'sofa',tool_call=raw)
+            history=history.append(source,SceneChange.from_dict(preview['operation']))
+        saved=history.to_dict()
+        with patch.object(SceneChangeHistory,'append',side_effect=AssertionError('prefix replay')):
+            self.assertEqual(SceneChangeHistory.from_dict(saved,source,'project'),history)
+        # Middle operations remain validated, not just the final revision.
+        for field in ('parent_revision','result_revision'):
+            bad=json.loads(json.dumps(saved));bad['operations'][1][field]='f'*64
+            with self.assertRaises(ValueError):SceneChangeHistory.from_dict(bad,source,'project')
+        bad=json.loads(json.dumps(saved));bad['operations'][1]['operation_id']=bad['operations'][0]['operation_id']
+        with self.assertRaisesRegex(ValueError,'duplicate'):SceneChangeHistory.from_dict(bad,source,'project')
+
     def test_batch_furniture_add_is_one_atomic_revision_and_undo_reopens(self):
         source = furnished_source()
         original = source.to_dict()

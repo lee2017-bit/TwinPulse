@@ -10,14 +10,19 @@ import time
 
 class RobotJournal:
     def __init__(self, path, *, clock=time.monotonic, capacity=256, max_bytes=64*1024*1024,
-                 stall_s=.2, opener=None, buffered=False):
+                 stall_s=.2, opener=None, buffered=False,max_pending_bytes=None,flush_each=True):
         self.clock, self.stall_s = clock, stall_s
         self.max_bytes = max_bytes; self.reserved = 0
+        self.max_pending_bytes=max_bytes if max_pending_bytes is None else min(max_pending_bytes,max_bytes)
+        if type(self.max_pending_bytes) is not int or self.max_pending_bytes<=0:
+            raise ValueError('SESSION_JOURNAL_PENDING_BYTE_LIMIT')
+        self.pending_bytes=0
         self.queue = queue.Queue(maxsize=capacity); self.lock = threading.Lock()
         self.pending = {}; self.accepted = self.saved = 0
         self.error = None; self.closed = False; self.max_write_s = 0.
         self.slowest_kind = None
         self.buffered=buffered is True;self.buffering=False;self.oldest_pending_age_s=0.
+        self.flush_each=flush_each is not False
         # Exclusive creation happens before any device operation.
         self.stream = (opener or (lambda p:p.open('x',encoding='utf-8',newline='\n')))(path)
         self.thread = threading.Thread(target=self._write, daemon=True, name='twinpulse-robot-journal')
@@ -45,18 +50,20 @@ class RobotJournal:
             if self.closed: raise ValueError('SESSION_JOURNAL_CLOSED')
             if self.reserved+size > self.max_bytes:
                 self.error = self.error or 'SESSION_LOG_BYTE_BUDGET'; raise ValueError(self.error)
+            if self.pending_bytes+size>self.max_pending_bytes:
+                self.error=self.error or 'SESSION_JOURNAL_PENDING_BYTE_BUDGET';raise ValueError(self.error)
             index = self.accepted+1
             self.pending[index] = self.clock()
-            try: self.queue.put_nowait((index,line,kind))
+            try: self.queue.put_nowait((index,line,kind,size))
             except queue.Full:
                 del self.pending[index]
                 self.error = self.error or 'SESSION_JOURNAL_QUEUE_FULL'; raise ValueError(self.error)
-            self.accepted = index; self.reserved += size
+            self.accepted = index; self.reserved += size;self.pending_bytes+=size
 
     def _write(self):
         try:
             while True:
-                try: index,line,kind = self.queue.get(timeout=.05)
+                try: index,line,kind,size = self.queue.get(timeout=.05)
                 except queue.Empty:
                     with self.lock:
                         if self.closed: break
@@ -64,12 +71,12 @@ class RobotJournal:
                 started = self.clock()
                 try:
                     if self.stream.write(line) != len(line): raise OSError('SHORT_JOURNAL_WRITE')
-                    self.stream.flush()
+                    if self.flush_each:self.stream.flush()
                 finally: self.queue.task_done()
                 elapsed = self.clock()-started
                 with self.lock:
                     if elapsed > self.max_write_s: self.max_write_s,self.slowest_kind = elapsed,kind
-                    self.saved += 1; del self.pending[index]
+                    self.saved += 1; del self.pending[index];self.pending_bytes-=size
         except Exception:
             with self.lock: self.error = self.error or 'SESSION_JOURNAL_WRITE_FAILED'
         finally:
@@ -80,6 +87,7 @@ class RobotJournal:
     def status(self):
         with self.lock:
             return {'accepted':self.accepted,'saved':self.saved,'queued':len(self.pending),
+                    'pending_bytes':self.pending_bytes,'pending_byte_limit':self.max_pending_bytes,
                     'error':self.error,'max_write_s':self.max_write_s,
                     'recording_state':'FAILED' if self.error else 'BUFFERING' if self.buffering else 'RECORDING',
                     'oldest_pending_age_s':self.oldest_pending_age_s,

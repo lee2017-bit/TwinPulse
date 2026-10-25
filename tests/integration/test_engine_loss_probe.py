@@ -132,7 +132,7 @@ class EngineLossProbeTests(unittest.TestCase):
     def test_status_read_retries_only_io_and_retains_actual_sample_and_failure(self):
         from twinpulse_app.process_manager import _read_engine_status
         sample=self.sample(7,connected=True);sample['sampled_at_utc']='original-clock'
-        with patch.object(Path,'open',side_effect=[PermissionError(13,'local sharing'),io.BytesIO(json.dumps(sample).encode())]) as opened:
+        with patch('twinpulse_app.process_manager._read_engine_status_bytes',side_effect=[PermissionError(13,'local sharing'),json.dumps(sample).encode()]) as opened:
             value,info=_read_engine_status(Path('status.json'))
         self.assertEqual(value,sample);self.assertEqual(opened.call_count,2)
         self.assertEqual(info['failures'][0]['type'],'PermissionError')
@@ -140,21 +140,21 @@ class EngineLossProbeTests(unittest.TestCase):
     def test_status_read_persistent_failure_is_not_cached_healthy(self):
         from twinpulse_app.process_manager import _read_engine_status
         self.assertEqual(self.probe.observe(self.sample(1,connected=True)),'healthy')
-        with patch.object(Path,'open',side_effect=PermissionError(13,'local sharing')) as opened:
+        with patch('twinpulse_app.process_manager._read_engine_status_bytes',side_effect=PermissionError(13,'local sharing')) as opened:
             value,info=_read_engine_status(Path('status.json'))
         self.assertEqual(opened.call_count,3);self.assertIsNone(value)
         self.assertEqual(info['reason'],'status_read_failed');self.assertEqual(self.probe.observe(value),'failed')
     def test_successfully_read_active_stale_or_invalid_marker_is_never_retried_to_healthy(self):
         from twinpulse_app.process_manager import _read_engine_status
         for sample in (self.sample(2,physical=True),{},dict(status_sample_id=0,engine_connected=False)):
-            with patch.object(Path,'open',return_value=io.BytesIO(json.dumps(sample).encode())) as opened:
+            with patch('twinpulse_app.process_manager._read_engine_status_bytes',return_value=json.dumps(sample).encode()) as opened:
                 value,info=_read_engine_status(Path('status.json'))
             self.assertEqual(value,sample);self.assertEqual(opened.call_count,1)
             self.assertEqual(self.probe.observe(value),'failed')
     def test_successfully_read_regressed_marker_keeps_original_rejection(self):
         from twinpulse_app.process_manager import _read_engine_status
         self.assertEqual(self.probe.observe(self.sample(5,connected=True)),'healthy')
-        with patch.object(Path,'open',return_value=io.BytesIO(json.dumps(self.sample(4,connected=True)).encode())) as opened:
+        with patch('twinpulse_app.process_manager._read_engine_status_bytes',return_value=json.dumps(self.sample(4,connected=True)).encode()) as opened:
             value,info=_read_engine_status(Path('status.json'))
         self.assertEqual(opened.call_count,1);self.assertEqual(self.probe.observe(value),'failed')
     def test_healthy_rewrite_of_same_marker_cannot_revive_stale_state(self):

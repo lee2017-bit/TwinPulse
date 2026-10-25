@@ -226,7 +226,7 @@ class SceneChangeHistory:
         return cls(project_id, canonical_sha256(checked.to_dict()), checked.input_revision.digest,
                    checked.site.scene.revision, (), checked.site.scene.revision,
                    'scene-changes-1.2' if checked.progressive_twin is not None else
-                   'scene-changes-1.1' if checked.placement_contract is not None else CHANGE_VERSION)
+                   'scene-changes-1.1' if checked.placement_contract is not None or checked.site.scene.environment is not None else CHANGE_VERSION)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "project_id": self.project_id,
@@ -244,18 +244,24 @@ class SceneChangeHistory:
                 or value["project_id"] != project_id or not isinstance(value["operations"], list)
                 or len(value["operations"]) > _MAX_OPERATIONS):
             raise ValueError("scene change history shape is unsupported")
-        if value['schema_version']=='scene-changes-1.1' and source.placement_contract is None:
-            raise ValueError('stack undo requires the explicit placement source contract')
+        if value['schema_version']=='scene-changes-1.1' and source.placement_contract is None and source.site.scene.environment is None:
+            raise ValueError('stack undo requires the explicit placement or imported-environment source contract')
         history = replace(cls.empty(project_id, source),schema_version=value['schema_version'])
         if any(value[key] != getattr(history, key) for key in (
             "source_sha256", "input_revision", "source_scene_revision"
         )):
             raise ValueError("scene change source differs from saved original")
-        for raw in value["operations"]:
-            operation = SceneChange.from_dict(raw)
-            history = history.append(source, operation)
-        if history.current_scene_revision != value["current_scene_revision"]:
-            raise ValueError("scene change history result differs from replay")
+        # Parse each operation once, then validate the complete chain once.
+        # append() replays its whole prefix (and recreates plans for Undo), so
+        # calling it for every saved prefix made ordinary reopen/preview cost
+        # quadratic in the retained edit history. No trusted replay cache or
+        # skipped digest/source/parent/non-target checks is introduced here.
+        operations=tuple(SceneChange.from_dict(raw) for raw in value['operations'])
+        if len({operation.operation_id for operation in operations})!=len(operations):
+            raise ValueError('scene change history limit or duplicate operation id')
+        version='scene-changes-1.2' if any(operation.mode=='dependency' for operation in operations) else history.schema_version
+        history=replace(history,operations=operations,current_scene_revision=value['current_scene_revision'],schema_version=version)
+        history.replay(source)
         return history
 
     def replay(self, source: SiteDraftRecord) -> tuple[SiteToolPlan, SitePlan]:
@@ -392,9 +398,13 @@ class SceneChangeHistory:
                 without = replace(plan, calls=tuple(item for item in plan.calls if item.call_id != target),
                                   call_evidence=(None if plan.call_evidence is None else tuple(
                                       item for item in plan.call_evidence if item.call_id != target)))
-                remaining = {item.id for item in execute_site_tool_plan(without,
-                    source=source.site.scene.source,source_ref=source.input_revision.digest).scene.objects}
-                targets = set(before) - remaining
+                if plan.plan_version=='2.4':
+                    from twinpulse_core.environment_source import checked_environment_change
+                    targets=checked_environment_change(old.arguments['environment'],call.arguments['environment'])
+                else:
+                    remaining = {item.id for item in execute_site_tool_plan(without,
+                        source=source.site.scene.source,source_ref=source.input_revision.digest).scene.objects}
+                    targets = set(before) - remaining
             if plan.call_evidence is None:
                 evidence = None
             else:
@@ -663,6 +673,15 @@ class SceneChangeStore:
         value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique)
         return SceneChangeHistory.from_dict(value, self.source, self.project_id)
 
+    def require_data_contract(self,history):
+        environment=history.effective(self.source).site.scene.environment
+        if environment and environment['schema_version']=='environment-static-1.1':
+            from .release_contract import require_data_capability,project_runtime_root
+            from .environment_evidence import verify_overlay_photos
+            verify_overlay_photos(self.path.parent/'environment-imports',environment)
+            require_data_capability(project_runtime_root(self.project_store.path if self.project_store else self.path),
+                'environment-static-1.1')
+
     def apply(self, operation: Mapping[str, Any], preview_digest: str) -> SceneChangeHistory:
         checked = SceneChange.from_dict(operation)
         if preview_digest != canonical_sha256(checked.to_dict()):
@@ -692,6 +711,7 @@ class SceneChangeStore:
                     raise ValueError("operation id was used for a different edit")
             updated = current.append(self.source, checked)
             admit_new_scene_change(self.source,updated,checked)
+            self.require_data_contract(updated)
             data = json.dumps(updated.to_dict(), ensure_ascii=False, separators=(",", ":"),
                               allow_nan=False).encode("utf-8")
             if len(data) > _MAX_BYTES:

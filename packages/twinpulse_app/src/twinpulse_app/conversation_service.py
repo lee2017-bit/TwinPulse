@@ -42,6 +42,9 @@ class ConversationService:
         self.inspection = None
         self.navigation = None
         self.robot_fleet = None
+        self.robot_tasks = None
+        self._robot_task_marker = None
+        self._robot_task_pending = None
         self._inspection_marker = None
         self._inspection_review_requested = False
         self._robot_marker = None
@@ -216,7 +219,8 @@ class ConversationService:
                    'robot_recheck':{'check','cancel'},'robot_initialize':{'initialize','cancel'},'robot_inspection':{'inspect','cancel'},
                    'robot_goal_confirm':{'confirm','cancel'},'robot_goal_loop':{'loop','finish'},
                    'generation_approval':{'approve','cancel'},'scene_edit_clarify':{'cancel'},
-                   'scene_sensor_policy':{'align_only','correct_walls','cancel'}}
+                   'scene_sensor_policy':{'align_only','correct_walls','cancel'},
+                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'}}
         card_ids = set()
         for card in stored["cards"]:
             # SIM-alpha emits a single SIM choice; historical full-product
@@ -366,6 +370,21 @@ class ConversationService:
         self._state["events"].append({"event_id": str(uuid4()), "sequence": self._state["cursor"],
                                       "session_id": self._state["session_id"],
                                       "type": kind, "timestamp": now(), "payload": payload})
+
+    def record_environment_import(self,request_id,source_name,source_sha256,scene_revision):
+        """An actual Import-space menu action, never an invented model message."""
+        with self._lock:
+            if any(e['type']=='environment_imported' and e['payload'].get('request_id')==request_id
+                   for e in self._state['events']):return
+            if self._state['mode']=='REAL':raise BrokerError('environment_sim_required','Import space in a new SIM chat.')
+            self._state['mode']='SIM';self._state['physical_authority']=False
+            self._message('user','Menu action: Import space for SIM · '+source_name,operation_id=request_id)
+            self._message('assistant','Local scanned space imported. Source geometry is preserved. '
+                'Selected units and real-world alignment require review. Use Show Twin to apply the scene; '
+                'add a SIM robot explicitly to test it.',operation_id=request_id)
+            self._event('environment_imported',request_id=request_id,source_name=source_name,
+                source_sha256=source_sha256,scene_revision=scene_revision)
+            self._persist()
 
     def _message(self, role, content, *, attachment=None, status="completed", operation_id=None, origin_message_id=None):
         message = {"message_id": str(uuid4()), "role": role, "content": content,
@@ -746,6 +765,7 @@ class ConversationService:
                 self._sync_inspection(owner)
                 self._sync_goal_demonstration(owner)
                 self._sync_fleet_registrations()
+                self._sync_robot_tasks(owner)
                 if self._flush_queued_edit():self._persist()
             public = deepcopy(self._state)
             # Attachment bytes are retained locally for a pending restart, not
@@ -763,7 +783,8 @@ class ConversationService:
             public["restore_error"] = self._restore_error
             public['restored_session'] = self._restored_session
             approvals = getattr(self.workflow, 'generation_approvals', None)
-            public['budgeted_generation_available'] = bool(approvals and approvals.enabled())
+            observed_enabled = getattr(approvals, 'observed_enabled', None)
+            public['budgeted_generation_available'] = bool(callable(observed_enabled) and observed_enabled())
             current_job = self._state['generation']
             settling = getattr(self.workflow, 'generation_settling', lambda generation_id: False)
             public['generation_settling'] = ({
@@ -774,6 +795,7 @@ class ConversationService:
             public['robot_preparation'] = self.robot_preparation.snapshot(owner) if self._state['mode']=='REAL' and self.robot_preparation else None
             public['inspection'] = self.inspection.snapshot(owner) if self._state['mode']=='REAL' and self.inspection else None
             public['navigation'] = self.navigation.snapshot(owner) if self._state['mode']=='REAL' and self.navigation else None
+            public['robot_task'] = self.robot_tasks.snapshot(owner) if self.robot_tasks else None
             descriptor=self._state['inspection_display']
             public['inspection_display']=(self.inspection.display_readiness(descriptor)
                 if descriptor and self._state['mode']=='REAL' and self.inspection else None)
@@ -942,6 +964,13 @@ class ConversationService:
             return self.snapshot(owner)
 
     def _fleet_message(self,body,*,command_text=None):
+        from .robot_fleet import parse_robot_command
+        try:parsed=parse_robot_command(command_text or body['text'])
+        except BrokerError:parsed=None
+        if parsed and parsed['action'] in {'stop','stop_all'}:
+            self._robot_task_pending=None
+            for card in self._state['cards']:
+                if card['kind'] in {'robot_task_plan','robot_task_run'} and card['state']=='waiting':card['state']='cancelled'
         self._message('user',body['text'])
         try:
             self._external_started=True
@@ -958,13 +987,48 @@ class ConversationService:
             self._message('assistant',str(error))
             self._event('robot_fleet_command_blocked',code=error.code,request_id=body['request_id'])
 
+    def _offer_robot_task(self,body):
+        if any(c['state']=='waiting' for c in self._state['cards']):
+            raise BrokerError('choice_required','Finish the current question before requesting another task.',status=409)
+        if self.robot_tasks.active():raise BrokerError('robot_task_busy','Finish or cancel the current task.',status=409)
+        self._message('user',body['text'])
+        self._robot_task_pending=dict(text=body['text'],request_id=body['request_id'],robot_id=self.robot_fleet.focused)
+        self._card('robot_task_plan','Send this instruction and the capability names to the configured planner? One text-only call; no photos, coordinates, USD or sensor logs. No movement yet.',[
+            self._choice('plan','Plan task'),self._choice('cancel','Cancel')])
+
+    def _sync_robot_tasks(self,owner):
+        if not self.robot_tasks:return
+        job=self.robot_tasks.snapshot(owner)
+        if not job:return
+        marker=(job['task_id'],job['state'],job['step_index'],job['segments'])
+        if marker==self._robot_task_marker:return
+        self._robot_task_marker=marker
+        if job['state']=='READY':
+            plan=job['plan'];summary=' → '.join(s['op']+((' '+s['target_kind']) if s['op']=='navigate' else
+                (' '+s['direction']+' '+str(s['amount'])+(' rad' if s['direction'] in {'left','right'} else ' m')) if s['op']=='move_relative' else '') for s in plan['steps'])
+            self._message('assistant','Planner proposal: '+summary+'. '+plan['explanation']+' Limits: '+str(plan['limits']['distance_m'])+' m / '+str(plan['limits']['duration_s'])+' s. This is not motion or whole-room coverage evidence.',operation_id=job['task_id'])
+            card=self._card('robot_task_run','Run this exact task? Physical: supervision, Arm and bootstrap Stop required. Collection and return use wheel-estimated local coordinates, not USD alignment or certified body position. Unknown-space and robot-side guards stay active.',[
+                self._choice('run','Run task'),self._choice('cancel','Cancel')])
+            card['related_plan_digest']=job['plan_sha256'];card['operation_id']=job['task_id']
+        elif job['state'] in {'COMPLETED','PARTIAL','HELD','FAILED','CANCELLED'}:
+            for card in self._state['cards']:
+                if card['kind']=='robot_task_run' and card['operation_id']==job['task_id'] and card['state']=='waiting':card['state']='cancelled'
+            self._message('assistant','Robot task '+job['state']+': '+str(job.get('reason') or 'exact child results and Stop checked')+
+                '. Finite segments: '+str(job['segments'])+'. Original robot recording remains separate; chassis accuracy and world registration are not certified.',
+                status='failed' if job['state'] in {'FAILED','HELD'} else 'completed',operation_id=job['task_id'])
+        elif job['state']=='RUNNING':
+            self._message('assistant','Robot task: step '+str(job['step_index']+1)+' · '+str(job['segments'])+' finite segments. Observing and rechecking before the next segment.',status='completed',operation_id=job['task_id'])
+        self._event('robot_task_changed',task_id=job['task_id'],state=job['state'],step_index=job['step_index'],segments=job['segments'])
+        self._persist()
+
     def _accept_message(self, body):
         text = body["text"]
         if not isinstance(text, str) or len(text) > 8000:
             raise BrokerError("prompt_invalid", "Prompt is invalid", status=400)
         if not isinstance(body['mode'],str) or body['mode'] not in {'new','add','change'}:
             raise BrokerError('scene_mode_invalid','Choose New, Add, or Change',status=400)
-        if body['attachment'] is None and text.strip().lower() in {'stop','stop simulation','pause simulation','정지','멈춰'}:
+        from twinpulse_core.robot_task_plan import immediate_stop
+        if body['attachment'] is None and (immediate_stop(text) or text.strip().lower() in {'stop','stop simulation','pause simulation','정지','멈춰'}):
             fleet_stopped=False
             if self.robot_fleet is not None and text.strip().lower() not in {'stop simulation','pause simulation'}:
                 # Bare Stop is not a command to whichever SIM happened to keep
@@ -989,12 +1053,17 @@ class ConversationService:
                 self._event('simulation_stop_request_recorded' if self._state['mode']!='REAL' else 'physical_stop_unavailable')
             return
         if self.robot_fleet is not None and body['attachment'] is None and body['mode']=='new':
+            from twinpulse_core.robot_task_plan import task_request
+            focused_kind=(self.robot_fleet.robots.get(self.robot_fleet.focused) or {}).get('kind')
+            if self.robot_tasks and self.robot_fleet.focused and task_request(text,focused_kind):
+                self._offer_robot_task(body)
+                return
             from .robot_fleet import parse_robot_command
             try:robot_command=parse_robot_command(text)
             except BrokerError:
                 self._fleet_message(body)
                 return
-            if robot_command is not None and (robot_command['action']!='status' or self.robot_fleet.focused is not None):
+            if robot_command is not None and (robot_command['action'] not in {'status','navigate'} or self.robot_fleet.focused is not None):
                 self._fleet_message(body)
                 return
         # Explanations do not dismiss a pending choice or submit another job.
@@ -1101,6 +1170,24 @@ class ConversationService:
             (card['kind']=='robot_presence' and choice['id']=='sim' or card['kind']=='robot_selection'))
         if 'limit_usd' in body and not direct_generation and (card['kind'] != 'generation_approval' or choice['id'] != 'approve'):
             raise BrokerError('chat_shape_invalid', 'A spending limit is accepted only for this generation approval.', status=400)
+        if card['kind'] in {'robot_task_plan','robot_task_run'}:
+            if not self.robot_tasks:raise BrokerError('robot_task_unavailable','Robot task service is unavailable.',status=409)
+            self._external_started=True
+            card.update(state='answered',selected_choice_id=choice['id'])
+            self._message('user',choice['label'])
+            if choice['id']=='cancel':
+                if self.robot_tasks.owner==self._request_owner:self.robot_tasks.cancel(self._request_owner)
+                self._robot_task_pending=None
+            elif card['kind']=='robot_task_plan':
+                pending=self._robot_task_pending
+                if not pending:raise BrokerError('robot_task_prompt_expired','Submit the task again; no request was resumed.',status=409)
+                if pending['robot_id']!=self.robot_fleet.focused:raise BrokerError('robot_task_selection_changed','Selected robot changed; submit the task again.',status=409)
+                self.robot_tasks.propose(pending['text'],self._request_owner,body['request_id']);self._robot_task_pending=None
+                self._message('assistant','Planning one bounded robot task with the configured planner. No controls are sent.',status='completed')
+            else:
+                self.robot_tasks.run(self._request_owner,card['related_plan_digest'])
+            self._sync_robot_tasks(self._request_owner)
+            return
         if card['kind'] == 'generation_approval' and choice['id'] == 'approve':
             approvals = getattr(self.workflow, 'generation_approvals', None)
             if not approvals:

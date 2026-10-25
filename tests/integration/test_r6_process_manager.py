@@ -561,14 +561,20 @@ class R6ProcessManagerTests(unittest.TestCase):
 
     def test_validation_failure_and_finally_stop_do_not_create_runtime_state(self) -> None:
         manager = self.manager(port=70_000)
-        with self.assertRaises(ProcessManagerError) as raised:
-            manager.start(open_browser=False)
+        from twinpulse_core.execution_diagnostics import ExecutionStore
+        store=ExecutionStore(self.state.parent/'launcher-diagnostics','default')
+        # Launcher diagnostics are asynchronous/best effort. Keep the original
+        # writer and await its explicit completion before a separate disk read
+        # or TemporaryDirectory cleanup; 250 ms is not a persistence guarantee.
+        with patch('twinpulse_core.execution_diagnostics.ExecutionStore',return_value=store):
+            with self.assertRaises(ProcessManagerError) as raised:
+                manager.start(open_browser=False)
         self.assertEqual(raised.exception.code, "port_invalid")
         manager.stop()
         manager.stop()
         self.assertFalse(self.state.exists())
         self.assertTrue(raised.exception.execution_id)
-        from twinpulse_core.execution_diagnostics import ExecutionStore
+        self.assertTrue(store.flush(timeout=5.),'Original diagnostic writer did not drain')
         saved=ExecutionStore(self.state.parent/'launcher-diagnostics','default').detail(raised.exception.execution_id)
         self.assertEqual(saved['status'],'failed')
         self.assertEqual(saved['first_error']['error_code'],'port_invalid')

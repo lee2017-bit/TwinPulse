@@ -210,4 +210,215 @@ class ContentionTests(unittest.TestCase):
         self.assertEqual(link.fresh_diagnostic['reason'],'SENSOR_SOURCE_AGE')
 
 
+class UnpreparedPauseJsonTests(unittest.TestCase):
+    """Real control -> strict FleetWorker JSON; no devices or worker threads."""
+    def fixture(self):
+        class NativeIdle:
+            def latest_frame(self):return None
+            def snapshot(self):return {'lidar_state':'OFF'}
+        class JournalMemory:
+            def __init__(self):self.rows=[]
+            def append_prepared(self,line,kind):self.rows.append(json.loads(line));return True
+        class ProtocolMemory:
+            def __init__(self):self.rows=[]
+            def send_prepared(self,line):self.rows.append(json.loads(line))
+        worker=FleetWorker.__new__(FleetWorker)
+        worker.context=dict(context(),schema='physical-live-start-2.0',
+            source_twin_context={'context_id':'d'*64})
+        worker.clock=__import__('time').monotonic;worker.lock=threading.RLock()
+        worker.sequence=0;worker.recording_failed=False
+        worker.emit_timing=dict(events=0,maximum_payload_prepare_s=0.,maximum_order_lock_wait_s=0.)
+        worker.journal=JournalMemory();worker.protocol=ProtocolMemory()
+        owner=RobotControl(worker.context,'.',worker.emit,NativeIdle());worker.control=owner
+        return worker,owner
+
+    def test_first_field_setup_crosses_actual_strict_json_without_output_or_authority(self):
+        worker,owner=self.fixture()
+        config=dict(schema='supervised-field-test-1.0',robot_id=context()['robot_id'],
+            binding_sha256=context()['binding_sha256'],provenance='reference',axes_reviewed=True,
+            angle_sign=1,footprint_radius_m=.12,sensor_x_m=0.,sensor_y_m=0.,sensor_yaw_rad=0.,
+            wheel_metres_per_tick=.00005,wheel_separation_m=.16)
+        command=dict(action='field_setup',request_id='first-setup',payload={'config':config})
+        owner._input_window()
+        tracker=S(snapshot=lambda:{},close=lambda:{'worker_reaped':True,'thread_reaped':True})
+        with patch('fleet_control.NativeTracker',return_value=tracker),patch.object(owner,'_field_write',return_value='fixture-write'):
+            owner._drain_commands(command)
+        self.assertEqual(owner.field_config,config);self.assertTrue(owner.field_mode)
+        self.assertFalse(worker.recording_failed);self.assertIsNone(owner.thread.ident)
+        self.assertIsNone(owner.link);self.assertIsNone(owner.direction);self.assertEqual(owner.field_until,0.)
+        self.assertEqual(worker.protocol.rows[-1]['data']['status'],'COMPLETED')
+        pause=next(r['data'] for r in worker.journal.rows if r['kind']=='control_pause')
+        self.assertIsNone(pause['input_diagnostic']['last_publish_s'])
+        self.assertFalse(pause['zero_off_readback_confirmed'])
+        self.assertEqual(owner.last_publish,float('-inf'))
+
+    def test_stop_before_prepare_keeps_no_publication_as_null_not_a_stop_readback(self):
+        worker,owner=self.fixture();owner._pause('OPERATOR_STOP')
+        pause=worker.protocol.rows[-1]['data']
+        self.assertEqual(pause['reason'],'OPERATOR_STOP')
+        self.assertIsNone(pause['input_diagnostic']['last_publish_s'])
+        self.assertFalse(pause['zero_off_readback_confirmed']);self.assertFalse(worker.recording_failed)
+        self.assertEqual(owner.last_publish,float('-inf'));self.assertFalse(owner.gate.active)
+
+    def test_real_control_thread_survives_initial_setup_and_stop_without_devices(self):
+        worker,owner=self.fixture();setup_done=threading.Event();stop_done=threading.Event()
+        waiting_for_stop=threading.Event();stop_submitted=threading.Event()
+        class StopArrivalQueue(fleet_control.queue.Queue):
+            signalled=False
+            def get(self,*args,**kwargs):
+                # The main loop has checked stop_requested before this get.
+                # Submit Stop only after that check, not through a timing sleep.
+                block=kwargs.get('block',args[0] if args else True)
+                if block and setup_done.is_set() and not self.signalled:
+                    self.signalled=True;waiting_for_stop.set()
+                    if not stop_submitted.wait(2):raise RuntimeError('TEST_STOP_BARRIER_TIMEOUT')
+                return super().get(*args,**kwargs)
+        owner.queue=StopArrivalQueue(maxsize=32)
+        config=dict(schema='supervised-field-test-1.0',robot_id=context()['robot_id'],
+            binding_sha256=context()['binding_sha256'],provenance='reference',axes_reviewed=True,
+            angle_sign=1,footprint_radius_m=.12,sensor_x_m=0.,sensor_y_m=0.,sensor_yaw_rad=0.,
+            wheel_metres_per_tick=.00005,wheel_separation_m=.16)
+        original=worker.protocol.send_prepared
+        def observe(line):
+            original(line);row=json.loads(line);data=row['data']
+            if row['kind']=='command' and data.get('status')=='COMPLETED':
+                if data.get('request_id')=='initial-setup':setup_done.set()
+                if data.get('request_id')=='first-stop':stop_done.set()
+        worker.protocol.send_prepared=observe
+        owner.queue.put_nowait(dict(action='field_setup',request_id='initial-setup',payload={'config':config}))
+        tracker=S(snapshot=lambda:{},close=lambda:{'worker_reaped':True,'thread_reaped':True})
+        with patch('fleet_control.NativeTracker',return_value=tracker),patch.object(owner,'_field_write',return_value='fixture-write'):
+            owner.start()
+            try:
+                self.assertTrue(setup_done.wait(2),'Initial setup did not cross the actual emit boundary')
+                self.assertTrue(owner.thread.is_alive());self.assertFalse(worker.recording_failed)
+                self.assertTrue(waiting_for_stop.wait(2),'Owner did not enter the declared queue-get boundary')
+                owner.submit(dict(action='stop',request_id='first-stop',motion_epoch='stopped-epoch',payload={}))
+                stop_submitted.set()
+                self.assertTrue(stop_done.wait(2),'Pre-Prepare Stop did not complete on the same worker: '+
+                    repr([(r['kind'],r['data'].get('action'),r['data'].get('reason'),r['data'].get('status')) for r in worker.protocol.rows[-5:]]))
+                self.assertTrue(owner.thread.is_alive());self.assertIsNone(owner.link)
+                self.assertEqual(owner.snapshot()['applied_motion_epoch'],'stopped-epoch')
+                self.assertFalse(owner.gate.active);self.assertEqual(owner.last_publish,float('-inf'))
+            finally:
+                stop_submitted.set();owner.cancel.set();owner.thread.join(2)
+        self.assertFalse(owner.thread.is_alive());self.assertFalse(worker.recording_failed)
+        pauses=[row['data'] for row in worker.journal.rows if row['kind']=='control_pause']
+        self.assertTrue(pauses)
+        self.assertTrue(all(row['input_diagnostic']['last_publish_s'] is None for row in pauses))
+        self.assertTrue(all(row['zero_off_readback_confirmed'] is False for row in pauses))
+
+    def test_rejected_unprepared_drive_keeps_original_reason_and_json_owner_alive(self):
+        worker,owner=self.fixture()
+        owner._drain_commands(dict(action='drive',request_id='not-prepared',
+            payload={'motion_generation':owner.gate.generation,'direction':'forward'}))
+        rejected=worker.protocol.rows[-1]['data']
+        self.assertEqual(rejected['status'],'REJECTED')
+        self.assertEqual(rejected['reason'],'PREPARE_REQUIRED')
+        self.assertFalse(worker.recording_failed);self.assertIsNone(owner.direction)
+        self.assertEqual(owner.snapshot()['control_state'],'UNPREPARED')
+
+    def test_finite_publication_timestamp_is_preserved_exactly(self):
+        worker,owner=self.fixture();owner.last_publish=12.5;owner._pause('OPERATOR_STOP')
+        self.assertEqual(worker.protocol.rows[-1]['data']['input_diagnostic']['last_publish_s'],12.5)
+        self.assertEqual(owner.last_publish,12.5);self.assertFalse(worker.recording_failed)
+
+    def test_stop_priority_still_discards_other_commands_and_cancel_blocks_all(self):
+        for action in ('drive','task','watch','field_setup','stop'):
+            for cancelled in (False,True):
+                if action=='stop' and not cancelled:continue
+                with self.subTest(action=action,cancelled=cancelled):
+                    worker,owner=self.fixture();owner.stop_requested.set()
+                    if cancelled:owner.cancel.set()
+                    result=owner._drain_commands(dict(action=action,request_id='blocked',payload={}))
+                    self.assertEqual(result,0)
+                    if action=='stop' and cancelled:
+                        self.assertEqual(worker.protocol.rows[-1]['data']['status'],'REJECTED')
+                        self.assertEqual(worker.protocol.rows[-1]['data']['request_id'],'blocked')
+                    else:self.assertEqual(worker.protocol.rows,[])
+                    self.assertIsNone(owner.direction);self.assertFalse(owner.gate.active)
+
+    def test_stop_keeps_its_epoch_and_does_not_drain_an_old_motion_after_it(self):
+        worker,owner=self.fixture();owner.stop_requested.set()
+        owner.queue.put_nowait(dict(action='drive',request_id='old-motion',
+            payload={'motion_generation':0,'direction':'forward'}))
+        result=owner._drain_commands(dict(action='stop',request_id='own-stop',
+            motion_epoch='exact-stop-epoch',payload={}))
+        self.assertEqual(result,1);self.assertEqual(owner.queue.qsize(),1)
+        self.assertEqual(owner.snapshot()['applied_motion_epoch'],'exact-stop-epoch')
+        self.assertEqual(worker.protocol.rows[-1]['data'],
+            dict(request_id='own-stop',action='stop',status='COMPLETED',
+                 event_delivery=worker.protocol.rows[-1]['data']['event_delivery']))
+        self.assertFalse(owner.gate.active);self.assertIsNone(owner.direction)
+
+    def test_other_nonfinite_diagnostic_still_fails_strict_json_and_latches_recording(self):
+        for value in (float('inf'),float('nan')):
+            with self.subTest(value=value):
+                worker,owner=self.fixture();owner.last_publish=value
+                with self.assertRaises(ValueError):owner._pause('OPERATOR_STOP')
+                self.assertTrue(worker.recording_failed);self.assertFalse(owner.gate.active)
+
+    def test_recording_failure_cancels_old_control_queue_and_only_requests_stop_once(self):
+        worker,owner=self.fixture()
+        original_generation=owner.gate.generation
+        queued=dict(action='prepare',request_id='old-queued-prepare',payload={'confirmed':True})
+        owner.queue.put_nowait(queued)
+        worker._recording_fault('SESSION_JOURNAL_QUEUE_FULL')
+        self.assertTrue(owner.cancel.is_set());self.assertTrue(owner.stop_requested.is_set())
+        owner.stop_requested.clear()  # An old Stop-handler clear is not recovery.
+        worker._recording_fault('SECONDARY_RECORDING_ERROR')
+        self.assertFalse(owner.stop_requested.is_set())
+        self.assertEqual(worker.recording_failure_reason,'SESSION_JOURNAL_QUEUE_FULL')
+        self.assertEqual(owner._drain_commands(queued),0)
+        self.assertEqual(owner.queue.qsize(),1)
+        with self.assertRaisesRegex(ValueError,'OPERATOR_STOP'):owner._safety()
+        self.assertEqual(owner.gate.generation,original_generation)
+
+    def test_stop_after_recording_fault_and_real_owner_exit_has_own_rejected_result(self):
+        worker,owner=self.fixture()
+        worker._recording_fault('FIRST_RECORDING_FAILURE')
+        owner.start();owner.thread.join(2)
+        self.assertFalse(owner.thread.is_alive())
+        self.assertEqual(owner.snapshot()['control_state'],'CLOSED')
+        epoch=owner.snapshot()['applied_motion_epoch']
+        worker.last_command=0
+        command=dict(schema='physical-live-command-2.0',
+            **{k:worker.context[k] for k in fleet_worker.IDENTITY},
+            source_twin_context_id=worker.context['source_twin_context']['context_id'],request_twin_context=None,
+            motion_epoch='s'*32,request_id='s'*32,sequence=1,action='stop',payload={})
+        worker.command(command)
+        result=worker.protocol.rows[-1]['data']
+        self.assertEqual(result['request_id'],command['request_id'])
+        self.assertEqual(result['status'],'REJECTED');self.assertEqual(result['reason'],'RECORDING_INCOMPLETE')
+        self.assertEqual(result['execution'],'NOT_EXECUTED_CONTROL_OWNER_CLOSING')
+        self.assertEqual(owner.snapshot()['applied_motion_epoch'],epoch)
+        self.assertEqual(owner.queue.qsize(),0)
+        owner.submit(dict(command,request_id='direct-stop'))
+        direct=worker.protocol.rows[-1]['data']
+        self.assertEqual(direct['request_id'],'direct-stop');self.assertEqual(direct['status'],'REJECTED')
+        self.assertEqual(direct['execution'],'NOT_EXECUTED')
+        owner.submit(dict(command,action='close'))
+        self.assertEqual(owner.queue.qsize(),0)
+        self.assertTrue(owner.close()['worker_reaped'])
+
+    def test_stop_queued_at_recording_cancel_boundary_gets_own_terminal(self):
+        for cancel_during_put in (False,True):
+            with self.subTest(cancel_during_put=cancel_during_put):
+                worker,owner=self.fixture()
+                if cancel_during_put:
+                    class CancelDuringPut(fleet_control.queue.Queue):
+                        def put_nowait(self,value):
+                            worker._recording_fault('FAULT_AFTER_ADMISSION_CHECK')
+                            return super().put_nowait(value)
+                    owner.queue=CancelDuringPut(maxsize=32)
+                owner.submit(dict(action='stop',request_id='queued-stop',motion_epoch='never-applied',payload={}))
+                if not cancel_during_put:worker._recording_fault('FAULT_AFTER_QUEUE')
+                owner.start();owner.thread.join(2)
+                self.assertFalse(owner.thread.is_alive());self.assertEqual(owner.queue.qsize(),0)
+                result=[r['data'] for r in worker.protocol.rows if r['data'].get('request_id')=='queued-stop']
+                self.assertEqual(len(result),1);self.assertEqual(result[0]['status'],'REJECTED')
+                self.assertEqual(result[0]['execution'],'NOT_EXECUTED')
+                self.assertNotEqual(owner.snapshot()['applied_motion_epoch'],'never-applied')
+
+
 if __name__=='__main__':unittest.main()

@@ -37,6 +37,36 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export class TwinPulseApi {
+  private environmentImageAdmission:Promise<void>|null=null;
+  private async waitForEnvironmentImages():Promise<void>{
+    const context=this.contextId;
+    await this.environmentImageAdmission;
+    if(context!==this.contextId)throw this.contextChanged();
+  }
+  environment():Promise<import('./environment-types').EnvironmentState>{return this.readState('/v1/product/environment');}
+  alignment():Promise<import('./EnvironmentAlignment').AlignmentState>{return this.readState('/v1/product/environment/alignment');}
+  environmentSurvey():Promise<import('./EnvironmentSurvey').SurveyState>{return this.readState('/v1/product/environment/survey');}
+  environmentSurveyAction(body:import('./EnvironmentSurvey').SurveyAction):Promise<import('./EnvironmentSurvey').SurveyState>{return this.boundedProjectAction('/v1/product/environment/survey',body);}
+  alignmentAction(body:import('./EnvironmentAlignment').AlignmentAction):Promise<import('./EnvironmentAlignment').AlignmentState>{return this.boundedProjectAction('/v1/product/environment/alignment',body);}
+  environmentAction(body:import('./environment-types').EnvironmentAction):Promise<import('./environment-types').EnvironmentState>{
+    if(body.action==='inspect')return this.boundedProjectAction('/v1/product/environment/action',body);
+    return this.environmentTransaction(()=>this.boundedProjectAction('/v1/product/environment/action',body));
+  }
+  private async environmentTransaction<T>(work:()=>Promise<T>):Promise<T>{
+    // Explicit environment changes drain observations before their validation
+    // lock, rather than timing out polls behind deterministic compile/save.
+    // No new motion, lease, timeout extension or automatic mutation retry.
+    if(this.projectReadBarrier)throw new ApiError('project_switch_busy','A project transaction is already being observed.');
+    const context=this.contextId;
+    let release!:()=>void;
+    this.projectReadBarrier=new Promise<void>(resolve=>{release=resolve;});
+    this.environmentImageAdmission=this.projectReadBarrier;
+    try{
+      await Promise.allSettled([...this.stateReads.values(),...this.imageReads,...this.leaseActions]);
+      if(context!==this.contextId)throw this.contextChanged();
+      return await work();
+    }finally{this.environmentImageAdmission=null;this.projectReadBarrier=null;release();}
+  }
   robotFleet():Promise<import('./robot-fleet-types').RobotFleetState>{return this.readState('/v1/product/robot-fleet');}
   robotFleetAction(body:import('./robot-fleet-types').RobotFleetAction):Promise<import('./robot-fleet-types').RobotFleetState>{
     // Each hold has a short deadline and must never wait behind a prior hold.
@@ -122,6 +152,7 @@ export class TwinPulseApi {
   async conversationImage(path:string):Promise<Blob>{
     if(!/^\/v1\/product\/conversation\/image\/[a-zA-Z0-9_-]{1,100}$/.test(path))
       throw new ApiError('conversation_image_invalid','Invalid source image identity.');
+    if(this.environmentImageAdmission)await this.waitForEnvironmentImages();
     const context=this.contextId;
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     try{return await Promise.race([(async()=>{
@@ -138,6 +169,7 @@ export class TwinPulseApi {
   }
   async viewportPreviewImage(sha:string):Promise<Blob>{
     if(!/^[a-f0-9]{64}$/.test(sha))throw new ApiError('viewport_image_invalid','Invalid preview identity.');
+    if(this.environmentImageAdmission)await this.waitForEnvironmentImages();
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     try{return await Promise.race([(async()=>{
       const response=await this.imageRequest(`/v1/product/viewport/preview/${sha}`,controller.signal);
@@ -169,6 +201,7 @@ export class TwinPulseApi {
     ]);}finally{if(timer!==undefined)clearTimeout(timer);}
   }
   async viewportImage(frameId:number):Promise<Blob>{
+    if(this.environmentImageAdmission)await this.waitForEnvironmentImages();
     const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),2000);
     try{
       const response=await this.imageRequest(`/v1/product/viewport/frame/${frameId}`,controller.signal);
@@ -184,6 +217,9 @@ export class TwinPulseApi {
     }finally{clearTimeout(timer);}
   }
   async viewportImageFrame():Promise<{state:import('./viewport-types').ViewportState;image:Blob|null}>{
+    // Explicit adoption queues unsent observation only. The unchanged 2s
+    // transfer/decode budget starts after admission; frame clocks stay original.
+    if(this.environmentImageAdmission)await this.waitForEnvironmentImages();
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
     try{return await Promise.race([(async()=>{
       const response=await this.imageRequest('/v1/product/viewport/current',controller.signal);
@@ -230,6 +266,10 @@ export class TwinPulseApi {
     return this.readState('/v1/product/conversation');
   }
   async conversationAction(body: import('./conversation-types').ConversationAction | import('./conversation-types').ResumeSceneAction | import('./conversation-types').RobotCheckAction): Promise<import('./conversation-types').ConversationState> {
+    if(body.action==='resume')return this.environmentTransaction(()=>this.sendConversationAction(body));
+    return this.sendConversationAction(body);
+  }
+  private async sendConversationAction(body:Parameters<TwinPulseApi['conversationAction']>[0]):Promise<import('./conversation-types').ConversationState>{
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -674,8 +714,8 @@ export class TwinPulseApi {
   continueRoomRecipe(): Promise<WorkflowState> { return this.request("/v1/product/project/continue-room", {}); }
   resumeSavedScene(project_id: string, expected_scene_revision: string,
                    expected_input_revision: string): Promise<WorkflowState> {
-    return this.request("/v1/product/project/resume-scene",
-      { project_id, expected_scene_revision, expected_input_revision });
+    return this.environmentTransaction(()=>this.boundedProjectAction("/v1/product/project/resume-scene",
+      { project_id, expected_scene_revision, expected_input_revision }));
   }
   previewSceneEdit(operation_id: string, mode: "add" | "add_many" | "change" | "undo",
                    target_call_id: string | null, tool_call: Record<string, unknown> | null): Promise<SceneEditPreview> {
@@ -691,6 +731,11 @@ export class TwinPulseApi {
   }
   applySceneEdit(operation: Record<string, unknown>, preview_digest: string): Promise<WorkflowState> {
     return this.request("/v1/product/scene-edit/apply", { operation, preview_digest });
+  }
+  applyEnvironmentEdit(operation:Record<string,unknown>,preview_digest:string):Promise<import('./types').SceneEditTransaction>{
+    return this.environmentTransaction(()=>this.boundedProjectAction('/v1/product/scene-edit/apply',{
+      schema_version:'scene-edit-apply-2.0',environment_preview_id:operation.operation_id,preview_digest,
+    }));
   }
   applyLibraryPlacement(preview_id:string,preview_digest:string):Promise<import('./types').SceneEditTransaction>{
     return this.boundedProjectAction('/v1/product/scene-edit/apply',{

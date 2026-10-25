@@ -2,6 +2,7 @@
 """Owned Isaac kinematic fleet. SIM source is explicit, not motor/PhysX evidence."""
 import math
 import time
+from twinpulse_core.robot_survey import SIM_BODY_RADIUS_M,SIM_STOP_SKIN_M,SIM_STOP_SUBSTEP_TRAVEL_M
 
 
 def observe_startup(robot,created,dt,capture_pending):
@@ -61,7 +62,7 @@ def integrate_motion(pose,direction,elapsed,boxes,remaining=None):
             candidate[0]+=sign*distance*math.cos(candidate[2]);candidate[1]+=sign*distance*math.sin(candidate[2])
         else:candidate[2]+=distance*(1 if direction=='left' else -1)
         steps+=1
-        if any(FleetRuntime._gap(candidate,box)<.10+.05*.05 and
+        if any(FleetRuntime._gap(candidate,box)<SIM_STOP_SKIN_M+SIM_STOP_SUBSTEP_TRAVEL_M and
                FleetRuntime._gap(candidate,box)<FleetRuntime._gap(current,box)-1e-8 for box in boxes):
             return current,travel,'OBSTACLE_STOP',steps
         current=candidate;travel+=distance
@@ -166,6 +167,9 @@ class FleetRuntime:
             return # Global one-slot worker, no per-robot queued jobs.
 
     def _navigation_scene(self,stage):
+        imported=getattr(self,'environment_navigation',None)
+        if imported is not None:
+            return imported['targets'],imported['bounds'],imported['obstacles']
         from pxr import UsdGeom,Usd
         cache=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_,UsdGeom.Tokens.render,UsdGeom.Tokens.guide])
         targets=[];floors=[];boxes=[]
@@ -219,7 +223,8 @@ class FleetRuntime:
                     self.planner=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sim-object-plan')
                 # Only pure copied geometry crosses this boundary; no USD or
                 # mutation on the worker, and no wait on Kit's main thread.
-                robot['navigation_future']=self.planner.submit(approach_plan,list(robot['pose']),task['target_kind'],targets,bounds,boxes,discs)
+                robot['navigation_future']=self.planner.submit(approach_plan,list(robot['pose']),task['target_kind'],targets,bounds,boxes,discs,
+                    observed_cells=(self.environment_navigation['cells'] if getattr(self,'environment_navigation',None) is not None else None))
             except ValueError as exc:
                 navigation.update(state='FAILED',reason=str(exc));return None,0.,str(exc)
         if robot.get('navigation_geometry_epoch')!=self.navigation_geometry_epoch:
@@ -285,6 +290,14 @@ class FleetRuntime:
             try:
                 targets,bounds,boxes=self._navigation_scene(stage)
                 self.navigation_scene=dict(epoch=self.navigation_geometry_epoch,targets=targets,bounds=bounds,obstacles=boxes)
+                if self.environment_navigation is not None:
+                    from twinpulse_core.navigation_grid import encode_navigation_grid
+                    root=stage.GetPrimAtPath('/World/TwinPulse/Environment')
+                    self.navigation_scene.update(schema='scene-navigation-2.0',
+                        source_sha256=root.GetCustomDataByKey('twinpulseEnvironmentSource'),scene_revision=self.identity[2],
+                        units_basis=root.GetCustomDataByKey('twinpulseEnvironmentUnitsBasis'),
+                        meters_per_unit=root.GetCustomDataByKey('twinpulseEnvironmentMetersPerUnit'),
+                        grid=encode_navigation_grid(self.environment_navigation['cells']))
             except ValueError:pass # Missing geometry cannot authorize a route.
 
     def receive(self,value,received_at=None):
@@ -310,6 +323,20 @@ class FleetRuntime:
         from pxr import UsdGeom, Usd
         root=stage.GetPrimAtPath('/World/TwinPulse/Environment')
         if not root:return []
+        self.environment_navigation=None
+        if root.GetCustomDataByKey('twinpulseEnvironmentSource'):
+            from twinpulse_app.lidar_scene_geometry import mesh_triangles
+            from twinpulse_core.environment_navigation import navigation_cells
+            meshes=[]
+            for obj in root.GetChildren():
+                geom=stage.GetPrimAtPath(str(obj.GetPath())+'/geometry')
+                triangles=mesh_triangles(geom)
+                meshes.append(dict(id=obj.GetName(),category=obj.GetCustomDataByKey('environmentCategory'),
+                    label=obj.GetCustomDataByKey('environmentLabel'),points_m=[list(p) for t in triangles for p in t],
+                    triangles=[[i,i+1,i+2] for i in range(0,len(triangles)*3,3)],
+                    synthetic_keepout=bool(obj.GetCustomDataByKey('syntheticKeepout'))))
+            self.environment_navigation=navigation_cells(meshes)
+            return self.environment_navigation['manual_boxes']
         cache=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_]);boxes=[]
         for prim in Usd.PrimRange(root):
             if prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube) or prim.IsA(UsdGeom.Cylinder):
@@ -324,7 +351,7 @@ class FleetRuntime:
     @staticmethod
     def _gap(pose,box):
         x,y,_=pose;a,b,c,d=box
-        return math.hypot(max(a-x,0,x-c),max(b-y,0,y-d))-.105
+        return math.hypot(max(a-x,0,x-c),max(b-y,0,y-d))-SIM_BODY_RADIUS_M
 
     def update(self,snapshot):
         import omni.usd

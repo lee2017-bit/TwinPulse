@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Source: https://github.com/lee2017-bit/TwinPulse
 // User input may be multilingual; product interface copy remains English.
+import {isImmediateRobotStop} from './robot-task-intent';
 export function isConversationStopRequest(text:string):boolean {
-  return ['stop','stop simulation','pause simulation','정지','멈춰'].includes(text.trim().toLowerCase());
+  return isImmediateRobotStop(text)||['stop','stop simulation','pause simulation','정지','멈춰'].includes(text.trim().toLowerCase());
 }
 export function isConversationStatusRequest(text: string): boolean {
   return ['status', 'what is happening?', 'explain status', '현재 상태', '상태'].includes(text.trim().toLowerCase());

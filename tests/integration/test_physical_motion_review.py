@@ -34,6 +34,15 @@ def write_archive(root,events):
     return p
 
 class AnalysisTests(unittest.TestCase):
+    def test_scan_sampling_keeps_last_sector_and_original_point_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            points=[[float(i),0.] for i in range(398)]
+            p=write_archive(tmp,[dict(kind='scan',data=dict(complete=True,quality=dict(interval_fallback_packets=0),
+                timing=dict(receipt_start_s=1.,receipt_end_s=1.1),points=points,stream_id='s',frame_sequence=1,raw_sha256='b'*64))])
+            a=read_archive(p,OP,PROJECT,time.monotonic()+5);scan=a['scans'][0]
+            self.assertGreater(scan['points'][-1][0],393.)
+            self.assertEqual(scan['input_point_count'],398);self.assertEqual(scan['points_full'],points)
+
     def test_legacy_repeated_same_direction_is_not_joined(self):
         a=archive();a['pubs']=[dict(sequence=1,at=10.,direction='forward',request_id='one'),dict(sequence=3,at=12.,direction='forward',request_id='two')]
         a['pauses']=[dict(sequence=2,at=10.2,reason='EXPIRED'),dict(sequence=4,at=12.2,reason='STOP')]

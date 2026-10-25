@@ -21,6 +21,20 @@ from tests.integration.test_r4_bridge_api import R4ApiTests
 
 
 class ViewportTests(unittest.TestCase):
+    def test_top_view_orbit_restores_oblique_direction_and_current_zoom_distance(self):
+        from scripts.twinpulse_live_viewport import orbit_offset
+        import math
+        self.assertEqual(orbit_offset([3,4,12]),[3,4,12])
+        for previous in ([3,4,12],None,[0,0,12],[float('nan'),1,1]):
+            result=orbit_offset([0,0,9],previous)
+            self.assertAlmostEqual(math.sqrt(sum(v*v for v in result)),9)
+            self.assertGreater(math.hypot(result[0],result[1]),.01)
+        self.assertAlmostEqual(orbit_offset([0,0,9],[3,4,12])[0],27/13)
+
+    def test_basic_image_plugins_are_initialized_before_first_frame(self):
+        with patch('twinpulse_app.viewport_service.Image.preinit') as warm:
+            ViewportService(Mock())
+        warm.assert_called_once_with()
     def test_diagnostic_shutdown_explicitly_wakes_queue_without_waiting_for_timeout(self):
         from queue import Queue
         from threading import Event, Thread
@@ -157,10 +171,15 @@ class ViewportTests(unittest.TestCase):
         packet=self.frame();uv=[.12345678901234567,.8765432109876543]
         packet['frame']['robot_anchors']=[dict(robot_id=str(i)+'a'*98,screen_anchor_uv=uv,screen_bounds_uv=[*uv,.99,.99],visible=True) for i in range(16)]
         packet['frame']['lidar_overlay']=dict(robot_id='a'*100,origin_uv=uv,points_uv=[uv]*90,captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,connection_epoch='a'*100,motion_epoch='b'*100,physical_authority=False)
+        packet['frame']['alignment_overlay']=dict(review_id='a'*32,source='CURRENT',body_bounds_uv=[*uv,.99,.99],origin_uv=uv,
+            points_uv=[uv]*180,original_captured_at_ms=100000,physical_authority=False)
         self.service.exchange('engine','stage',packet)
         state=self.service.status();header=json.dumps(state)
         self.assertLessEqual(len(header.encode()),8192)
         self.assertNotIn('lidar_overlay',state['last_frame']);self.assertNotIn('robot_anchors',state['last_frame'])
+        self.assertNotIn('alignment_overlay',state['last_frame'])
+        self.assertLessEqual(len(state['frame']['alignment_overlay']['points_uv']),40)
+        self.assertEqual(len(self.service.latest['alignment_overlay']['points_uv']),180)
         self.assertEqual(state['frame']['captured_at_ms'],100000)
         self.assertEqual(self.service.latest['lidar_overlay']['points_uv'][0],uv)
         self.assertLess(abs(state['frame']['lidar_overlay']['points_uv'][0][0]-uv[0])*1280,.002)
@@ -173,6 +192,16 @@ class ViewportTests(unittest.TestCase):
             row=self.frame(2);row['frame']['lidar_overlay']={**packet['frame']['lidar_overlay'],**patch}
             with self.assertRaisesRegex(BrokerError,'frame-bound SIM scan'):
                 self.service.exchange('engine','stage',row)
+    def test_alignment_header_budget_includes_long_ids_and_all_visual_layers(self):
+        self.engine.update(engine_session_id='e'*160,stage_epoch='s'*160,snapshot={'applied_revision':'r'*160})
+        packet=self.frame();packet.update(engine_session_id='e'*160,stage_epoch='s'*160)
+        packet['frame']['applied_revision']='r'*160;uv=[.12345678901234567,.8765432109876543]
+        packet['frame']['robot_anchors']=[dict(robot_id=str(i)+'a'*98,screen_anchor_uv=uv,screen_bounds_uv=[*uv,.99,.99],visible=True) for i in range(16)]
+        packet['frame']['lidar_overlay']=dict(robot_id='a'*100,origin_uv=uv,points_uv=[uv]*90,captured_at_ms=100000,source='isaac_usd_surface_rays',height_m=.182,connection_epoch='a'*100,motion_epoch='b'*100,physical_authority=False)
+        packet['frame']['alignment_overlay']=dict(review_id='a'*32,source='CURRENT',body_bounds_uv=[*uv,.99,.99],origin_uv=uv,points_uv=[uv]*180,original_captured_at_ms=100000,physical_authority=False)
+        self.service.exchange('e'*160,'s'*160,packet);self.service.camera_result=dict(request_id='😀'*80,state='completed',code='😀'*80)
+        state=self.service.status();self.assertLessEqual(len(json.dumps(state,ensure_ascii=True,separators=(',',':')).encode('ascii')),8000)
+        self.assertEqual(len(self.service.latest['alignment_overlay']['points_uv']),180)
     def setUp(self):
         self.now=100.
         self.broker=Mock()
@@ -302,6 +331,15 @@ class ViewportTests(unittest.TestCase):
         self.now+=2.1
         result=self.service.exchange('engine','stage',{**self.frame(),'frame':None})
         self.assertIsNone(result['camera']);self.assertEqual(self.service.status()['camera_result']['code'],'camera_delivery_expired')
+        self.broker.submit.assert_not_called();self.broker.acquire_lease.assert_not_called()
+
+    def test_top_view_uses_the_same_fresh_frame_gate_without_scene_authority(self):
+        body=dict(request_id='top',frame_id=1,action='top_view')
+        with self.assertRaises(BrokerError):self.service.camera_action(body)
+        self.service.exchange('engine','stage',self.frame())
+        self.assertTrue(self.service.camera_action(body)['camera_pending'])
+        result=self.service.exchange('engine','stage',{**self.frame(),'frame':None})
+        self.assertEqual(result['camera']['action'],'top_view')
         self.broker.submit.assert_not_called();self.broker.acquire_lease.assert_not_called()
 
     def test_browser_failure_is_typed_deduplicated_and_not_control_authority(self):

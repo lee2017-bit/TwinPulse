@@ -21,6 +21,16 @@ import time
 _FLEET_DIAGNOSTIC_STOP = object()
 
 
+def orbit_offset(offset,previous=None):
+    """Resume a bounded oblique direction after Top view, keeping zoom distance."""
+    if math.hypot(offset[0],offset[1])>=.01:return list(offset)
+    valid=(isinstance(previous,(tuple,list)) and len(previous)==3 and
+        all(type(v) in (int,float) and math.isfinite(v) for v in previous) and math.hypot(previous[0],previous[1])>=.01)
+    direction=list(previous) if valid else [1.,-1.,1.]
+    scale=max(.5,math.sqrt(sum(v*v for v in offset)))/math.sqrt(sum(v*v for v in direction))
+    return [v*scale for v in direction]
+
+
 class LiveViewportPublisher:
     # USD Build acknowledgement precedes asynchronous Hydra/GPU presentation.
     # Never label the immediately previous render buffer as the new revision.
@@ -33,6 +43,9 @@ class LiveViewportPublisher:
         try:from twinpulse_fleet_runtime import FleetRuntime
         except ModuleNotFoundError:from scripts.twinpulse_fleet_runtime import FleetRuntime
         self.fleet_runtime=FleetRuntime();self.fleet_pending=deque(maxlen=16);self.fleet_report=None
+        try:from twinpulse_alignment_view import AlignmentView
+        except ModuleNotFoundError:from scripts.twinpulse_alignment_view import AlignmentView
+        self.alignment_view=AlignmentView();self.alignment_packet=None;self.alignment_error=None
         self.fleet_render_completed=deque(maxlen=2)
         self.lock = Lock(); self.stop_event = Event(); self.thread = None;self.fleet_thread=None
         self.raw = None; self.camera = None; self.camera_result = None
@@ -62,7 +75,7 @@ class LiveViewportPublisher:
         value=self.phase_probe.snapshot()
         with self.lock:
             value.update(deepcopy(dict(latest_io=self.viewport_latest,worst_io=self.viewport_worst,
-                active_io=self.viewport_active,join_status=self.io_join_status)))
+                active_io=self.viewport_active,join_status=self.io_join_status,alignment_review_error=self.alignment_error)))
         return value
 
     def _begin_render_epoch(self, identity):
@@ -151,6 +164,12 @@ class LiveViewportPublisher:
         with self.phase_probe.phase('pending_receive'):
             for identity,tokens in rendered:self.fleet_runtime.rendered(identity,tokens)
             for fleet,received_at in fleets:self.fleet_runtime.receive(fleet,received_at=received_at)
+        with self.lock:alignment_packet=self.alignment_packet
+        try:self.alignment_view.update(snapshot,alignment_packet);self.alignment_error=None
+        except Exception as exc:
+            self.alignment_error=type(exc).__name__;self.alignment_view.packet=None
+            try:self.alignment_view.update(snapshot,None)
+            except Exception:pass
         try:
             with self.phase_probe.phase('fleet_update'):self.fleet_runtime.update(snapshot)
             with self.lock:
@@ -206,6 +225,9 @@ class LiveViewportPublisher:
                     'captured_at_ms':time.time()*1000,'camera_sequence':self.camera_sequence}
         with self.phase_probe.phase('frame_anchors'):metadata['robot_anchors']=self.fleet_runtime.frame_anchors(viewport)
         metadata['lidar_overlay']=self.fleet_runtime.frame_scan
+        try:metadata['alignment_overlay']=self.alignment_view.frame(viewport)
+        except Exception as exc:
+            self.alignment_error=type(exc).__name__;metadata['alignment_overlay']=None
         fleet_render_tokens=self.fleet_runtime.render_tokens()
         self.started_capture = self.last_capture = now
         with self.lock:
@@ -268,7 +290,16 @@ class LiveViewportPublisher:
         target = Gf.Vec3d(*stored) if stored is not None else bound.GetMidpoint()
         if stored is None: target[2] = min(target[2],.5)
         offset = eye-target
-        if action.startswith('orbit_'):
+        if action=='top_view':
+            # Presentation only: preserve target/distance, look vertically down
+            # so imported walls cannot occlude a low robot. No geometry edits.
+            if math.hypot(offset[0],offset[1])>=.01:
+                camera.GetPrim().SetCustomDataByKey('twinpulseViewerObliqueOffset',Gf.Vec3d(offset))
+            offset = Gf.Vec3d(0,0,max(.5,offset.GetLength()))
+            eye = target+offset
+        elif action.startswith('orbit_'):
+            previous=camera.GetPrim().GetCustomDataByKey('twinpulseViewerObliqueOffset')
+            offset=Gf.Vec3d(*orbit_offset(offset,list(previous) if previous is not None else None))
             angle = math.radians(15 if action=='orbit_left' else -15)
             offset = Gf.Vec3d(offset[0]*math.cos(angle)-offset[1]*math.sin(angle),
                              offset[0]*math.sin(angle)+offset[1]*math.cos(angle),offset[2])
@@ -412,6 +443,7 @@ class LiveViewportPublisher:
                 with self.lock:
                     if self.camera_result == result: self.camera_result = None
                     command = response.get('camera')
+                    self.alignment_packet=response.get('alignment_review')
                     if command and (not result or command['request_id']!=result['request_id']): self.camera = command
                 self.transport_error = None
             except Exception as exc:

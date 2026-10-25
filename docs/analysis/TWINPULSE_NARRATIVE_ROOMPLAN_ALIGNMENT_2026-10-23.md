@@ -1,5 +1,59 @@
 # TwinPulse 방향성·사진 충실도·RoomPlan 실파일 종합 분석
 
+## 2026-10-23 추가 검토 · v612: Scanner 앱보다 현 USD/설치12 재사용
+
+**현재 결론:** 추가 iPhone 앱·JSON·USDZ 변환 없이 현 원본 USD로 공간 표시/편집 및 기하 기반 TurtleBot3 SIM 데모가 가능하다. 단지 구현 가능성만의 판단이 아니라 설치 `20261023T045245Z-9d9e533cef09`/source `9d9e533cef0949b6792a0078a50790fb54997dc570a9ca2079d4bb6d6f2fd9cf`의 기존 실제 여정(Import6/실모델 편집Undo3/SIM13/cold3)이 있다. 아래 최초 분석의 “환경 Import 미구현/이 입력 SIM NOT_RUN”은 당시 이력이며 현재 상태가 아니다. 원사진 충실도/실물 정합의 미검증은 그대로다. 이번 사용자 요청에 따라 **검토만** 수행했으며 새 제품 수정·App/Isaac GUI/모델 호출·로봇 접속·업로드는 하지 않았다.
+
+### (1) 실제 USD 재검사
+
+현재 접근한 원본은 `C:\Users\jaewo\OneDrive\문서\카카오톡 받은 파일\Project-2610222326.usd`이다. 이름에 `(1)`이 붙은 별도 사본은 확인되지 않았으므로 그 사본과의 바이트 동일성을 단정하지 않는다. 이 파일은 사용자가 이전에 제공한 38,339bytes/PXR-USDC이며 SHA256 `844366fc9e53e1ad8887a2db92c086462bf12a4b54b16d39eb2d7e3259b4d69b`가 이전 인수와 같다. 원본은 불변이다.
+
+기존 OpenUSD0.25.11 API로 `/Project_2610222326` Stage와 각 Prim/변환/재질 바인딩을 다시 읽었다. Xform29/Scope2/Mesh30/Material30/Shader30, 정점1212/삼각형620/사각형0. Wall15/Door4/Window2/Floor1, Chair2/Refrigerator1/Sofa1/Storage3/Table1. 외부 layer/reference/asset 의존성0, 원 authored physics0이다. **Stage.HasAuthoredMetadata('upAxis')=true/Y, metersPerUnit=false**이며 API fallback0.01은 실측 단위가 아니다. 원 수치 외접범위10.2632×2.4636×9.0173과 최대 wall 높이2.3036은 native값이다. Meters 선택 시에만 그 숫자를 m로 해석하며 실제 방 치수/면적/정확도로 확정하지 않는다.
+
+명시 단위 없이 현재 환경 inspector를 호출하면 `ENVIRONMENT_SELECT_UNITS`, Library inspector는 `USD_EXPLICIT_UNITS_AND_AXIS_REQUIRED`로 각각 거절한다. 명시 Meters의 환경 경로는30mesh 유지, source path별 composed transform→Y/Z 변환·바닥 원점 보정을 다시 계산한 정점 오차0(오프라인 double 수치 비교), 실제 `author_environment`의 메모리 USD Stage와 `matches_environment` 대조 PASS다. 이 테스트는 Kit 독립 시각 렌더/PhysX contact 시험이 아니다. 원 Prim property/metadata 이름에서 RoomPlan confidence/dimensions/identifier/category 필드는 찾지 못했으며 별도 CapturedRoom UUID/신뢰도 데이터의 존재를 추정하지 않는다.
+
+새 분석 원문: [USD 검사](../../outputs/roomplan-scanner-review-20261023/usd-inspection.json), [Stage/Prim·좌표·현재 author/nav 대조](../../outputs/roomplan-scanner-review-20261023/source-geometry-review.json), [Library 원본 거절](../../outputs/roomplan-scanner-review-20261023/library-source-probe.json). 원 메시 투영과 기존 실제 설치 화면도 직접 보았지만 서로 카메라/렌더 방식이 달라 동일시점 영상 비교라고 하지 않는다.
+
+### (2) 기존 Library와 현재 공간 Import는 다르다
+
+Library는 여전히 `.usd/.usda/.usdc` 정적 메시·명시 단위/축을 요구한다. 여러 Prim의 world vertices를 단일 MeshAsset으로 합치고 bounds-centre로 정규화하며 배치 충돌은 enclosing box다. 방 전체를 이 경로에 넣거나 단위 검증을 풀 이유가 없다.
+
+최신 `EnvironmentImport.tsx`→`environment_workspace.py`→`twinpulse_environment_worker.py`는 New chat/Attach/Import space/명시 단위/Inspect/Import/Show Twin 경로다. 원 bytes/SHA를 별도 archive에 보존하고 각 mesh의 source path와 안정ID를 유지해 별도 USD mesh로 author한다. **원 USD를 통째로 reference하는 완전 무손실 scene editor는 아니다.** 계층 transform을 world-space vertices에 bake하고 새 객체 wrapper로 재구성, 재질은 display/diffuse 색상, 범주는 Prim 이름에서 유도한다. 복잡 shader/texture·원 parenting/변환 스택·RoomPlan API의 semantic confidence 보존까지 약속하지 않는다. 편집은 현재 가구1개의 XY translation/preview/명시 Apply/ACK/저장/Undo이며 회전·크기·벽 구조 CAD편집은 아니다.
+
+같은 설치12의 실제 Import/AI편집/Undo/저장/cold·LiDAR/4방향/60초/목표도착·Stop/반출 원문은 [최종 인수 보고서](../../outputs/robot-roomplan-ready-20261023/report.html)와 [saved cycle](../../outputs/robot-roomplan-ready-20261023/roomplan-saved-cycle12.json)이다. 이번에는 이를 hash-bound 원문과 재대조했지 새 일반 GUI 시험을 했다고 하지 않는다. focused 환경/nav 보조16개도 새로 PASS했다. 첫 unittest 직접실행은 프로젝트 PYTHONPATH 누락으로 loader2ERROR였으며, 시험환경 경로만 process-local로 명시해 재실행했다. 제품 수정은 없고 별도 최초 raw 파일은 없으며 원 도구출력/이 기술 이력으로 남긴다.
+
+### (3) JSON/Scanner 결정
+
+이번 목적의 geometry·객체별 위치/형상·대상 이름은 현 USD에서 얻으므로 JSON을 필수입력으로 추가하지 않는다. Apple은 CapturedRoom을 JSON/Plist로 encode하고 node-name↔UUID metadata로 연결하는 별도 경로를 설명한다. 그 자료는 confidence/고유ID/객체 속성·재스캔 추적 등이 실제 요구일 때 유용하며 geometry로 이를 임의 복원해서는 안 된다. 현재 서드파티 앱의 숨은 JSON 메뉴/실제 권한은 확인하지 않았고 필요성도 없어 추가 조사하지 않았다. [Apple RoomPlan](https://developer.apple.com/augmented-reality/roomplan/), [Apple WWDC23 export/metadata](https://developer.apple.com/videos/play/wwdc2023/10192/).
+
+USDZ는 의존성을 묶는 전달 package이지 정확도 개선기가 아니다. 이번 원본은 외부 의존성이 없고 직접 USD 지원으로 통과했으므로 전환 이익이 입증되지 않았다. [OpenUSD USDZ specification](https://openusd.org/release/spec_usdz.html). Xcode의 macOS 요구는 공식 확인했으나 사용자의 Mac/Xcode/서명·실기기 접근성은 미확인이다. 그러므로 일주일 안에 별도 앱을 완성한다고 약속하지 않고 데모 이후 검토한다. [Apple Xcode requirements](https://developer.apple.com/xcode/system-requirements).
+
+### (4) 최소 변경 대상·회귀 위험
+
+현재 증거상 **이 입력의 데모를 위해 반드시 고쳐야 할 추가 제품 코드 결함은 확인하지 못했다.** 신규 importer/Scanner 개발이 아니라 검증과 촬영 시나리오를 우선한다. 데이터 손실/통로 오류가 재현될 때에만 해당 경계를 수정한다: `twinpulse_environment_worker.py`(축·단위·mesh/material 추출), `environment_source.py`(source ID·불변 geometry/translation), `environment_geometry.py`(실제 static triangle mesh), `environment_navigation.py`(floor/장애물 projection), `EnvironmentImport.tsx`(입력·상태 표시). 기존 Library/asset store는 변경하지 않는다. core normalization 변경은 렌더/충돌/LiDAR/nav/Undo/cold 전부에 영향을 주므로 별도 importer 완화보다 회귀 위험이 크다. 변경하면 새 같은 설치본 필수 여정을 다시 검사해야 한다.
+
+### (5) 시뮬레이션의 정확한 경계와 남은 데모 검증
+
+현재 환경은 개별 triangle collider/approximation none을 author하며 방 전체 convex/AABB로 채우지 않는다. nav는 실제 floor triangle와 높이0.005–0.30m 장애물의 보수적0.10m cell, goal planner는 기존0.25m clearance/경로5m한도를 사용한다. 이번 오프라인8000cell 중2760free/4-neighbor57 component라는 결과는 입력의 모든 문이 열려 있거나 모든 방을 왕복 가능하다는 근거가 아니다. 연결성은 footprint inflation 전 cell 수준이고 문 mesh도 장애물로 남는다. 보이지 않는 통로를 만들기 위해 Door를 임의 삭제하거나 clearance를 줄이지 않는다.
+
+**Fleet SIM은 kinematic motion/실제 geometry 기반 검사이며 wheel/PhysX 동역학 시험이 아니다.** robot model의 Physics variant none과 pose transform 갱신 경로가 명시되어 있다. collision API가 있다는 것과 실제 마찰·접촉·제동 검증은 구분한다. 기존 RoomPlan12의60초는 held-left 회전이고 Sofa0 도착 path_length는 **0.3784585m**다. 따라서 전 공간 횡단/긴 연속 직진 성공으로 과장하지 않는다. 실제 소파 목표도착은 확인했지만 제출 영상에는 UI로 선언한 시작점에서 원 장애물 옆 **가능하면1–2m의 눈에 보이는 경로**를 기존 안전기준에서 확인해 보여주는 것이 유리하다. 이는 새 필수 런타임 gate가 아니라 데모 장면 선정/명시 시험이며, 불가하면 검증한 거실 구역만 솔직하게 보여준다.
+
+원파일 독립 Kit Stage와 TwinPulse Import를 같은 카메라·명시 scale로 나란히 보는 비교는 아직 별도 NOT_RUN이다. 원 구조/색상/개구부 보존을 설명하려면 이 비교와 실제 dimension 한두 개의 교차확인을 추가하는 편이 좋다. SIM을 위해 실측을 순환 선행조건으로 만들지는 않으며, 실제 목적지 주행에는 현장 좌표정합이 별도로 필요하다. 새 캡처 실패 시 현재 원수치/정점 대조와 기존 실제 Twin 화면을 근거로 쓰되 독립 render 비교라고 표시하지 않는다.
+
+### (6) 남은 약1주 실행안 — 제안, 이번 구현 승인 아님
+
+1. 첫날: 원 USD/현재 Import 숫자·구조 비교를 묶고 독립 Stage/현재 Twin 동일 camera를 확인. 실측 근거가 없으면 selected_for_sim을 그대로 노출.
+2. 다음1일: 같은 RoomPlan 거실의 명시 시작점·눈에 보이는 경로/원소파·Stop·scan·가구 이동/Undo/cold를 데모 시나리오로 고정. 거절 시 원인 보존/검증된 구역으로 범위를 명시, 기하·한도를 숨겨 바꾸지 않음.
+3. 다음1–2일: 기존 준비가 끝난 실제 App의 한 현장 세션(Check Connection→Prepare→정지센서/부하→저속주행/Stop→scan/반출). 물리 소파 목표이동은 좌표정합 후 별도 범위, SIM 성공을 실물로 바꾸지 않음.
+4. 중반 이후: 필요한 최소 수정이 발생했을 때만 같은 설치 회귀·동결. 마지막1–2일은 Home부터 Import/등록/조종/변경·복원까지 고정 크기 영상·실물 별도 footage·제출 설명. 정확한 공식 마감/영상 규칙은 별도 확인 대상.
+5. 실패 대안: 실물 미통과면 SIM과 실제 실패/부분근거를 구분 제출. 원 스캔 자체가 중요한 부분을 누락했다면 기존 앱의 해당 구역 재스캔/재export가 자체 Scanner 개발보다 작은 대안이다. 다른 scan을 기존 원본으로 위장하거나 이름/충돌을 임의 재작성하지 않는다.
+
+### (7) 이번에는 하지 않을 것
+
+불필요한 USDZ 전환/JSON 의무화, 별도 iOS 앱·서명/TestFlight, 신규 depth/재구성 모델·GPU Cloud, 범용 입력 자동라우팅·전체 CAD·원본 방의 사진품질 재생성·실물 자동 세계정합을 이번 검토에 편입하지 않는다. 원본/프로젝트/장부/원 로봇 로그/설치12·원실패 보존. 로봇OFF/SSH·모터·API모델호출·설치·삭제·Git업로드0. 웹에는 공식문서 URL만 요청했고 사적 USD/메시/사진은 보내지 않았다. 문서 추출 스킬의 CLI/참조 setup이 이 환경에 없어 설치하지 않고 일반 웹 도구로 공식 Apple/OpenUSD 자료만 확인했다.
+
+---
+
 2026-10-23 KST · 분석/소스 체크포인트 · **RoomPlan 제품 통합 구현·새 사진 생성·실물 시험 아님**
 
 ## 1. 결론

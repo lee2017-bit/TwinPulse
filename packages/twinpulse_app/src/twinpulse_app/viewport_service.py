@@ -8,6 +8,7 @@ import base64
 import binascii
 from collections import deque
 import hashlib
+import json
 from io import BytesIO
 import math
 import re
@@ -15,10 +16,15 @@ from threading import RLock
 import time
 
 from .command_broker import BrokerError
+from PIL import Image
 
 
 class ViewportService:
     def __init__(self, broker, *, clock=time.monotonic, wall_clock=time.time):
+        # Frozen Pillow loads its basic plugins lazily. Do that before serving
+        # HTTP, not while holding the image lock on the first engine frame.
+        # This does not decode/authorize a frame or extend its original clock.
+        Image.preinit()
         self.broker = broker
         self.clock, self.wall_clock = clock, wall_clock
         self.lock = RLock()
@@ -58,7 +64,7 @@ class ViewportService:
             frame = body['frame']
             if frame is not None:
                 required = {'frame_id', 'applied_revision', 'captured_at_ms', 'width', 'height', 'jpeg_base64', 'camera_sequence'}
-                if not isinstance(frame, dict) or not required<=set(frame) or set(frame)-required-{'robot_anchors','lidar_overlay'}:
+                if not isinstance(frame, dict) or not required<=set(frame) or set(frame)-required-{'robot_anchors','lidar_overlay','alignment_overlay'}:
                     raise BrokerError('viewport_frame_invalid', 'Viewport frame shape is invalid', status=400)
                 anchors=frame.get('robot_anchors',[])
                 if (not isinstance(anchors,list) or len(anchors)>16 or any(not isinstance(a,dict)
@@ -82,6 +88,20 @@ class ViewportService:
                             or any(not isinstance(p,list) or len(p)!=2 or any(type(n) not in (int,float) or not math.isfinite(n) or not 0<=n<=1 for n in p)
                                    for p in [scan['origin_uv'],*scan['points_uv']])):
                         raise BrokerError('viewport_scan_invalid','Invalid frame-bound SIM scan overlay.',status=400)
+                aligned=frame.get('alignment_overlay')
+                if aligned is not None:
+                    if (not isinstance(aligned,dict) or set(aligned)!={'review_id','source','body_bounds_uv','origin_uv','points_uv','original_captured_at_ms','physical_authority'}
+                        or not isinstance(aligned['review_id'],str) or re.fullmatch('[a-f0-9]{32}',aligned['review_id']) is None
+                        or aligned['source'] not in {'CURRENT','SAVED'} or aligned['physical_authority'] is not False
+                        or not isinstance(aligned['points_uv'],list) or len(aligned['points_uv'])>180):
+                        raise BrokerError('viewport_alignment_invalid','Invalid bounded review projection.',status=400)
+                    coords=[(p,2) for p in aligned['points_uv']]
+                    coords.extend((aligned[k],n) for k,n in (('origin_uv',2),('body_bounds_uv',4)) if aligned[k] is not None)
+                    if any(not isinstance(p,list) or len(p)!=n or any(type(v) not in (int,float) or not math.isfinite(v) or not 0<=v<=1 for v in p) for p,n in coords):
+                        raise BrokerError('viewport_alignment_invalid','Invalid review projection coordinates.',status=400)
+                    stamp=aligned['original_captured_at_ms']
+                    if (aligned['source']=='CURRENT' and (type(stamp) not in (int,float) or not math.isfinite(stamp) or not -50<=frame['captured_at_ms']-stamp<1000)):
+                        raise BrokerError('viewport_alignment_stale','Current review scan is stale.',status=409)
                 seq = frame['frame_id']
                 stamp = frame['captured_at_ms']
                 if (type(seq) is not int or seq <= self.sequence or seq > 2**53-1
@@ -94,9 +114,8 @@ class ViewportService:
                         or not isinstance(frame['jpeg_base64'], str) or len(frame['jpeg_base64']) > 240000):
                     raise BrokerError('viewport_frame_stale_or_invalid', 'Frame identity, dimensions or capture time is invalid', status=409)
                 try:
-                    from PIL import Image
                     data = base64.b64decode(frame['jpeg_base64'], validate=True)
-                    with Image.open(BytesIO(data)) as image:
+                    with Image.open(BytesIO(data), formats=('JPEG',)) as image:
                         if image.format != 'JPEG' or image.size != (frame['width'], frame['height']):
                             raise ValueError('dimensions')
                         image.verify()
@@ -224,9 +243,17 @@ class ViewportService:
                     scan=public['lidar_overlay']
                     public['lidar_overlay']={**scan,'origin_uv':[round(n,6) for n in scan['origin_uv']],
                         'points_uv':[[round(n,6) for n in point] for point in scan['points_uv']]}
+                if public.get('alignment_overlay'):
+                    aligned=public['alignment_overlay'];points=aligned['points_uv']
+                    # Display-only decimation/rounding. Original sensor data,
+                    # fit/heldout indices and source clocks remain untouched.
+                    public['alignment_overlay']={**aligned,
+                        'body_bounds_uv':None if aligned['body_bounds_uv'] is None else [round(n,6) for n in aligned['body_bounds_uv']],
+                        'origin_uv':None if aligned['origin_uv'] is None else [round(n,6) for n in aligned['origin_uv']],
+                        'points_uv':[[round(n,6) for n in point] for point in points[::max(1,math.ceil(len(points)/32))]]}
             # A static preview cannot carry live tracking/scan authority.
             # Do not duplicate transient point data in every JPEG header.
-            last = {k:v for k,v in self.last_preview.items() if k not in {'data','robot_anchors','lidar_overlay'}} if self.last_preview else None
+            last = {k:v for k,v in self.last_preview.items() if k not in {'data','robot_anchors','lidar_overlay','alignment_overlay'}} if self.last_preview else None
             if last:
                 last.update(url=f"/v1/product/viewport/preview/{last['sha256']}",
                             preview_only=True,physical_authority=False)
@@ -236,6 +263,22 @@ class ViewportService:
                     'detail':('Fresh Isaac render; physics execution is separate.' if current else
                               'Waiting for fresh frames from the current Isaac stage.'),
                     'physical_authority':False}
+            # Match the actual atomic-header encoding, including other visual
+            # layers and long owner IDs. Reduce ONLY this optional display
+            # layer; never raise the existing receipt/freshness limits.
+            if public and public.get('alignment_overlay'):
+                while len(json.dumps(result,ensure_ascii=True,separators=(',',':')).encode('ascii'))>8000:
+                    layer=public['alignment_overlay'];points=layer['points_uv']
+                    if len(points)<=4:public['alignment_overlay']=None;break
+                    layer['points_uv']=points[::2]
+            def receipt_size():return len(json.dumps(result,ensure_ascii=True,separators=(',',':')).encode('ascii'))
+            if public and receipt_size()>8000:
+                # Current pixels already carry their receipt. The duplicate
+                # historical preview is optional and remains stored server-side.
+                result['last_frame']=None
+                if receipt_size()>8000:public['lidar_overlay']=None
+                if receipt_size()>8000:public['alignment_overlay']=None
+                if receipt_size()>8000:public['robot_anchors']=[]
             if probe is not None:probe['tp_view_copy']=(time.perf_counter()-after_lock)*1000
             return result
 
@@ -270,7 +313,7 @@ class ViewportService:
                 or not isinstance(body['request_id'], str) or not 1 <= len(body['request_id']) <= 80
                 or type(body['frame_id']) is not int
                 or not isinstance(body['action'], str)
-                or body['action'] not in {'orbit_left','orbit_right','zoom_in','zoom_out','pan_left','pan_right','pan_up','pan_down'}):
+                or body['action'] not in {'orbit_left','orbit_right','zoom_in','zoom_out','pan_left','pan_right','pan_up','pan_down','top_view'}):
             raise BrokerError('viewport_camera_invalid', 'Choose a registered camera action', status=400)
         with self.lock:
             previous = self.requests.get(body['request_id'])

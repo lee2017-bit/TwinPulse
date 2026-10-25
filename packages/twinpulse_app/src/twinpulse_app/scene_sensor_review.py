@@ -65,6 +65,9 @@ def checked_context(value):
 
 def checked_sensor_binding(value):
     if value is None:return None
+    if isinstance(value,dict) and value.get('schema_version')=='environment-survey-binding-1.0':
+        from .environment_survey_binding import checked_survey_binding
+        return checked_survey_binding(value)
     if isinstance(value,dict) and value.get('schema_version')=='scene-obstacle-binding-1.0':
         from .scene_obstacle_feedback import checked_obstacle_binding
         return checked_obstacle_binding(value)
@@ -315,6 +318,9 @@ class SceneSensorReview:
     def validate_apply(self,binding,operation,store,history):
         binding=checked_sensor_binding(binding)
         if binding is None:return
+        if binding.get('policy')=='review_survey_obstacle':
+            from .environment_survey_binding import validate_survey_apply
+            return validate_survey_apply(self,binding,operation,store,history)
         if binding.get('policy')=='correct_obstacles':
             return self.obstacles.validate_apply(binding,operation,store,history)
         if binding['context']!=self.context(store,history) or binding['preview_sha256']!=canonical_sha256(operation):

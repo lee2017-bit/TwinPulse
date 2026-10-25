@@ -18,7 +18,9 @@ def ref(path):return dict(path=path.relative_to(OUT).as_posix(),sha256=sha256(pa
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--attempt',default='31');parser.add_argument('--reproduction-attempt',default='32');args=parser.parse_args()
+    global OUT
+    parser=argparse.ArgumentParser();parser.add_argument('--attempt',default='31');parser.add_argument('--reproduction-attempt',default='32')
+    parser.add_argument('--output-root',type=Path,default=OUT);args=parser.parse_args();OUT=args.output_root.resolve()
     if any(len(v)!=2 or not v.isascii() or not v.isdecimal() for v in (args.attempt,args.reproduction_attempt)):raise ValueError('TWO_DIGIT_ATTEMPTS_REQUIRED')
     active=read(Path(os.environ['LOCALAPPDATA'])/'TwinPulse/installed/active-release.json')
     evidence=[];issues=[]

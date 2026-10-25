@@ -18,6 +18,7 @@ import struct
 import threading
 import time
 from uuid import uuid4
+from robot_journal import RobotJournal
 
 
 class FrozenFrame(dict):
@@ -153,6 +154,59 @@ class NativeDecoder:
         return packets
 
 
+class NativeCaptureSink:
+    """Single archive-thread owner of the unchanged raw/chunks file format.
+
+    Original serial timestamps and bytes are frozen before enqueue. Only this
+    sink rotates, writes, hashes and closes files; never the serial reader.
+    Buffered writes are not a final persistence receipt until close succeeds.
+    """
+    def __init__(self,directory,segment_bytes):
+        self.directory=Path(directory);self.segment_bytes=segment_bytes
+        self.stream=self.chunks=None;self.segment=-1;self.offset=self.segment_start=self.chunk_index=0
+        self.stream_id=None;self.segments=[];self.raw_digest=self.timing_digest=None
+
+    def _finish(self):
+        if self.stream is None and self.chunks is None:return
+        streams=(self.stream,self.chunks);self.stream=self.chunks=None;errors=[]
+        for stream in streams:
+            if stream is None:continue
+            try:stream.flush()
+            except Exception as error:errors.append(error)
+            try:stream.close()
+            except Exception as error:errors.append(error)
+        if errors:raise errors[0]
+        self.segments.append(dict(index=self.segment,offset=self.segment_start,bytes=self.offset-self.segment_start,
+            raw_sha256=self.raw_digest.hexdigest(),chunks_sha256=self.timing_digest.hexdigest()))
+
+    def write(self,line):
+        metadata=json.loads(line);data=base64.b64decode(metadata.pop('base64'),validate=True)
+        if (metadata['offset']!=self.offset or metadata['chunk_index']!=self.chunk_index
+                or metadata['length']!=len(data) or hashlib.sha256(data).hexdigest()!=metadata['sha256']
+                or self.stream_id is not None and metadata['stream_id']!=self.stream_id):
+            raise ValueError('NATIVE_ARCHIVE_IDENTITY')
+        self.stream_id=metadata['stream_id']
+        if self.stream is None or self.offset-self.segment_start+len(data)>self.segment_bytes:
+            self._finish();self.segment+=1;self.segment_start=self.offset
+            self.raw_digest=hashlib.sha256();self.timing_digest=hashlib.sha256()
+            self.stream=(self.directory/('raw-%06d.bin'%self.segment)).open('xb')
+            self.chunks=(self.directory/('chunks-%06d.jsonl'%self.segment)).open('xb')
+        encoded=(json.dumps(metadata,separators=(',',':'))+'\n').encode()
+        if self.stream.write(data)!=len(data) or self.chunks.write(encoded)!=len(encoded):
+            raise OSError('NATIVE_SHORT_WRITE')
+        self.raw_digest.update(data);self.timing_digest.update(encoded)
+        self.offset+=len(data);self.chunk_index+=1
+        return len(line)
+
+    def flush(self):
+        # Rotation/final close flush both handles. The native journal uses
+        # flush_each=False to retain the original buffered-file write policy.
+        if self.stream:self.stream.flush()
+        if self.chunks:self.chunks.flush()
+
+    def close(self):self._finish()
+
+
 class NativeStream:
     def __init__(self, directory, emit, *, channel_factory=None, clock=time.monotonic,
                  timing_profile=None, segment_bytes=1024*1024, maximum_bytes=256*1024*1024):
@@ -166,10 +220,15 @@ class NativeStream:
         self.lock = threading.RLock(); self.cancel = threading.Event(); self.thread = None
         self.state = dict(lidar_state='OFF', recording_state='IDLE', reason=None, bytes_received=0, frame_count=0)
         self.frame = None; self.complete_frame = None; self.stream_id = None
+        self.archive=None;self.archive_failure=None
         self._frame_packets = []; self._complete_start = False
 
     def snapshot(self):
-        with self.lock:return deepcopy(self.state)
+        with self.lock:
+            result=deepcopy(self.state)
+            if self.archive is not None:result['archive']=self.archive.status()
+            result['archive_failure']=self.archive_failure
+            return result
 
     def latest_frame(self):
         # Published frames are recursively read-only: no repeated full-ring
@@ -188,7 +247,12 @@ class NativeStream:
     def start(self):
         with self.lock:
             if self.thread and self.thread.is_alive():return self.snapshot()
+            if self.archive is not None and self.archive.status()['writer_alive']:
+                raise ValueError('NATIVE_ARCHIVE_PREVIOUS_OWNER_NOT_REAPED')
+            if self.archive_failure is not None:
+                raise ValueError('NATIVE_ARCHIVE_PREVIOUS_FAILURE_RECONNECT_REQUIRED')
             self.stream_id = uuid4().hex; self.cancel.clear(); self.frame = self.complete_frame = None
+            self.archive=None
             self._frame_packets = []; self._complete_start = False
             self.state = dict(lidar_state='STARTING', recording_state='RECORDING', reason=None,
                 bytes_received=0, frame_count=0, stream_id=self.stream_id)
@@ -205,48 +269,42 @@ class NativeStream:
 
     def close(self):
         self.stop()
-        if self.thread:self.thread.join(timeout=8)
+        # STOP/quiet/port restore happen before waiting for archive drainage.
+        if self.thread:self.thread.join(timeout=20)
         return self.snapshot()
 
     def _run(self):
         from lidar_capture import SerialChannel, START, STOP
         channel = None
         directory = self.directory / self.stream_id
-        stream = chunks = None; segment = -1; offset = 0; segment_start = 0; chunk_index = 0
+        offset=chunk_index=0;sink=archive=None
         decoder = NativeDecoder(); last_emit = -math.inf
         manifest = dict(schema='native-stream-manifest-1.0', stream_id=self.stream_id, segments=[], complete=False)
-        raw_digest = hashlib.sha256(); timing_digest = hashlib.sha256()
-        error = None; started = False
-        def close_segment():
-            nonlocal stream, chunks
-            if stream is None:return
-            stream.flush(); chunks.flush(); stream.close(); chunks.close()
-            manifest['segments'].append(dict(index=segment, offset=segment_start, bytes=offset-segment_start,
-                raw_sha256=raw_digest.hexdigest(), chunks_sha256=timing_digest.hexdigest()))
-            stream = chunks = None
+        error = None; started = False;archive_fault_emitted=False
         try:
             directory.mkdir(parents=True, exist_ok=False)
+            sink=NativeCaptureSink(directory,self.segment_bytes)
+            archive=RobotJournal(directory/'unused',capacity=4096,max_bytes=self.maximum_bytes*16,
+                max_pending_bytes=4*1024*1024,buffered=True,flush_each=False,opener=lambda _:sink)
+            with self.lock:self.archive=archive
             channel = (self.channel_factory or SerialChannel)()
             channel.configure(); started = True
             if channel.write(START) != len(START):raise ValueError('NATIVE_START_INCOMPLETE')
             with self.lock:self.state['lidar_state'] = 'STREAMING'
             while not self.cancel.is_set():
+                archive.check()
                 before = self.clock(); data = channel.read(.05); received = self.clock()
                 if not data:continue
                 if len(data) > 65536 or offset+len(data) > self.maximum_bytes:
                     raise ValueError('NATIVE_RECORDING_CAPACITY')
-                if stream is None or offset-segment_start+len(data) > self.segment_bytes:
-                    close_segment(); segment += 1; segment_start = offset
-                    raw_digest = hashlib.sha256(); timing_digest = hashlib.sha256()
-                    stream = (directory / ('raw-%06d.bin' % segment)).open('xb')
-                    chunks = (directory / ('chunks-%06d.jsonl' % segment)).open('xb')
                 metadata = dict(stream_id=self.stream_id, chunk_index=chunk_index, offset=offset,
                     length=len(data), receipt_start_s=before, receipt_end_s=received,
                     sha256=hashlib.sha256(data).hexdigest())
-                line = (json.dumps(metadata, separators=(',', ':'))+'\n').encode()
-                if stream.write(data) != len(data) or chunks.write(line) != len(line):raise OSError('NATIVE_SHORT_WRITE')
-                raw_digest.update(data); timing_digest.update(line)
-                self.emit('raw', dict(metadata, base64=base64.b64encode(data).decode()))
+                raw_event=dict(metadata,base64=base64.b64encode(data).decode())
+                # Queue admission precedes decode; bounded capacity and sticky
+                # writer errors remain fail-closed. No disk call on this path.
+                archive.append_prepared(json.dumps(raw_event,separators=(',',':'))+'\n','native_chunk')
+                self.emit('raw',raw_event)
                 chunk_index += 1; offset += len(data)
                 decode_started=time.perf_counter()
                 packets=decoder.feed(data, received)
@@ -269,10 +327,14 @@ class NativeStream:
                     last_emit = received
         except BaseException as exc:
             error = str(exc) if isinstance(exc, (ValueError, OSError)) else type(exc).__name__
+            archive_error=archive.status()['error'] if archive is not None else None
             with self.lock:
                 self.frame=self.complete_frame=None
+                if archive_error:self.archive_failure=self.archive_failure or 'NATIVE_ARCHIVE_'+archive_error
                 self.state.update(lidar_state='FAULT',reason=error[:120])
-            self.emit('fault', dict(reason=error[:120], subsystem='native_sensor'))
+            archive_fault_emitted=archive_error is not None
+            self.emit('fault', dict(reason=self.archive_failure if archive_fault_emitted else error[:120],
+                subsystem='native_archive' if archive_fault_emitted else 'native_sensor'))
         finally:
             with self.lock:self.frame=self.complete_frame=None
             stop = dict(write_complete=False, data_quiet=False, port_restored=False, physical_rotor_stopped='UNCONFIRMED')
@@ -290,9 +352,20 @@ class NativeStream:
             finally:
                 if channel is not None:
                     try:channel.close()
-                    except BaseException as exc:stop['close_error']=type(exc).__name__;error='NATIVE_CLOSE_FAILED'
+                    except BaseException as exc:stop['close_error']=type(exc).__name__;error=error or 'NATIVE_CLOSE_FAILED'
             try:
-                close_segment()
+                archived=archive.close(timeout=15.) if archive is not None else None
+                if (archived is None or archived['error'] or archived['writer_alive']
+                        or archived['accepted']!=archived['saved'] or archived['queued']):
+                    error=error or 'NATIVE_ARCHIVE_INCOMPLETE'
+                    with self.lock:
+                        self.archive_failure=self.archive_failure or 'NATIVE_ARCHIVE_'+str((archived or {}).get('error') or 'INCOMPLETE')
+                if archived is not None and not archived['writer_alive']:
+                    manifest['segments']=deepcopy(sink.segments)
+                    if sink.offset!=offset or sink.chunk_index!=chunk_index:
+                        error=error or 'NATIVE_ARCHIVE_COUNTS'
+                        with self.lock:self.archive_failure=self.archive_failure or 'NATIVE_ARCHIVE_COUNTS'
+                manifest['archive']=archived
                 manifest.update(bytes_received=offset, chunks=chunk_index, pending_decoder_bytes=len(decoder.buffer),
                     decoded_packet_bytes=decoder.packet_bytes, unframed_bytes=decoder.noise_bytes,
                     unframed_segments=decoder.unframed_segments, unframed_tail=decoder.pending_unframed(),
@@ -300,12 +373,18 @@ class NativeStream:
                     incomplete_tail_nodes=sum(len(p['nodes']) for p in self._frame_packets), cleanup=stop, reason=error,
                     complete=error is None and stop['write_complete'] and stop['data_quiet'] and stop['port_restored'])
                 (directory/'manifest.json').write_text(json.dumps(manifest, allow_nan=False, indent=2), encoding='utf-8')
-            except BaseException as exc:error = 'NATIVE_FINALIZE_'+type(exc).__name__
+            except BaseException as exc:
+                finalize_error='NATIVE_FINALIZE_'+type(exc).__name__
+                error=error or finalize_error
+                manifest.update(complete=False,reason=error,finalize_error=finalize_error)
+                with self.lock:self.archive_failure=self.archive_failure or finalize_error
             with self.lock:
                 self.frame = self.complete_frame = None
                 self.state.update(lidar_state='FAULT' if error or not manifest['complete'] else 'OFF',
                     recording_state='INCOMPLETE' if error or not manifest['complete'] else 'COMPLETE', reason=error,
                     manifest=manifest)
+            if self.archive_failure and not archive_fault_emitted:
+                self.emit('fault',dict(subsystem='native_archive',reason=self.archive_failure))
             self.emit('cleanup', dict(subsystem='native_sensor', **manifest))
 
     def _accept_packets(self, packets):

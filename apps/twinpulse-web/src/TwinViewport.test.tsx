@@ -468,6 +468,13 @@ describe('Real Isaac viewport',()=>{
     expect(api.viewportCamera.mock.calls[0][0].action).toBe('orbit_left');expect(api.command).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);expect(URL.createObjectURL).not.toHaveBeenCalled();component.unmount();
   });
+  it('requests a top camera view without a scene or robot command',async()=>{
+    const api=harness();const component=render(<TwinViewport api={api as unknown as TwinPulseApi}/>);
+    await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
+    fireEvent.click(screen.getByRole('button',{name:'Top view'}));
+    await waitFor(()=>expect(api.viewportCamera).toHaveBeenCalledTimes(1));
+    expect(api.viewportCamera.mock.calls[0][0].action).toBe('top_view');expect(api.command).not.toHaveBeenCalled();component.unmount();
+  });
   it('retains preview pixels on loss and never retries a camera mutation',async()=>{
     URL.createObjectURL=vi.fn(()=>'blob:frame');URL.revokeObjectURL=vi.fn();
     const api=harness();api.viewportCamera.mockRejectedValue(new Error('Camera delivery unknown'));
@@ -845,7 +852,8 @@ describe('Real Isaac viewport',()=>{
     const firstCanvas=await screen.findByRole('img',{name:'Current Isaac Digital Twin render'});
     const frameSlot=firstCanvas.parentElement;
     expect(frameSlot?.classList.contains('twin-frame-slot')).toBe(true);
-    expect(frameSlot?.nextElementSibling).toBe(photo.closest('figure'));
+    expect(frameSlot?.parentElement?.classList.contains('twin-render-grid')).toBe(true);
+    expect(frameSlot?.parentElement?.nextElementSibling).toBe(photo.closest('figure'));
     expect(screen.getByRole('img',{name:'Source photo: room.jpg'})).toBe(photo);
     metadata=view(2);
     api.viewportImageFrame.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));

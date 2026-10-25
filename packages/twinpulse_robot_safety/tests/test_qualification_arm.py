@@ -72,19 +72,20 @@ class QualificationArmTests(unittest.TestCase):
         self.assertAlmostEqual(gate.first_fault['last_admission']['remaining_s'],INPUT_TTL_S-.19)
         self.assertNotIn('challenge',str(gate.first_fault))
 
-    def trial(self,relay_delay=.025,silence_at=None):
+    def trial(self,relay_delay=.025,silence_at=None,*,timing_values=None,guard_s=None):
         """Actual qualify/gate logic, deterministic transport and encoder model.
 
         Modelled samples are supplementary; they never create a device receipt.
         """
         now=[1.];pending=deque();sequence=[1];phases=[];sent=[];last=[None];ticks=[0.]
-        gate=InputGate(lambda:now[0],persistent=True,recoverable=True)
+        gate=InputGate(lambda:now[0],persistent=True,recoverable=True,timing_values=timing_values)
         gate.accept(dict(sequence=1,action='qualify',challenge=gate.challenge(),age_ms=0))
         link=SimpleNamespace(sensor=SimpleNamespace(left_encoder=0,right_encoder=0,torque=True),reason='active',rows=[])
         def spin(_):
             now[0]+=.01
             if last[0] is not None:
-                link.reason='command_timeout' if now[0]-last[0]>=.4 else 'active'
+                cutoff=.4 if guard_s is None else guard_s
+                link.reason='command_timeout' if now[0]-last[0]>=cutoff else 'active'
                 if link.reason=='active':ticks[0]+=.03*.01/(MM_PER_TICK/1000)
             link.sensor.left_encoder=link.sensor.right_encoder=round(ticks[0])
             link.rows.append(dict(t=now[0],encoders=[round(ticks[0])]*2,torque=True,source_age_s=.01))
@@ -98,7 +99,7 @@ class QualificationArmTests(unittest.TestCase):
         link.spin=spin;link.fresh=lambda:None;link.publish=publish
         result=None;failure=None
         try:result=qualify(link,SimpleNamespace(receive=receive),output,gate,lambda:now[0],
-            supervised_field_speed=.03,post_arm_watch=True,
+            supervised_field_speed=.03,supervised_stop_timing=timing_values,post_arm_watch=True,
             diagnostic=lambda phase:phases.append(dict(phase=phase,**gate.timing())))
         except ValueError as exc:failure=str(exc)
         return result,failure,gate,phases,sent
@@ -120,6 +121,34 @@ class QualificationArmTests(unittest.TestCase):
         result,failure,gate,phases,sent=self.trial(relay_delay=INPUT_TTL_S+.01)
         self.assertIsNone(result);self.assertEqual(failure,'FRESH_POST_ARM_INPUT_REQUIRED')
         self.assertEqual(sent,[])
+
+    def test_configured_longer_output_cutoff_is_actually_observed_not_fixed_700ms(self):
+        from twinpulse_core.robot_timing_profile import values_of
+        for output_ms in (1200,):
+            values=dict(values_of(),input_ttl_ms=1000,output_timeout_ms=output_ms,
+                        operator_presence_ms=1500,wheel_interval_ms=500)
+            result,failure,gate,phases,sent=self.trial(timing_values=values,guard_s=output_ms/1000)
+            with self.subTest(output_ms=output_ms):
+                self.assertIsNone(failure)
+                self.assertEqual(result['status'],'STOP_POLICY_PASS')
+                self.assertGreaterEqual(result['timeout_seen_s']-result['last_send_s'],output_ms/1000)
+                # Driving's coarser progress interval is not stop observation coverage.
+                self.assertEqual(result['stop_assessment']['limits']['max_sample_gap_s'],.225)
+                self.assertGreaterEqual(result['stop_assessment']['metrics']['verification_observed_ms'],299.999)
+        # A two-second output can exceed the unchanged 1300-tick movement
+        # envelope. A valid timing configuration does not waive that bound.
+        wide=dict(values,output_timeout_ms=2000)
+        result,failure,_,_,_=self.trial(timing_values=wide,guard_s=2.)
+        self.assertIsNone(result);self.assertEqual(failure,'TRIAL_ENCODER_BOUND')
+
+    def test_longer_policy_still_rejects_missing_input_and_unobserved_output_timeout(self):
+        from twinpulse_core.robot_timing_profile import values_of
+        values=dict(values_of(),input_ttl_ms=1000,output_timeout_ms=1200,
+                    operator_presence_ms=1500,wheel_interval_ms=500)
+        result,failure,gate,_,_=self.trial(timing_values=values,guard_s=2.)
+        self.assertIsNone(result);self.assertEqual(failure,'GUARD_TIMEOUT_NOT_OBSERVED')
+        result,failure,gate,_,_=self.trial(timing_values=values,guard_s=1.2,silence_at=1.65)
+        self.assertIsNone(result);self.assertEqual(failure,'INPUT_DEADLINE_EXPIRED')
 
 
 if __name__=='__main__':unittest.main()

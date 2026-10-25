@@ -18,19 +18,22 @@ class PhysicalPlanTests(unittest.TestCase):
         self.fleet=RobotFleet(fixture.Broker(),Path(self.tmp.name),clock=lambda:self.now,wall=lambda:self.now)
         self.fleet.physical=SimpleNamespace(navigate=Mock())
         self.row=self.fleet._robot('physical','Robot',[0,0,0],kind='physical')
-        self.row.update(operation_id='operation',connection_epoch='connection',display_pose={'visual_epoch':'visual'})
+        self.row.update(operation_id='operation',connection_epoch='connection',project_id='test-project',
+            display_pose={'visual_epoch':'visual'},field={'tracking':{'epoch':'tracking'}})
         self.fleet.robots['physical']=self.row
         self.binding=('engine','stage','revision')
         self.scene=dict(binding=self.binding,produced_at=100.,geometry=dict(epoch=1,bounds=[0,0,5,5],
             targets=[dict(id='bed1',kind='bed',label='bed',bounds=[1.,3.,2.,4.5])],obstacles=[[1.,3.,2.,4.5]]))
         self.fleet.navigation_scene=deepcopy(self.scene)
         self.anchor=dict(key=('operation','connection','tracking','visual',self.binding),origin=[0.,0.,0.])
+        self.fleet.physical_tracking_anchors['physical']=deepcopy(self.anchor)
         self.estimate=dict(scene_revision='revision',visual_epoch='visual',position_m=[2.5,1.,0.])
         self.tracking=dict(status='ESTIMATED',epoch='tracking',pose=[0.,0.,0.],sample_s=100.)
         self.fleet.physical_navigation_reviews['physical']=('connection','visual','tracking')
     def tearDown(self):self.fleet.close();self.tmp.cleanup()
     def send(self):
-        return self.fleet._physical_destination('physical','owner','request','bed','Go to bed',{'context_id':'context'},
+        return self.fleet._physical_destination('physical','owner','request','bed','Go to bed',dict(context_id='context',
+            project_id='test-project',engine_session_id='engine',stage_epoch='stage',scene_revision='revision'),
             self.scene,self.anchor,self.estimate,self.tracking,'connection','motion')
     def test_real_adapter_task_carries_estimated_target_anchor_native_epoch_and_context(self):
         self.send();kw=self.fleet.physical.navigate.call_args.kwargs
@@ -52,6 +55,18 @@ class PhysicalPlanTests(unittest.TestCase):
     def test_geometry_validator_rejects_unsafe_unbounded_payload(self):
         value=deepcopy(self.scene['geometry']);self.assertEqual(checked_scene_geometry(value),value)
         value['obstacles']=[[0,0,float('nan'),1]];self.assertIsNone(checked_scene_geometry(value))
+
+    def test_frozen_route_rejects_changed_project_operation_connection_tracking_anchor_or_mask(self):
+        self.send();guard=self.fleet.physical.navigate.call_args.kwargs['guard']
+        mutations=[(self.row,'operation_id','new-operation'),(self.row,'connection_epoch','new-connection'),
+            (self.row,'project_id','new-project'),(self.row['display_pose'],'visual_epoch','new-visual'),
+            (self.row['field']['tracking'],'epoch','new-tracking'),
+            (self.fleet.physical_tracking_anchors['physical'],'key',('different',)),
+            (self.fleet.navigation_scene['geometry'],'bounds',[0,0,6,6])]
+        for item,key,value in mutations:
+            with self.subTest(key=key):
+                previous=deepcopy(item[key]);item[key]=value
+                self.assertFalse(guard());item[key]=previous;self.assertTrue(guard())
 
 
 class CaptureLifecycleTests(unittest.TestCase):

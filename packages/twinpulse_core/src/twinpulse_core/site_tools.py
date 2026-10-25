@@ -98,6 +98,19 @@ def site_tool_plan_from_json(payload: str) -> SiteToolPlan:
 
 
 def validate_site_tool_plan(plan: SiteToolPlan) -> SiteToolPlan:
+    if plan.plan_version=='2.4':
+        from .environment_source import checked_environment
+        if (not isinstance(plan.scene_id,str) or not _ID.fullmatch(plan.scene_id) or
+                not isinstance(plan.summary,str) or not 1<=len(plan.summary)<=500 or
+                not isinstance(plan.image_observations,str) or len(plan.image_observations)>1000 or
+                not isinstance(plan.calls,tuple) or len(plan.calls)!=1 or plan.call_evidence is not None):
+            raise SceneToolPlanError('ENVIRONMENT_PLAN_INVALID')
+        call=plan.calls[0]
+        if (call.call_id!='imported_space' or call.tool!='import_environment' or
+                set(call.arguments)!={'id','environment'} or call.arguments['id']!='imported_space'):
+            raise SceneToolPlanError('ENVIRONMENT_CALL_INVALID')
+        checked_environment(call.arguments['environment'])
+        return plan
     if plan.plan_version not in {SITE_TOOL_PLAN_VERSION, "2.1", "2.2", "2.3"}:
         raise SceneToolPlanError("unsupported site tool plan version")
     if not isinstance(plan.scene_id, str) or not _ID.fullmatch(plan.scene_id):
@@ -166,6 +179,11 @@ def execute_site_tool_plan(plan: SiteToolPlan, *, source: str, source_ref: str) 
     validate_site_tool_plan(plan)
     if not isinstance(source_ref, str) or not _DIGEST.fullmatch(source_ref):
         raise SceneToolPlanError("site source reference must be a trusted digest")
+    if plan.plan_version=='2.4':
+        from .environment_source import checked_environment,environment_objects
+        environment=checked_environment(plan.calls[0].arguments['environment'])
+        return SitePlan(SceneRevision(plan.scene_id,environment_objects(environment),'scan',
+            source_ref=source_ref,environment=environment))
     registry = SceneToolRegistry()
     objects: list[SceneObject] = []
     furniture_groups: list[tuple[str, ...]] = []

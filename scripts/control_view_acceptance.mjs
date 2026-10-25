@@ -2,41 +2,58 @@
 // Read-only DOM measurements in the real installed BrowserWindow, no API writes.
 export async function currentControlView(page,name){
  return page.evaluate(name=>{
+  const beganAt=Date.now(),beganPerformance=performance.now();
   const canvas=document.querySelector('.twin-frame-slot canvas'),dock=[...document.querySelectorAll('.robot-fleet-drawer')].find(e=>e.getAttribute('aria-label')==='Control '+name);
   if(!canvas||!dock)throw Error('Actual viewport/controller missing');
-  const c=canvas.getBoundingClientRect(),d=dock.getBoundingClientRect();
+  const entryFrame={at:Date.now(),frame_id:Number(canvas.dataset.frameId),captured_at_ms:Number(canvas.dataset.capturedAt),live:canvas.dataset.live==='true'};
+  // One synchronous measurement only: no cache survives this evaluate. Reuse
+  // identical ancestor geometry and primitive style fields without changing
+  // any clipping, five-point hit-test or freshness predicate.
+  const boxes=new Map(),styles=new Map(),visibility=new Map();
+  const rect=e=>{if(!boxes.has(e))boxes.set(e,e.getBoundingClientRect());return boxes.get(e);};
+  const style=e=>{if(!styles.has(e)){const s=getComputedStyle(e);styles.set(e,{display:s.display,visibility:s.visibility,opacity:s.opacity,overflowX:s.overflowX,overflowY:s.overflowY});}return styles.get(e);};
+  const c=rect(canvas),d=rect(dock);
   const intersection=Math.max(0,Math.min(c.right,d.right)-Math.max(c.left,d.left))*Math.max(0,Math.min(c.bottom,d.bottom)-Math.max(c.top,d.top));
   const stop=[...dock.querySelectorAll('button')].find(e=>e.textContent.trim()==='Stop'),pad=dock.querySelector('.robot-fleet-pad');
-  const shown=e=>{if(!e)return false;const r=e.getBoundingClientRect();
+  const measureShown=e=>{if(!e)return false;const r=rect(e);
    if(r.width<=0||r.height<=0||r.top<0||r.left<0||r.bottom>innerHeight+1||r.right>innerWidth+1)return false;
-   for(let parent=e;parent;parent=parent.parentElement){const style=getComputedStyle(parent);if(style.display==='none'||style.visibility!=='visible'||Number(style.opacity)===0)return false;
-    const box=parent.getBoundingClientRect();if(['hidden','clip','auto','scroll'].includes(style.overflowX)&&(r.left<box.left-1||r.right>box.right+1))return false;
-    if(['hidden','clip','auto','scroll'].includes(style.overflowY)&&(r.top<box.top-1||r.bottom>box.bottom+1))return false;
+   for(let parent=e;parent;parent=parent.parentElement){const s=style(parent);if(s.display==='none'||s.visibility!=='visible'||Number(s.opacity)===0)return false;
+    const box=rect(parent);if(['hidden','clip','auto','scroll'].includes(s.overflowX)&&(r.left<box.left-1||r.right>box.right+1))return false;
+    if(['hidden','clip','auto','scroll'].includes(s.overflowY)&&(r.top<box.top-1||r.bottom>box.bottom+1))return false;
    }return true;
   };
-  const hit=e=>{if(!shown(e))return false;const r=e.getBoundingClientRect();return [[.5,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]].every(([x,y])=>e.contains(document.elementFromPoint(r.left+r.width*x,r.top+r.height*y)));};
+  const shown=e=>{if(!e)return false;if(!visibility.has(e))visibility.set(e,measureShown(e));return visibility.get(e);};
+  const hit=e=>{if(!shown(e))return false;const r=rect(e);return [[.5,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]].every(([x,y])=>e.contains(document.elementFromPoint(r.left+r.width*x,r.top+r.height*y)));};
   const directions=[...dock.querySelectorAll('.robot-fleet-pad button')];
   const badge=[...document.querySelectorAll('.robot-anchor-badge')].find(e=>e.getAttribute('aria-label')==='Select '+name+' in Twin');
   const bounds=badge?.dataset.screenBounds?JSON.parse(badge.dataset.screenBounds):null;
-  const labels=[...document.querySelectorAll('.robot-anchor-badge')],layer=badge?.closest('.robot-anchor-layer')?.getBoundingClientRect();
+  const labels=[...document.querySelectorAll('.robot-anchor-badge')],layerElement=badge?.closest('.robot-anchor-layer'),layer=layerElement?rect(layerElement):null;
   let badgeBodyOverlap=0;
   if(layer)for(const label of labels){const b=JSON.parse(label.dataset.screenBounds??'null');
-   if(!b||b.length!==4||b[2]<=b[0]||b[3]<=b[1])continue;const plate=label.getBoundingClientRect();
+   if(!b||b.length!==4||b[2]<=b[0]||b[3]<=b[1])continue;const plate=rect(label);
    badgeBodyOverlap+=Math.max(0,Math.min(plate.right,layer.left+b[2]*layer.width)-Math.max(plate.left,layer.left+b[0]*layer.width))*
     Math.max(0,Math.min(plate.bottom,layer.top+b[3]*layer.height)-Math.max(plate.top,layer.top+b[1]*layer.height));}
-  const plate=badge?.getBoundingClientRect();
-  return {origin_marker_count:document.querySelectorAll('.robot-frame-origin-dot').length,
+  const plate=badge?rect(badge):null;
+  // Keep the original post-geometry observation point, not entryFrame.at.
+  const observedAt=Date.now(),observedFrame={frame_id:Number(canvas.dataset.frameId),captured_at_ms:Number(canvas.dataset.capturedAt),live:canvas.dataset.live==='true'};
+  const value={origin_marker_count:document.querySelectorAll('.robot-frame-origin-dot').length,
    label_under_body_error_px:plate&&layer&&bounds?Math.abs(plate.top-(layer.top+bounds[3]*layer.height+2)):null,
    label_horizontal_error_px:plate&&layer&&bounds?Math.abs(plate.left+plate.width/2-(layer.left+(bounds[0]+bounds[2])/2*layer.width)):null,
-   at:Date.now(),frame_id:Number(canvas.dataset.frameId),captured_at_ms:Number(canvas.dataset.capturedAt),
-   frame_age_ms:Date.now()-Number(canvas.dataset.capturedAt),live:canvas.dataset.live==='true',scene_revision:canvas.dataset.sceneRevision,
+   at:observedAt,frame_id:observedFrame.frame_id,captured_at_ms:observedFrame.captured_at_ms,
+   frame_age_ms:observedAt-observedFrame.captured_at_ms,live:observedFrame.live,scene_revision:canvas.dataset.sceneRevision,
    stage_epoch:canvas.dataset.stageEpoch,canvas_visible:shown(canvas),canvas:{x:c.x,y:c.y,width:c.width,height:c.height},
    dock:{x:d.x,y:d.y,width:d.width,height:d.height},intersection_px2:intersection,stop_visible:hit(stop),pad_visible:shown(pad)&&directions.length===4&&directions.every(hit),
    robot_badge_visible:shown(badge),robot_bounds:bounds,badge_body_overlap_px2:badgeBodyOverlap,
    anchor_diagnostic:{layers:document.querySelectorAll('.robot-anchor-layer').length,
     badges:labels.map(e=>({aria:e.getAttribute('aria-label'),id:e.dataset.robotId,bounds:e.dataset.screenBounds})),
-    slot:canvas.closest('.twin-frame-slot')?.getBoundingClientRect().toJSON()},
+    slot:rect(canvas.closest('.twin-frame-slot')).toJSON()},
    window:{width:innerWidth,height:innerHeight,devicePixelRatio}};
+  const endedAt=Date.now(),endedPerformance=performance.now();
+  value.measurement={began_at:beganAt,frame_snapshot_at:observedAt,ended_at:endedAt,
+   began_performance_ms:beganPerformance,ended_performance_ms:endedPerformance,duration_ms:endedPerformance-beganPerformance,
+   entry_frame:entryFrame,rect_reads:boxes.size,style_reads:styles.size,visibility_checks:visibility.size,
+   classification:'Synchronous same-DOM measurement; original post-geometry browser wall-clock freshness point. Entry time never substitutes for frame age.'};
+  return value;
  },name);
 }
 export function checkControlView(value,{fresh=true,robot=true}={}){

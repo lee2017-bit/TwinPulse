@@ -87,7 +87,7 @@ class SimLineageTests(unittest.TestCase):
 
     def test_stop_all_preserves_parent_request_and_new_chat_reference_for_each_robot(self):
         f=self.f;sent=[]
-        f.fleet.physical=SimpleNamespace(snapshot=lambda owner:{'robots':[dict(robot_id='a',owned=True),dict(robot_id='b',owned=True)]},
+        f.fleet.physical=SimpleNamespace(snapshot=lambda owner=None:{'robots':[dict(robot_id='a',owned=True),dict(robot_id='b',owned=True)]},
             stop=lambda robot,owner,**kw:sent.append((robot,deepcopy(kw))))
         f.send('stop_all')
         self.assertEqual([r[0] for r in sent],['a','b'])

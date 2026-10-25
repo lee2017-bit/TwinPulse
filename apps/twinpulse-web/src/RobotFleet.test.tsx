@@ -24,6 +24,19 @@ function setup(state=fleet(),custom?:(body:RobotFleetAction)=>Promise<RobotFleet
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
 describe('robot fleet controls (supplementary UI tests)',()=>{
+  it('keeps imported map and estimated scale under physical Details without initiating control',()=>{
+    const state=fleet([{...robot(),kind:'physical',connection_state:'DISCONNECTED',connection_epoch:null}]);
+    state.navigation_scene={status:'AVAILABLE',kind:'imported',source_sha256:'a'.repeat(64),units_basis:'selected_for_sim',meters_per_unit:1,geometry_revision:'geometry-a',scene_revision:'scene-a',physical_accuracy:'UNQUALIFIED'};
+    const {action,container}=setup(state);const details=container.querySelector('.robot-fleet-diagnostics')!;
+    expect(details.contains(screen.getByLabelText('Physical navigation map'))).toBe(true);
+    expect(screen.getByLabelText('Physical navigation map').textContent).toContain('Imported space · shared floor mask');
+    expect(screen.getByLabelText('Physical navigation map').textContent).toContain('user-selected estimate');
+    expect(screen.getByText(/Review the anchor in this connection/)).toBeTruthy();expect(action).not.toHaveBeenCalled();
+  });
+  it('shows an unavailable map without implying measured scale or driving readiness',()=>{
+    setup(fleet([{...robot(),kind:'physical'}]));
+    expect(screen.getByLabelText('Physical navigation map').textContent).toBe('Map: Unavailable · Scale: unqualified · Physical accuracy unqualified.');
+  });
   it('shows one short preparation phase while retaining the original reason in help',()=>{
     const r={...robot(),kind:'physical' as const,reason:'OLD_STOP_REASON',setup:{runtime_state:'PREPARING',blockers:['BUILDING_OUTPUT_GUARD'],profile:null,qualification:null,maintenance_phase:'BUILDING_OUTPUT_GUARD'}};
     setup(fleet([r]));
@@ -192,23 +205,43 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(screen.getByText('Original failed check robot s').parentElement?.textContent).toContain('4.9');
     expect(summary.textContent).not.toContain('DO_NOT_SHOW');
   });
+  it('preserves a self-bound recorded motion stop above later operator cleanup without inventing failed-check telemetry',async()=>{
+    const motion={state:'ENDED',operation_id:'operation-a',robot_id:'a',source_twin_context_id:'source-context',motion_epoch:'motion-right',request_id:'original-input',latest_request_id:'latest-input',direction:'right',reason:'FIELD_DIRECTION_COVERAGE_GAP',started_s:4716.093,ended_s:4720.987,stop_readback_confirmed:true};
+    const event={kind:'heartbeat',operation_id:'operation-a',robot_id:'a',source_twin_context_id:'source-context',connection_epoch:'connection-a',sequence:26486,data:{reason:'OPERATOR_STOP',motion_observation:motion}};
+    const {operation}=setup();operation.mockResolvedValue({schema_version:'robot-operation-1.0',operation_id:'operation-a',robot_id:'a',project_id:'project',
+      events:[event,{...event,sequence:26487,data:{motion_observation:{...motion,motion_epoch:'motion-other',request_id:'other-input',ended_s:4721,reason:'FIELD_WHEEL_CLOCK_OR_GAP'}}},...Array.from({length:70},(_,i)=>({...event,sequence:26488+i})),
+        {...event,sequence:27000,data:{reason:'OPERATOR_STOP',motion_observation:{...motion,reason:'OPERATOR_STOP'}}},
+        ...[{...event,operation_id:'other'},{...event,robot_id:'other'},{...event,source_twin_context_id:'other'},
+          {...event,data:{motion_observation:{...motion,source_twin_context_id:'other'}}},
+          {...event,data:{motion_observation:{...motion,operation_id:'other'}}},
+          {...event,data:{motion_observation:{...motion,robot_id:'other'}}},
+          {...event,data:{motion_observation:{...motion,state:'ACTIVE'}}},
+          {...event,data:{motion_observation:{...motion,ended_s:Number.NaN}}}].map(e=>({...e,data:{...e.data,motion_observation:{...e.data.motion_observation,reason:'DO_NOT_SHOW'}}}))],
+      manifest:{historical:true,complete:true,source_twin_context:{context_id:'source-context'}}});
+    fireEvent.click(screen.getByRole('button',{name:'Operation logs'}));const summary=await screen.findByLabelText('Operation summary');
+    await waitFor(()=>expect(summary.textContent).toContain('Recorded motion stop reason'));
+    expect(summary.textContent!.split('FIELD_DIRECTION_COVERAGE_GAP')).toHaveLength(2);
+    expect(summary.textContent).toContain('original-input');expect(summary.textContent).toContain('4720.987');
+    expect(summary.textContent).toContain('FIELD_WHEEL_CLOCK_OR_GAP');expect(summary.textContent).toContain('other-input');
+    expect(summary.textContent).not.toContain('DO_NOT_SHOW');expect(summary.textContent).not.toContain('original failed check reason');
+  });
   it('uses the selected custom mapping or explicit voltage-only without changing protection',()=>{
     const r={...robot(),battery:{...robot().battery,voltage_v:11.34,percent:null,estimated_percent:67,
       estimate_method:'custom_voltage_table_v1',display_mode:'custom' as const,display_label:'My table',voltage_protection:'CLEAR' as const}};
-    expect(fleetBatteryLabel(r)).toContain('약 67%');expect(fleetBatteryPolicyMessage(r)).toContain('사용자 기준표 · My table');
+    expect(fleetBatteryLabel(r)).toContain('~67%');expect(fleetBatteryPolicyMessage(r)).toContain('Custom mapping · My table');
     const voltage={...r,battery:{...r.battery,display_mode:'voltage_only' as const,percent:80}};
     expect(fleetBatteryLabel(voltage)).toBe('11.34 V · simulated');
-    expect(fleetBatteryPolicyMessage({...voltage,battery:{...voltage.battery,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('저전압 보호');
+    expect(fleetBatteryPolicyMessage({...voltage,battery:{...voltage.battery,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('Low-voltage protection');
   });
   it('separates voltage-derived47percent from20percent reserve and low-voltage protection',()=>{
     const r:RobotFleetRobot={...robot(),kind:'physical',live_heartbeat:true,battery:{voltage_v:11.34,percent:null,source:'measured',age_ms:50,
       estimated_percent:46.7,estimate_method:'robotis_opencr_voltage_10_5_to_12_3_v1',capacity_measured:false,
       reserve_state:'ABOVE_RESERVE',voltage_protection:'CLEAR'}};
-    expect(fleetBatteryLabel(r)).toBe('약 47% (전압 추정) · 11.34 V · measured');
-    setup(fleet([r]));expect(screen.getByLabelText('Battery estimate and protection').textContent).toContain('실측 용량이 아닙니다');
-    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_v:11.1,estimated_percent:33.3,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('저전압 보호');
+    expect(fleetBatteryLabel(r)).toBe('~47% (voltage estimate) · 11.34 V · measured');
+    setup(fleet([r]));expect(screen.getByLabelText('Battery estimate and protection').textContent).toContain('not measured capacity');
+    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_v:11.1,estimated_percent:33.3,voltage_protection:'LOW_VOLTAGE_GUARD'}})).toContain('Low-voltage protection');
     expect(fleetBatteryLabel({...r,battery:{...r.battery,age_ms:40000}})).toContain('stale');
-    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_protection:'UNKNOWN',reserve_state:'AT_OR_BELOW_RESERVE'}})).toContain('20% 이하');
+    expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_protection:'UNKNOWN',reserve_state:'AT_OR_BELOW_RESERVE'}})).toContain('20% or below');
   });
   it('renders actual physical voltage-only battery replies without inventing a percentage or crashing',()=>{
     const physical={...robot(),kind:'physical' as const,live_heartbeat:true,
@@ -306,6 +339,96 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     await act(async()=>{complete();vi.advanceTimersByTime(600);});
     expect(action.mock.calls.filter(([body])=>body.action==='drive')).toHaveLength(1);
     expect(screen.getByRole('alert').textContent).toContain('delivery expired');
+  });
+  it('renews a still-held physical input when its timely reply misses a timer tick',async()=>{
+    vi.useFakeTimers();const row={...robot(),kind:'physical' as const,live_heartbeat:true,timing_values:{input_ttl_ms:350,input_renewal_ms:100}};
+    const state={...fleet([row]),capabilities:{sim:true,physical:true}};const replies:Array<()=>void>=[];
+    const {action}=setup(state,body=>body.action==='drive'?new Promise(resolve=>{replies.push(()=>resolve(state));}):Promise.resolve(state));
+    // Settle the initially open physical Details toggle before starting input.
+    await act(async()=>{vi.advanceTimersByTime(1);});expect(action).not.toHaveBeenCalled();
+    const began=Date.now();fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowUp'});
+    await act(async()=>{vi.advanceTimersByTime(125);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive']);
+    await act(async()=>{replies.shift()!();});
+    const drives=action.mock.calls.filter(([b])=>b.action==='drive');
+    expect(drives).toHaveLength(2);expect(drives[1][0].payload).toMatchObject({sequence:2,expires_at_ms:began+125+350});
+    // Resolve the second request too: the following interval must be blocked
+    // by the 100ms minimum, not merely by a still-outstanding response.
+    await act(async()=>{replies.shift()!();});
+    await act(async()=>{vi.advanceTimersByTime(75);});
+    expect(action.mock.calls.filter(([b])=>b.action==='drive')).toHaveLength(2);
+    fireEvent.keyUp(window,{key:'ArrowUp'});
+    await act(async()=>{vi.advanceTimersByTime(200);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','drive','stop']);
+  });
+  it.each([125,175])('reanchors physical renewal after a %ims reply instead of skipping to the old interval phase',async replyMs=>{
+    vi.useFakeTimers();const row={...robot(),kind:'physical' as const,live_heartbeat:true,timing_values:{input_ttl_ms:350,input_renewal_ms:100}};
+    const state={...fleet([row]),capabilities:{sim:true,physical:true}};let firstReply=()=>{};let count=0;
+    const {action}=setup(state,body=>body.action==='drive'&&++count===1?new Promise(resolve=>{firstReply=()=>resolve(state);}):Promise.resolve(state));
+    await act(async()=>{vi.advanceTimersByTime(1);});expect(action).not.toHaveBeenCalled();
+    const began=Date.now();fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowUp'});
+    await act(async()=>{vi.advanceTimersByTime(replyMs);});
+    await act(async()=>{firstReply();});
+    expect(action.mock.calls.filter(([b])=>b.action==='drive')).toHaveLength(2);
+    await act(async()=>{vi.advanceTimersByTime(99);});
+    expect(action.mock.calls.filter(([b])=>b.action==='drive')).toHaveLength(2);
+    await act(async()=>{vi.advanceTimersByTime(1);});
+    const drives=action.mock.calls.filter(([b])=>b.action==='drive');expect(drives).toHaveLength(3);
+    expect(drives[2][0].payload).toMatchObject({sequence:3,expires_at_ms:began+replyMs+100+350});
+    fireEvent.keyUp(window,{key:'ArrowUp'});await act(async()=>{vi.advanceTimersByTime(500);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','drive','drive','stop']);
+  });
+  it.each(['release','blur','motion','layout','unmount'])('cancels a reanchored physical timer on %s before its due time',async fence=>{
+    vi.useFakeTimers();const row={...robot(),kind:'physical' as const,live_heartbeat:true,timing_values:{input_ttl_ms:350,input_renewal_ms:100}};
+    const state={...fleet([row]),capabilities:{sim:true,physical:true}};let firstReply=()=>{};let count=0;
+    const {action,props,rerender,unmount}=setup(state,body=>body.action==='drive'&&++count===1?new Promise(resolve=>{firstReply=()=>resolve(state);}):Promise.resolve(state));
+    await act(async()=>{vi.advanceTimersByTime(1);});expect(action).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowUp'});
+    await act(async()=>{vi.advanceTimersByTime(125);});await act(async()=>{firstReply();});
+    await act(async()=>{vi.advanceTimersByTime(75);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','drive']);
+    if(fence==='release')fireEvent.keyUp(window,{key:'ArrowUp'});
+    if(fence==='blur')fireEvent.blur(window);
+    if(fence==='motion')rerender(<RobotFleet {...props} state={{...state,robots:[{...row,motion_epoch:'new-epoch'}]}}/>);
+    if(fence==='layout')rerender(<RobotFleet {...props} layoutVersion={1}/>);
+    if(fence==='unmount')unmount();
+    await act(async()=>{vi.advanceTimersByTime(500);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','drive','stop']);
+  });
+  it('does not refresh physical input on a reply after its original expiry before the timer runs',async()=>{
+    vi.useFakeTimers();const row={...robot(),kind:'physical' as const,live_heartbeat:true,timing_values:{input_ttl_ms:350,input_renewal_ms:100}};
+    const state={...fleet([row]),capabilities:{sim:true,physical:true}};let complete=()=>{};
+    const {action}=setup(state,body=>body.action==='drive'?new Promise(resolve=>{complete=()=>resolve(state);}):Promise.resolve(state));
+    await act(async()=>{vi.advanceTimersByTime(1);});expect(action).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowUp'});
+    vi.setSystemTime(Date.now()+351);await act(async()=>{complete();});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','stop']);
+    expect(screen.getByRole('alert').textContent).toContain('delivery expired');
+  });
+  it.each(['connection','motion','operation','focus','capability','heartbeat','control','disconnected','adapter'])('revokes response-driven physical renewal immediately on %s change',async change=>{
+    vi.useFakeTimers();const row={...robot(),kind:'physical' as const,live_heartbeat:true,timing_values:{input_ttl_ms:350,input_renewal_ms:100}};
+    const state={...fleet([row]),capabilities:{sim:true,physical:true}};let complete=(_next:RobotFleetState)=>{};
+    const {action}=setup(state,body=>body.action==='drive'?new Promise(resolve=>{complete=resolve;}):Promise.resolve(state));
+    await act(async()=>{vi.advanceTimersByTime(1);});expect(action).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('group',{name:'Hold to drive'}),{key:'ArrowUp'});
+    await act(async()=>{vi.advanceTimersByTime(125);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive']);
+    const changed:RobotFleetState={...state,robots:[{...row}]};const next=changed.robots[0];
+    if(change==='connection')next.connection_epoch='new-connection';
+    if(change==='motion')next.motion_epoch='new-motion';
+    if(change==='operation')next.operation_id='new-operation';
+    if(change==='focus')changed.focused_robot_id='b';
+    if(change==='capability')next.capabilities={...next.capabilities,drive:false};
+    if(change==='heartbeat')next.live_heartbeat=false;
+    if(change==='control')next.control_state='UNPREPARED';
+    if(change==='disconnected')next.connection_state='DISCONNECTED';
+    if(change==='adapter')changed.capabilities={sim:true,physical:false};
+    // onChange intentionally does not rerender: verify the promise boundary,
+    // not an eventual React invalidation effect.
+    await act(async()=>{complete(changed);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','stop']);
+    await act(async()=>{vi.advanceTimersByTime(500);});
+    expect(action.mock.calls.map(([b])=>b.action)).toEqual(['drive','stop']);
   });
   it('stops on window blur, prevents delayed drive errors from reviving a gesture',async()=>{
     let rejectDrive:(error:Error)=>void=()=>{};
@@ -595,7 +718,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     const physical={...livePhysical(),connection_state:'DISCONNECTED' as const,connection_epoch:null,motion_epoch:null,live_heartbeat:false};
     const originalPose={position_m:[1,2,.3] as [number,number,number],frame_id:'odom',source:'wheel_odometry',aligned:false};physical.pose=originalPose;
     const {action}=setup(physicalState(physical));
-    const summary=screen.getByText('Estimated Twin marker',{selector:'summary'});
+    const summary=screen.getByText(/^Estimated Twin marker/,{selector:'summary'});
     expect(summary.parentElement?.hasAttribute('open')).toBe(false);
     expect(action).not.toHaveBeenCalled();fireEvent.click(summary);expect(action).not.toHaveBeenCalled();
     expect(screen.getByText('Review the robot position and yaw in this Twin. This estimate anchors relative LiDAR tracking for display and explicitly requested destinations; it never grants driving permission or claims measured world alignment.')).toBeTruthy();
@@ -619,7 +742,7 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect((screen.getByRole('button',{name:'Place estimated robot marker'}) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(screen.getByLabelText('Marker X (m)').closest('form')!);expect(action).not.toHaveBeenCalled();
     rerender(<RobotFleet {...props} state={fleet()}/>);
-    expect(screen.queryByText('Estimated Twin marker',{selector:'summary'})).toBeNull();
+    expect(screen.queryByText(/^Estimated Twin marker/,{selector:'summary'})).toBeNull();
   });
   it('shows a saved marker as an estimate and surfaces current-revision rejection without optimistic placement',async()=>{
     const physical=livePhysical();physical.display_pose={position_m:[.1,.2,.3],source:'operator_estimate_not_localized',scene_revision:'confirmed-revision',frame_id:'isaac_world',aligned:false};
@@ -885,7 +1008,11 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     expect(h.api.viewportCamera).not.toHaveBeenCalled();component.unmount();
   });
   it('has no connection circle and clears old scan geometry/status on sensor Off and mismatched epochs',async()=>{
-    const h=viewportHarness(),stamp=Date.now();
+    const stamp=Date.now();
+    // This contract checks OFF/epoch invalidation, not host test-runner speed.
+    // Keep the measured-age branch explicit below instead of accidentally
+    // expiring its fixture while jsdom mounts under unrelated CPU pressure.
+    const clock=vi.spyOn(Date,'now').mockReturnValue(stamp),h=viewportHarness();
     h.getState().frame!.lidar_overlay={robot_id:'a',connection_epoch:'connection-a',motion_epoch:'motion-a',origin_uv:[.25,.5],points_uv:[[.2,.3],[.3,.4]],captured_at_ms:stamp,source:'isaac_usd_aabb_rays',physical_authority:false};
     const current=fleet();current.robots[0].scan={points:[[.1,.2]],source:'test'};
     const component=render(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
@@ -900,7 +1027,7 @@ describe('fleet anchors bound to decoded Isaac frames (supplementary)',()=>{
     component.rerender(<TwinViewport api={h.api} robotFleet={{...current,robots:[{...current.robots[0],motion_epoch:'new-motion'}]}} onRobotSelect={vi.fn()}/>);
     expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull();
     component.rerender(<TwinViewport api={h.api} robotFleet={current} onRobotSelect={vi.fn()}/>);
-    vi.spyOn(Date,'now').mockReturnValue(stamp+800);
+    clock.mockReturnValue(stamp+800);
     await waitFor(()=>expect(screen.queryByLabelText('Latest frame-bound simulated LiDAR hits')).toBeNull());
     expect(screen.getByText(/awaiting current scan/)).toBeTruthy();
   });

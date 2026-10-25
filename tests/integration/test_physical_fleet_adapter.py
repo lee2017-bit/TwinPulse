@@ -125,7 +125,8 @@ class PhysicalFleetAdapterTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.trace, self.created = [], {}
         self.rows = [self.row('Robot A', '192.0.2.1'), self.row('Robot B', '192.0.2.2')]
-        self.registry = SimpleNamespace(snapshot=lambda: {'robots': deepcopy(self.rows)})
+        self.registry = SimpleNamespace(snapshot=lambda: {'robots': deepcopy(self.rows)},
+            registered=lambda identity:next((deepcopy(row) for row in self.rows if row['id']==identity),None))
         self.devices = SimpleNamespace(
             registry_service=SimpleNamespace(registry=self.registry), lock=RLock(), closed=False,
             diagnostics=Diagnostics('legacy-diagnostics', self.trace),

@@ -14,17 +14,35 @@ def ref(p):return dict(path=p.relative_to(OUT).as_posix(),sha256=sha256(p.read_b
 def write(p,v):
     with p.open('x',encoding='utf-8') as f:json.dump(v,f,indent=2)
 def main():
+    global OUT
     parser=argparse.ArgumentParser();parser.add_argument('--attempt',required=True);parser.add_argument('--reproduction-attempt',required=True)
     parser.add_argument('--source-review',type=Path,required=True,help='Required actual independently reviewed, hash-bound current delta; never synthesize a reviewer approval from current files.')
     parser.add_argument('--reproduction-project',required=True)
     parser.add_argument('--reproduction-scene',required=True)
+    parser.add_argument('--output-root',type=Path,default=OUT)
+    parser.add_argument('--runtime-label')
+    parser.add_argument('--normal-tag',help='Reuse exact already-recorded normal/restart receipts on the current release; do not relabel their launches.')
+    parser.add_argument('--runtime-role-label',action='append',default=[],help='Explicit role=archive-directory mapping when independent journeys were frozen separately.')
+    parser.add_argument('--supplementary',type=Path)
+    parser.add_argument('--observation-replay',type=Path)
     args=parser.parse_args();a=args.attempt;b=args.reproduction_attempt
-    if any(len(v)!=2 or not v.isascii() or not v.isdecimal() for v in (a,b)):raise ValueError('TWO_DIGIT_ATTEMPTS_REQUIRED')
+    OUT=args.output_root.resolve()
+    normal_tag=args.normal_tag or a
+    if any(len(v)!=2 or not v.isascii() or not v.isdecimal() for v in (a,b,normal_tag)):raise ValueError('TWO_DIGIT_ATTEMPTS_REQUIRED')
+    runtime_labels={}
+    for item in args.runtime_role_label:
+        role,separator,label=item.partition('=')
+        if (not separator or role not in {'fresh','cold','lineage','lineage_cold','normal','restart','reproduction'}
+                or role in runtime_labels or not label or Path(label).is_absolute()
+                or not (OUT/label).resolve().is_relative_to(OUT)):
+            raise ValueError('INVALID_RUNTIME_ROLE_LABEL')
+        runtime_labels[role]=label
     active=read(Path(os.environ['LOCALAPPDATA'])/'TwinPulse/installed/active-release.json')
     paths=[OUT/name for name in (f'ui-{a}/result.json',f'ui-cold-{a}/result.json',f'lineage-{a}/result.json',
         f'lineage-cold-{a}/result.json',f'ui-reproduction-{b}/result.json',f'cleanup-fresh-{a}.json',f'cleanup-cold-{a}.json',
         f'cleanup-lineage-{a}.json',f'cleanup-history-{a}.json',f'cleanup-reproduction-{b}.json',
-        f'normal{a}/shutdown.json',f'normal{a}-restart/shutdown.json',f'installed-files{a}.json',f'supplementary{a}/result.json')]
+        f'normal{normal_tag}/shutdown.json',f'normal{normal_tag}-restart/shutdown.json',f'installed-files{a}.json',f'supplementary{a}/result.json')]
+    if args.supplementary:paths[-1]=args.supplementary.resolve()
     unresolved=['FINAL_RECEIPT_NOT_PASS:'+p.relative_to(OUT).as_posix() for p in paths if not p.is_file() or read(p).get('status')!='PASS']
     reproduction=OUT/f'ui-reproduction-{b}/result.json'
     if reproduction.is_file() and read(reproduction).get('status')=='PASS':
@@ -94,10 +112,10 @@ def main():
     branches={}
     for role,start_path in dict(fresh=OUT/f'start-fresh-{a}.json',cold=OUT/f'start-cold-{a}.json',
             lineage=OUT/f'start-lineage-{a}.json',lineage_cold=OUT/f'start-history-{a}.json',
-            normal=OUT/f'normal{a}/result.json',restart=OUT/f'normal{a}-restart/result.json',
+            normal=OUT/f'normal{normal_tag}/result.json',restart=OUT/f'normal{normal_tag}-restart/result.json',
             reproduction=OUT/f'start-reproduction-{b}.json').items():
         if not start_path.is_file():unresolved.append('SHUTDOWN_START_MISSING:'+role);continue
-        launch=read(start_path)['launch_id'];folder=OUT/f'runtime-final{a}'/launch
+        launch=read(start_path)['launch_id'];folder=OUT/runtime_labels.get(role,args.runtime_label or f'runtime-final{a}')/launch
         evidence=dict(start=start_path,engine_result=folder/'engine-result.json',owner_exit=folder/'owned-exit-observations.json',cleanup=folder/'cleanup-receipt.json')
         for key,path in evidence.items():
             if not path.is_file():unresolved.append('SHUTDOWN_FILE_MISSING:'+role+':'+key)
@@ -105,7 +123,8 @@ def main():
     shutdown=OUT/f'shutdown-contract{a}.json'
     write(shutdown,dict(schema='owned-shutdown-contract-1.0',release_id=active['release_id'],source_sha256=active['source_manifest_sha256'],branches=branches,
         limitation='Root natural exit is not a claim that all Job descendants shut down gracefully. Pre-close descendant counts and Job close remain explicit.'))
-    replay=OUT/f'observation-replay{a}.json'
+    replay=args.observation_replay.resolve() if args.observation_replay else OUT/f'observation-replay{a}.json'
+    if not replay.is_relative_to(OUT):raise ValueError('REPLAY_MUST_BE_INSIDE_EVIDENCE_ROOT')
     review=dict(schema='physical-readiness-review-1.2',status='KNOWN_BLOCKER' if unresolved else 'SOFTWARE_NO_KNOWN_BLOCKER',
         unresolved=unresolved,scope='SUPERVISED_TEST_ENTRY_NOT_PHYSICAL_QUALIFICATION',
         observation_policy='SUPERVISED_LAST_COMPLETE_ORIGINAL_AGE_AND_NEWER_STOP_VETO_V1',

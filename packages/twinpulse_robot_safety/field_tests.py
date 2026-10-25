@@ -23,6 +23,9 @@ from twinpulse_core.robot_timing_profile import values_of
 CASES = ('stationary', 'bootstrap_stop', 'forward', 'backward', 'left', 'right',
          'full_turn', 'proximity', 'stall', 'presence_gap', 'soak')
 CAP_V, CAP_W, TTL = .03, .20, 900.
+# Explicit engineering setting approved by the operator on 2026-10-24.
+# This does not qualify missing returns as measured clear space.
+FIELD_MAXIMUM_RETURN_GAP_DEG = 10.
 
 
 def frame_points(frame, config, now, *, timing_values=None):
@@ -313,14 +316,15 @@ class NativeTracker:
 class FieldEvidenceWriter:
     """Fixed members, bounded queue; no disk work on the motor owner thread."""
     MEMBERS={'field-config.json','field-trials.json','field-stop.json','field-tracking.json'}
-    # Disk durability is not a motor/sensor deadline. Two serial fsyncs on the
-    # powered Pi took 0.299 + 0.208 s (2026-10-20 operation cd5d8c45...), so the
-    # former 0.5 s latch rejected a completed, exact-byte write. Report that age
-    # as buffering; keep results/stop authority pending until both durable ACKs.
+    # Disk durability is not a motor/sensor deadline. The real no-motion
+    # 2026-10-24 connection (6b428c29...) observed FSYNC 1.058 s plus ACK_FSYNC
+    # 8.805 s; the former 2 s storage budget latched an otherwise completed
+    # write. Report slow storage as buffering, not a fabricated durable ACK.
+    # Results/stop authority still wait for both exact-byte durable ACKs.
     # This bounded storage budget is not a measured safety limit. Motor input,
     # sensor age and local output watchdog deadlines are deliberately unchanged.
     BUFFERING_S=.5
-    COMMIT_DEADLINE_S=2.
+    COMMIT_DEADLINE_S=30.
     def __init__(self,directory,clock=time.monotonic):
         self.directory=Path(directory);self.clock=clock;self.queue=queue.Queue(maxsize=32)
         self.lock=threading.Lock();self.pending={};self.error=None;self.closed=False
@@ -463,14 +467,14 @@ class FieldGuard:
                 relevant.append((x,y))
         # Only positive, valid returns cover an angle. A no-return is never
         # free space, but does not erase surrounding valid samples. Enforce the
-        # existing 5-degree maximum using VALID returns, not raw beam slots.
+        # approved maximum using VALID returns, not raw beam slots.
         needed = set(range(24)) if w else ({22,23,0,1} if v > 0 else {10,11,12,13})
         for returns in [pts]+([partial_points] if partial is not None else []):
             angles=sorted(math.atan2(y,x)%math.tau for x,y in returns)
             sectors={int(a/(math.tau/24)) for a in angles}
             if not needed.issubset(sectors):raise ValueError('FIELD_DIRECTION_COVERAGE_UNKNOWN')
             for a,b in zip(angles,angles[1:]+[angles[0]+math.tau]):
-                if b-a<=math.radians(5):continue
+                if b-a<=math.radians(FIELD_MAXIMUM_RETURN_GAP_DEG)+1e-12:continue
                 # Include gaps intersecting a cone even if midpoint is outside.
                 intersects=any(max(a,sector*math.tau/24+turn)<min(b,(sector+1)*math.tau/24+turn)-1e-12
                                for sector in needed for turn in (0.,math.tau))
@@ -486,7 +490,8 @@ class FieldGuard:
             latest_unknown_bytes=((partial or frame).get('quality') or {}).get('unframed_bytes',0),
             latest_receipt_age_s=now-(partial or frame)['timing']['receipt_end_s'],
             valid_return_count=len(pts),latest_valid_return_count=len(partial_points) if partial is not None else len(pts),
-            coverage_policy='POSITIVE_VALID_RETURNS_MAXIMUM_GAP_5_DEG_NOT_ZERO_AS_FREE_SPACE',
+            maximum_return_gap_deg=FIELD_MAXIMUM_RETURN_GAP_DEG,
+            coverage_policy='POSITIVE_VALID_RETURNS_MAXIMUM_GAP_10_DEG_NOT_ZERO_AS_FREE_SPACE',
             observation_policy='SUPERVISED_LAST_COMPLETE_ORIGINAL_AGE_AND_NEWER_STOP_VETO_V1',
             acquisition_timing='UNQUALIFIED', config_sha256=digest(self.config))
         if gap <= .1:raise ValueError('FIELD_PROXIMITY_10CM')

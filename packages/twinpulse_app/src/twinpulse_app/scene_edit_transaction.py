@@ -55,6 +55,7 @@ class SceneEditTransaction:
         if self.path.exists():
             try:
                 value=self._read()
+                self._require_sensor_capabilities(value.get('sensor_binding'),value.get('sensor_origin_binding'))
                 if value['state'] not in TERMINAL:
                     value.update(state='ENGINE_STATE_UNKNOWN',error='Interrupted transaction; reconcile the current engine before recovery.')
                 self.value=value
@@ -69,6 +70,12 @@ class SceneEditTransaction:
                         self.workflow._application.diagnostics.note_storage_error()
             except (OSError,ValueError,TypeError,KeyError) as error:
                 self.storage_error=type(error).__name__
+
+    def _require_sensor_capabilities(self,*bindings):
+        if any(b and b.get('schema_version')=='environment-survey-binding-1.0' for b in bindings):
+            from .release_contract import require_data_capability,project_runtime_root
+            require_data_capability(project_runtime_root(self.workflow._application._project_store.path),
+                'environment-survey-binding-1.0')
 
     def _read(self,path=None):
         path=path or self.path
@@ -141,26 +148,38 @@ class SceneEditTransaction:
     def snapshot(self,owner=None):
         if self.storage_error:
             return dict(state='ENGINE_STATE_UNKNOWN',error='Scene transaction journal is unavailable.',storage_error=self.storage_error,physical_authority=False)
+        def capture():
+            # Caller owns self.lock. Polling needs only these projection fields,
+            # never copies the potentially large edit/history/receipt journals.
+            value=self.value
+            if value is None:return None
+            return dict(state=value['state'],operation_id=value['operation']['operation_id'],preview_digest=value['preview_digest'],
+                parent_revision=value['before_history']['current_scene_revision'],result_revision=value['after_history']['current_scene_revision'],
+                command_id=value['command_id'],compensation_command_id=value['compensation_command_id'],
+                engine_session_id=value['engine_session_id'],stage_epoch=value['stage_epoch'],
+                engine_acknowledged=value['receipt'] is not None,compensation_acknowledged=value['compensation_receipt'] is not None,
+                error=value['error'],execution_id=value.get('execution_id'),feedback_lineage=deepcopy(value.get('feedback_lineage')),
+                sensor_binding=deepcopy(value.get('sensor_binding')),sensor_origin_binding=deepcopy(value.get('sensor_origin_binding')))
         with self.lock:
-            value=deepcopy(self.value)
+            value=capture()
         if value is None:return None
         if owner and not (self.worker and self.worker.is_alive()):
             self.reconcile(owner)
-            with self.lock:value=deepcopy(self.value)
+            with self.lock:value=capture()
         view=self.broker.public_state(owner or '')
         current=view.get('build_view')
         restored=value['state']=='ROLLED_BACK'
-        displayed_revision=value['before_history']['current_scene_revision'] if restored else value['after_history']['current_scene_revision']
+        displayed_revision=value['parent_revision'] if restored else value['result_revision']
         displayed_command=value['compensation_command_id'] if restored else value['command_id']
         frame_current=bool(current and current['status']=='succeeded' and current.get('applied_revision')==displayed_revision and
             current.get('command_id')==displayed_command and (current.get('engine_session_id'),current.get('stage_epoch'))==(value['engine_session_id'],value['stage_epoch']))
-        return dict(state=value['state'],operation_id=value['operation']['operation_id'],preview_digest=value['preview_digest'],
-            parent_revision=value['before_history']['current_scene_revision'],result_revision=value['after_history']['current_scene_revision'],
-            command_id=value['command_id'],engine_acknowledged=value['receipt'] is not None,
+        return dict(state=value['state'],operation_id=value['operation_id'],preview_digest=value['preview_digest'],
+            parent_revision=value['parent_revision'],result_revision=value['result_revision'],
+            command_id=value['command_id'],engine_acknowledged=value['engine_acknowledged'],
             durable_committed=value['state']=='COMMITTED',current_frame=frame_current,error=value['error'],
-            execution_id=value.get('execution_id'),feedback_lineage=deepcopy(value.get('feedback_lineage')),
-            sensor_binding=deepcopy(value.get('sensor_binding')),sensor_origin_binding=deepcopy(value.get('sensor_origin_binding')),
-            displayed_revision=displayed_revision,compensation_acknowledged=value['compensation_receipt'] is not None,physical_authority=False)
+            execution_id=value['execution_id'],feedback_lineage=value['feedback_lineage'],
+            sensor_binding=value['sensor_binding'],sensor_origin_binding=value['sensor_origin_binding'],
+            displayed_revision=displayed_revision,compensation_acknowledged=value['compensation_acknowledged'],physical_authority=False)
 
     def start(self,owner,operation,digest,*,feedback_lineage=None,sensor_binding=None):
         if not self.ownership.acquire(blocking=False):
@@ -219,6 +238,10 @@ class SceneEditTransaction:
                     or snapshot['safety_state'] or snapshot['applied_revision']!=before.current_scene_revision):
                 raise BrokerError('scene_edit_engine_not_ready','View the current saved scene in idle Isaac before applying this edit.',status=409)
             self.broker.acquire_lease(owner)
+            # This must precede even a STAGED journal. Old programs must not
+            # reopen only the original scene while ignoring new obstacle history.
+            store.require_data_contract(after)
+            self._require_sensor_capabilities(sensor,origin)
             if self.value:
                 retained=self.path.with_name(self.path.stem+'.history')/(self.value['operation']['operation_id']+'.json')
                 if retained.parent.is_symlink():raise ValueError('SCENE_TRANSACTION_PATH_INVALID')
@@ -235,11 +258,15 @@ class SceneEditTransaction:
                 preview_sha256=digest,engine_session_id=current['engine_session_id'],stage_epoch=current['stage_epoch'])
             if sensor or origin:
                 proof=sensor or origin
-                self.trace.bind(sensor_binding_sha256=canonical_sha256(proof),sensor_execution_id=proof['execution_id'])
-                if proof.get('policy')=='correct_obstacles':
+                self.trace.bind(sensor_binding_sha256=canonical_sha256(proof))
+                if proof.get('policy')=='review_survey_obstacle':
+                    self.trace.bind(sensor_status='COLLECTED_SURVEY_REVIEW',sensor_raw_sha256=proof['collection_sha256'],
+                        sensor_alignment_sha256=proof['result_sha256'])
+                elif proof.get('policy')=='correct_obstacles':
+                    self.trace.bind(sensor_execution_id=proof['execution_id'])
                     self.trace.bind(observation_id=proof['observation_id'],sensor_raw_sha256=proof['observation_sha256'])
                 else:
-                    self.trace.bind(sensor_map_id=proof['evidence']['map_id'],sensor_raw_sha256=proof['evidence']['raw_sha256'],
+                    self.trace.bind(sensor_execution_id=proof['execution_id'],sensor_map_id=proof['evidence']['map_id'],sensor_raw_sha256=proof['evidence']['raw_sha256'],
                         sensor_evidence_sha256=canonical_sha256(proof['evidence']),sensor_alignment_sha256=proof['alignment_sha256'])
             self.value=dict(schema_version='scene-edit-transaction-1.2',execution_id=self.trace.execution_id,feedback_lineage=lineage,project_id=store.project_id,
                 source_sha256=canonical_sha256(store.source.to_dict()),operation=checked.to_dict(),preview_digest=digest,
@@ -385,6 +412,9 @@ class SceneEditTransaction:
         """Compare durable ACK, history and current engine. Never submit/retry."""
         if self.storage_error or not self.value or self.worker and self.worker.is_alive():return
         if self.value['state'] in TERMINAL:return
+        # With no authoritative ACK there is nothing to reconcile. In
+        # particular UNKNOWN polls must not replay two full history chains.
+        if not self.value['receipt'] and not self.value['compensation_receipt']:return
         try:
             current=self.broker.public_state(owner);snapshot=current['snapshot']
             if (not current['engine_connected'] or snapshot is None or snapshot['runtime_state']=='running' or snapshot['safety_state'] or
@@ -433,6 +463,18 @@ class SceneEditTransaction:
             with self.ownership:
                 recovery_trace=self.trace.child('scene_edit_explicit_recovery') if self.trace else None
                 try:
+                    # Explicit cold recovery also restores the saved *review*
+                    # through its existing source/history validator. It grants
+                    # no Build/Run authority and never replaces another input.
+                    with self.workflow._lock:
+                        selected=self.workflow._input
+                        if selected is None:
+                            if self.workflow._phase!='restore_review_required':
+                                raise ValueError('SCENE_EDIT_RECOVERY_INPUT_NOT_COLD')
+                            self.workflow.resume_saved_scene(store.project_id,
+                                store.source.site.scene.revision,store.source.input_revision.digest)
+                        elif selected.revision!=store.source.input_revision.digest:
+                            raise ValueError('SCENE_EDIT_RECOVERY_INPUT_CHANGED')
                     _,ack=self._build(owner,store.source,current,'edit-recovery-'+uuid4().hex,compensation=True)
                     if store.load()!=current:raise ValueError('SCENE_EDIT_DISK_CHANGED_DURING_RECOVERY')
                     committed=current.to_dict()==self.value['after_history']

@@ -641,6 +641,19 @@ class StageSettingsTests(unittest.TestCase):
         with self.assertRaises(ProviderConfigurationError):
             ConfiguredStageTransport(transport.transports, configs, transport.providers, transport.reasoning)
 
+    def test_environment_photo_schema_routes_only_to_observer(self):
+        service,_,calls=self.scripted_service()
+        from twinpulse_provider.harness_profiles import binding,default_profile
+        transport=service._provider._transport
+        transport.harness_bindings={'observer':binding(default_profile(transport.providers['observer'],service._provider.observer_model_id,'observer'))}
+        body={'model':service._provider.observer_model_id,'max_tokens':1000,
+            'response_format':{'type':'json_schema','json_schema':{'name':'twinpulse_environment_photo','strict':True,'schema':{'type':'object','properties':{},'additionalProperties':False}}},
+            'messages':[{'role':'system','content':'Return the supplied observation contract.'},
+                {'role':'user','content':[{'type':'text','text':'Inspect this photo.'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,fixture'}}]}]}
+        asyncio.run(service._provider._transport.complete(body,CancellationToken(),service._config))
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][2],'gpt-canary')
+        self.assertIn('Model-specific guidance',calls[0][0]['messages'][0]['content'])
+
     def test_http_route_mutation_requires_cookie_csrf_and_reconstructs_gateway(self):
         from urllib.request import Request, urlopen
         from urllib.error import HTTPError

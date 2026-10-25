@@ -24,7 +24,8 @@ class FieldAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.row=f.PhysicalFleetAdapterTests.row('Existing A','192.0.2.1');self.trace=[]
-        registry=SimpleNamespace(snapshot=lambda:{'robots':[deepcopy(self.row)]})
+        registry=SimpleNamespace(snapshot=lambda:{'robots':[deepcopy(self.row)]},
+            registered=lambda identity:deepcopy(self.row) if identity==self.row['id'] else None)
         devices=SimpleNamespace(registry_service=SimpleNamespace(registry=registry),lock=RLock(),closed=False,contexts=[],
             diagnostics=f.Diagnostics('legacy',self.trace),readiness=f.Readiness('legacy',self.trace),controller=f.Controller('legacy',self.trace))
         def factory(*_):return PhysicalFleetServices(f.Diagnostics('d',self.trace),f.Readiness('r',self.trace),f.Controller('c',self.trace))

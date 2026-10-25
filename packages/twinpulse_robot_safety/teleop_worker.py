@@ -368,10 +368,12 @@ def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervis
         diagnostic('POST_ARM_ACCEPTED')
     # New robot-local diagnostic commands, not re-stamped remote direction inputs.
     started = clock(); last_send = started; timeout_seen = None
-    gate.hold_end = started+4
+    trial_duration=max(3.,.6+stop_policy['guard_observation_limit_s']+OBSERVE_S+
+                       stop_policy['max_sample_gap_s']+.2)
+    gate.hold_end = started+trial_duration+1.
     last_emit = -1.
     timeout_encoders = None
-    while clock()-started < 3.:
+    while clock()-started < trial_duration:
         diagnostic('LOOP_CHECK')
         gate.check()
         if clock()-last_emit >= .05:
@@ -395,7 +397,8 @@ def qualify(link, incoming, output, gate, clock, *, safety=lambda:None, supervis
             if link.reason == 'command_timeout':
                 timeout_seen = clock()
                 timeout_encoders = current
-            elif clock()-last_send >= .7: raise ValueError('GUARD_TIMEOUT_NOT_OBSERVED')
+            elif clock()-last_send >= stop_policy['guard_observation_limit_s']:
+                raise ValueError('GUARD_TIMEOUT_NOT_OBSERVED')
         else:
             if link.reason != 'command_timeout': raise ValueError('STOP_NOT_LATCHED')
             if max(abs(a-b) for a,b in zip(current,timeout_encoders))*MM_PER_TICK > POLICY['wheel_travel_limit_mm']:

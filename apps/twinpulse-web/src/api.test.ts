@@ -13,6 +13,39 @@ const jsonResponse = (status: number, body: object): Response => ({
 describe("TwinPulse browser session recovery", () => {
   const contextResponse=(context:string,body:object,status=200)=>({...jsonResponse(status,body),
     headers:new Headers({'X-TwinPulse-Context':context})}) as Response;
+  it('drains old reads before explicit saved review, queues new observations, and keeps Stop independent',async()=>{
+    let finishRead!:(r:Response)=>void,finishResume!:(r:Response)=>void;
+    const calls:string[]=[];
+    const request=vi.fn(async(path:string,init?:RequestInit)=>{
+      calls.push(`${init?.method??'GET'} ${path}`);
+      if(path==='/v1/product/session')return contextResponse('ctx',{csrf_token:'csrf',context_id:'ctx',project_id:'test',project_switch:null});
+      if(path==='/v1/product/conversation'&&init?.method!=='POST')return new Promise<Response>(resolve=>{finishRead=resolve;});
+      if(path==='/v1/product/conversation')return new Promise<Response>(resolve=>{finishResume=resolve;});
+      return contextResponse('ctx',{});
+    });
+    vi.stubGlobal('fetch',request);const api=new TwinPulseApi();await api.bootstrap();
+    const reading=api.conversation();await vi.waitFor(()=>expect(finishRead).toBeTypeOf('function'));
+    const resume=api.conversationAction({action:'resume',request_id:'resume',expected_scene_revision:'scene',expected_input_revision:'input'});
+    const pending=api.environment();await Promise.resolve();
+    expect(calls).not.toContain('POST /v1/product/conversation');expect(calls).not.toContain('GET /v1/product/environment');
+    finishRead(contextResponse('ctx',{}));await reading;
+    await vi.waitFor(()=>expect(finishResume).toBeTypeOf('function'));
+    await api.robotFleetAction({action:'stop',robot_id:'robot',connection_epoch:'connection',motion_epoch:'motion',request_id:'stop',payload:{}});
+    expect(calls).toContain('POST /v1/product/robot-fleet');expect(calls).not.toContain('GET /v1/product/environment');
+    finishResume(contextResponse('ctx',{}));await resume;await pending;
+    expect(calls.filter(c=>c==='POST /v1/product/conversation')).toHaveLength(1);
+    expect(calls).toContain('GET /v1/product/environment');
+  });
+  it('releases saved-review observations on unknown delivery without retrying the action',async()=>{
+    let reads=0,posts=0;
+    const request=vi.fn(async(path:string,init?:RequestInit)=>{
+      if(path==='/v1/product/session')return contextResponse('ctx',{csrf_token:'csrf',context_id:'ctx',project_id:'test',project_switch:null});
+      if(init?.method==='POST'){posts++;throw Error('Lost saved review response');}reads++;return contextResponse('ctx',{});
+    });
+    vi.stubGlobal('fetch',request);const api=new TwinPulseApi();await api.bootstrap();
+    await expect(api.conversationAction({action:'resume',request_id:'resume',expected_scene_revision:'scene',expected_input_revision:'input'})).rejects.toThrow('Lost saved review response');
+    await api.environment();expect(posts).toBe(1);expect(reads).toBe(1);
+  });
   it('applies a server-pinned Library preview by ID and digest without round-tripping its operation',async()=>{
     const request=vi.fn(async(path:string)=>path==='/v1/product/session'?
       contextResponse('ctx-library',{csrf_token:'csrf-library',context_id:'ctx-library',project_id:'room',project_switch:null}):

@@ -67,6 +67,15 @@ class R5ProductApiTests(unittest.TestCase):
                     status,value,_=self.request('/v1/product/projects',headers=self.product_headers)
                 self.assertEqual(status,409)
                 self.assertEqual(value['error']['code'],'original_catalog_failure')
+                # Reading the HTTP body precedes the server handler's finally
+                # block. Observe that original cleanup, not client receipt as
+                # if it were a server-thread completion barrier.
+                deadline=time.monotonic()+1.
+                while time.monotonic()<deadline:
+                    with self.server._request_latency.lock:
+                        empty=not self.server._request_latency.requests
+                    if empty:break
+                    time.sleep(.005)
                 self.assertEqual(self.server._request_latency.requests,{})
 
     def setUp(self) -> None:

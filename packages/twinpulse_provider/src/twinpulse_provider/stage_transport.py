@@ -277,11 +277,11 @@ class ConfiguredStageTransport:
 
     async def complete(self, body, token, _pipeline_config):
         schema = body.get('response_format', {}).get('json_schema', {}).get('name')
-        if schema in ('twinpulse_image_observation', 'twinpulse_room_observation', 'twinpulse_render_review','twinpulse_asset_observation'):
+        if schema in ('twinpulse_image_observation', 'twinpulse_room_observation', 'twinpulse_render_review','twinpulse_asset_observation','twinpulse_environment_photo'):
             stage = 'observer'
         elif schema in {'twinpulse_site_tool_plan_v2', 'twinpulse_compact_photo_layout',
                         'twinpulse_semantic_room', 'twinpulse_semantic_structure', 'twinpulse_model_resolution', 'twinpulse_model_recipe', 'twinpulse_semantic_batch', 'twinpulse_semantic_patch',
-                        'twinpulse_scene_feedback','twinpulse_library_recipe'}:
+                        'twinpulse_scene_feedback','twinpulse_library_recipe','twinpulse_environment_move','twinpulse_robot_task'}:
             stage = 'planner'
             if has_image(body.get('messages')):
                 raise ProviderConfigurationError('Images cannot be dispatched to the planner')

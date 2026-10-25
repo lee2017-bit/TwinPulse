@@ -6,6 +6,7 @@
 Robot-issued challenges bound input age without assuming PC/robot clock sync.
 Never refresh a delayed command's lifetime. No transport or device imports.
 """
+import hashlib
 import math
 import secrets
 import time
@@ -151,7 +152,7 @@ class InputGate:
         self.active = False
         self.deadline = self.hold_end = 0.
 
-    def accept(self, packet):
+    def accept(self, packet, *, motion_input=True):
         if not isinstance(packet, dict) or set(packet) != {'sequence', 'action', 'challenge', 'age_ms'}:
             raise ValueError('INPUT_SHAPE')
         seq, action = packet['sequence'], packet['action']
@@ -167,11 +168,27 @@ class InputGate:
             if action != 'stop': self.closed = True
             return action, 0.
         if seq<=self.sequence:raise ValueError('INPUT_SEQUENCE')
-        self.check()
+        # Only the robot-local finite executor may validate a presence watch
+        # independently of its previous manual-input deadline. This is not a
+        # wire flag and never exempts this packet's nonce, sequence or age.
+        if motion_input is not True and (motion_input is not False or action!='watch' or not self.persistent):
+            raise ValueError('TASK_WATCH_MODE_INVALID')
+        if motion_input:self.check()
+        else:self.check(motion_input=False)
         if self.closed: raise ValueError('SESSION_CLOSED')
         challenge = packet['challenge']
         if not isinstance(challenge, str) or challenge not in self.challenges:
-            raise ValueError('INPUT_CHALLENGE')
+            # Capture before the caller's pause burns the current generation.
+            # A fingerprint correlates a refusal with the PC's selected window;
+            # it is not a usable nonce, an ACK, or permission to retry it.
+            fingerprint=(hashlib.sha256(challenge.encode('ascii')).hexdigest()
+                if isinstance(challenge,str) and len(challenge)==24
+                and all(c in '0123456789abcdef' for c in challenge) else None)
+            error=ValueError('INPUT_CHALLENGE')
+            error.input_diagnostic=dict(reason='INPUT_CHALLENGE',**self.timing(),
+                challenge_fingerprint_sha256=fingerprint,challenge_present=False,
+                retained_challenges=len(self.challenges))
+            raise error
         extra = packet['age_ms']
         if type(extra) not in (int,float) or not math.isfinite(extra) or not 0<=extra<self.input_ttl_s*1000:
             raise ValueError('INPUT_AGE')
@@ -194,10 +211,10 @@ class InputGate:
             remaining_s=self.deadline-self.clock())
         return action, age
 
-    def check(self):
+    def check(self, *, motion_input=True):
         now = self.clock()
         reason = ('SESSION_EXPIRED' if not self.persistent and now-self.started >= 60 else
-                  'INPUT_DEADLINE_EXPIRED' if self.active and now >= self.deadline else
+                  'INPUT_DEADLINE_EXPIRED' if motion_input and self.active and now >= self.deadline else
                   'HOLD_LIMIT_EXCEEDED' if self.active and now >= self.hold_end else
                   'OPERATOR_PRESENCE_EXPIRED' if self.persistent and self.presence_at is not None and now-self.presence_at>=self.presence_s else None)
         if reason:

@@ -39,7 +39,9 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
             launcher_lock.rename(preserved)
         except (json.JSONDecodeError, AttributeError):
             raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL') from None
-    contract = checked.get('data_contract') or DATA_CONTRACT
+    # A legacy package has no support for newly required capabilities. Never
+    # attribute the current program's feature support to an older package.
+    contract = checked.get('data_contract') or {k:v for k,v in DATA_CONTRACT.items() if k!='read_capabilities'}
     epoch = check_data_epoch(state, contract)
     if contract.get('write_epoch') != epoch:
         raise ValueError('DATA_MIGRATION_NOT_IMPLEMENTED')
@@ -114,7 +116,7 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
             'verified_desktop_hardlinks':desktop_links,
             'start': str(destination / 'Start-TwinPulse.cmd'), 'user_data': 'preserved',
             'test_start': str(destination / 'Start-TwinPulse-Test.cmd'),
-            'data_epoch': epoch, 'rollback': 'same declared epoch only; original formats preserved'}
+            'data_epoch': epoch, 'rollback': 'same epoch and required capabilities only; no project conversion'}
 
 
 def rollback_package(destination: Path, release_id: str):

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Jaewon Lee
 // SPDX-License-Identifier: Apache-2.0
 // Source: https://github.com/lee2017-bit/TwinPulse
+import {isImmediateRobotStop,isRobotTaskRequest} from './robot-task-intent';
 export type FleetDirection = 'forward' | 'backward' | 'left' | 'right';
 export type RobotTwinContext = {
   schema:'robot-twin-context-1.0';context_id:string;project_id:string;conversation_session_id:string|null;
@@ -73,6 +74,8 @@ export type RobotFleetState = {
   schema_version:'robot-fleet-1.0';revision:number;focused_robot_id:string|null;robots:RobotFleetRobot[];
   last_command:{request_id:string;operation_id:string|null;robot_id:string|null;status:string;message:string}|null;
   capabilities:{sim:boolean;physical:boolean};policy:{linear_m_s:number;angular_rad_s:number;input_expiry_ms:number};
+  navigation_scene?:{status:'AVAILABLE'|'UNAVAILABLE';kind:'imported'|'legacy'|null;source_sha256:string|null;
+    units_basis:string|null;meters_per_unit:number|null;geometry_revision:string|null;scene_revision:string|null;physical_accuracy:'UNQUALIFIED'};
 };
 type FleetPayloads = {
   register_sim:{label:string;position_m:[number,number,number]};focus:Record<string,never>;
@@ -104,19 +107,19 @@ export function fleetBatteryLabel(robot:RobotFleetRobot){
   const value=battery.source==='unknown'?'unavailable':[
     battery.display_mode!=='voltage_only'&&typeof battery.percent==='number'&&Number.isFinite(battery.percent)?`${battery.percent.toFixed(0)}%`:
       battery.display_mode!=='voltage_only'&&['robotis_opencr_voltage_10_5_to_12_3_v1','custom_voltage_table_v1'].includes(battery.estimate_method??'')&&typeof battery.estimated_percent==='number'&&Number.isFinite(battery.estimated_percent)&&battery.estimated_percent>=0&&battery.estimated_percent<=100
-        ?`약 ${battery.estimated_percent.toFixed(0)}% (전압 추정)`:null,
+        ?`~${battery.estimated_percent.toFixed(0)}% (voltage estimate)`:null,
     typeof battery.voltage_v==='number'&&Number.isFinite(battery.voltage_v)?`${battery.voltage_v.toFixed(2)} V`:null,
   ].filter(Boolean).join(' · ')||'unavailable';
   return `${value} · ${battery.source}${stale?' · stale':''}`;
 }
 export function fleetBatteryPolicyMessage(robot:RobotFleetRobot){
   const b=robot.battery;
-  if(b.voltage_protection==='LOW_VOLTAGE_GUARD')return '저전압 보호로 새 이동 차단 · 기존 11.1V 이하 보호가 20% 잔량 정책보다 우선합니다.';
-  if(b.display_mode==='voltage_only')return '잔량 환산 기준 없음 · 전압만 표시합니다. 주행 보호 기준은 별도로 유지됩니다.';
-  if(b.display_mode==='custom')return `사용자 기준표${b.display_label?` · ${b.display_label}`:''} · 전압 추정이며 실측 용량이 아닙니다. 표시 설정으로 주행 보호를 바꾸지 않습니다.`;
+  if(b.voltage_protection==='LOW_VOLTAGE_GUARD')return 'Low-voltage protection blocks new movement. The existing 11.1 V guard takes priority over the 20% reserve estimate.';
+  if(b.display_mode==='voltage_only')return 'No capacity mapping · voltage only. Drive protection remains separate.';
+  if(b.display_mode==='custom')return `Custom mapping${b.display_label?` · ${b.display_label}`:''} · voltage estimate, not measured capacity. Display settings do not change drive protection.`;
   if(b.estimate_method!=='robotis_opencr_voltage_10_5_to_12_3_v1')return null;
-  if(b.reserve_state==='AT_OR_BELOW_RESERVE')return '추정 잔량 20% 이하 · 충전이 필요하며 새 이동을 시작하지 않습니다.';
-  return 'ROBOTIS 전압 환산: 10.5V=0%, 12.3V=100% · 실측 용량이 아닙니다. 추정 20% 충전 정책과 별도 저전압 보호를 구분합니다. 잔량만으로 주행을 허가하지 않습니다.';
+  if(b.reserve_state==='AT_OR_BELOW_RESERVE')return 'Estimated reserve 20% or below · charge before new movement.';
+  return 'ROBOTIS voltage reference: 10.5 V=0%, 12.3 V=100% · not measured capacity. The 20% reserve estimate and low-voltage guard are separate; battery display does not authorize driving.';
 }
-export const fleetStopCommand=(value:string)=>/(?:멈춰|정지|스톱|\bstop|\bpause)(?:해줘|해|줘)?[.!?]*$/i.test(value.trim())||/^(?:stop|pause)\s*(?:robot|로봇)[.!?]*$/i.test(value.trim());
+export const fleetStopCommand=(value:string)=>isImmediateRobotStop(value)||!isRobotTaskRequest(value)&&(/(?:멈춰|정지|스톱|\bstop|\bpause)(?:해줘|해|줘)?[.!?]*$/i.test(value.trim())||/^(?:stop|pause)\s*(?:robot|로봇)[.!?]*$/i.test(value.trim()));
 export const fleetReadCommand=(value:string)=>/상태|배터리|battery|status|로그|기록.*(?:보여|분석)|\b(?:logs?|recording)\b/i.test(value);

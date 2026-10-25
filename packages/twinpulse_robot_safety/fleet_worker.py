@@ -176,9 +176,10 @@ class FleetWorker:
     def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream,line_writer=None):
         self.context=checked_context(context);self.directory=Path(directory);self.clock=clock
         self.lock=threading.RLock();self.sequence=0;self.last_command=0;self.cancel=threading.Event()
-        self.recording_failed=False;self.cleanup_confirmed=False
+        self.recording_failed=False;self.recording_failure_reason=None;self.cleanup_confirmed=False
         self.disk=SegmentedWriter(directory)
-        self.journal=RobotJournal(self.directory/'unused',max_bytes=EVENT_ARCHIVE_BYTES,capacity=512,
+        self.journal=RobotJournal(self.directory/'unused',max_bytes=EVENT_ARCHIVE_BYTES,capacity=16384,
+            max_pending_bytes=16*1024*1024,
             opener=lambda _:self.disk,buffered=True)
         self.protocol=ProtocolOutbox(writer,max_messages=512,max_bytes=4*1024*1024,buffered=True,line_writer=line_writer)
         self.emit_timing=dict(events=0,maximum_payload_prepare_s=0.,maximum_order_lock_wait_s=0.)
@@ -190,6 +191,10 @@ class FleetWorker:
         self.preparation_challenges={}
 
     def emit(self,kind,data,*,record=True):
+        if kind=='fault' and isinstance(data,dict) and data.get('subsystem')=='native_archive':
+            # A later sensor restart cannot erase an earlier native archive
+            # failure in this operation. Existing stop/cancel paths act first.
+            self._recording_fault(data.get('reason') or 'NATIVE_ARCHIVE_FAILED')
         # Payloads belong to callers until this owned copy is made. Large
         # heartbeat/raw snapshots and both JSON encodings must NOT hold the
         # order lock needed by the small original input-window/output events.
@@ -202,8 +207,8 @@ class FleetWorker:
                 allow_nan=False,separators=(',',':')) if record and ('challenge' in owned or 'watch_challenge' in owned) else wire_body)
             if max(len(wire_body.encode('utf-8')),len(archive_body.encode('utf-8')))>256*1024:
                 raise ValueError('EVENT_LINE_BYTE_LIMIT')
-        except Exception:
-            self._recording_fault();raise
+        except Exception as error:
+            self._recording_fault(reason_code(error));raise
         prepared=self.clock()
         with self.lock:
             self.sequence+=1
@@ -227,19 +232,28 @@ class FleetWorker:
             wire=prefix+wire_body+'}'
             archive=prefix+archive_body+'}\n'
             if max(len(wire.encode('utf-8'))+1,len(archive.encode('utf-8')))>256*1024:
-                self._recording_fault();raise ValueError('EVENT_LINE_BYTE_LIMIT')
+                self._recording_fault('EVENT_LINE_BYTE_LIMIT');raise ValueError('EVENT_LINE_BYTE_LIMIT')
             if record:
                 try:
-                    if self.journal.append_prepared(archive,kind) is False:self._recording_fault()
-                except Exception:self._recording_fault()
+                    if self.journal.append_prepared(archive,kind) is False:self._recording_fault('SESSION_JOURNAL_APPEND_REJECTED')
+                except Exception as error:self._recording_fault(reason_code(error))
             try:self.protocol.send_prepared(wire)
-            except Exception:self._recording_fault();raise
+            except Exception as error:self._recording_fault(reason_code(error));raise
 
-    def _recording_fault(self):
-        self.recording_failed=True
+    def _recording_fault(self,reason='RECORDING_INCOMPLETE'):
+        with self.lock:
+            first=not self.recording_failed
+            self.recording_failed=True
+            if first:self.recording_failure_reason=reason
+        if not first:return
         control=getattr(self,'control',None)
         if control is not None:
             control.field_until=0.;control.stop_requested.set()
+            # Existing cancel checks fence queued/preparing/qualifying paths
+            # and every output. End this control owner through its normal
+            # zero/OFF finally; do not regenerate Stop events at 100Hz.
+            cancel=getattr(control,'cancel',None)
+            if cancel is not None:cancel.set()
 
     def _control_flags(self):
         return self.control.status_flags() if hasattr(self.control,'status_flags') else self.control.snapshot()
@@ -248,6 +262,13 @@ class FleetWorker:
         value=checked_command(value,self.context,self.last_command)
         self.last_command=max(self.last_command,value['sequence'])
         action,p=value['action'],value['payload']
+        if self.recording_failed and action=='stop':
+            self.control.stop_requested.set()
+            self.emit('command',dict(request_id=value['request_id'],action='stop',status='REJECTED',
+                reason='RECORDING_INCOMPLETE',execution='NOT_EXECUTED_CONTROL_OWNER_CLOSING'))
+            return
+        if self.recording_failed and action not in {'stop','close','watch'} and not (action=='lidar' and p.get('enabled') is False):
+            raise ValueError('RECORDING_INCOMPLETE')
         status=self._control_flags()
         presence_only=('CLEANUP' if status.get('maintenance_phase')=='CLEANUP' else
                        'PREPARATION' if status['control_state']=='PREPARING' else None)
@@ -306,11 +327,15 @@ class FleetWorker:
 
     def heartbeat(self):
         status=self.control.snapshot()
+        # Mapping serialization belongs to the display heartbeat, never the
+        # final-output tick or small input-window/Stop publication locks.
+        if hasattr(self.control,'task_observation'):status.update(self.control.task_observation(status))
         if status['control_state']=='PREPARING' or status.get('maintenance_phase')=='CLEANUP':
             now=self.clock();self.preparation_challenges={k:v for k,v in self.preparation_challenges.items() if now-v<values_of(self.context.get('timing_profile'))['input_ttl_ms']/1000}
             nonce=secrets.token_hex(12);self.preparation_challenges[nonce]=now;status['watch_challenge']=nonce
         if self.recording_failed:
             status['blockers']=status['blockers']+['RECORDING_INCOMPLETE'];status['drive_ready']=False
+            status['recording_failure_reason']=getattr(self,'recording_failure_reason',None)
         battery=status['battery']
         if battery.get('sample_monotonic_s') is not None:
             battery['age_ms']=(self.clock()-battery['sample_monotonic_s'])*1000
@@ -336,9 +361,7 @@ class FleetWorker:
             while not self.cancel.is_set():
                 self.protocol.check()
                 try:self.journal.check()
-                except Exception:self.recording_failed=True
-                if self.recording_failed:
-                    self.control.field_until=0.;self.control.stop_requested.set()
+                except Exception as error:self._recording_fault(reason_code(error))
                 for _ in range(16):
                     try:value=incoming.messages.get_nowait()
                     except queue.Empty:break
@@ -367,7 +390,8 @@ class FleetWorker:
             native_ok=native['lidar_state']=='OFF'
             control_ok=control['control_state']=='CLOSED' and control['worker_reaped'] and control['cleanup_confirmed']
             self.cleanup_confirmed=control_ok and native_ok and not (self.board_thread and self.board_thread.is_alive())
-            try:self.emit('cleanup',{'subsystem':'devices','reason':fault,'control':control,'native':native})
+            try:self.emit('cleanup',{'subsystem':'devices','reason':fault,'control':control,'native':native,
+                'recording_failure_reason':self.recording_failure_reason})
             except Exception:pass
             try:
                 required=[]
@@ -376,15 +400,22 @@ class FleetWorker:
                 source_export=export_sources(self.directory,self.emit,owners_reaped=
                     control['worker_reaped'] and not (self.board_thread and self.board_thread.is_alive()),
                     required_members=required,evidence_error=control.get('output_guard_diagnostic_evidence_error'))
-                if not source_export['complete']:self.recording_failed=True
+                if not source_export['complete']:self._recording_fault(source_export.get('reason','ROBOT_SOURCE_EXPORT_INCOMPLETE'))
             except Exception:
-                source_export={'complete':False,'reason':'ROBOT_SOURCE_EXPORT_FAILED'};self.recording_failed=True
-            journal=self.journal.close(timeout=2.)
+                source_export={'complete':False,'reason':'ROBOT_SOURCE_EXPORT_FAILED'};self._recording_fault('ROBOT_SOURCE_EXPORT_FAILED')
+            # Devices are already stopped/reaped. SD-card close/flush is not
+            # an output-watchdog deadline: the real 293f3042... session saved
+            # every line but its writer was still closing at the former 2 s.
+            # Keep this bounded and below the PC's 30 s cleanup join; only an
+            # actually reaped writer with exact accepted/saved counts is final.
+            journal=self.journal.close(timeout=15.)
+            if journal['error'] is not None:self._recording_fault(journal['error'])
             recording_complete=not self.recording_failed and journal['error'] is None and journal['saved']==journal['accepted']
             receipt={'schema':'physical-live-receipt-1.0',**{k:self.context[k] for k in IDENTITY},
                 'worker_sha256':self.context['worker_sha256'],'cleanup_confirmed':self.cleanup_confirmed,
                 'complete':self.cleanup_confirmed and recording_complete,
-                'journal':journal,'segments':self.disk.segments,'reason':fault,'source_export':source_export}
+                'journal':journal,'segments':self.disk.segments,'reason':fault,'source_export':source_export,
+                'recording_failure_reason':self.recording_failure_reason}
             if self.context['schema']=='physical-live-start-2.0':
                 receipt['source_twin_context']=deepcopy(self.context['source_twin_context'])
                 receipt['twin_reference_basis']='OPERATION_START_REFERENCE_NOT_ACQUISITION_SYNC'
@@ -396,6 +427,7 @@ class FleetWorker:
             # closed journal. A failed recording never becomes PC COMPLETE.
             try:self.emit('cleanup',{'subsystem':'session','confirmed':self.cleanup_confirmed,'reason':fault,
                 'control':control,'native':native,'recording_complete':recording_complete,
+                'recording_failure_reason':self.recording_failure_reason,
                 'journal':journal,'source_export':source_export},record=False)
             except Exception:pass
             self.protocol.close(timeout=2.)

@@ -56,6 +56,41 @@ class TimingPolicyTests(unittest.TestCase):
         for age in (.35,.351,float('nan'),-.001):
             self.assertFalse(checked_command(.03,0,age,None,1.,require_scan=False)['allowed'])
 
+    def test_pruned_challenge_refusal_has_bound_secret_free_original_diagnostic(self):
+        now=[0.];gate=InputGate(lambda:now[0],persistent=True,recoverable=True)
+        nonce=gate.challenge();now[0]=1.;gate.challenge()
+        with self.assertRaisesRegex(ValueError,'^INPUT_CHALLENGE$') as caught:
+            gate.accept(dict(sequence=1,action='forward',challenge=nonce,age_ms=0))
+        diagnostic=caught.exception.input_diagnostic
+        self.assertEqual(diagnostic['challenge_fingerprint_sha256'],hashlib.sha256(nonce.encode()).hexdigest())
+        self.assertEqual((diagnostic['generation'],diagnostic['checked_s'],diagnostic['retained_challenges']),(0,1.,1))
+        self.assertNotIn(nonce,json.dumps(diagnostic));self.assertFalse(gate.active)
+        gate.pause('INPUT_CHALLENGE')
+        self.assertEqual(gate.generation,1)
+        self.assertEqual(diagnostic['generation'],0)
+
+    def test_consumed_or_stop_revoked_challenge_remains_rejected_without_retry(self):
+        for stop in (False,True):
+            with self.subTest(stop=stop):
+                gate=InputGate(lambda:0.,persistent=True,recoverable=True)
+                nonce=gate.challenge()
+                gate.accept(dict(sequence=1,action='watch',challenge=nonce,age_ms=0))
+                gate.discard_idle_watch()
+                if stop:gate.accept(dict(sequence=2,action='stop',challenge=None,age_ms=0))
+                generation=gate.generation
+                with self.assertRaisesRegex(ValueError,'^INPUT_CHALLENGE$') as caught:
+                    gate.accept(dict(sequence=3,action='forward',challenge=nonce,age_ms=0))
+                self.assertEqual(caught.exception.input_diagnostic['generation'],generation)
+                self.assertFalse(gate.active);self.assertEqual(gate.deadline,0.)
+
+    def test_malformed_challenge_diagnostic_cannot_mask_original_refusal(self):
+        for nonce in (None,[],{},'\ud800','x'*24):
+            with self.subTest(nonce=repr(nonce)):
+                gate=InputGate(lambda:0.)
+                with self.assertRaisesRegex(ValueError,'^INPUT_CHALLENGE$') as caught:
+                    gate.accept(dict(sequence=1,action='forward',challenge=nonce,age_ms=0))
+                self.assertIsNone(caught.exception.input_diagnostic['challenge_fingerprint_sha256'])
+
     def tick(self,previous,pose):
         published=[];owner=RobotControl({},'.',lambda *_:None,SimpleNamespace(),clock=lambda:pose['sample_s']+.001)
         owner.field_mode=True;owner._safety=lambda:None;owner.gate.check=lambda:None;owner._pose=lambda:pose

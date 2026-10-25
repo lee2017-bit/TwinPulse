@@ -89,7 +89,7 @@ class ControlObservationTests(unittest.TestCase):
             for distance,quality,reason in ((.20,100,'PROXIMITY'),(0,100,'COVERAGE'),(1.,0,'COVERAGE')):
                 latest,previous=pair();latest['beams'][index].update(distance_m=distance,quality=quality)
                 if reason=='COVERAGE':
-                    for delta in range(-3,4):latest['beams'][(index+delta)%360].update(distance_m=distance,quality=quality)
+                    for delta in range(-6,7):latest['beams'][(index+delta)%360].update(distance_m=distance,quality=quality)
                 with self.assertRaisesRegex(ValueError,reason):self.guard(latest,previous)(v,w,1.1)
         for key,value in (('angle_deg',math.nan),('distance_m',math.nan),('quality',math.inf),('valid_packet',False)):
             latest,previous=pair();latest['beams'][0][key]=value
@@ -148,7 +148,7 @@ class ControlObservationTests(unittest.TestCase):
         guard=self.guard(latest,previous);guard(0,.2,1.1)
         self.assertEqual(guard.last_result['valid_return_count'],359)
         self.assertEqual(guard.last_result['latest_valid_return_count'],359)
-        for i in range(178,184):latest['beams'][i]['distance_m']=0
+        for i in range(175,186):latest['beams'][i]['distance_m']=0
         with self.assertRaisesRegex(ValueError,'COVERAGE_GAP'):guard(0,.2,1.1)
 
     def test_exact_existing_350ms_limit_and_end_of_compute_input_expiry(self):

@@ -104,7 +104,8 @@ def main():
         'twinpulse_desktop_entry.py', 'twinpulse_bootstrap_integrity.py', 'build_windows_exe.py',
         'twinpulse_capture_contract.py', 'inspect_robot_evidence.py', 'ros_message_diagnostics.py',
         'prepare_robot.py', 'run_robot_readiness.py', 'check_robot_connection.py',
-        'robot_health.py', 'turtlebot_probe.py', 'robot_source_identity.py','twinpulse_library_worker.py','twinpulse_motion_review_worker.py')
+        'robot_health.py', 'turtlebot_probe.py', 'robot_source_identity.py','twinpulse_library_worker.py','twinpulse_motion_review_worker.py',
+        'twinpulse_environment_worker.py','twinpulse_alignment_archive_worker.py')
     for name in scripts:
         copy('scripts/' + name)
     for name in ('packaging/windows/TwinPulse.spec', 'packages/twinpulse_app/pyproject.toml',

@@ -199,8 +199,12 @@ class SceneCompiler:
             physics = UsdPhysics.Scene.Define(stage, PHYSICS_SCENE_PATH)
             physics.CreateGravityDirectionAttr(Gf.Vec3f(0.0, 0.0, -1.0))
             physics.CreateGravityMagnitudeAttr(9.81)
-            for item in checked.objects:
-                self._create_scene_object(item,asset=next((a for a in checked.library_assets if a.asset_ref==item.asset_id),None))
+            if checked.environment is not None:
+                from .environment_geometry import author_environment
+                author_environment(stage,checked.environment)
+            else:
+                for item in checked.objects:
+                    self._create_scene_object(item,asset=next((a for a in checked.library_assets if a.asset_ref==item.asset_id),None))
             self._ensure_presentation(None, checked, presentation=presentation)
             if not self.matches_site_scene(checked, stage=stage):
                 raise RuntimeError("Authored site scene does not match the reviewed revision")
@@ -269,8 +273,12 @@ class SceneCompiler:
             gravity_direction.Set(Gf.Vec3f(0.0, 0.0, -1.0))
             gravity_magnitude.Set(9.81)
             UsdGeom.Xform.Define(stage, ENVIRONMENT_PATH)
-            for item in scene.objects:
-                self._create_scene_object(item,asset=next((a for a in scene.library_assets if a.asset_ref==item.asset_id),None))
+            if scene.environment is not None:
+                from .environment_geometry import author_environment
+                author_environment(stage,scene.environment)
+            else:
+                for item in scene.objects:
+                    self._create_scene_object(item,asset=next((a for a in scene.library_assets if a.asset_ref==item.asset_id),None))
             self._ensure_presentation(None, scene, presentation=presentation)
             if not self.matches_site_scene(scene, stage=stage):
                 raise RuntimeError("Authored site scene does not match the reviewed revision")
@@ -320,6 +328,9 @@ class SceneCompiler:
         if (not _vector_close(physics.GetAttribute("physics:gravityDirection").Get(), (0.0, 0.0, -1.0))
                 or not _number_close(physics.GetAttribute("physics:gravityMagnitude").Get(), 9.81)):
             return False
+        if scene.environment is not None:
+            from .environment_geometry import matches_environment
+            return matches_environment(stage,scene.environment)
         for item in scene.objects:
             obj = stage.GetPrimAtPath(ENVIRONMENT_PATH.AppendChild(item.id))
             geom = stage.GetPrimAtPath(ENVIRONMENT_PATH.AppendChild(item.id).AppendChild("geometry"))
@@ -797,6 +808,7 @@ class SceneCompiler:
         center_x = center_y = 0.0
         radius = None
         open_side = None
+        top_view = False
         if site_scene is not None:
             floor = next((item for item in site_scene.objects if item.kind == "floor"), None)
             if floor is not None and floor.shape.type == "box":
@@ -829,6 +841,9 @@ class SceneCompiler:
         else:
             radius = max(2.5, min(float(radius), 20.0))
             view = presentation["view"] if presentation is not None else "auto"
+            if site_scene is not None and site_scene.environment is not None and view=='auto':
+                view='top'  # Overview without removing any source wall.
+            top_view = view=='top'
             if view != "auto" and view != "top":
                 open_side = {"front": "-y", "back": "+y", "left": "-x", "right": "+x"}[view]
             side_x, side_y = {"-y": (0.0, -1.0), "+y": (0.0, 1.0),
@@ -843,7 +858,7 @@ class SceneCompiler:
         if presentation is not None:
             presentation_xform.GetPrim().SetCustomDataByKey("twinpulsePresentation", dict(presentation))
         if open_side is not None:
-            presentation_xform.GetPrim().SetCustomDataByKey("twinpulseCameraSide", "top" if presentation is not None and presentation["view"] == "top" else open_side)
+            presentation_xform.GetPrim().SetCustomDataByKey("twinpulseCameraSide", "top" if top_view else open_side)
         elif presentation_xform.GetPrim().GetCustomDataByKey("twinpulseCameraSide") is not None:
             presentation_data = presentation_xform.GetPrim().GetCustomData()
             presentation_data.pop("twinpulseCameraSide", None)
@@ -860,7 +875,7 @@ class SceneCompiler:
             .SetLookAt(
                 eye,
                 target,
-                Gf.Vec3d(0.0, 1.0, 0.0) if presentation is not None and presentation["view"] == "top"
+                Gf.Vec3d(0.0, 1.0, 0.0) if top_view
                 else Gf.Vec3d(0.0, 0.0, 1.0),
             )
             .GetInverse()

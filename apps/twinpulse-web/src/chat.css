@@ -71,8 +71,9 @@
 .is-control-view .chat-twin-heading h2 { font-size:13px; }
 .is-control-view .chat-twin-mission-details { margin:0; max-height:90px; overflow:auto; font-size:11px; }
 .is-control-view .twin-live-viewport { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-.is-control-view .twin-live-viewport>.twin-frame-slot { flex:1 1 auto; min-height:0; height:auto; aspect-ratio:auto; }
-.is-control-view .twin-live-viewport>.twin-frame-slot>canvas { aspect-ratio:auto; }
+.is-control-view .twin-live-viewport>.twin-render-grid { flex:1 1 auto; min-height:0; }
+.is-control-view .twin-render-grid>.twin-frame-slot { min-height:0; height:auto; aspect-ratio:auto; }
+.is-control-view .twin-render-grid>.twin-frame-slot>canvas { aspect-ratio:auto; }
 .is-control-view .twin-live-viewport>p { margin:1px 0; font-size:11px; line-height:1.35; }
 .is-control-view .twin-live-viewport>details { flex:0 0 auto; max-height:28%; overflow:auto; font-size:11px; }
 .is-control-view .twin-live-viewport>details>summary { cursor:pointer; }
@@ -118,7 +119,7 @@
   .is-control-view .chat-twin-splitter { display:none; }
   .is-control-view .chat-twin-panel { position:static; padding:4px 8px; grid-template-rows:minmax(184px,1fr) auto auto; }
   .is-control-view .chat-twin-heading { display:none; }
-  .is-control-view .twin-live-viewport>.twin-frame-slot { min-height:150px; }
+  .is-control-view .twin-render-grid>.twin-frame-slot { min-height:150px; }
 }
 .twin-live-viewport img, .twin-live-viewport canvas { width:100%; aspect-ratio:3/2; object-fit:contain; background:#101920; border-radius:12px; }
 .twin-frame-slot { width:100%; aspect-ratio:3/2; position:relative; }

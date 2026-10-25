@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from copy import deepcopy
 import hashlib
 import json
@@ -53,6 +53,19 @@ MAX_IMAGE_PIXELS = 40_000_000
 MAX_SIDECAR_BYTES = 128 * 1024
 INPUT_KINDS = frozenset({"auto", "photo", "drawing"})
 WORKFLOW_MODES = frozenset({"live_provider", "explicit_fixture", "replay", "simulation_offline"})
+
+
+def _display_memo_object(value):
+    """Shallow dataclass view for a private full-content display fingerprint.
+
+    Read every nested value, without asdict/deepcopy rebuilding the complete
+    imported mesh/history graph on each poll. This is not a public scene hash
+    or an admission/validation shortcut. Unsupported values fail explicitly.
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        return {'dataclass_type':type(value).__module__+'.'+type(value).__qualname__,
+                'fields':{field.name:getattr(value, field.name) for field in fields(value)}}
+    raise TypeError('Unsupported display memo value: ' + type(value).__name__)
 
 if TYPE_CHECKING:
     from .replay import ReplayFixture
@@ -578,6 +591,7 @@ class ProductWorkflow:
     def shutdown(self, timeout_s: float = 2.0) -> None:
         """Cancel owned generation and briefly join its worker before teardown."""
         if getattr(self,'library_workspace',None) is not None:self.library_workspace.shutdown()
+        if getattr(self,'environment_workspace',None) is not None:self.environment_workspace.shutdown()
         self.cancel()
         with self._lock:
             workers = tuple(self._workers)
@@ -600,6 +614,8 @@ class ProductWorkflow:
         try:
             gateway=self._gateway_factory()
             provider_state=dict(self._provider_state_getter())
+            approvals=getattr(self,'generation_approvals',None)
+            approval_enabled=approvals.enabled() if approvals is not None else False
         except Exception as error:
             # Legacy settings save may already have changed the disk. Retain
             # the original exception and old input/gateway, but do not execute
@@ -618,6 +634,8 @@ class ProductWorkflow:
                 self._provider_observation_error = error
                 raise
             self._provider_state = provider_state
+            if approvals is not None:
+                approvals.publish_enabled_observation(approval_enabled)
             self._provider_configuration_state = 'observed'
             self._provider_observation_error = None
             self._input = None
@@ -864,7 +882,8 @@ class ProductWorkflow:
                 "scene_edit_transaction": self.scene_edit_transaction.snapshot(),
                 "photo_inventory": inventory_coverage(photo, site_draft['room_inventory'] if site_draft and
                     selected is not None and selected.revision == site_record.input_revision.digest else None),
-                "presentation": None if site_record is None else self._presentation_snapshot(site_record),
+                "presentation": None if site_record is None else self._presentation_snapshot(
+                    site_draft['original_scene_revision'] if site_draft is not None else site_record.site.scene.revision),
                 "saved_site_scene_protected": site_record is not None,
                 "saved_input": None if saved_record is None or saved_record.input_revision is None else {
                     "input_kind": saved_record.input_revision.input_kind,
@@ -879,10 +898,12 @@ class ProductWorkflow:
                 "error": self._error,
             }
 
-    def _presentation_snapshot(self, record: SiteDraftRecord) -> dict[str, object]:
-        stored = self._application.presentation_store().load(record.site.scene.revision)
+    def _presentation_snapshot(self, source_revision: str) -> dict[str, object]:
+        # The summary above has already validated this exact source revision.
+        # Rehashing every imported vertex twice adds no display authority.
+        stored = self._application.presentation_store().load(source_revision)
         return {**(stored or DEFAULT_PRESENTATION), "saved": stored is not None,
-                "source_scene_revision": record.site.scene.revision,
+                "source_scene_revision": source_revision,
                 "applies_on_next_build": True}
 
     def save_presentation(self, expected_source_scene_revision: str, value: object) -> dict[str, object]:
@@ -934,7 +955,8 @@ class ProductWorkflow:
 
     def has_active_generation(self) -> bool:
         with self._lock:
-            return bool(self._workers) or (getattr(self,'library_workspace',None) is not None and self.library_workspace.active())
+            return (bool(self._workers) or (getattr(self,'library_workspace',None) is not None and self.library_workspace.active())
+                    or (getattr(self,'environment_workspace',None) is not None and self.environment_workspace.active()))
 
     def generation_settling(self, generation_id: str | None) -> bool:
         """Process-local cancellation hint; never a persisted retry authority."""
@@ -1260,9 +1282,9 @@ class ProductWorkflow:
         acknowledged=self._acknowledged_identity
         derived_selection=self._derived_revision
         capable=self._broker.site_scene_capable()
-        material=dict(record=record.to_dict(),
-            edits=edits.to_dict() if edits is not None else None,
-            derived=derived.to_dict() if derived is not None else None,
+        material=dict(record=record,
+            edits=edits,
+            derived=derived,
             derived_selection=derived_selection,
             artifact=None if artifact is None else [artifact.artifact_id,artifact.revision],
             input_revision=selected.revision if selected is not None else None,
@@ -1271,7 +1293,16 @@ class ProductWorkflow:
         # Do not replay all scene edits merely because a lease became valid.
         # Build permission is recalculated from the SAME fresh captures below;
         # a cached geometry summary never supplies control authority.
-        key=canonical_sha256({k:v for k,v in material.items() if k not in {'acknowledged','capable'}})
+        # This private display memo key is NOT a scene/state/approval digest.
+        # Keep all content (including pending-only changes), but avoid the
+        # expensive Python float-normalization walk on every metadata poll.
+        # Exact JSON spelling changes can only cause extra misses, not stale
+        # permission or a cache hit for changed content. Public digests below
+        # and every mutation/replay validator retain canonical_sha256.
+        key=hashlib.sha256(json.dumps(
+            {k:v for k,v in material.items() if k not in {'acknowledged','capable'}},
+            sort_keys=True,ensure_ascii=False,allow_nan=False,separators=(',',':'),
+            default=_display_memo_object).encode('utf-8')).hexdigest()
         identity=None if selected is None or artifact is None else (selected.revision,artifact.revision)
         build_allowed=bool(artifact is not None and identity==acknowledged and capable)
         cached=self._site_summary_cache
@@ -1286,7 +1317,7 @@ class ProductWorkflow:
         # Metadata readers consume only an already-published summary. Bind its
         # full source/history/input (including pending-only changes), without
         # giving that display snapshot any mutation/ACK authority.
-        metadata_identity=canonical_sha256(dict(source=material['record'],history=material['edits'],
+        metadata_identity=canonical_sha256(dict(source=record.to_dict(),history=edits.to_dict() if edits is not None else None,
             input_revision=material['input_revision'],derived_selection=material['derived_selection'],
             artifact=material['artifact']))
         self._site_summary_cache=(key,deepcopy(result),metadata_identity)
@@ -1295,13 +1326,28 @@ class ProductWorkflow:
     def _compute_site_draft_summary(self, record: SiteDraftRecord, *, site_capable: bool,
                                    derived, edits, artifact, selected, acknowledged, derived_selection) -> dict[str, object]:
         from .site_review_provenance import site_review_provenance
-        edited_plan, edited_site = edits.replay(record) if edits is not None else (None, None)
-        effective = edits.effective(record) if edits is not None and edits.schema_version=='scene-changes-1.2' else None
+        from .dependency_patch import initial_state
+        # effective() already performs the schema's complete replay/validation.
+        # Reuse its result, rather than replaying the same history once for
+        # display and once again for the state digest. Keep progressive-only
+        # metadata semantics separate from the non-progressive replay state.
+        replayed_state=edits.effective(record) if edits is not None else None
+        edited_plan,edited_site=(replayed_state.plan,replayed_state.site) if replayed_state is not None else (None,None)
+        effective=replayed_state if edits is not None and edits.schema_version=='scene-changes-1.2' else None
         # A fresh draft has no sidecar/cache yet. Its exact state is still
         # available in memory; hashing it must not create history or write disk.
         state_history = (edits or SceneChangeHistory.empty(self._application.project_id, record)) if derived_selection is None else None
-        state_digest = (state_history.state_sha256(effective if effective is not None else state_history.effective(record))
-                        if state_history is not None else None)
+        digest_state=replayed_state
+        # empty() above still performs the complete source round-trip validation.
+        # With no operations there is nothing to replay: effective(empty) would
+        # compile that same imported mesh yet again merely to hash its original
+        # plan/placement/inventory/refinement/revision. Reuse the exact original
+        # state for that read-only digest and the pending-context comparison.
+        # Edited histories, load/Build/mutation validators remain unchanged.
+        original_context=initial_state(record)
+        if state_history is not None and digest_state is None:
+            digest_state=original_context
+        state_digest=state_history.state_sha256(digest_state) if state_history is not None else None
         site = derived.site if derived is not None else edited_site or record.site
         original_objects = {item.id: item for item in record.site.scene.objects}
         identity = None if selected is None or artifact is None else (selected.revision, artifact.revision)
@@ -1313,8 +1359,6 @@ class ProductWorkflow:
         photo = None  # Inventory comes from this generated plan, never a known-photo lookup.
         from twinpulse_core.progressive_twin import summary as progressive_summary
         from twinpulse_core.draft_refinement import public_refinement
-        from .dependency_patch import initial_state
-        original_context=initial_state(record)
         pending_context_current=(effective is None or (effective.inventory==original_context.inventory and
             effective.placement==original_context.placement))
         return {
@@ -1335,8 +1379,12 @@ class ProductWorkflow:
             "derived_review_revision": derived.revision if derived is not None else None,
             "scene_edit_revision": site.scene.revision if edits is not None and edits.operations else None,
             "scene_edit_count": len(edits.operations) if edits is not None else 0,
+            # Imported meshes have their own ID-bound environment editor.
+            # Generic furniture/box editors cannot edit import_environment;
+            # copying its entire mesh into every 750ms workflow response adds
+            # allocation/GC and exposes no additional editable control.
             "editable_calls": [item.to_dict() for item in (edited_plan or record.plan).calls
-                               if item.tool not in {"create_floor", "place_predefined_agv", "create_navigation_task"}],
+                               if item.tool not in {"create_floor", "place_predefined_agv", "create_navigation_task", "import_environment"}],
             "original_scene_revision": record.site.scene.revision,
             "geometry_provenance": "offline_review_unverified" if derived is not None or edits is not None and edits.operations else "original_tool_plan",
             "review_provenance": site_review_provenance(

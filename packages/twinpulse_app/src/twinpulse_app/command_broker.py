@@ -65,6 +65,9 @@ class _Operation:
     view_status: str | None = None
     view_error_code: str | None = None
     view_execution_id: str | None = None
+    disconnected_inflight: bool = False
+    late_receipt: CommandReceipt | None = None
+    late_receipt_sha256: str | None = None
 
     def public(self) -> dict[str, object]:
         return {
@@ -77,6 +80,7 @@ class _Operation:
             "expected_applied_revision": self.command.expected_applied_revision,
             "status": self.receipt.status if self.receipt is not None else self.status,
             "receipt": self.receipt.to_dict() if self.receipt is not None else None,
+            "late_receipt_sha256": self.late_receipt_sha256,
         }
 
 
@@ -139,6 +143,14 @@ class CommandBroker:
         """A detached read of optional references, never control admission."""
         with self._lock:
             return dict(self._diagnostic_artifacts.get(artifact_id,{}))
+
+    def navigation_source(self, revision):
+        """Immutable imported-source identity, not a geometry/authority grant."""
+        with self._lock:
+            item=next((v for v in self._site_scenes.values() if v.revision==revision),None)
+            environment=item.scene.environment if item is not None else None
+            return ({k:environment[k] for k in ('source_sha256','units_basis','meters_per_unit')}
+                if environment is not None else None)
 
     def bind_artifact_diagnostics(self, artifact_id, **values):
         from twinpulse_core.execution_diagnostics import metadata
@@ -497,16 +509,12 @@ class CommandBroker:
             self._finish_diagnostics(operation, 'cancelled', 'cancelled_by_product')
             return operation.public()
 
-    def record_receipt(self, receipt: CommandReceipt, *, diagnostics=None) -> None:
+    def record_receipt(self, receipt: CommandReceipt, *, diagnostics=None) -> dict:
         checked = CommandReceipt.from_dict(receipt.to_dict())
         with self._lock:
             operation = self._operations.get(checked.command_id)
             if operation is None:
                 raise BrokerError("receipt_unknown", "Receipt command is unknown", status=404)
-            if operation.receipt is not None:
-                if operation.receipt.to_dict() == checked.to_dict():
-                    return
-                raise BrokerError("receipt_duplicate_conflict", "Final receipt content changed")
             command = operation.command
             if any((
                 checked.command_type != command.command_type,
@@ -518,6 +526,30 @@ class CommandBroker:
             if (command.command_type in {"build_scene", "build_site_scene"} and checked.status == "succeeded"
                     and checked.applied_revision != command.expected_applied_revision):
                 raise BrokerError("receipt_revision_mismatch", "Build receipt revision does not match command")
+            if operation.receipt is not None:
+                if operation.receipt.to_dict() == checked.to_dict():
+                    return {"accepted": True}
+                if (operation.disconnected_inflight and operation.receipt.status == 'unknown'
+                        and operation.receipt.error_code == 'engine_disconnected'
+                        and checked.status in {'succeeded', 'failed', 'cancelled'}):
+                    if (checked.engine_session_id, checked.stage_epoch) != (self._engine_session_id, self._stage_epoch):
+                        raise BrokerError('receipt_identity_mismatch', 'Late receipt is not from the current engine stage')
+                    if operation.late_receipt is not None and operation.late_receipt != checked:
+                        raise BrokerError('receipt_duplicate_conflict', 'Late receipt content changed')
+                    if self.diagnostics is None:
+                        raise BrokerError('late_receipt_storage_unavailable', 'Late evidence requires durable storage', status=503)
+                    try:
+                        from .engine_receipt_evidence import preserve_late_receipt
+                        digest = preserve_late_receipt(self.diagnostics.root, command, operation.receipt, checked)
+                    except (OSError, ValueError) as error:
+                        self.diagnostics.note_storage_error()
+                        raise BrokerError('late_receipt_storage_failed', 'Late evidence could not be retained', status=503) from error
+                    operation.late_receipt, operation.late_receipt_sha256 = checked, digest
+                    # Do not change UNKNOWN, restore a lease, start a frame wait,
+                    # reconcile/commit an edit, or replay the original command.
+                    return dict(accepted=False, disposition='late_receipt_recorded',
+                                command_id=checked.command_id, original_status='unknown', receipt_sha256=digest)
+                raise BrokerError("receipt_duplicate_conflict", "Final receipt content changed")
             operation.receipt = checked
             operation.status = checked.status
             self._record_engine_timing(operation, diagnostics)
@@ -542,6 +574,7 @@ class CommandBroker:
                 self._runtime_command_id = None
             if self._inflight == checked.command_id:
                 self._inflight = None
+            return {"accepted": True}
 
     def _record_engine_timing(self, operation, value):
         """Optional receipt sidecar. It cannot change receipt acceptance or authority.
@@ -845,6 +878,7 @@ class CommandBroker:
                 continue
             command = operation.command
             operation.status = "unknown" if command_id == self._inflight else "expired"
+            operation.disconnected_inflight = command_id == self._inflight and code == 'engine_disconnected'
             operation.receipt = CommandReceipt(
                 command_id=command.command_id, command_type=command.command_type,
                 project_id=command.project_id, engine_session_id=command.engine_session_id,

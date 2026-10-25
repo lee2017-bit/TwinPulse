@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from contextlib import contextmanager
 import base64
 import binascii
@@ -203,7 +204,10 @@ class LocalApiServer:
             # Conversation restore is complete. Copy only its public identity,
             # never the authenticated owner token or a locking snapshot callback.
             conversation_session_id=self.conversation._state['session_id'] if self.conversation is not None else None)
-        if self.conversation is not None:self.conversation.robot_fleet=self.robot_fleet
+        if self.conversation is not None:
+            self.conversation.robot_fleet=self.robot_fleet
+            from .robot_task_service import RobotTaskService
+            self.conversation.robot_tasks=RobotTaskService(product_workflow,self.robot_fleet,key_registry,clock=clock)
         if workspace_devices is not None:
             robot_diagnostics = workspace_devices.diagnostics
             robot_readiness = workspace_devices.readiness
@@ -259,6 +263,26 @@ class LocalApiServer:
         self.chat_robot_preparation.scene_edit_guard=self._scene_edit_physical_guard
         if self.product_workflow is not None:
             self.product_workflow.scene_edit_transaction.admission=self._scene_edit_admission
+        if self.conversation is not None:
+            tasks=self.conversation.robot_tasks
+            tasks.execution_admission=lambda:self._robot_task_admission()
+            tasks.source_binding=lambda:self.product_workflow.scene_edit_context('Robot task source binding',None,dependency=True)['current_state_sha256']
+            def capture_environment():
+                workspace=self._environment_workspace()
+                try:environment,revision=workspace._current_review(self.product_workflow._application.site_draft)
+                except BrokerError:return None
+                from twinpulse_core.revisions import canonical_sha256
+                return dict(source_sha256=environment['source_sha256'],meters_per_unit=environment['meters_per_unit'],
+                    source_up_axis=environment['source_up_axis'],units_basis=environment['units_basis'],
+                    environment_sha256=canonical_sha256(environment),scene_revision=revision)
+            tasks.capture_environment=capture_environment
+            previous_guard=broker.scene_mutation_guard
+            def task_scene_guard(command_type):
+                # Called under broker lock: no start/service/fleet lock here.
+                if command_type in {'run','reset','build_scene','build_site_scene'} and tasks.owns_execution():
+                    raise BrokerError('robot_task_execution_owned','Stop and confirm the robot task before changing engine execution.',status=409)
+                if previous_guard:previous_guard(command_type)
+            broker.scene_mutation_guard=task_scene_guard
         if self.conversation is not None:
             self.conversation.robot_preparation = self.chat_robot_preparation
             from .chat_inspection import ChatInspection
@@ -400,6 +424,10 @@ class LocalApiServer:
         self.manual_controller.start_watchdog()
 
     def stop(self) -> None:
+        survey=getattr(self,'environment_survey',None)
+        if survey:survey.close()
+        alignment=getattr(self,'environment_alignment',None)
+        if alignment:alignment.close()
         self.robot_fleet.close()
         if self.workspace is not None and self.workspace.root is self:
             self.workspace.close()
@@ -584,6 +612,16 @@ class LocalApiServer:
                         physical_authority=False))
                 if request.command=='GET' and parsed.path=='/v1/product/library-workspace':
                     return self._json(request,200,self._library_workspace().snapshot())
+                if request.command=='GET' and parsed.path=='/v1/product/environment':
+                    return self._json(request,200,self._environment_workspace().snapshot(session.session_id))
+                if parsed.path=='/v1/product/environment/alignment' and request.command in {'GET','POST'}:
+                    service=self._environment_alignment()
+                    value=service.action(self._read_json(request),session.session_id) if request.command=='POST' else service.snapshot()
+                    return self._json(request,200,value)
+                if parsed.path=='/v1/product/environment/survey' and request.command in {'GET','POST'}:
+                    service=self._environment_survey()
+                    value=service.action(self._read_json(request),session.session_id) if request.command=='POST' else service.snapshot()
+                    return self._json(request,200,value)
                 if request.command == 'GET' and parsed.path.startswith('/v1/product/diagnostics'):
                     if self.product_workflow is None:
                         raise BrokerError('diagnostics_unavailable', 'No active product project', status=409)
@@ -990,6 +1028,7 @@ class LocalApiServer:
                 body = gated_body if gated_body is not None else self._read_json(
                     request,
                     maximum=(70*1024*1024 if parsed.path=='/v1/product/library-workspace' else
+                             15*1024*1024 if parsed.path=='/v1/product/environment/action' else
                              MAX_UPLOAD_JSON_BYTES if parsed.path == "/v1/product/input" else
                              10 * 1024 * 1024 if parsed.path == "/v1/product/native-scan/import" else
                              4 * 1024 * 1024 if parsed.path == '/v1/product/scene-edit/obstacle-feedback' else
@@ -999,6 +1038,15 @@ class LocalApiServer:
                 )
                 if request.command=='POST' and parsed.path=='/v1/product/library-workspace':
                     return self._json(request,200,self._library_workspace().action(body))
+                if request.command=='POST' and parsed.path=='/v1/product/environment/action':
+                    with self._robot_start_lock:
+                        self._scene_edit_physical_guard()
+                        if body.get('action')=='adopt' and self.conversation and self.conversation._state['mode']=='REAL':
+                            raise BrokerError('environment_sim_required','Import space in a new SIM chat.',status=409)
+                        result=self._environment_workspace().action(body,session.session_id)
+                    if body.get('action')=='adopt' and self.conversation:
+                        self.conversation.record_environment_import(body['request_id'],result['source_name'],result['source_sha256'],result['scene_revision'])
+                    return self._json(request,200,result)
                 if request.command == "POST" and parsed.path == "/v1/product/native-scan/import":
                     self._require_shape(body, {"bundle_text"})
                     return self._json(request, 200, self._workflow().native_scan_review.import_bundle(body["bundle_text"]))
@@ -1270,6 +1318,13 @@ class LocalApiServer:
                                 self._string(body,'library_placement_id'),self._string(body,'preview_digest'))
                             return self._json(request,202,self._workflow().scene_edit_transaction.start(
                                 session.session_id,operation,digest))
+                        if 'environment_preview_id' in body:
+                            self._require_shape(body,{'schema_version','environment_preview_id','preview_digest'})
+                            operation,digest=self._environment_workspace().pinned_environment_operation(
+                                self._string(body,'environment_preview_id'),self._string(body,'preview_digest'),session.session_id,claim=True)
+                            binding=deepcopy(self._environment_workspace().previews[body['environment_preview_id']].get('_survey_binding'))
+                            return self._json(request,202,self._workflow().scene_edit_transaction.start(
+                                session.session_id,operation,digest,sensor_binding=binding))
                         if 'obstacle_preview_id' in body:
                             self._require_shape(body,{'schema_version','obstacle_preview_id','preview_digest'})
                             operation,digest,binding=self._workflow().scene_sensor_review.obstacles.pinned_preview(
@@ -1387,7 +1442,19 @@ class LocalApiServer:
                 stage_epoch = session.stage_epoch or ""
                 if parsed.path == "/v1/engine/viewport":
                     self._assert_body_engine(body, session)
-                    return self._json(request, 200, self.viewport.exchange(engine_id, stage_epoch, body))
+                    result=self.viewport.exchange(engine_id, stage_epoch, body)
+                    alignment=getattr(self,'environment_alignment',None)
+                    survey=getattr(self,'environment_survey',None)
+                    try:result['alignment_review']=(survey.overlay() if survey else None) or (alignment.overlay() if alignment else None)
+                    except Exception:
+                        # Optional review failure must never replace the real
+                        # viewport result or touch an engine/control lease.
+                        result['alignment_review']=None
+                        if alignment:
+                            with alignment.lock:
+                                alignment.visible=False;alignment.packet=None
+                                if alignment.job:alignment.job.update(status='HELD',reason='ALIGNMENT_DISPLAY_UNCONFIRMED')
+                    return self._json(request, 200, result)
                 if parsed.path == '/v1/engine/robots':
                     self._assert_body_engine(body,session)
                     return self._json(request,200,self.robot_fleet.engine_exchange(engine_id,stage_epoch,body))
@@ -1438,8 +1505,8 @@ class LocalApiServer:
                     receipt = CommandReceipt.from_dict(receipt_value)
                     if receipt.engine_session_id != engine_id or receipt.stage_epoch != stage_epoch:
                         raise BrokerError("engine_identity_mismatch", "Receipt engine identity is invalid")
-                    self.broker.record_receipt(receipt,diagnostics=body.get('diagnostics'))
-                    return self._json(request, 200, {"accepted": True})
+                    disposition=self.broker.record_receipt(receipt,diagnostics=body.get('diagnostics'))
+                    return self._json(request, 200, disposition)
                 if parsed.path == "/v1/engine/snapshot":
                     self._require_shape(body, {"snapshot"})
                     snapshot_value = body["snapshot"]
@@ -1473,6 +1540,9 @@ class LocalApiServer:
     def _scene_edit_physical_guard(self):
         # Called under the shared physical start lock. Stop/terminal input and
         # read-only state/history do not use this guard and remain available.
+        tasks=getattr(self.robot_fleet,'task_service',None)
+        if tasks and tasks.owns_execution():
+            raise BrokerError('scene_edit_robot_task_busy','Stop and confirm the current robot task before another operation.',status=409)
         if self.product_workflow is not None and self.product_workflow.scene_edit_transaction.locked():
             raise BrokerError('scene_edit_busy','Finish or recover the scene transaction before starting a robot operation.',status=409)
         if self.workspace_devices is not None:
@@ -1484,8 +1554,21 @@ class LocalApiServer:
         return self._virtual
 
     @contextmanager
+    def _robot_task_admission(self):
+        # SAME mutex/admission as scene transactions and physical operations.
+        # Publish the task owner before releasing it, not after a stale preview.
+        with self._scene_edit_admission('robot-task-start'):
+            workflow=self._workflow()
+            if workflow.scene_edit_transaction.locked() or workflow.has_active_generation() or self.broker.has_pending_operations():
+                raise BrokerError('robot_task_scene_busy','Finish the current scene transaction or Build before Run.',status=409)
+            yield
+
+    @contextmanager
     def _scene_edit_admission(self,owner):
         with self._robot_start_lock:
+            tasks=getattr(self.robot_fleet,'task_service',None)
+            if tasks and tasks.owns_execution():
+                raise BrokerError('scene_edit_robot_task_busy','Stop the robot task before changing the scene.',status=409)
             if self.workspace_devices is not None:
                 self.workspace_devices.assert_document_available()
                 yield
@@ -1569,6 +1652,30 @@ class LocalApiServer:
                 from .library_workspace import LibraryWorkspace
                 workflow.library_workspace=LibraryWorkspace(workflow,self._key_registry)
             return workflow.library_workspace
+
+    def _environment_workspace(self):
+        workflow=self._workflow()
+        with workflow._lock:
+            if getattr(workflow,'environment_workspace',None) is None:
+                from .environment_workspace import EnvironmentWorkspace
+                workflow.environment_workspace=EnvironmentWorkspace(workflow,self._key_registry)
+            return workflow.environment_workspace
+
+    def _environment_alignment(self):
+        # This display service does not call RobotFleet.action/set_twin_pose.
+        with self._workflow()._lock:
+            if getattr(self,'environment_alignment',None) is None:
+                from .environment_alignment_review import AlignmentReview
+                self.environment_alignment=AlignmentReview(self._environment_workspace(),self.robot_fleet)
+            return self.environment_alignment
+
+    def _environment_survey(self):
+        with self._workflow()._lock:
+            if getattr(self,'environment_survey',None) is None:
+                from .environment_survey_review import EnvironmentSurveyReview
+                self.environment_survey=EnvironmentSurveyReview(self._environment_workspace(),self.robot_fleet)
+                if self.robot_fleet.task_service:self.robot_fleet.task_service.spatial_review=self.environment_survey
+            return self.environment_survey
 
     def _provider_keys(self, body=None) -> dict[str, object]:
         if self._key_registry is None:

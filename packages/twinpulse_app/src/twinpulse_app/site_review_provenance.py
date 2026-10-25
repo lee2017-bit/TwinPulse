@@ -31,7 +31,7 @@ def site_review_provenance(record: SiteDraftRecord, current_plan: SiteToolPlan,
     local_recipe = record.provider_name == "local-room-recipe" and record.model_id == "no-provider-call"
     return {
         "schema_version": "site-review-provenance-1.0",
-        "source_class": "local_recipe" if local_recipe else "saved_provider_or_fixture_plan",
+        "source_class": "local_environment_import" if record.site.scene.environment is not None else "local_recipe" if local_recipe else "saved_provider_or_fixture_plan",
         "provider_name": record.provider_name,
         "model_id": record.model_id,
         "input_kind": record.input_revision.input_kind,

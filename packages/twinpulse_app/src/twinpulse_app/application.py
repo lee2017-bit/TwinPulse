@@ -173,6 +173,30 @@ class ApplicationService:
     def record(self) -> GeneratedDraftRecord | None:
         return self._project.draft
 
+    def import_environment(self, plan, revision, request_id, source_bytes):
+        """Explicit local import, using the ordinary validated project store."""
+        if self._project.draft is not None or self._project.site_draft is not None or self._restore_blocked:
+            raise ValueError('ENVIRONMENT_NEW_PROJECT_REQUIRED')
+        record=SiteDraftRecord.create(request_id=request_id,provider_name='local-environment-import',
+            model_id='existing-openusd-static',image_count=0,input_revision=revision,plan=plan)
+        import hashlib
+        if (not isinstance(source_bytes,bytes) or not 0<len(source_bytes)<=10*1024*1024 or
+                hashlib.sha256(source_bytes).hexdigest()!=record.site.scene.environment['source_sha256']):
+            raise ValueError('ENVIRONMENT_SOURCE_BYTES_MISMATCH')
+        folder=self._artifact_store.save(revision,())
+        original=folder/'environment-source.bin'
+        if original.is_symlink():raise ValueError('ENVIRONMENT_SOURCE_LINK')
+        if original.exists():
+            if original.read_bytes()!=source_bytes:raise ValueError('ENVIRONMENT_ARCHIVED_SOURCE_CHANGED')
+        else:
+            with original.open('xb') as stream:stream.write(source_bytes)
+        candidate=ProjectRecord(self.project_id,revision,site_draft=record)
+        self._project_store.save(candidate)
+        self._project=candidate;self._epoch+=1
+        self._phase='draft_ready'
+        self._last_event=self._event('import','environment_imported','Static environment imported; simulation review required')
+        return record
+
     @property
     def site_draft(self) -> SiteDraftRecord | None:
         return self._project.site_draft
@@ -321,6 +345,12 @@ class ApplicationService:
         if isinstance(draft, SiteDraftRecord) and draft.provider_name == "local-room-recipe":
             return self.restored_room_input()
         revision, archived_images = self._artifact_store.load(draft.input_revision)
+        if isinstance(draft,SiteDraftRecord) and draft.site.scene.environment is not None:
+            import hashlib
+            original=self._artifact_store.root/revision.digest/'environment-source.bin'
+            if (original.is_symlink() or original.stat().st_size>10*1024*1024 or
+                    hashlib.sha256(original.read_bytes()).hexdigest()!=draft.site.scene.environment['source_sha256']):
+                raise ValueError('ENVIRONMENT_ARCHIVED_SOURCE_CHANGED')
         from twinpulse_provider import MeasurementConstraint
         constraints = tuple(MeasurementConstraint.from_dict(item) for item in revision.measurement_constraints)
         return PreparedInput(revision,

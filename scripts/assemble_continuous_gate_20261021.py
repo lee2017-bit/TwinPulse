@@ -17,17 +17,25 @@ def write(p,v):
     with p.open('x',encoding='utf-8') as f:json.dump(v,f,ensure_ascii=False,indent=2)
 
 def main():
+    global OUT
     parser=argparse.ArgumentParser();parser.add_argument('--attempt',required=True)
     parser.add_argument('--review',type=Path,required=True);parser.add_argument('--budget',type=Path,required=True)
+    parser.add_argument('--output-root',type=Path,default=OUT)
+    parser.add_argument('--supplementary',type=Path)
+    parser.add_argument('--normal-tag',help='Explicit already-recorded normal/restart tag on the same installed release')
     args=parser.parse_args();a=args.attempt
+    OUT=args.output_root.resolve()
     if len(a)!=2 or not a.isascii() or not a.isdecimal():raise ValueError('TWO_DIGIT_ATTEMPT_REQUIRED')
+    normal_tag=args.normal_tag or a
+    if len(normal_tag)!=2 or not normal_tag.isascii() or not normal_tag.isdecimal():raise ValueError('TWO_DIGIT_NORMAL_TAG_REQUIRED')
     active=read(Path(os.environ['LOCALAPPDATA'])/'TwinPulse/installed/active-release.json')
     release,source=active['release_id'],active['source_manifest_sha256']
     roles=dict(fresh=OUT/f'ui-{a}/result.json',cold=OUT/f'ui-cold-{a}/result.json',
         lineage=OUT/f'lineage-{a}/result.json',lineage_cold=OUT/f'lineage-cold-{a}/result.json',
-        normal=OUT/f'normal{a}/result.json',installation=OUT/f'installed-files{a}.json',
+        normal=OUT/f'normal{normal_tag}/result.json',installation=OUT/f'installed-files{a}.json',
         supplementary=OUT/f'supplementary{a}/result.json',budget=args.budget.resolve())
-    restart=OUT/f'normal{a}-restart/result.json';shutdown=OUT/f'normal{a}/shutdown.json';again=OUT/f'normal{a}-restart/shutdown.json'
+    if args.supplementary:roles['supplementary']=args.supplementary.resolve()
+    restart=OUT/f'normal{normal_tag}-restart/result.json';shutdown=OUT/f'normal{normal_tag}/shutdown.json';again=OUT/f'normal{normal_tag}-restart/shutdown.json'
     if all(p.is_file() for p in (roles['normal'],restart,shutdown,again)):
         n,r,s,t=[read(p) for p in (roles['normal'],restart,shutdown,again)]
         consistent=all(v.get('release_id')==release and v.get('source_sha256')==source for v in (n,r,s,t))

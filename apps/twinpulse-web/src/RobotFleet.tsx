@@ -4,6 +4,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import type {TwinPulseApi} from './api';
 import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
+import {isRobotTaskRequest} from './robot-task-intent';
 import {downloadBlob} from './download-blob';
 import {RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
@@ -69,8 +70,25 @@ function summarizeOperation(operation:RobotFleetOperation){
   const manifest=operation.manifest,observations:{index:number;kind:string;detail:string}[]=[],commands:{index:number;kind:string;detail:string}[]=[];
   // Historical receipts never restore current field-session authority.
   const trials=new Map<string,Record<string,unknown>>();
+  const motionEnds=new Map<string,{event:Record<string,unknown>;motion:Record<string,unknown>}>();
+  const sourceContext=record(manifest.source_twin_context).context_id;
   let originalFailure:{event:Record<string,unknown>;fault:Record<string,unknown>;check:Record<string,unknown>}|null=null;
   for(const event of operation.events){
+    const motion=record(record(event.data).motion_observation);
+    // This is a recorded wheel-observation end, not the original pause/check
+    // or a reconstructed LiDAR decision. Keep its report identity distinct.
+    if(typeof sourceContext==='string'&&sourceContext&&event.operation_id===operation.operation_id&&event.robot_id===operation.robot_id
+        &&event.source_twin_context_id===sourceContext&&motion.operation_id===operation.operation_id&&motion.robot_id===operation.robot_id
+        &&motion.source_twin_context_id===sourceContext&&typeof event.connection_epoch==='string'&&event.connection_epoch
+        &&motion.state==='ENDED'&&typeof motion.reason==='string'&&motion.reason
+        &&!['OPERATOR_STOP','TASK_COMPLETED'].includes(motion.reason)
+        &&typeof motion.motion_epoch==='string'&&motion.motion_epoch&&typeof motion.request_id==='string'&&motion.request_id
+        &&typeof motion.started_s==='number'&&Number.isFinite(motion.started_s)&&motion.started_s>=0
+        &&typeof motion.ended_s==='number'&&Number.isFinite(motion.ended_s)&&motion.ended_s>=motion.started_s){
+      const key=JSON.stringify([event.connection_epoch,motion.motion_epoch,motion.request_id,motion.started_s,motion.ended_s,motion.reason]);
+      if(!motionEnds.has(key))motionEnds.set(key,{event,motion});
+      if(motionEnds.size>12)motionEnds.delete(motionEnds.keys().next().value!);
+    }
     const fault=record(record(event.data).last_control_fault),check=record(fault.telemetry);
     if(event.operation_id===operation.operation_id&&typeof fault.reason==='string'&&typeof check.reason==='string')originalFailure={event,fault,check};
     const field=record(record(event.data).field),values=Array.isArray(field.trials)?field.trials:[];
@@ -126,6 +144,12 @@ function summarizeOperation(operation:RobotFleetOperation){
       const value=check[key];if(typeof value==='number'&&Number.isFinite(value)&&value>=0)rows.push([label,`${(value*1000).toFixed(2)} ms`]);
     }
   }
+  for(const {event,motion} of motionEnds.values())rows.push(
+    ['Recorded motion stop reason',scalar(motion.reason)],
+    ['Observation scope','Recorded wheel observation · not failed-check telemetry or body-motion proof'],
+    ['Motion end robot s',scalar(motion.ended_s)],['Motion epoch',scalar(motion.motion_epoch,80)],
+    ['Original input request',scalar(motion.request_id,80)],['Latest input request',scalar(motion.latest_request_id,80)],
+    ['Observation report sequence',scalar(event.sequence)],['Observation connection',scalar(event.connection_epoch,80)]);
   const stream=record(manifest.stream),receipt=record(stream.local_receipt??manifest.local_receipt);
   for(const [id,trial] of [...trials].slice(-12))rows.push([`Historical trial ${id}`,
     `${scalar(trial.case)} · ${scalar(trial.status)} · ${scalar(trial.reason,180)} · frames ${scalar(trial.frames)} · not current qualification`]);
@@ -142,7 +166,7 @@ function summarizeOperation(operation:RobotFleetOperation){
     return {path:scalar(path,200),file:evidenceName(path),sha:scalar(file.sha256,80),status:scalar(file.status??file.complete??(typeof file.events==='number'?`${file.events} events`:'not recorded'))};
   }),evidenceCount:evidence.length,events:[...commands.slice(0,50-observations.length),...observations].sort((a,b)=>b.index-a.index)};
 }
-type Hold={robot:RobotFleetRobot;direction:FleetDirection;timer:ReturnType<typeof setInterval>;lastTick:number;token:number};
+type Hold={robot:RobotFleetRobot;direction:FleetDirection;timer:ReturnType<typeof setTimeout>;lastTick:number;token:number};
 type Props={api:TwinPulseApi;state:RobotFleetState|null;selectedId:string|null;onSelect:(id:string)=>void;
   onChange:(state:RobotFleetState)=>void;available?:boolean;error?:string|null;drawerOpen?:boolean;onClose?:()=>void;selectionPending?:boolean;layoutVersion?:string|number};
 export function RobotFleet({api,state,selectedId,onSelect,onChange,available=true,error:pollError,drawerOpen=true,onClose,selectionPending=false,layoutVersion=0}:Props){
@@ -162,6 +186,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const [profileDraft,setProfileDraft]=useState('');
   const [prepareConfirmed,setPrepareConfirmed]=useState(false),[qualifyConfirmed,setQualifyConfirmed]=useState(false);
   const [markerX,setMarkerX]=useState('0'),[markerY,setMarkerY]=useState('0'),[markerYaw,setMarkerYaw]=useState('0');
+  const [markerOpen,setMarkerOpen]=useState(false);
   const [evidenceBusy,setEvidenceBusy]=useState<string|null>(null);
   const importGeneration=useRef(0);
   const operationSummary=useMemo(()=>operation?summarizeOperation(operation):null,[operation]);
@@ -188,7 +213,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const reportError=(caught:unknown)=>{if(owner.current.api===api&&owner.current.context===context)setError(caught instanceof Error?caught.message:'Robot request failed.');};
   const stop=(target=hold.current?.robot??selected.current,force=false)=>{
     const active=hold.current;token.current++;
-    if(active)clearInterval(active.timer);
+    if(active)clearTimeout(active.timer);
     hold.current=null;setHeld(null);
     if(!target||!active&&!force)return;
     stopPending.current=true;
@@ -209,7 +234,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     importGeneration.current++;setProfileReview(null);setProfileReviewed(false);setProfileReading(false);setProfileError(null);
     setProfileDraft('');
     setPrepareConfirmed(false);setQualifyConfirmed(false);
-    setMarkerX('0');setMarkerY('0');setMarkerYaw('0');
+    setMarkerX('0');setMarkerY('0');setMarkerYaw('0');setMarkerOpen(false);
   },[api,context,selectedId]);
   useEffect(()=>{setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);},[robot?.connection_epoch]);
   useEffect(()=>{setOperation(null);},[logOperationId]);
@@ -236,7 +261,14 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   function start(direction:FleetDirection){
     if(!mayDrive||!robot||stopPending.current||hold.current)return;
     setError(null);const captured=robot,gesture=++token.current;
+    const renewal=captured.kind==='physical'?(captured.timing_values?.input_renewal_ms??100):100;
     let inFlight=false,sentAt=0;
+    const schedulePhysical=(delay:number)=>{
+      const active=hold.current;
+      if(captured.kind!=='physical'||token.current!==gesture||active?.token!==gesture)return;
+      clearTimeout(active.timer);
+      active.timer=setTimeout(tick,Math.max(1,Math.ceil(delay)));
+    };
     const tick=()=>{
       if(token.current!==gesture)return;
       const now=Date.now(),active=hold.current;
@@ -248,12 +280,40 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       // handlers can otherwise admit seq N+1 before N and cancel a valid hold.
       // Stop still uses its independent channel and never waits for this reply.
       if(inFlight){if(now-sentAt>=expiry){setError('Held input delivery expired. Movement paused; release and press again.');release.current();}return;}
+      if(captured.kind==='physical'&&sentAt>0&&now-sentAt<renewal){schedulePhysical(renewal-(now-sentAt));return;}
       inFlight=true;sentAt=now;
-      void send(envelope('drive',captured,{direction,sequence:++sequence.current,expires_at_ms:now+expiry})).catch(caught=>{
+      // While HTTP is outstanding, retain an original-expiry deadline. A
+      // timely reply replaces this one timer with sentAt+renewal, not the
+      // phase of an interval created before a delayed response/input.
+      schedulePhysical(expiry);
+      let timelyReply=false;
+      void send(envelope('drive',captured,{direction,sequence:++sequence.current,expires_at_ms:now+expiry})).then(next=>{
+        if(captured.kind!=='physical'||token.current!==gesture||hold.current?.token!==gesture)return;
+        if(Date.now()-sentAt>=expiry){setError('Held input delivery expired. Movement paused; release and press again.');release.current();return;}
+        // React's epoch/capability effect may run after this promise. Apply the
+        // same revocation immediately before a response-driven fresh input.
+        const updated=next.robots.find(row=>row.robot_id===captured.robot_id);
+        if(!next.capabilities.physical||next.focused_robot_id!==captured.robot_id||!updated||
+            updated.connection_state!=='CONNECTED'||updated.connection_epoch!==captured.connection_epoch||
+            updated.motion_epoch!==captured.motion_epoch||updated.operation_id!==captured.operation_id||
+            !updated.capabilities.drive||!fleetRobotFresh(updated)||!['READY','DRIVING','PAUSED'].includes(updated.control_state)){
+          release.current();return;
+        }
+        timelyReply=true;
+      }).catch(caught=>{
         if(token.current===gesture){reportError(caught);release.current();}
-      }).finally(()=>{inFlight=false;});
+      }).finally(()=>{
+        inFlight=false;
+        if(!timelyReply||token.current!==gesture||hold.current?.token!==gesture)return;
+        if(Date.now()-sentAt>=expiry){setError('Held input delivery expired. Movement paused; release and press again.');release.current();return;}
+        // A 125ms reply must not wait for the 200ms interval tick. This samples
+        // the still-held gesture anew; it never extends the previous packet.
+        if(Date.now()-sentAt>=renewal)tick();
+        else schedulePhysical(renewal-(Date.now()-sentAt));
+      });
     };
-    hold.current={robot:captured,direction,lastTick:Date.now(),token:gesture,timer:setInterval(tick,captured.kind==='physical'?(captured.timing_values?.input_renewal_ms??100):100)};
+    hold.current={robot:captured,direction,lastTick:Date.now(),token:gesture,
+      timer:captured.kind==='physical'?setTimeout(tick,renewal):setInterval(tick,renewal)};
     setHeld(direction);tick();
   }
   async function action(body:RobotFleetAction){
@@ -377,7 +437,10 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           setSubmitted({request_id:body.request_id,text:text.trim(),state:'SENDING',prior_command_id});
           const dispatch=async()=>{
             if(!commandIsStop)setBusy(true);setError(null);
-            try{await send(body);if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId){
+            try{
+              if(isRobotTaskRequest(commandText,robot?.kind))await api.conversationAction({action:'message',request_id:body.request_id,text:commandText,attachment:null,mode:'new'});
+              else await send(body);
+              if(owner.current.api===captured.api&&owner.current.context===captured.context&&owner.current.selectedId===captured.selectedId){
               setSubmitted({request_id:body.request_id,text:commandText,state:'ACCEPTED',prior_command_id});
               // Only clear the acknowledged draft. A late reply must not erase
               // newer typing, even when the user has typed the same text again.
@@ -399,6 +462,22 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         </form>
       </div>
       <div className="robot-fleet-detail-tools"><details className="robot-fleet-diagnostics" open={diagnosticsOpen} onToggle={event=>{setDiagnosticsOpen(event.currentTarget.open);release.current();}}><summary title="Setup, sensor details and logs">Details</summary>
+      {physical&&<details className="robot-estimated-marker robot-twin-placement-form" open={markerOpen} onToggle={event=>{setMarkerOpen(event.currentTarget.open);release.current();}}>
+        <summary>Estimated Twin marker · {robot.display_pose?'Edit position':'Place robot'}</summary>
+        <p>Review the robot position and yaw in this Twin. This estimate anchors relative LiDAR tracking for display and explicitly requested destinations; it never grants driving permission or claims measured world alignment.</p>
+          {robot.display_pose&&<p className="robot-fleet-policy">Static visualization estimate [{robot.display_pose.position_m.map(value=>scalar(value)).join(', ')}] · revision {scalar(robot.display_pose.scene_revision)} · {robot.display_pose.source}. This is the initial operator anchor, not localization. A valid same-epoch native relative tracker updates the displayed robot from this anchor; lost tracking keeps the last estimate and requires a new anchor. Accuracy remains unqualified.</p>}
+        <form onSubmit={event=>{
+          event.preventDefault();if(!available||busy||selectionPending)return;
+          const values=[markerX,markerY,markerYaw],position=values.map(Number);
+          if(values.some(value=>!value.trim())||position.some(value=>!Number.isFinite(value))){setError('Enter finite X, Y and yaw values for the visualization estimate.');return;}
+          void action(envelope('set_twin_pose',robot,{position_m:position}));
+        }}>
+          <div className="robot-fleet-position">{([['Marker X (m)',markerX,setMarkerX],['Marker Y (m)',markerY,setMarkerY],['Marker yaw (rad)',markerYaw,setMarkerYaw]] as const).map(([name,value,set])=>
+            <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
+          <button aria-label="Place estimated robot marker" disabled={!available||busy||selectionPending}>Place robot</button>
+        </form>
+        <small>The saved marker belongs to the current confirmed Twin revision. Placing it starts no connection, sensor or movement.</small>
+      </details>}
       {state?.last_command?.robot_id===robot.robot_id&&<p>Last request: {state.last_command.status} · {state.last_command.message}</p>}
       {(robot.command||submitted)&&<p>Command request: <code>{robot.command?.request_id??submitted?.request_id}</code> · {robot.command?.text??submitted?.text}</p>}
       <p>{robot.pose?.aligned?'Pose aligned':'Pose unaligned / unavailable'} · Recording {available&&fresh?'':'last reported '}{robot.recording_state}</p>
@@ -409,6 +488,8 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       <small>{physical?'Object destinations use an operator-reviewed Twin anchor and current relative LiDAR tracking under the supervised field setup. The robot-local guard checks each low-speed output. An estimated destination is not verified furniture arrival; lost tracking, a new obstacle or a changed Twin stops the route.':'SIM supports a nearby scene destination, finite distance/angle, status, logs and Stop.'}</small>
       <button type="button" onClick={()=>{release.current();setLidarReviewOpen(true);}}>Review LiDAR scans</button>
       {physical&&<>
+        <p className="robot-fleet-policy" aria-label="Physical navigation map">Map: {state?.navigation_scene?.status==='AVAILABLE'?(state.navigation_scene.kind==='imported'?'Imported space · shared floor mask':'Current Twin geometry'):'Unavailable'} · Scale: {state?.navigation_scene?.units_basis==='selected_for_sim'?'user-selected estimate':'unqualified'} · Physical accuracy unqualified.</p>
+        <small>Review the anchor in this connection and current Twin. Reconnect or a changed Twin requires a new review; estimated scale and relative LiDAR tracking do not establish measured world alignment.</small>
         <dl className="robot-physical-status" aria-label="Physical connection and readiness">
           <div><dt>SSH heartbeat</dt><dd>{available&&fresh?'Fresh authenticated session':'Unavailable / stale'} · age {age(robot.telemetry_age_ms)}</dd></div>
           <div><dt>Battery</dt><dd>{fleetBatteryLabel(robot)}{!available?' · receipt stale':''} · age {age(robot.battery.age_ms)}</dd></div>
@@ -424,22 +505,6 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <p className="robot-fleet-policy">Connect keeps one authenticated SSH session and starts no motor or sensor. Fresh heartbeat and measured voltage do not grant driving permission. Reconnect requires Disconnect first.</p>
         {!robot.capabilities.drive&&<p role="status">Protected manual movement is unavailable until the runtime grants drive capability. The separate supervised field-test path has its own explicit admission below. Status, Stop and operation logs remain available.</p>}
       </>}
-      {physical&&<details className="robot-estimated-marker">
-        <summary>Estimated Twin marker</summary>
-        <p>Review the robot position and yaw in this Twin. This estimate anchors relative LiDAR tracking for display and explicitly requested destinations; it never grants driving permission or claims measured world alignment.</p>
-          {robot.display_pose&&<p className="robot-fleet-policy">Static visualization estimate [{robot.display_pose.position_m.map(value=>scalar(value)).join(', ')}] · revision {scalar(robot.display_pose.scene_revision)} · {robot.display_pose.source}. This is the initial operator anchor, not localization. A valid same-epoch native relative tracker updates the displayed robot from this anchor; lost tracking keeps the last estimate and requires a new anchor. Accuracy remains unqualified.</p>}
-        <form onSubmit={event=>{
-          event.preventDefault();if(!available||busy||selectionPending)return;
-          const values=[markerX,markerY,markerYaw],position=values.map(Number);
-          if(values.some(value=>!value.trim())||position.some(value=>!Number.isFinite(value))){setError('Enter finite X, Y and yaw values for the visualization estimate.');return;}
-          void action(envelope('set_twin_pose',robot,{position_m:position}));
-        }}>
-          <div className="robot-fleet-position">{([['Marker X (m)',markerX,setMarkerX],['Marker Y (m)',markerY,setMarkerY],['Marker yaw (rad)',markerYaw,setMarkerYaw]] as const).map(([name,value,set])=>
-            <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
-          <button disabled={!available||busy||selectionPending}>Place estimated robot marker</button>
-        </form>
-        <small>The saved marker belongs to the current confirmed Twin revision. Placing it starts no connection, sensor or movement.</small>
-      </details>}
       {physical&&<RobotFieldTests key={`${context}:${robot.robot_id}`} robot={robot} available={available&&adapterAvailable&&!selectionPending} busy={busy}
         onAction={(name,payload)=>{release.current();void action(envelope(name,robot,payload));}} onOpenLogs={()=>void logs()}/>}
       {physical&&<details className="robot-physical-setup">
@@ -533,7 +598,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <p>{physical?'The JSON contains summaries and receipts. Download the separate runtime evidence segments below for original sensor bytes and helper logs.':'Complete source events, scan points and manifest details are included in the download.'}</p>
         {logBusy&&<p role="status">Refreshing operation log; download waits for the response.</p>}
         <button type="button" disabled={logBusy} onClick={download}>Download operation JSON</button>
-        <dl aria-label="Operation manifest summary">{operationSummary.rows.map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
+        <dl aria-label="Operation manifest summary">{operationSummary.rows.map(([key,value],index)=><div key={`${index}:${key}`}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
         {operationSummary.evidenceCount>0&&<details><summary>Physical runtime evidence · {operationSummary.evidenceCount} files</summary>
           <p>Source paths, SHA256 and receipt status come from the runtime manifest. The complete JSON includes all receipts and missing evidence.</p>
           <ul className="robot-runtime-evidence">{operationSummary.evidence.map((item,index)=><li key={index}>{item.path}<small>SHA256 {item.sha} · {item.status}</small>
@@ -543,7 +608,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <ol aria-label="Recent operation events">{operationSummary.events.map(event=><li key={event.index}>
           <strong>#{event.index+1} · {event.kind}</strong><span>{event.detail}</span></li>)}</ol>
       </section>}
-      </details><button type="button" disabled={!logOperationId||logBusy} onClick={()=>{release.current();void logs();}}>Operation logs</button></div>
+      </details>{physical&&<button type="button" title={robot.display_pose?'Estimated robot position saved · not localized':'Robot not placed in Twin'} onClick={()=>{release.current();setDiagnosticsOpen(!markerOpen);setMarkerOpen(value=>!value);}}>{markerOpen?'Hide position':'Set position'}</button>}<button type="button" disabled={!logOperationId||logBusy} onClick={()=>{release.current();void logs();}}>Operation logs</button></div>
     </section>}
     {error&&(!robot||!drawerOpen)&&<p role="alert">{error}</p>}
   </section>;

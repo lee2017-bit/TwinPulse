@@ -45,6 +45,23 @@ def persist(owner):
 
 
 class FieldTests(unittest.TestCase):
+    def test_operator_approved_ten_degree_gap_and_strictly_larger_gap(self):
+        for gap,allowed in [(5.375,True),(9.9,True),(10.,True),(10.001,False),(11.,False)]:
+            with self.subTest(gap=gap):
+                frame=ring()
+                frame['beams']=[b for b in frame['beams'] if not 100.<b['angle_deg']<100.+gap]
+                frame['beams'].append(dict(frame['beams'][0],angle_deg=100.+gap,node_index=999))
+                frame['beams'].sort(key=lambda b:b['angle_deg'])
+                for index,beam in enumerate(frame['beams']):beam.update(node_index=index,source_byte_cursor=index*3)
+                guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:frame),
+                    SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0)),lambda:True,clock=lambda:1.)
+                if allowed:
+                    guard(0.,.2,1.)
+                    self.assertEqual(guard.last_result['maximum_return_gap_deg'],10.)
+                    self.assertEqual(guard.last_result['valid_return_count'],len(frame['beams']))
+                else:
+                    with self.assertRaisesRegex(ValueError,'FIELD_DIRECTION_COVERAGE_GAP'):guard(0.,.2,1.)
+
     def test_offline_review_has_no_measured_promotion_and_strict_shape(self):
         c=checked_config(config(),robot_id='b'*32,binding_sha256='a'*64)
         self.assertEqual(c['provenance'],'reference');self.assertEqual(len(digest(c)),64)

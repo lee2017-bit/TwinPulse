@@ -457,6 +457,24 @@ footer { padding: 24px 0 36px; display: flex; justify-content: space-between; bo
 .robot-physical-setup { margin:8px 0; padding:8px; border:1px solid #c6d5df; border-radius:8px; }
 .robot-physical-setup h5 { margin:10px 0 5px; font-size:.78rem; }
 .robot-estimated-marker { border-top:1px solid #c6d5df; margin:8px 0; padding-top:5px; }
+.twin-render-grid { display:grid; grid-template-columns:minmax(0,1fr); min-height:0; }
+.twin-render-grid.has-physical-sensor { grid-template-columns:minmax(0,1fr) clamp(160px,24%,240px); gap:8px; }
+.physical-lidar-panel { min-width:0; min-height:0; overflow:auto; padding:8px; border:1px solid #c6d5df; border-radius:8px; background:#f5fbfb; color:#203e4a; font-size:11px; }
+.physical-lidar-panel p { margin:5px 0; overflow-wrap:anywhere; }
+.physical-lidar-panel small { display:block; font-size:10px; line-height:1.4; }
+.physical-lidar-panel .lidar-point-view label { font-size:10px; margin:3px 0; display:flex; align-items:center; gap:4px; }
+.physical-lidar-panel .lidar-point-view label input { width:12px; height:12px; margin:0; }
+.physical-lidar-panel .robot-fleet-scan { display:block; height:auto; max-height:190px; min-height:90px; aspect-ratio:1; }
+.physical-scan-placeholder { min-height:100px; display:grid; place-items:center; text-align:center; border:1px dashed #a6bfc7; padding:8px; margin:6px 0; }
+.physical-model-status { border-top:1px solid #c6d5df; padding-top:6px; font-weight:600; }
+.robot-twin-placement { display:flex; align-items:center; gap:6px; min-width:0; font-size:11px; margin:4px 0; }
+.robot-twin-placement>span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.robot-twin-placement button { flex:0 0 auto; }
+.robot-twin-placement-form .robot-fleet-position { display:flex; gap:6px; }
+.robot-twin-placement-form label { flex:1; min-width:0; font-size:11px; }
+.robot-twin-placement-form input { min-width:0; width:100%; box-sizing:border-box; }
+.robot-twin-placement-form small { display:block; font-size:10px; }
+@media(max-width:759px) { .twin-render-grid.has-physical-sensor { grid-template-columns:minmax(0,1fr) 150px; gap:4px; }.physical-lidar-panel { padding:4px; } }
 .robot-fleet .robot-fleet-confirm { display:flex; align-items:flex-start; gap:7px; margin:10px 0; line-height:1.4; }
 .robot-fleet .robot-fleet-confirm input { flex:0 0 16px; width:16px; height:16px; margin:2px 0 0; }
 .robot-physical-profile { border-top:1px solid #c6d5df; margin-top:10px; }

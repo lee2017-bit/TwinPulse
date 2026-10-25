@@ -68,6 +68,48 @@ def restoration(product):
 
 
 class SceneEditTransactionTests(unittest.TestCase):
+    def test_cold_explicit_recovery_restores_read_review_without_implicit_build_or_input_replacement(self):
+        with TemporaryDirectory() as folder:
+            product=self.make_workflow(Path(folder));attach(product)
+            transaction=product.scene_edit_transaction;transaction.timeout_s=.05
+            value=restoration(product);transaction.start('owner',value['operation'],value['preview_digest'])
+            command=claim(product._broker);acknowledge(product._broker,command,receipt=False)
+            transaction.worker.join(3);self.assertEqual(transaction.value['state'],'ENGINE_STATE_UNKNOWN')
+            # A new real workflow is intentionally NOT resumed by this helper.
+            app=ApplicationService(NoGateway(),project_store=ProjectStore.for_project(Path(folder),'default'),project_id='default')
+            cold=ProductWorkflow(app,product._broker,mode='simulation_offline',generation_settings_getter=lambda:{'request_schema':'offline-1.0'})
+            self.products.append(cold)
+            self.assertIsNone(cold._input);self.assertEqual(cold._phase,'restore_review_required')
+            self.assertTrue(cold.scene_edit_transaction.locked());self.assertIsNone(product._broker.claim('engine','stage'))
+            product._broker.register_engine('engine','recovery-stage')
+            product._broker.acquire_lease('owner')
+            product._broker.record_snapshot(SimulationSnapshot(engine_session_id='engine',stage_epoch='recovery-stage',
+                project_id='default',applied_revision=command.expected_applied_revision,run_id=None,
+                sequence=1,runtime_state='built',safety_state=None,safety_reason=None,
+                permitted_commands=('build_site_scene','get_state'),capabilities=('simulation','site_scene_build_v2')))
+            cold.scene_edit_transaction.recover('owner')
+            cold.scene_edit_transaction.worker.join(.05)
+            self.assertTrue(cold.scene_edit_transaction.worker.is_alive(),cold.scene_edit_transaction.value.get('error'))
+            recovery=claim(product._broker);acknowledge(product._broker,recovery)
+            cold.scene_edit_transaction.worker.join(3)
+            self.assertEqual(cold.scene_edit_transaction.value['state'],'ROLLED_BACK')
+            self.assertEqual(cold._phase,'draft_ready')
+            self.assertEqual(cold._input.revision,app.site_draft.input_revision.digest)
+            self.assertEqual(cold._scene_changes.current_scene_revision,recovery.expected_applied_revision)
+            self.assertIsNone(product._broker.claim('engine','recovery-stage'));self.flush_products()
+
+    def test_unknown_without_either_ack_does_not_replay_history_or_dispatch(self):
+        with TemporaryDirectory() as folder:
+            product=self.make_workflow(Path(folder));attach(product)
+            transaction=product.scene_edit_transaction
+            transaction.value=dict(state='ENGINE_STATE_UNKNOWN',receipt=None,compensation_receipt=None)
+            with patch('twinpulse_app.scene_edit_transaction.SceneChangeHistory.from_dict',
+                    side_effect=AssertionError('No ACK to reconcile')):
+                transaction.reconcile('owner')
+            self.assertEqual(transaction.value['state'],'ENGINE_STATE_UNKNOWN')
+            self.assertIsNone(product._broker.claim('engine','stage'))
+            self.flush_products()
+
     def test_new_apply_admission_precedes_staging_dispatch_and_store_write(self):
         with TemporaryDirectory() as folder:
             product=self.make_workflow(Path(folder));attach(product)

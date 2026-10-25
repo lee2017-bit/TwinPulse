@@ -20,6 +20,7 @@ STAGES = {
 SCHEMAS = {
     'twinpulse_image_observation': ('observer', 'observation'),
     'twinpulse_asset_observation': ('observer', 'observation'),
+    'twinpulse_environment_photo': ('observer', 'observation'),
     'twinpulse_room_observation': ('observer', 'structure'),
     'twinpulse_render_review': ('observer', 'render_review'),
     'twinpulse_site_tool_plan_v2': ('planner', 'planning'),
@@ -32,6 +33,8 @@ SCHEMAS = {
     'twinpulse_semantic_batch': ('planner', 'batch'),
     'twinpulse_semantic_patch': ('planner', 'repair'),
     'twinpulse_scene_feedback': ('planner', 'feedback'),
+    'twinpulse_environment_move': ('planner', 'feedback'),
+    'twinpulse_robot_task': ('planner', 'planning'),
 }
 SUPER = 'nvidia/nemotron-3-super-120b-a12b'
 FLASH = 'deepseek-ai/DeepSeek-V4.1-Flash'

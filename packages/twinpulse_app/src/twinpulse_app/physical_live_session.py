@@ -110,7 +110,7 @@ def reviewed_bundle(root):
     health = root / 'scripts/robot_health.py'
     if health.is_file(): files['robot_health.py'] = health.read_bytes()
     core = root / 'packages/twinpulse_core/src/twinpulse_core'
-    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage','field_persistence','physical_object_navigation','robot_control_timing','robot_timing_profile']
+    pending = ['manual_motion_guard', 'local_navigation', 'ros_observations', 'navigation_binding', 'observation_stream', 'robot_lineage','field_persistence','physical_object_navigation','robot_control_timing','robot_timing_profile','physical_task_observation']
     import ast
     files['twinpulse_core/__init__.py'] = b'"""Pure shipped contracts; no device initialization."""\n'
     seen = set()
@@ -239,9 +239,10 @@ class PhysicalLiveSession:
         self.writes = queue.Queue(maxsize=16)
         self.navigation_guard=None
         self.last = {}; self.scan = None; self.scan_at = None; self.at = self.battery_at = None
+        self.last_robot_monotonic_s=None;self.command_guards={}
         self.motion_epoch=None
         self.watch_ack_at=None;self.watches={}
-        self.input_window=None;self.input_window_at=None;self.queued_at={}
+        self.input_window=None;self.input_window_at=None;self.input_window_sequence=None;self.queued_at={}
         self.used_input_challenges={};self.pending_drive=None
         self.last_pause_id=None;self.last_robot_pause=None
         self.terminal_motion_observation=None;self.motion_observation_projection_error=None
@@ -289,7 +290,10 @@ class PhysicalLiveSession:
                     if self.context['schema'].endswith('2.0') else 'physical-live-pc-start-1.0'),
                     separators=(',',':'),allow_nan=False)+'\n').encode()):
                 raise BrokerError('physical_start_recording_failed','Could not record the operation reference.',status=409)
-            command = [ssh, '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+            # The ordered raw stream repeats large history/diagnostic JSON.
+            # SSH's existing lossless transport compression reduces wire bytes
+            # without changing a source clock, nonce, event order or admission.
+            command = [ssh, '-T', '-C', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                        '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'ForwardAgent=no',
                        '-o', 'ClearAllForwardings=yes', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none',
                        '-o', 'ConnectTimeout=6', '-o', 'ServerAliveInterval=3', '-o', 'ServerAliveCountMax=2',
@@ -356,6 +360,7 @@ class PhysicalLiveSession:
                             try: item = self.writes.get(timeout=max(.001,min(.1,next_watch-self.clock())))
                             except queue.Empty:continue
                             if item is None: break
+                            if not self._claim_task_packet(item):continue
                             # Expired motor packets never regain life in a blocked OS pipe.
                             if item.get('action') == 'drive' and item['payload']['expires_at_ms'] <= self.wall()*1000: continue
                             if item['action']=='watch' and self.clock()<self.presence_gap_until:continue
@@ -509,7 +514,7 @@ class PhysicalLiveSession:
                     battery.get('voltage_v') is not None and (type(battery['voltage_v']) not in (int,float)
                     or not math.isfinite(battery['voltage_v']) or not 0<=battery['voltage_v']<=50)):
                     raise ValueError('SESSION_BATTERY_SHAPE')
-                self.last = data; self.at = self.clock()
+                self.last = data; self.at = self.clock();self.last_robot_monotonic_s=event['robot_monotonic_s']
                 if data.get('control_state')=='PREPARING' or data.get('maintenance_phase')=='CLEANUP':
                     self.input_window=None;self.input_window_at=None
                 trial=(data.get('field') or {}).get('active_trial') or {}
@@ -569,7 +574,7 @@ class PhysicalLiveSession:
                         or type(issued) not in (int,float) or not math.isfinite(issued)
                         or not 0<=event['robot_monotonic_s']-issued<self.timing_values['input_ttl_ms']/1000):
                     raise ValueError('INPUT_WINDOW_SHAPE_OR_AGE')
-                self.input_window=data;self.input_window_at=self.clock()
+                self.input_window=data;self.input_window_at=self.clock();self.input_window_sequence=event['sequence']
                 pending=self.pending_drive
                 if pending is not None:
                     self.pending_drive=None
@@ -608,11 +613,13 @@ class PhysicalLiveSession:
                 pc_monotonic_s=self.clock())
             self.evidence.append((json.dumps(value,separators=(',',':'))+'\n').encode())
 
-    def command(self, action, payload, *, motion_epoch, request_id, request_twin_context=None):
+    def command(self, action, payload, *, motion_epoch, request_id, request_twin_context=None, admission_guard=None):
         if action not in {'lidar','prepare','qualify','drive','task','stop','close','profile','watch',
                           'field_setup','field_arm','field_test','field_review'}:
             raise BrokerError('physical_action_invalid', 'Unsupported physical action.', status=400)
         with self.lock:
+            if admission_guard is not None and not admission_guard(self.last):
+                raise BrokerError('physical_task_revoked','Task context expired before physical queue admission.',status=409)
             if self.context is None or self.closed:
                 raise BrokerError('physical_connection_required', 'Connect this robot first.', status=409)
             if self.closing:
@@ -632,23 +639,46 @@ class PhysicalLiveSession:
                         execution_confirmed=False,pc_monotonic_s=self.clock())
                     self.evidence.append((json.dumps(admitted,separators=(',',':'))+'\n').encode())
                 return result
-            if action not in {'stop','close'} and (self.at is None or not 0<=self.clock()-self.at<=2.5):
+            heartbeat_limit_s=max(2.5,self.timing_values['operator_presence_ms']/1000)
+            if action not in {'stop','close'} and (self.at is None or not 0<=self.clock()-self.at<=heartbeat_limit_s):
                 raise BrokerError('physical_heartbeat_stale', 'The authenticated robot heartbeat is not current.', status=409)
             if (action in {'drive','task','prepare','qualify','field_arm','field_test'}
                     and motion_epoch!=(self.motion_epoch or self.context.get('motion_epoch'))):
                 raise BrokerError('fleet_motion_epoch_changed','The movement generation changed; use a new explicit input.',status=409)
             payload = deepcopy(payload)
+            age_checked_s=self.clock();input_age_audit=None
             window=(self.input_window if self.input_window_at is not None
-                    and 0<=self.clock()-self.input_window_at<self.timing_values['input_ttl_ms']/1000 else None)
+                    and 0<=age_checked_s-self.input_window_at<self.timing_values['input_ttl_ms']/1000 else None)
             if action in {'drive','task','prepare','qualify','field_arm','field_test'} and self.evidence is not None and self.evidence.error:
                 raise BrokerError('physical_recording_incomplete','Recording is incomplete; reconnect after resolving its storage error.',status=409)
             if action == 'drive':
                 expires = payload.get('expires_at_ms')
-                if type(expires) not in (float,int) or not math.isfinite(expires) or not 0<expires-self.wall()*1000<=self.timing_values['input_ttl_ms']:
+                age_checked_wall_s=self.wall()
+                if type(expires) not in (float,int) or not math.isfinite(expires) or not 0<expires-age_checked_wall_s*1000<=self.timing_values['input_ttl_ms']:
                     raise BrokerError('fleet_input_expired', 'Movement input expired; press again.', status=409)
                 source=window or self.last
+                ui_age_ms=max(0,self.timing_values['input_ttl_ms']-(expires-age_checked_wall_s*1000))
+                window_age_ms=(age_checked_s-self.input_window_at)*1000 if window else None
+                overlap_ms=min(ui_age_ms,window_age_ms) if window_age_ms is not None else 0.
+                # The nonce roundtrip already includes PC time since receiving
+                # this exact window. Add only UI age before that receipt. The
+                # robot-created bound never advances past nonce issuance.
+                relay_age_ms=ui_age_ms-overlap_ms
                 payload.update(challenge=source.get('challenge'), motion_generation=source.get('motion_generation'),
-                               source_age_ms=max(0,self.timing_values['input_ttl_ms']-(expires-self.wall()*1000)))
+                               source_age_ms=relay_age_ms)
+                input_age_audit=dict(schema='physical-live-pc-input-age-1.0',
+                    **{k:self.context[k] for k in ('operation_id','robot_id','project_id','connection_epoch')},
+                    request_id=request_id,motion_epoch=motion_epoch,motion_generation=source.get('motion_generation'),
+                    expires_at_ms=expires,ui_age_ms=ui_age_ms,window_age_ms=window_age_ms,
+                    window_received_pc_monotonic_s=self.input_window_at if window else None,
+                    window_robot_sequence=self.input_window_sequence if window else None,
+                    window_robot_issued_s=source.get('issued_s') if window else None,
+                    challenge_fingerprint_sha256=hashlib.sha256(source['challenge'].encode()).hexdigest()
+                        if isinstance(source.get('challenge'),str) else None,
+                    checked_pc_monotonic_s=age_checked_s,checked_wall_s=age_checked_wall_s,
+                    deducted_overlap_ms=overlap_ms,source_age_ms=relay_age_ms,
+                    basis='SAME_SMALL_WINDOW_PC_OVERLAP' if window else 'LEGACY_SUM_NO_BOUND_RECEIPT',
+                    execution_confirmed=False)
             elif action in {'watch','task','qualify','prepare','field_arm','field_test'}:
                 source=window or self.last
                 payload.update(challenge=source.get('watch_challenge',source.get('challenge')) if action=='watch' else source.get('challenge'),
@@ -685,10 +715,17 @@ class PhysicalLiveSession:
                 if action=='close':self.closing=True;self.close_request_id=request_id
                 # Stop has its own replacement admission, not a full queued drive FIFO.
                 try:
-                    while True: self.writes.get_nowait()
+                    while True:
+                        dropped=self.writes.get_nowait()
+                        if isinstance(dropped,dict):self.command_guards.pop(dropped.get('request_id'),None)
                 except queue.Empty: pass
+            if input_age_audit is not None and self.evidence is not None:
+                if not self.evidence.append((json.dumps(input_age_audit,separators=(',',':'),allow_nan=False)+'\n').encode()):
+                    raise BrokerError('physical_recording_incomplete','Input-age evidence could not be recorded; no movement was queued.',status=409)
+            if admission_guard is not None:self.command_guards[request_id]=admission_guard
             try: self.writes.put_nowait(packet)
             except queue.Full:
+                self.command_guards.pop(request_id,None)
                 raise BrokerError('physical_command_buffer', 'Command channel is congested; no movement was queued.', status=409) from None
             if token is not None:self.used_input_challenges[token]=now
             # A zero-motion diagnostic deliberately pauses the robot at start.
@@ -701,6 +738,17 @@ class PhysicalLiveSession:
             if len(self.queued_at)>64:self.queued_at.pop(next(iter(self.queued_at)))
             return dict(status='accepted', request_id=request_id, operation_id=self.context['operation_id'])
 
+    def _claim_task_packet(self,packet):
+        # Last admission is serialized with Stop/Close queue replacement, but
+        # NEVER hold the Stop/state lock across a potentially blocked OS pipe.
+        # An admitted in-flight write retains the existing robot nonce/expiry.
+        with self.lock:
+            guard=self.command_guards.pop(packet['request_id'],None)
+            if guard is None:return True
+            valid=(not self.closed and not self.closing and packet['motion_epoch']==self.motion_epoch and guard(self.last))
+            if not valid:self._input_disposition(packet['request_id'],'TASK_REVOKED_BEFORE_WIRE_ADMISSION')
+            return valid
+
     def snapshot(self):
         with self.lock:
             age = None if self.at is None else max(0,(self.clock()-self.at)*1000)
@@ -708,6 +756,7 @@ class PhysicalLiveSession:
             # capture their references and all scalar state atomically, then
             # copy the large display/history bodies outside admission's lock.
             last,scan=self.last,self.scan
+            robot_now=self.last_robot_monotonic_s
             source_export=getattr(self,'source_export',None)
             terminal_cleanup,last_robot_pause=self.terminal_cleanup,self.last_robot_pause
             terminal_observation=self.terminal_motion_observation
@@ -715,10 +764,12 @@ class PhysicalLiveSession:
             closed,cleanup_confirmed=self.closed,self.cleanup_confirmed
             evidence=self.evidence
             scan_age=None if self.scan_at is None else max(0,(self.clock()-self.scan_at)*1000)
-            verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<2.5
+            heartbeat_limit_ms=max(2500,self.timing_values['operator_presence_ms'])
+            verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<heartbeat_limit_ms/1000
             status=dict(connection_state='DISCONNECTED' if closed else 'DEGRADED' if self.context is None else 'CONNECTING' if age is None and not self.error else
-                         'CONNECTED' if verified and age is not None and age<2500 and not self.error else 'DEGRADED',
-                         live_heartbeat=verified and age is not None and age<2500 and not closed and not self.error,
+                         'CONNECTED' if verified and age is not None and age<heartbeat_limit_ms and not self.error else 'DEGRADED',
+                         live_heartbeat=verified and age is not None and age<heartbeat_limit_ms and not closed and not self.error,
+                         heartbeat_freshness_ms=heartbeat_limit_ms,
                          telemetry_age_ms=age, telemetry_sequence=self.sequence,
                          cleanup_confirmed=cleanup_confirmed, transport_error=self.error,
                          terminal_cleanup_received=terminal_cleanup is not None,remote_exit_code=self.remote_exit_code,
@@ -726,6 +777,9 @@ class PhysicalLiveSession:
                          pc_motion_epoch=self.motion_epoch,
                          expected_worker_sha256=self.context.get('worker_sha256') if self.context else None)
         value = deepcopy(last)
+        pose_sample=(value.get('pose') or {}).get('sample_s')
+        value['pose_age_ms']=(age+max(0.,robot_now-pose_sample)*1000 if age is not None
+            and all(type(v) in (int,float) and math.isfinite(v) for v in (robot_now,pose_sample)) and robot_now>=pose_sample else None)
         observation=value.get('motion_observation')
         identity=self._observation_identity(observation) if observation is not None else None
         if observation is not None and identity is None:
@@ -746,6 +800,13 @@ class PhysicalLiveSession:
                 diagnostic['last_check_values']=deepcopy(diagnostic)
                 diagnostic.update(reason='SESSION_CLOSED_HISTORICAL',source_age_s=None,
                     sensor_receipt_age_s=None,guard_receipt_age_s=None)
+        task_observation=value.get('task_local_observation') or {}
+        ring_end=((task_observation.get('scan') or {}).get('timing') or {}).get('receipt_end_s')
+        pose_sample=(task_observation.get('pose') or {}).get('sample_s')
+        oldest=min(ring_end,pose_sample) if all(type(v) in (int,float) and math.isfinite(v) for v in (ring_end,pose_sample)) else None
+        value['task_observation_age_ms']=(age+max(0.,robot_now-oldest)*1000
+            if age is not None and type(robot_now) in (int,float) and oldest is not None and robot_now>=oldest else None)
+        value['task_observation_age_basis']='ORIGINAL_RING_AND_ODOM_ROBOT_AGE_PLUS_PC_RECEIPT_ELAPSED_NETWORK_TRANSIT_UNKNOWN'
         value['robot_recording']=deepcopy(value.get('recording'))
         value['source_export']=deepcopy(source_export)
         if scan is not None and not closed:

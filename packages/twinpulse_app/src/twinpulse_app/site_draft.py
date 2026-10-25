@@ -57,7 +57,7 @@ class SiteDraftRecord:
         if refinement is not None and progressive is None:raise ValueError('DRAFT_REFINEMENT_PROGRESSIVE_REQUIRED')
         return cls(request_id, provider_name, model_id, image_count, checked_input,
                    checked_plan, site, canonical_sha256(checked_plan.to_dict()),
-                   '2.3' if refinement is not None else '2.2' if progressive is not None else '2.1' if contract is not None else SITE_DRAFT_VERSION,
+                   '2.4' if checked_plan.plan_version=='2.4' else '2.3' if refinement is not None else '2.2' if progressive is not None else '2.1' if contract is not None else SITE_DRAFT_VERSION,
                    contract,progressive,refinement)
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,7 +80,7 @@ class SiteDraftRecord:
             expected|={'progressive_twin'}
             if 'placement_contract' in value:expected|={'placement_contract'}
         if version=='2.3':expected|={'draft_refinement'}
-        if not isinstance(value, Mapping) or set(value) != expected or version not in (SITE_DRAFT_VERSION,'2.1','2.2','2.3'):
+        if not isinstance(value, Mapping) or set(value) != expected or version not in (SITE_DRAFT_VERSION,'2.1','2.2','2.3','2.4'):
             raise ValueError("site draft shape or version is unsupported")
         if not all(isinstance(value[field], Mapping) for field in ("input_revision", "plan", "site")):
             raise ValueError("site draft records are invalid")

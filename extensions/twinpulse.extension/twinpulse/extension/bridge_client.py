@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import deque
+import hashlib
 import json
 from threading import Event, Lock, Thread, local
 import time
@@ -413,7 +414,13 @@ class BridgeClient:
                         'kit_queue_s':timing['kit_queue_s'],'adapter_execute_s':timing['adapter_execute_s'],
                         'receipt_queue_s':max(0.,self._clock()-timing['executed_at']),
                         'dropped_receipts':min(self._dropped_receipts,1000000)}
-            self._post("/v1/engine/receipt", body)
+            result = self._post("/v1/engine/receipt", body)
+            digest = hashlib.sha256(json.dumps(receipt.to_dict(), sort_keys=True,
+                separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+            if not (result == {'accepted': True} or result == dict(accepted=False,
+                    disposition='late_receipt_recorded', command_id=receipt.command_id,
+                    original_status='unknown', receipt_sha256=digest)):
+                raise BridgeProtocolError('Receipt delivery disposition is invalid')
             with self._lock:
                 if self._outgoing and self._outgoing[0] == receipt:
                     self._outgoing.popleft()

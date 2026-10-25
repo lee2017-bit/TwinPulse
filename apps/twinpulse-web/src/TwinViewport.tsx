@@ -8,6 +8,7 @@ import type {ConversationState,GenerationPreview,InventoryWorkProgress} from './
 import {AuthenticatedConversationImage} from './AuthenticatedConversationImage';
 import type {WorkflowState} from './types';
 import {fleetRobotFresh,type RobotFleetState} from './robot-fleet-types';
+import {PhysicalLidarPanel} from './PhysicalLidarPanel';
 
 type RobotAnchor=NonNullable<ViewportFrame['robot_anchors']>[number];
 export type RobotBadgePlacement={robot_id:string;anchorX:number;anchorY:number;left:number;top:number;width:number;height:number;lineX:number;lineY:number};
@@ -195,7 +196,7 @@ function GenerationProgress({generation,confirmedPreview,imageDecoded,imageMatch
 }
 
 export type ViewerFault={code:string;execution_id:string|null};
-export function TwinViewport({api,projectId,report,diagnose,generation,sourcePhoto,savedScene=null,appConnected=true,robotFleet,onRobotSelect,controlView=false}: {api:TwinPulseApi;projectId?:string;report?:(fault:ViewerFault|null)=>void;diagnose?:(id:string|null)=>void;appConnected?:boolean;controlView?:boolean;
+export function TwinViewport({api,projectId,report,diagnose,generation,sourcePhoto,savedScene=null,appConnected=true,fleetAvailable=true,robotFleet,onRobotSelect,controlView=false}: {api:TwinPulseApi;projectId?:string;report?:(fault:ViewerFault|null)=>void;diagnose?:(id:string|null)=>void;appConnected?:boolean;fleetAvailable?:boolean;controlView?:boolean;
   robotFleet?:RobotFleetState;onRobotSelect?:(id:string)=>void;
   generation?:ConversationState['generation'];sourcePhoto?:{url:string;name:string}|null;savedScene?:SavedGenerationScene|null}) {
   const [scanMode,setScanMode]=useState<'off'|'points'|'rays'>('points');
@@ -491,6 +492,11 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
   const fitWidth=(anchorFrame?.width??0)*fitScale,fitHeight=(anchorFrame?.height??0)*fitScale;
   const robotBadges=anchorFrame&&robotFleet?layoutRobotBadges((anchorFrame.robot_anchors??[]).filter(anchor=>robotFleet.robots.some(robot=>robot.robot_id===anchor.robot_id)),fitWidth,fitHeight):[];
   const selectedScan=anchorFrame?.lidar_overlay;
+  const alignedScan=anchorFrame?.alignment_overlay;
+  const shownAlignment=alignedScan&&(alignedScan.source==='SAVED'||typeof alignedScan.original_captured_at_ms==='number'&&Date.now()-alignedScan.original_captured_at_ms>=0&&Date.now()-alignedScan.original_captured_at_ms<1000)?alignedScan:null;
+  useEffect(()=>{if(alignedScan?.source!=='CURRENT'||typeof alignedScan.original_captured_at_ms!=='number')return;
+    const timer=setTimeout(()=>setDisplayAge(Date.now()),Math.max(0,alignedScan.original_captured_at_ms+1000-Date.now()));return()=>clearTimeout(timer);
+  },[alignedScan?.review_id,alignedScan?.source,alignedScan?.original_captured_at_ms]);
   const scanRobot=robotFleet?.robots.find(r=>r.robot_id===robotFleet.focused_robot_id);
   useEffect(()=>{
     if(!selectedScan||scanRobot?.lidar_state!=='STREAMING'||!Number.isFinite(selectedScan.captured_at_ms))return;
@@ -527,6 +533,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       {fresh && ` · ${state!.fps.toFixed(1)} FPS`}</p>
     {!controlView&&progress}
     {superseded&&<p role="status">The display observation belonged to an earlier scene. Waiting for a fresh current frame; the last preview has no camera control.</p>}
+    <div className={`twin-render-grid${scanRobot?.kind==='physical'?' has-physical-sensor':''}`}>
     <div className="twin-frame-slot" ref={frameSlot}><canvas ref={surface} hidden={!image} role={image?'img':undefined}
       aria-label={image?fresh?'Current Isaac Digital Twin render':'Last Isaac preview · not live':undefined}
       data-frame-id={image?.frame.frame_id} data-captured-at={image?.frame.captured_at_ms}
@@ -560,15 +567,27 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
         </button>;
       })}
     </div>}
+    {shownAlignment&&fitScale>0&&<div aria-label="Frame-bound alignment review" data-review-id={shownAlignment.review_id} data-source={shownAlignment.source}
+      style={{position:'absolute',pointerEvents:'none',left:(slotSize.width-fitWidth)/2,top:(slotSize.height-fitHeight)/2,width:fitWidth,height:fitHeight}}>
+      <svg viewBox={`0 0 ${fitWidth} ${fitHeight}`} style={{position:'absolute',inset:0,width:'100%',height:'100%',fill:'#a855f7',stroke:'#a855f7',strokeWidth:0.6}}>
+        {shownAlignment.origin_uv&&shownAlignment.points_uv.filter((_,i)=>i%12===0).map(([u,v],i)=><line key={'r'+i} opacity="0.45" x1={shownAlignment.origin_uv![0]*fitWidth} y1={shownAlignment.origin_uv![1]*fitHeight} x2={u*fitWidth} y2={v*fitHeight}/>)}
+        {shownAlignment.points_uv.map(([u,v],i)=><circle key={i} cx={u*fitWidth} cy={v*fitHeight} r="1.8"/>)}
+      </svg>
+      {shownAlignment.body_bounds_uv&&<span style={{position:'absolute',left:(shownAlignment.body_bounds_uv[0]+shownAlignment.body_bounds_uv[2])/2*fitWidth,top:shownAlignment.body_bounds_uv[3]*fitHeight+2,transform:'translateX(-50%)',fontSize:10,color:'#5b21b6',whiteSpace:'nowrap'}}>Alignment review</span>}
+      <small style={{position:'absolute',bottom:2,left:4,background:'#ffffffe8',color:'#5b21b6',padding:'1px 4px'}}>{shownAlignment.source==='SAVED'?'Saved scan':'Current scan'} · geometric review · no drive authority</small>
+    </div>}
     {!image && <div className="chat-twin-placeholder"><strong>No current 3D frame</strong>
       <p>Build the scene in Isaac to see a 3D preview.</p></div>}</div>
+    {scanRobot?.kind==='physical'&&<PhysicalLidarPanel robot={scanRobot} available={appConnected&&fleetAvailable} currentRevision={image?.frame.applied_revision}
+      rendered={!!anchorFrame?.robot_anchors?.some(anchor=>anchor.robot_id===scanRobot.robot_id&&anchor.visible)}/>}
+    </div>
     {!controlView&&sourcePhoto&&<figure key="source-photo" className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/>
       <figcaption>Source photo · reference for this Twin</figcaption></figure>}
     <div className="twin-scan-toolbar" aria-label="LiDAR display">
-      <label>LiDAR view <select aria-label="LiDAR visualization" value={scanMode} onChange={event=>setScanMode(event.target.value as 'off'|'points'|'rays')}>
-        <option value="off">Off</option><option value="points">Hit points</option><option value="rays">Sparse rays + hits</option></select></label>
-      <span role="status">{!scanRobot?'Select a robot':scanRobot.lidar_state==='OFF'?'LiDAR sensor: OFF':scanMode==='off'?`Display hidden · sensor ${scanRobot.lidar_state}`:shownScan?`LiDAR sensor: ON · Scanning obstacles · ${shownScan.points_uv.length} hits · SIM`:`LiDAR sensor: ${scanRobot.lidar_state} · awaiting current scan`}</span>
-      <details className="lidar-display-help"><summary>Scan details</summary><p>Horizontal geometric scan, not an optical sensor model. Rays are an X-ray overlay without depth occlusion; use hit points to inspect the first surface.</p>
+      {scanRobot?.kind!=='physical'&&<label>LiDAR view <select aria-label="LiDAR visualization" value={scanMode} onChange={event=>setScanMode(event.target.value as 'off'|'points'|'rays')}>
+        <option value="off">Off</option><option value="points">Hit points</option><option value="rays">Sparse rays + hits</option></select></label>}
+      <span role="status">{!scanRobot?'Select a robot':scanRobot.kind==='physical'?'Physical scan shown in sensor-local panel · room projection unavailable':scanRobot.lidar_state==='OFF'?'LiDAR sensor: OFF':scanMode==='off'?`Display hidden · sensor ${scanRobot.lidar_state}`:shownScan?`LiDAR sensor: ON · Scanning obstacles · ${shownScan.points_uv.length} hits · SIM`:`LiDAR sensor: ${scanRobot.lidar_state} · awaiting current scan`}</span>
+      <details className="lidar-display-help"><summary>Scan details</summary><p>{scanRobot?.kind==='physical'?'Physical sensor-local returns are separate from the room. Use the sensor button to stop acquisition. No world alignment is assumed.':'Horizontal geometric scan, not an optical sensor model. Rays are an X-ray overlay without depth occlusion; use hit points to inspect the first surface.'}</p>
         {shownScan&&scanMode!=='off'&&<p>Isaac pose · no correction applied{shownScan.height_m!==undefined?` · sensor ${(shownScan.height_m*100).toFixed(1)} cm · surface hits${scanMode==='rays'?' · X-ray rays':''}`:''}</p>}</details>
     </div>
     {error && <p role="alert">Viewer: {error}. Browser display is unavailable; this does not mean scene apply failed.
@@ -580,7 +599,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
     {controlView&&progress}
     {controlView&&sourcePhoto&&<figure className="twin-source-photo"><AuthenticatedConversationImage api={api} url={sourcePhoto.url} alt={`Source photo: ${sourcePhoto.name}`}/><figcaption>Source photo · reference for this Twin</figcaption></figure>}
     <div className="twin-camera-actions" aria-label="Camera controls">
-      {([['orbit_left','Orbit left'],['orbit_right','Orbit right'],['zoom_in','Zoom in'],['zoom_out','Zoom out'],
+      {([['top_view','Top view'],['orbit_left','Orbit left'],['orbit_right','Orbit right'],['zoom_in','Zoom in'],['zoom_out','Zoom out'],
         ['pan_left','Pan left'],['pan_right','Pan right'],['pan_up','Pan up'],['pan_down','Pan down']] as const).map(([action,label])=>
           <button key={action} disabled={!fresh||busy||state?.camera_pending||displayAge<cameraReadyAt} onClick={()=>void camera(action)}>{label}</button>)}
     </div>

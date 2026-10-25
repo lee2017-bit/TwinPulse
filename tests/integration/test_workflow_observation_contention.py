@@ -7,6 +7,43 @@ import tests.integration.test_r5_product_api as fixtures
 from twinpulse_app.command_broker import BrokerError
 
 class ObservationTests(unittest.TestCase):
+    def observed_approvals(self):
+        from types import SimpleNamespace
+        from twinpulse_app.generation_approval import GenerationApprovals
+        registry=SimpleNamespace(settings=SimpleNamespace(path=self.fixture.static/'observed-settings.json'))
+        with patch.object(GenerationApprovals,'enabled',return_value=True):
+            approvals=GenerationApprovals(registry,self.workflow)
+        self.workflow.generation_approvals=approvals
+        return approvals
+
+    def test_chat_budget_hint_never_reloads_route_or_harness_files(self):
+        from twinpulse_app.conversation_service import ConversationService
+        approvals=self.observed_approvals()
+        conversation=ConversationService(self.workflow,self.fixture.static/'budget-observation.json')
+        with patch.object(approvals,'enabled',side_effect=AssertionError('hot route validation')):
+            self.assertTrue(conversation.snapshot()['budgeted_generation_available'])
+            self.workflow._provider_configuration_state='refreshing'
+            self.assertFalse(conversation.snapshot()['budgeted_generation_available'])
+
+    def test_explicit_settings_refresh_reobserves_hint_but_does_not_cache_scope_authority(self):
+        approvals=self.observed_approvals()
+        with patch.object(approvals,'enabled',return_value=False) as enabled:
+            self.workflow.provider_settings_changed()
+        enabled.assert_called_once_with()
+        self.assertFalse(approvals.observed_enabled())
+        error=OSError('controlled fresh route failure')
+        gateway=self.workflow._application._generation_gateway
+        with patch.object(approvals,'enabled',side_effect=error):
+            with self.assertRaises(OSError) as raised:self.workflow.provider_settings_changed()
+        self.assertIs(raised.exception,error)
+        self.assertIs(self.workflow._application._generation_gateway,gateway)
+        self.assertFalse(approvals.observed_enabled())
+        self.assertEqual(self.workflow._provider_configuration_state,'unconfirmed')
+        # Scope/prepare still consult the actual routes rather than this hint.
+        approvals.publish_enabled_observation(True)
+        with patch.object(approvals.routes,'load',side_effect=error):
+            with self.assertRaises(OSError):approvals.prepare()
+
     def setUp(self):
         self.fixture=fixtures.R5ProductApiTests();self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown);self.workflow=self.fixture.workflow

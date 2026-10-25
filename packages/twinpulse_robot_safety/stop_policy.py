@@ -23,6 +23,9 @@ POLICY = {
 POLICY_SHA256 = hashlib.sha256(json.dumps(POLICY, sort_keys=True).encode()).hexdigest()
 MM_PER_TICK = 2 * math.pi * POLICY['wheel_radius_mm'] / POLICY['ticks_per_revolution']
 OBSERVE_S = POLICY['deceleration_budget_s'] + POLICY['verification_s']
+# Motion progress sampling may be configured more coarsely. Stop evidence
+# still requires dense samples within the existing 300ms verification window.
+FIELD_STOP_SAMPLE_GAP_CAP_S = .225
 
 
 def finite(value):
@@ -34,10 +37,13 @@ def field_stop_policy(timing_values):
     from twinpulse_core.robot_timing_profile import checked_values, digest
     values=checked_values(timing_values)
     gap=values['wheel_interval_ms']/1000
-    # A sample interval cannot span the entire residual verification window.
-    if gap>POLICY['verification_s']:
-        raise ValueError('FIELD_STOP_SAMPLE_GAP_EXCEEDS_VERIFICATION_WINDOW')
-    return dict(POLICY,id='supervised-field-stop-coverage-1.0',max_sample_gap_s=gap,
+    # Do not reject a wider motion interval before observing the actual stop.
+    # Nor may that wider setting certify a sparsely observed stop as PASS.
+    coverage_gap=min(gap,FIELD_STOP_SAMPLE_GAP_CAP_S)
+    cutoff_limit=max(POLICY['guard_observation_limit_s'],values['output_timeout_ms']/1000+.25)
+    return dict(POLICY,id='supervised-field-stop-coverage-1.1',max_sample_gap_s=coverage_gap,
+        motion_sample_gap_s=gap,stop_sample_gap_cap_s=FIELD_STOP_SAMPLE_GAP_CAP_S,
+        guard_observation_limit_s=cutoff_limit,
         scope='engineering_forward_wheel_observation_not_legacy_qualification',
         coverage_basis='PINNED_SENSORSTATE_WHEEL_INTERVAL_NOT_ODOMETRY',
         timing_values_sha256=digest(values))

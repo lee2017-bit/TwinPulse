@@ -28,8 +28,7 @@ from .command_broker import BrokerError
 from .robot_adapters import instance_binding, require_adapter
 from .session_journal import SessionJournal
 from twinpulse_core.robot_lineage import checked_twin_context
-from twinpulse_core.robot_battery import battery_estimate, battery_display_estimate
-from .robot_registry import record_battery_display
+from twinpulse_core.robot_battery import battery_estimate, battery_display_estimate, battery_display_config
 
 
 def _uuid(value, label):
@@ -125,7 +124,7 @@ class PhysicalFleetAdapter:
 
     def _row(self, robot_id):
         identity = _uuid(robot_id, 'robot ID')
-        row = next((r for r in self.registry.snapshot()['robots'] if r['id'] == identity), None)
+        row = self.registry.registered(identity)
         if row is None:
             raise BrokerError('physical_fleet_unknown', 'Registered robot not found.', status=404)
         if identity == '0' * 32:
@@ -407,7 +406,7 @@ class PhysicalFleetAdapter:
             elif entry.services.controller is not None and entry.services.controller.snapshot(owner).get('mode') in {'control','control_scan'}:
                 self._stop(entry,owner,'FOCUS_CHANGED')
 
-    def _live_command(self,robot_id,owner,action,payload,*,connection_epoch=None,motion_epoch=None,request_id=None,request_twin_context=None,route_guard=None):
+    def _live_command(self,robot_id,owner,action,payload,*,connection_epoch=None,motion_epoch=None,request_id=None,request_twin_context=None,route_guard=None,admission_guard=None):
         _owner(owner)
         if (action in {'prepare','qualify','drive','task','field_arm','field_test'}
                 and getattr(self.devices,'engine_process_probe_blocked',False)):
@@ -436,6 +435,7 @@ class PhysicalFleetAdapter:
                 entry.services.live.navigation_guard=route_guard
             elif action in {'drive','task','stop','close'}:entry.services.live.navigation_guard=None
             result=entry.services.live.command(action,payload,motion_epoch=entry.motion_epoch,request_id=request_id or uuid4().hex,
+                **({'admission_guard':admission_guard} if admission_guard is not None else {}),
                 **({'request_twin_context':request_twin_context} if request_twin_context is not None else {}))
             if action in {'drive','task'}:entry.intent_kind='manual' if action=='drive' else 'task'
             # The live stream records every transmitted command/robot ACK. The
@@ -603,9 +603,9 @@ class PhysicalFleetAdapter:
                 # estimate never grants motion or refreshes its sample age.
                 battery.update(battery_estimate(battery.get('voltage_v')))
                 battery['reserve_reference_method']='robotis_opencr_voltage_10_5_to_12_3_v1'
-                row=next((r for r in self.registry.snapshot()['robots'] if r['id']==entry.binding['instance_id']),None)
-                if row is not None:
-                    battery.update(battery_display_estimate(battery.get('voltage_v'),record_battery_display(row)))
+                config=self.registry.battery_display_for_view(entry.binding['instance_id'],entry.binding['sha256'])
+                battery.update(battery_display_estimate(battery.get('voltage_v'),config or battery_display_config()))
+                battery['display_settings_state']='LOADED' if config is not None else 'AWAITING_SETTINGS_VIEW'
             setup=live.get('setup') or dict(runtime_state='STARTING' if not live.get('live_heartbeat') else 'CONNECTED',blockers=live.get('blockers',[]),
                                           profile=live.get('profile'),qualification=live.get('qualification'))
             setup['binding_sha256']=entry.binding['sha256']
@@ -625,6 +625,9 @@ class PhysicalFleetAdapter:
                 reason='DISCONNECTING_AWAITING_ROBOT_CLEANUP' if entry.disconnecting else live.get('transport_error') or live.get('reason') or entry.reason,
                 battery=battery,pose=live.get('pose'),field=live.get('field'),command=deepcopy(live.get('command')),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),
                 scan_receipt=None if ended else deepcopy(live.get('scan_receipt')),
+                task_local_observation=None if ended else deepcopy(live.get('task_local_observation')),
+                task_local_state=deepcopy(live.get('task_local_state')),task_observation_age_ms=live.get('task_observation_age_ms'),
+                stop_receipt=deepcopy(live.get('stop_receipt')),device_boot_id=live.get('boot_id'),device_release_id=live.get('release_id'),
                 lidar_state=('OFF' if live.get('cleanup_confirmed') else 'FAULT') if ended else live.get('lidar_state','OFF'),
                 telemetry_diagnostic=deepcopy(live.get('telemetry_diagnostic')),native_diagnostic=deepcopy(live.get('lidar')),
                 motion_observation=deepcopy(live.get('motion_observation')),
@@ -637,6 +640,7 @@ class PhysicalFleetAdapter:
                 source_twin_context=deepcopy(entry.source_twin_context),
                 cleanup_confirmed=live.get('cleanup_confirmed',False),
                 telemetry_age_ms=live.get('telemetry_age_ms'),telemetry_sequence=live.get('telemetry_sequence',0),
+                pose_age_ms=live.get('pose_age_ms'),
                 capabilities=dict(read_only_connection=True,prepare=True,qualify=True,profile=True,
                     lidar=live.get('live_heartbeat',False) and not ended,drive=not ended and live.get('drive_ready') is True and live.get('live_heartbeat',False)
                     and not recording_error),

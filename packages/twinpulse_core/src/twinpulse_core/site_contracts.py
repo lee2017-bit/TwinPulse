@@ -83,6 +83,7 @@ class SceneRevision:
     frame_id: str = "world"
     schema_version: str = SITE_SCHEMA_VERSION
     library_assets: tuple = ()
+    environment: dict | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != SITE_SCHEMA_VERSION or self.frame_id != "world":
@@ -107,6 +108,11 @@ class SceneRevision:
                 tuple(o.shape.dimensions_m)!=assets[o.asset_id].dimensions_m) for o in self.objects):
             raise ValueError('LIBRARY_SCENE_COLLIDER_MISMATCH')
         validate_scene_geometry(self.id, self.objects, ValidationLimits(max_objects=None,allowed_asset_ids=frozenset(assets)))
+        if self.environment is not None:
+            from .environment_source import checked_environment, environment_objects
+            environment=checked_environment(self.environment)
+            if self.library_assets or self.objects!=environment_objects(environment):
+                raise ValueError('ENVIRONMENT_SCENE_METADATA_MISMATCH')
         object_ids = {item.id for item in self.objects}
         binding_pairs = [(item.observation_id, item.scene_object_id) for item in self.observation_bindings]
         if len(binding_pairs) != len(set(binding_pairs)) or any(
@@ -124,7 +130,8 @@ class SceneRevision:
                 "source_ref": self.source_ref, "parent_revision": self.parent_revision,
                 "observation_bindings": [asdict(item) for item in self.observation_bindings],
                 "frame_id": self.frame_id,
-                **({'library_assets':[a.to_dict() for a in self.library_assets]} if self.library_assets else {})}
+                **({'library_assets':[a.to_dict() for a in self.library_assets]} if self.library_assets else {}),
+                **({'environment':self.environment} if self.environment is not None else {})}
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._body(), "revision": self.revision}
@@ -133,7 +140,8 @@ class SceneRevision:
     def from_dict(cls, value: Mapping[str, Any]) -> "SceneRevision":
         _exact(value, {"schema_version", "id", "objects", "source", "source_ref",
                        "parent_revision", "observation_bindings", "frame_id", "revision"} |
-                       ({'library_assets'} if 'library_assets' in value else set()), "scene revision")
+                       ({'library_assets'} if 'library_assets' in value else set()) |
+                       ({'environment'} if 'environment' in value else set()), "scene revision")
         from .library_assets import MeshAsset
         if 'library_assets' in value and not isinstance(value['library_assets'],list):raise ValueError('LIBRARY_SCENE_ASSETS_INVALID')
         if not isinstance(value["objects"], list):
@@ -148,7 +156,8 @@ class SceneRevision:
                     source=value["source"], source_ref=value["source_ref"],
                     parent_revision=value["parent_revision"], frame_id=value["frame_id"],
                     observation_bindings=tuple(ObservationBinding.from_dict(item) for item in value["observation_bindings"]),
-                    schema_version=value["schema_version"],library_assets=tuple(MeshAsset.from_dict(a) for a in value.get('library_assets',[])))
+                    schema_version=value["schema_version"],library_assets=tuple(MeshAsset.from_dict(a) for a in value.get('library_assets',[])),
+                    environment=value.get('environment'))
         if value["revision"] != scene.revision:
             raise ValueError("scene revision digest mismatch")
         return scene

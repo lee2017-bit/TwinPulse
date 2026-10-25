@@ -240,7 +240,7 @@ class RecoveryTests(unittest.TestCase):
                     owner._finish_field('PASS','ZERO_MOTION_NATIVE_COLLECTION')
                     self.assertTrue(entered.wait(1.));self.assertEqual(owner.field_trial['status'],'PENDING_PERSISTENCE')
                     self.assertIsNone(owner.field_receipt)
-                    now[0]=3.1
+                    now[0]=1.+FieldEvidenceWriter.COMMIT_DEADLINE_S+.1
                     for _ in range(4):owner._cycle()
                     self.assertEqual(len(ticks),4);self.assertEqual(owner.field_trial['status'],'INCONCLUSIVE')
                     self.assertEqual(owner.field_trial['reason'],'FIELD_EVIDENCE_STALLED')
@@ -357,7 +357,7 @@ class RecoveryTests(unittest.TestCase):
             try:
                 with patch('os.fsync',side_effect=blocked):
                     token=writer.append('field-config.json',dict(original=True));self.assertTrue(entered.wait(1.))
-                    now[0]=3.1;unblock.set();closed=writer.close()
+                    now[0]=1.+FieldEvidenceWriter.COMMIT_DEADLINE_S+.1;unblock.set();closed=writer.close()
                 self.assertFalse(closed['complete']);self.assertEqual(closed['error'],'FIELD_EVIDENCE_STALLED')
                 with self.assertRaisesRegex(ValueError,'FIELD_EVIDENCE_STALLED'):writer.receipt(token)
             finally:unblock.set();writer.close()
@@ -371,13 +371,15 @@ class RecoveryTests(unittest.TestCase):
             try:
                 with patch('os.fsync',side_effect=delayed):
                     token=writer.append('field-config.json',dict(original=True))
-                    self.assertTrue(entered.wait(1.));now[0]=1.51
+                    # Reproduce the observed ~10 s storage wait, not the old
+                    # subsecond sample. It remains pending, never an early PASS.
+                    self.assertTrue(entered.wait(1.));now[0]=11.
                     writer.check();self.assertTrue(writer.status()['buffering'])
                     self.assertIsNone(writer.receipt(token))
                     unblock.set();closed=writer.close()
                 self.assertTrue(closed['complete']);self.assertIsNone(closed['error'])
                 self.assertEqual(writer.receipt(token)['sha256'],token['sha256'])
-                self.assertEqual(closed['commit_deadline_s'],2.)
+                self.assertEqual(closed['commit_deadline_s'],30.)
             finally:unblock.set();writer.close()
 
     def test_exported_trial_resolves_only_with_exact_ack_and_complete_writer(self):

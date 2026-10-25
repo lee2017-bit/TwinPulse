@@ -109,7 +109,9 @@ try{
    const prior=JSON.parse(await fs.readFile(arg('--prior'),'utf8'));
    if(hash(record.events)!==hash(prior.events)||hash(record.manifest.source_twin_context)!==hash(prior.manifest.source_twin_context))throw Error('Historical bytes or reference changed');
    await openLinkage();
-   await expect(drawer().getByLabel('Robot Twin record linkage').getByText(record.manifest.source_twin_context.scene_revision,{exact:true})).toBeVisible();
+   const sourceRow=drawer().getByLabel('Robot Twin record linkage').locator('dl > div').filter({has:page.getByText('Connection-start Twin',{exact:true})});
+   await expect(sourceRow.locator('dd')).toBeVisible();
+   await expect(sourceRow.locator('dd')).toHaveText(record.manifest.source_twin_context.scene_revision);
    await shot('cold-lineage');return {operation_id:record.operation_id,event_sha256:hash(record.events),source_context:record.manifest.source_twin_context};
   });
  }else{

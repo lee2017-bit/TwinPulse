@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Explicit ordinary UI recovery of the retained durable revision after ENOSPC.
+import {chromium,expect} from '../apps/twinpulse-web/node_modules/@playwright/test/index.mjs';
+import fs from 'node:fs/promises';import path from 'node:path';
+import {recordRenderedPage} from './record_rendered_page.mjs';
+const [out]=process.argv.slice(2);await fs.mkdir(out,{recursive:false});const b=await chromium.connectOverCDP('http://127.0.0.1:19222');const pages=b.contexts().flatMap(c=>c.pages()).filter(p=>p.url().startsWith('http://127.0.0.1:8765/'));if(pages.length!==1)throw Error('One installed renderer required');const p=pages[0];p.setDefaultTimeout(60000);let transaction;
+const result={status:'FAIL',scope:'EXPLICIT_SAVED_SCENE_RECOVERY_NOT_RETRY_OF_FAILED_UNDO_OR_MODEL',steps:[],requests:[],errors:[],physical_actions:0};let finish;
+p.on('response',async r=>{const u=new URL(r.url());if(!u.pathname.startsWith('/v1/product/scene-edit')&&!u.pathname.endsWith('/conversation'))return;try{const v=await r.json();if(u.pathname.endsWith('/transaction'))transaction=v;if(v.scene_edit_transaction)transaction=v.scene_edit_transaction;if(r.request().method()==='POST')result.requests.push({path:u.pathname,status:r.status(),body:v});}catch{}});
+try{result.versions=await p.evaluate(()=>window.twinpulseDesktop?.versions());finish=await recordRenderedPage(p,path.join(out,'recording'));await expect(p.getByText('Isaac connected',{exact:true}).first()).toBeVisible({timeout:120000});
+if(!await p.getByRole('button',{name:'Recover saved Twin in Isaac',exact:true}).isVisible()){
+ const toggle=p.getByRole('button',{name:'Toggle conversations and projects',exact:true});if(await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();
+ await p.getByRole('button',{name:'Open chat_mvmcf9wa_18f1e6d1',exact:true}).click();
+}
+await expect(p.getByRole('button',{name:'Recover saved Twin in Isaac',exact:true})).toBeVisible();await p.getByRole('button',{name:'Recover saved Twin in Isaac',exact:true}).click();await expect.poll(()=>transaction,{timeout:135000}).toMatchObject({state:'ROLLED_BACK',compensation_acknowledged:true,current_frame:true});result.transaction=transaction;result.steps.push({name:'Retained interrupted edit requires explicit one-Build recovery of saved revision',status:'PASS'});await p.screenshot({path:path.join(out,'recovered.png')});result.status='PASS_SCOPED';}catch(e){result.errors.push(String(e));await fs.writeFile(path.join(out,'failure.aria.txt'),await p.locator('body').ariaSnapshot());}finally{if(finish)result.recording=await finish().catch(e=>({error:String(e)}));await fs.writeFile(path.join(out,'result.json'),JSON.stringify(result,null,2));await b.close();}if(result.status!=='PASS_SCOPED')throw Error(result.errors.join('\n'));

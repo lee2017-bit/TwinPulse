@@ -14,7 +14,13 @@ def read(p):return json.loads(p.read_text(encoding='utf-8-sig'))
 def write(p,v):
     with p.open('x',encoding='utf-8') as f:json.dump(v,f,indent=2)
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--suffix',default='');parser.add_argument('--attempt',default='12');args=parser.parse_args()
+    global OUT
+    parser=argparse.ArgumentParser();parser.add_argument('--suffix',default='');parser.add_argument('--attempt',default='12')
+    parser.add_argument('--output-root',type=Path,default=OUT)
+    parser.add_argument('--original-native-failure',type=Path)
+    args=parser.parse_args();OUT=args.output_root.resolve()
+    native_failure=(args.original_native_failure.resolve() if args.original_native_failure else OUT/'ui-19/result.json')
+    if not native_failure.is_relative_to(OUT):raise ValueError('Exact original copy must be inside evidence root')
     if args.suffix not in ('','b'):raise ValueError('EXPLICIT_NEGATIVE_ATTEMPT_SUFFIX')
     if len(args.attempt)!=2 or not args.attempt.isascii() or not args.attempt.isdecimal():raise ValueError('TWO_DIGIT_ATTEMPT_REQUIRED')
     a=args.attempt+args.suffix
@@ -72,7 +78,7 @@ def main():
             contract_path=OUT/('gate-negative-'+kind+'-contract'+a+'.json');write(contract_path,contract)
             review['shutdown_contract']=dict(path=contract_path.relative_to(OUT).as_posix(),sha256=sha256(contract_path.read_bytes()).hexdigest())
         else:
-            target=OUT/'ui-19/result.json'
+            target=native_failure
             for entry in manifest['evidence']:
                 if entry['role']=='fresh':entry.update(path=target.relative_to(OUT).as_posix(),sha256=sha256(target.read_bytes()).hexdigest())
             expected='UNCLASSIFIED_REQUEST_FAILURE:fresh'

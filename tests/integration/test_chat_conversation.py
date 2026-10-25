@@ -697,4 +697,51 @@ class ChatConversationTests(unittest.TestCase):
         self.assertEqual(self.broker.public_state('unowned')['operations'],[])
 
 
+    def test_general_task_asks_for_text_planner_consent_and_stop_expires_it(self):
+        from twinpulse_app.conversation_service import ConversationService
+        self.server.robot_fleet.action(dict(action='register_sim',request_id='task-register',robot_id=None,
+            connection_epoch=None,motion_epoch=None,payload=dict(label='Task SIM',position_m=[1,1,0])),'owner')
+        state=self.send('task-goal',text='방을 이동하며 라이다로 측정하고 돌아와')
+        self.assertEqual(state['cards'][-1]['kind'],'robot_task_plan')
+        self.assertIsNone(state['robot_task'])
+        self.assertIsNone(self.server.robot_fleet.robots[self.server.robot_fleet.focused]['_task'])
+        restored=ConversationService(self.workflow,self.server.conversation.path)
+        self.assertIsNone(restored.snapshot()['restore_error'])
+        self.assertEqual(restored.snapshot()['cards'][-1]['state'],'expired')
+        stopped=self.send('task-stop',text='stop')
+        self.assertEqual(stopped['cards'][-1]['state'],'cancelled')
+        self.assertIsNone(self.server.conversation._robot_task_pending)
+
+    def test_task_unknown_stop_blocks_typed_engine_and_environment_mutation(self):
+        tasks=self.server.conversation.robot_tasks
+        tasks.job={'state':'FAILED'};tasks.pending_stop={'request_id':'unknown-stop','motion_epoch':'pending'}
+        for kind in ('run','reset','build_scene','build_site_scene'):
+            body=dict(client_request_id='task-block-'+kind,command_type=kind,expected_applied_revision=None)
+            if kind.startswith('build'):body['artifact_id']='not-needed-guard-runs-first'
+            with self.assertRaisesRegex(__import__('twinpulse_app.command_broker',fromlist=['BrokerError']).BrokerError,'Stop and confirm'):
+                self.broker.submit('fixture-owner',body)
+        status,body,_=self.request('/v1/product/commands',dict(client_request_id='typed-reset',command_type='reset',expected_applied_revision=None),headers=self.product_headers)
+        self.assertEqual(status,409);self.assertEqual(body['error']['code'],'robot_task_execution_owned')
+        status,body,_=self.request('/v1/product/environment/action',dict(action='build',request_id='task-env-build'),headers=self.product_headers)
+        self.assertEqual(status,409);self.assertEqual(body['error']['code'],'scene_edit_robot_task_busy')
+        tasks.pending_stop=None;tasks.job=None
+
+    def test_staged_scene_transaction_blocks_task_admission_before_publication(self):
+        with patch.object(self.workflow.scene_edit_transaction,'locked',return_value=True):
+            with self.assertRaisesRegex(__import__('twinpulse_app.command_broker',fromlist=['BrokerError']).BrokerError,'scene transaction'):
+                with self.server._robot_task_admission():self.fail('Task ownership must not be published')
+
+    def test_immediate_task_stop_ignores_scene_mode_and_never_calls_planner(self):
+        fleet=self.server.robot_fleet;tasks=self.server.conversation.robot_tasks
+        robot=fleet.action(dict(action='register_sim',request_id='stop-priority-register',robot_id=None,connection_epoch=None,motion_epoch=None,
+            payload=dict(label='Stop SIM',position_m=[1,1,0])),'fixture')['focused_robot_id']
+        with patch.object(tasks,'propose',side_effect=AssertionError('Stop must not call a planner')):
+            for mode in ('new','add','change'):
+                for index,text in enumerate(('Stop survey','Cancel task','즉시 정지')):
+                    tasks.job={'state':'RUNNING'};tasks.cancelled.clear();fleet.robots[robot]['_task']={'fixture':'admitted-child'}
+                    self.call(dict(action='message',request_id=f'stop-priority-{mode}-{index}',text=text,mode=mode,attachment=None))
+                    self.assertTrue(tasks.cancelled.is_set());self.assertIsNone(fleet.robots[robot]['_task'])
+        tasks.job=None
+
+
 if __name__ == '__main__': unittest.main()

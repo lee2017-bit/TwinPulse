@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {currentControlView,checkControlView,visibleMotion} from './control_view_acceptance.mjs';
 import {safeUnknownDriveRejection,scopedFetchBoundaryFailure,scopedPreviewCacheMiss,explicitFinalFaultStep} from './explicit_fault_recovery.mjs';
-import {recordStopReceipt,assertFinalStopReceipt} from './control_stop_receipt.mjs';
+import {recordStopReceipt,assertFinalStopReceipt,exactStopAllApplied} from './control_stop_receipt.mjs';
 import {sceneRobotUx} from './scene_robot_ux_acceptance.mjs';
 import {registrationHistory} from './registration_history_receipt.mjs';
 import {recordRenderedPage} from './record_rendered_page.mjs';
@@ -18,6 +18,20 @@ if(phase==='reopen'&&(!arg('--project')||!arg('--field-config')||!arg('--registr
 if(phase==='reproduction'&&(!arg('--project')||!arg('--scene-revision')))throw Error('Saved failure reproduction requires original project and revision; it is not a fresh generation');
 await fs.mkdir(out,{recursive:false});
 const result={phase,status:'IN_PROGRESS',steps:[],errors:[],http_errors:[],request_failures:[],network_failures:[],fault_rejections:[],stop_fence_rejections:[],fleet_requests:[],expected_rejections:[],samples:[],screenshots:[],display_samples:[],native_os_input:'NOT_RUN',physical:'OFF_NOT_RUN'};
+result.control_view_helper_sha256=createHash('sha256').update(await fs.readFile(new URL('./control_view_acceptance.mjs',import.meta.url))).digest('hex');
+let initialPosePin;
+if(arg('--initial-pose-prior')){
+ if(phase!=='reproduction')throw Error('Start pin only for declared saved-geometry retest');
+ const raw=await fs.readFile(arg('--initial-pose-prior')),prior=JSON.parse(raw);
+ const robots=prior.samples?.at(-1)?.robots?.filter(r=>r.kind==='sim');
+ if(prior.status!=='FAIL'||prior.project!==arg('--project')||robots?.length!==2||robots.some(r=>r.source_twin_context?.scene_revision!==arg('--scene-revision')||r.control_state!=='PAUSED'||r.pose?.position_m?.length!==3))throw Error('Exact stopped original scene/robots required for start pin');
+ initialPosePin={classification:'SAVED_GEOMETRY_RETEST_NOT_EXACT_HISTORICAL_INITIAL_POSE_REPLAY',
+  prior:{path:arg('--initial-pose-prior'),sha256:createHash('sha256').update(raw).digest('hex')},
+  project:arg('--project'),scene_revision:arg('--scene-revision'),xy_tolerance_m:.001,yaw_tolerance_rad:.001,
+  robots:robots.map(r=>({robot_id:r.robot_id,label:r.label,position_m:r.pose.position_m,old_operation_id:r.operation_id,old_connection_epoch:r.connection_epoch})),
+  policy:'Existing saved pose only. Check current engine telemetry before any drive/command. No writes, teleport, automatic escape or adaptive expectation.'};
+ await fs.writeFile(path.join(out,'predeclared-start-pin.json'),JSON.stringify(initialPosePin,null,2),{flag:'wx'});
+}
 result.fault_classification_contract='08_TYPED_PREVIEW_CACHE_RACE_WITH_ORIGINAL_AND_EXACT_CONTEXT_RECOVERY';
 result.keyboard_release_trials=[];
 const recordViewportReceipts=args.includes('--viewport-receipts');
@@ -311,6 +325,16 @@ try{
     if(robot(name)?.lidar_state!=='STREAMING')await drawer(name).getByRole('button',{name:'Turn LiDAR on',exact:true}).click();
     await poll(()=>robot(name)?.lidar_state==='STREAMING');
    }
+   if(initialPosePin){
+    await poll(()=>initialPosePin.robots.every(p=>{const r=robot(p.label);return r?.robot_id===p.robot_id&&r.telemetry_sequence>0&&r.operation_id&&r.operation_id!==p.old_operation_id&&r.connection_epoch&&r.connection_epoch!==p.old_connection_epoch&&r.source_twin_context?.project_id===initialPosePin.project&&r.source_twin_context?.scene_revision===initialPosePin.scene_revision;}));
+    await select('Alpha');
+    const currentView=await currentControlView(page,'Alpha');checkControlView(currentView);
+    const receipt=result.viewport_receipt_trace.receipts.findLast(v=>v.context===conversation?.context&&v.frame?.frame_id===currentView.frame_id&&v.frame.stage_epoch===currentView.stage_epoch&&v.frame.applied_revision===currentView.scene_revision);
+    const observed=sims().map(r=>({robot_id:r.robot_id,label:r.label,position_m:r.pose.position_m,operation_id:r.operation_id,connection_epoch:r.connection_epoch,telemetry_sequence:r.telemetry_sequence,telemetry_age_ms:r.telemetry_age_ms,connection_state:r.connection_state,control_state:r.control_state,source_twin_context:r.source_twin_context,current_twin_context:r.current_twin_context}));
+    result.reproduction_start_pin={predeclared:initialPosePin,current_view:currentView,frame_receipt:receipt,observed};
+    if(!receipt?.frame?.engine_session_id||observed.some(r=>r.connection_state!=='CONNECTED'||r.control_state!=='PAUSED'||!Number.isFinite(r.telemetry_age_ms)||r.telemetry_age_ms<0||r.telemetry_age_ms>=1000||['source_twin_context','current_twin_context'].some(k=>r[k]?.engine_session_id!==receipt.frame.engine_session_id||r[k]?.stage_epoch!==currentView.stage_epoch||r[k]?.scene_revision!==currentView.scene_revision))){throw Error('Saved start pin lacks current fresh engine/stage telemetry');}
+    if(initialPosePin.robots.some(p=>{const r=observed.find(v=>v.robot_id===p.robot_id);return !r||r.position_m.some((v,i)=>Math.abs(v-p.position_m[i])>.001);})){throw Error('Saved start pose mismatch; no adaptive preparation');}
+   }
    await select('Alpha');await shot('two-connected');return sims();});
   if(phase==='reproduction'&&sims().some(r=>r.source_twin_context?.scene_revision!==arg('--scene-revision')))throw Error('Original failed geometry revision not actually loaded');
   await step('Non-overlapping dock and visible robot across actual renderer sizes; CSS scaling is not OS DPI proof',async()=>{
@@ -451,9 +475,16 @@ try{
     await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
     await input.fill('');await select('Alpha');
    }finally{conversationFaultHandler=null;await Promise.all(responseChecks);
-    const beforeStop=structuredClone(sims()),stopRequestStart=result.fleet_requests.length;
-    await page.getByRole('button',{name:'Stop all',exact:true}).click();await poll(()=>sims().every(row=>row.control_state==='PAUSED'&&row.applied_motion_epoch===row.motion_epoch));
-    await Promise.all(responseChecks);const stopRequest=result.fleet_requests.slice(stopRequestStart).find(row=>row.action==='stop_all'&&row.status===200);
+    const beforeStop=structuredClone(sims());
+    const [ownStop]=await Promise.all([page.waitForRequest(r=>{
+     if(r.method()!=='POST'||new URL(r.url()).pathname!=='/v1/product/robot-fleet')return false;
+     return r.postDataJSON()?.action==='stop_all';
+    },{timeout:5000}),page.getByRole('button',{name:'Stop all',exact:true}).click()]);
+    const response=await ownStop.response();if(response?.status()!==200||response.headers()['x-twinpulse-context']!==conversation?.context)throw Error('Own final Stop response/context missing');
+    const accepted=await response.json(),ownId=ownStop.postDataJSON().request_id;
+    await poll(()=>exactStopAllApplied(beforeStop,accepted,fleet));
+    await Promise.all(responseChecks);const stopRequest=result.fleet_requests.find(row=>row.request_id===ownId&&row.action==='stop_all'&&row.status===200&&row.result_revision===accepted.revision);
+    if(!stopRequest)throw Error('Own final Stop passive request record missing');
     const before=await currentControlView(page,'Alpha'),stoppedRobots=structuredClone(sims());await routeBoundary('final_fault_handlers_cleared_no_fetch_teardown');
     let after;const until=Date.now()+15000;do{await sleep(100);after=await currentControlView(page,'Alpha');}while((!after.live||!after.robot_badge_visible||after.frame_id<=before.frame_id)&&Date.now()<until);
     checkControlView(after);if(after.frame_id<=before.frame_id||after.scene_revision!==before.scene_revision||after.stage_epoch!==before.stage_epoch)throw Error('No exact-scene decoded recovery after explicit fault handlers cleared');
@@ -669,7 +700,7 @@ try{
   await shot('physical-profile-editor');return {identity:blank.robot_id,all_measurements:'original null',policy_only_null_review:true,profile_mutations:0};
  });
  await step('Explicit static estimated physical marker in actual Isaac; not tracking or localization',async()=>{
-  const controls=drawer(result.physical_label),marker=controls.getByText('Estimated Twin marker',{exact:true});
+  const controls=drawer(result.physical_label),marker=controls.locator('.robot-estimated-marker > summary');
   if(await marker.locator('..').getAttribute('open')===null)await marker.click();
   if(phase!=='reopen'){
    await controls.getByRole('spinbutton',{name:'Marker X (m)',exact:true}).fill('3.5');

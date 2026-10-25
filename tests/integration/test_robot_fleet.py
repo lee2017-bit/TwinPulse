@@ -212,6 +212,7 @@ class FleetTests(unittest.TestCase):
         robot=self.connected();entered=Event();release=Event();errors=[]
         class Pool:
             def disconnect(self,*args,**kwargs):entered.set();release.wait(3)
+            def snapshot(self):return {'robots':[]}
         self.fleet.physical=Pool();identity='physical_fixture'
         self.fleet.robots[identity]=self.fleet._robot(identity,'Offline fixture',[0,0,0],'physical')
         def disconnect():
@@ -252,7 +253,7 @@ class FleetTests(unittest.TestCase):
         from types import SimpleNamespace
         identity='a'*32;operation='b'*32
         self.fleet.physical_history[identity]=operation;self.fleet.close()
-        registry=SimpleNamespace(snapshot=lambda:dict(robots=[dict(id=identity,label='Saved robot')]))
+        registry=SimpleNamespace(registration_snapshot=lambda:dict(robots=[dict(id=identity,label='Saved robot')]))
         devices=SimpleNamespace(registry_service=SimpleNamespace(registry=registry),physical_fleet=None)
         restored=RobotFleet(Broker(),Path(self.temp.name),devices=devices)
         try:

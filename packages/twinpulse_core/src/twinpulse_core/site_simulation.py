@@ -19,6 +19,8 @@ def xy(value):
 
 
 def geometry(scene):
+    if scene.environment is not None:
+        raise ValueError('IMPORTED_SPACE_USE_FLEET_SIM_CONTROLS')
     floors = [o for o in scene.objects if o.kind == 'floor']
     if len(floors) != 1 or floors[0].shape.type != 'box' or not floors[0].collision:
         raise ValueError('SIM_SINGLE_COLLIDING_FLOOR_REQUIRED')
@@ -47,6 +49,8 @@ def geometry(scene):
 
 def make_plan(scene, start, goal, asset_files, *, yaw_rad=0.0):
     scene = SceneRevision.from_dict(scene.to_dict())
+    if scene.environment is not None:
+        raise ValueError('IMPORTED_SPACE_USE_FLEET_SIM_CONTROLS')
     start, goal = xy(start), xy(goal)
     if math.dist(start, goal) < .10:
         raise ValueError('SIM_GOAL_TOO_CLOSE')

@@ -17,6 +17,7 @@ from twinpulse_app import ApplicationService, CommandBroker, ProductWorkflow, Pr
 from twinpulse_app.project_store import ProjectRecord
 from twinpulse_app.scene_changes import SceneChange, SceneChangeHistory, SceneChangeStore
 from twinpulse_app.derived_site_review import DerivedSiteReview
+from twinpulse_app.site_draft import SiteDraftRecord
 from twinpulse_core import InputArtifactStore
 from twinpulse_provider import SiteGenerationResult
 from twinpulse_provider.semantic_scene import compile_scene
@@ -204,6 +205,97 @@ class SceneStateMetadataTests(unittest.TestCase):
             changed=product.snapshot()['site_draft']
             self.assertEqual(compute.call_count,2)
             self.assertNotEqual(changed['scene_state_sha256'],second['scene_state_sha256'])
+
+    def test_presentation_reuses_current_content_validated_original_revision(self):
+        product=self.saved_product(room_source(),self.root)
+        expected=product.snapshot()['site_draft']['original_scene_revision']
+        store=product._application.presentation_store()
+        with mock_patch.object(product._application,'presentation_store',return_value=store), \
+             mock_patch.object(store,'load',wraps=store.load) as load:
+            result=product.snapshot()
+        load.assert_called_once_with(expected)
+        self.assertEqual(result['presentation']['source_scene_revision'],expected)
+        self.assertFalse(result['presentation']['saved'])
+
+    def test_display_memo_detects_nested_mutation_without_rebuilding_source_dict(self):
+        product=self.saved_product(room_source(),self.root)
+        product.snapshot()
+        original=product._application.site_draft
+        original_key=product._site_summary_cache[0]
+        # A frozen dataclass can contain mutable JSON containers. The memo
+        # must inspect their content, not just the enclosing object's identity.
+        coordinates=original.plan.calls[0].arguments['center_m'];before=coordinates[0]
+        try:
+            coordinates[0]=.1
+            with mock_patch.object(product,'_compute_site_draft_summary',side_effect=RuntimeError('content changed')):
+                with self.assertRaisesRegex(RuntimeError,'content changed'):
+                    product.snapshot()
+        finally:
+            coordinates[0]=before
+        self.assertEqual(product._site_summary_cache[0],original_key)
+
+    def test_cache_hit_fingerprints_content_without_serializing_source_records(self):
+        product=self.saved_product(room_source(),self.root)
+        expected=product.snapshot()['site_draft']
+        with mock_patch.object(SiteDraftRecord,'to_dict',side_effect=AssertionError('large source copy on display hit')), \
+             mock_patch.object(SceneChangeHistory,'to_dict',side_effect=AssertionError('large history copy on display hit')):
+            actual=product.snapshot()['site_draft']
+        self.assertEqual(actual,expected)
+
+    def test_nonprogressive_summary_reuses_one_validated_replay_without_changing_state_sha(self):
+        source=room_source();product=self.saved_product(source,self.root)
+        history=product._scene_changes
+        expected=history.state_sha256(history.effective(source))
+        product._site_summary_cache=None
+        original=SceneChangeHistory.replay;calls=[]
+        def replay_once(current,record):
+            calls.append(current)
+            return original(current,record)
+        with mock_patch.object(SceneChangeHistory,'replay',new=replay_once):
+            with product._lock:
+                first=product._site_draft_summary(source)
+                second=product._site_draft_summary(source)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(first['scene_state_sha256'],expected)
+        self.assertEqual(first,second)
+
+    def test_nohistory_summary_validates_source_once_without_recompiling_an_empty_history(self):
+        sources=[room_source(),partial_source()]
+        for index,source in enumerate(sources):
+            with self.subTest(index=index):
+                product=self.saved_product(source,self.root/str(index))
+                product._scene_changes=None;product._site_summary_cache=None
+                expected=self.expected(source)
+                with mock_patch.object(SceneChangeHistory,'effective',side_effect=AssertionError('no edits to replay')), \
+                     mock_patch.object(SiteDraftRecord,'from_dict',wraps=SiteDraftRecord.from_dict) as validate:
+                    actual=product.snapshot()['site_draft']
+                self.assertEqual(validate.call_count,1)
+                self.assertEqual(actual['scene_state_sha256'],expected)
+                self.assertIsNone(product._scene_changes)
+
+    def test_nohistory_import_summary_keeps_the_exact_digest_without_empty_history_compile(self):
+        from tests.integration.test_environment_import import EnvironmentImportTests
+        with EnvironmentImportTests().reviewed_workspace() as (_,app,product,source):
+            expected=self.expected(source)
+            product._scene_changes=None;product._site_summary_cache=None
+            with mock_patch.object(SceneChangeHistory,'effective',side_effect=AssertionError('import must not recompile for empty history')):
+                result=product.snapshot()['site_draft']
+            self.assertEqual(result['scene_state_sha256'],expected)
+            self.assertEqual(result['revision'],source.site.scene.revision)
+
+    def test_nohistory_summary_still_rejects_invalid_source_before_publishing(self):
+        source=partial_source();product=self.saved_product(source,self.root)
+        product._scene_changes=None
+        changed_scene=replace(source.site.scene,source='drawing')
+        invalid=[replace(source,plan_sha256='0'*64),replace(source,site=replace(source.site,scene=changed_scene)),
+                 replace(source,schema_version='bad'),replace(source,placement_contract={'bad':True}),
+                 replace(source,progressive_twin={'bad':True}),replace(source,draft_refinement={'bad':True})]
+        for value in invalid:
+            with self.subTest(field=value):
+                product._site_summary_cache=None
+                with product._lock,self.assertRaises((ValueError,KeyError,TypeError)):
+                    product._site_draft_summary(value)
+                self.assertIsNone(product._site_summary_cache)
 
     def test_summary_cache_captures_engine_capability_once_for_key_and_value(self):
         product=self.saved_product(partial_source(),self.root)

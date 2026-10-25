@@ -84,6 +84,9 @@ class WorkspaceDevices:
         """Only live local work can hold the shared scene; no remote action here."""
         if self.physical_fleet is not None:self.physical_fleet.assert_legacy_available()
         for context in self.contexts:
+            tasks=getattr(getattr(context,'robot_fleet',None),'task_service',None)
+            if tasks and tasks.owns_execution():
+                raise BrokerError('scene_edit_robot_task_busy','Stop the current robot task before starting a conflicting operation.',status=409)
             navigation = getattr(context.conversation, 'navigation', None)
             task = getattr(navigation, 'task_loop', None)
             if (context.chat_robot_preparation._busy()
@@ -113,6 +116,9 @@ class WorkspaceDevices:
         if self.engine_process_probe_blocked:
             raise BrokerError('engine_observation_stale','Wait for current engine observation before a new physical operation.',status=409)
         for other in self.contexts:
+            tasks=getattr(getattr(other,'robot_fleet',None),'task_service',None)
+            if tasks and tasks.owns_execution():
+                raise BrokerError('robot_task_busy','Stop the current robot task before a physical operation.',status=409)
             if other.product_workflow is not None and other.product_workflow.scene_edit_transaction.locked():
                 raise BrokerError('scene_edit_busy', 'Finish the scene transaction before starting a robot operation.', status=409)
         execution = context.product_workflow._application.diagnostics if context.product_workflow else None
