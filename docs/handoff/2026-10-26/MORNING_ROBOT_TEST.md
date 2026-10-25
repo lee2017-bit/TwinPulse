@@ -6,10 +6,10 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 설치된 빌드 ID | `20261025T182006Z-e390aa4478c3` (channel **development**, physical_robot=true) |
-| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `fa7577b` (+ 사용자 미커밋 문서 2개) |
-| 이전 빌드(롤백용, 보존) | `20261025T162952Z-62f7a3f1e698`, `20261025T120155Z-cb02064b5674` |
-| 설치 로그 | `outputs/path-b-20261026/install20.log`, 빌드 로그 `outputs/path-b-20261026/build20.log`; 설치본 SIM 여정 PASS 증거 `outputs/path-b-20261026/sim16/` (3 stops, 12 moves, 복귀 오차 0.4 mm) |
+| 설치된 빌드 ID | `20261025T223555Z-ee9267cf8927` (channel **development**, physical_robot=true; 06:50 세션의 결함 4개 수정 포함) |
+| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `d24c506` (+ 사용자 미커밋 문서 2개) |
+| 이전 빌드(롤백용, 보존) | `20261025T182006Z-e390aa4478c3`(밤 빌드, 06:50 세션에 사용), `20261025T162952Z-62f7a3f1e698`, `20261025T120155Z-cb02064b5674` |
+| 설치 로그 | `outputs/path-b-20261026/install21.log`, 빌드 로그 `outputs/path-b-20261026/build21.log` (이전: install20/build20); 설치본 SIM 여정 PASS 증거 `outputs/path-b-20261026/sim16/` (3 stops, 12 moves, 복귀 오차 0.4 mm) |
 
 최종 설치본 검증: Test 모드 기동 → Isaac 연결 30 s → 설치 UI 스모크 6/6 PASS(`outputs/path-b-20261026/smoke20b/`) → Exit 정상 종료. 이 검사가 프로젝트 목록에 빈 "New chat" 항목 하나를 남겼을 수 있습니다(무시 가능). 중간 빌드 `20261025T172753Z-6ad052bdf3f6`은 정리했고 이전 두 빌드는 보존.
 
