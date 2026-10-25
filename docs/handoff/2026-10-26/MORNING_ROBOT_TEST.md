@@ -6,10 +6,10 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 설치된 빌드 ID | `20261025T223555Z-ee9267cf8927` (channel **development**, physical_robot=true; 06:50 세션의 결함 4개 수정 포함) |
-| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `d24c506` (+ 사용자 미커밋 문서 2개) |
+| 설치된 빌드 ID | `20261025T224738Z-b05f44b2f990` (channel **development**, physical_robot=true; 06:50 세션 결함 4개 + 리뷰 #9/#23/#25/#31 수정 포함) |
+| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `0f019ad` (+ 사용자 미커밋 문서 2개) |
 | 이전 빌드(롤백용, 보존) | `20261025T162952Z-62f7a3f1e698`, `20261025T120155Z-cb02064b5674` (밤 빌드 `20261025T182006Z`는 06:50 세션 후 새 빌드로 대체·정리) |
-| 설치 로그 | `outputs/path-b-20261026/install21.log`, 빌드 로그 `outputs/path-b-20261026/build21.log` (이전: install20/build20); 설치본 SIM 여정 PASS 증거 `outputs/path-b-20261026/sim16/` (3 stops, 12 moves, 복귀 오차 0.4 mm) |
+| 설치 로그 | `outputs/path-b-20261026/install22.log`, 빌드 로그 `outputs/path-b-20261026/build22.log` (이전: install20/21); 설치본 SIM 여정 PASS 증거 `outputs/path-b-20261026/sim16/` (3 stops, 12 moves, 복귀 오차 0.4 mm) |
 
 최종 설치본 검증: Test 모드 기동 → Isaac 연결 30 s → 설치 UI 스모크 6/6 PASS(`outputs/path-b-20261026/smoke20b/`) → Exit 정상 종료. 이 검사가 프로젝트 목록에 빈 "New chat" 항목 하나를 남겼을 수 있습니다(무시 가능). 중간 빌드 `20261025T172753Z-6ad052bdf3f6`은 정리했고 이전 두 빌드는 보존.
 
@@ -26,7 +26,7 @@
 
 ## 2. 앱에서 (순서대로)
 
-1. `Start-TwinPulse.cmd` → 왼쪽 Recent chats에서 어젯밤 프로젝트(`Menu action: Import space for SIM · Project-2610222326.usd`, 106 messages, 프로젝트 ID `chat_mvmbjpcn_d8ef3086`) 열기. **앱을 새로 켠 뒤에는 Isaac에 Twin이 자동으로 다시 세워지지 않습니다**: 채팅 안의 **Reopen saved scene** 버튼(없으면 생략) → 상단 **Import space → Check saved import → Show Twin**(패널 안의 버튼; "Import status: failed · Reopen the saved space"가 보이면 Reopen saved scene을 먼저) → Twin 패널에 3D 프레임이 뜨고 Robots 카드의 내비게이션 맵이 `AVAILABLE`이 될 때까지 기다린 뒤 **Close import space**. (어젯밤 SIM 검증도 이 순서로 통과.)
+1. `Start-TwinPulse.cmd` → 왼쪽 Recent chats에서 어젯밤 프로젝트(`Menu action: Import space for SIM · Project-2610222326.usd`, 106 messages, 프로젝트 ID `chat_mvmbjpcn_d8ef3086`) 열기. **앱을 새로 켠 뒤에는 Isaac에 Twin이 자동으로 다시 세워지지 않습니다**: 채팅 안의 **Reopen saved scene** 버튼(없으면 생략) → 채팅의 "Imported space · next steps" 블록에 있는 **Rebuild Twin in Isaac** 버튼(새 빌드; 이전 방식 Import space → Check saved import → Show Twin도 그대로 동작) → Twin 패널에 3D 프레임이 뜨고 Robots 카드의 내비게이션 맵이 `AVAILABLE`이 될 때까지 기다린 뒤 **Close import space**. (어젯밤 SIM 검증도 이 순서로 통과.)
 2. Twin 패널 **Robots**에서 실물 로봇 선택 → **Connect** → LiDAR on → 로봇 카드 **Details → Physical setup**에서 (a) "I am present…" 체크 후 **Prepare**, (b) "I am supervising…" 체크 후 **Arm supervised field session**, (c) "I reviewed the selected trial…" 체크 후 **Run Bootstrap stop**(이동 0). 카드의 차단 사유가 비고 drive 가능이어야 합니다. (06:50 세션: 이 두 단계 없이 Run route를 누르면 첫 명령이 ACK되지 않음 → 이제 경로 요청 자체가 사유를 알려 주며 거절합니다.)
 3. 로봇 카드 **Set position**으로 선언 좌표 입력(위 값). 라벨은 "operator-declared"로 남습니다.
 4. 채팅에 **`Survey the room and come back`** 입력 → 경로 카드(미니맵, "4 stops, 6.42 m, about N finite moves") 확인. **아직 Run route를 누르지 마세요.**
