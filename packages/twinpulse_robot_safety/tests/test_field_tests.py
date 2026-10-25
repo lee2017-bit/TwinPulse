@@ -304,6 +304,14 @@ class FieldTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP'):
             self._drive_progress(guard,link,tracking,3.)
 
+    def test_required_body_check_does_not_wait_forever_for_an_in_window_sample(self):
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.require_body=True
+        def tracking(now):return dict(status='ESTIMATED',epoch='e',sample_s=.9,pose=[0.,0.,0.])
+        with self.assertRaisesRegex(ValueError,'FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP'):
+            self._drive_progress(guard,link,tracking,1.+guard.timing_values['tracking_result_ms']/1000+1.5)
+
     def test_new_drive_window_does_not_inherit_previous_progress_keys(self):
         link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
         guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)

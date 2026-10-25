@@ -45,6 +45,7 @@ class ConversationService:
         self.robot_tasks = None
         self._robot_task_marker = None
         self._robot_task_pending = None
+        self._declared_route_pending = None
         self._inspection_marker = None
         self._inspection_review_requested = False
         self._robot_marker = None
@@ -220,7 +221,7 @@ class ConversationService:
                    'robot_goal_confirm':{'confirm','cancel'},'robot_goal_loop':{'loop','finish'},
                    'generation_approval':{'approve','cancel'},'scene_edit_clarify':{'cancel'},
                    'scene_sensor_policy':{'align_only','correct_walls','cancel'},
-                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'}}
+                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'},'declared_route_run':{'run','cancel'}}
         card_ids = set()
         for card in stored["cards"]:
             # SIM-alpha emits a single SIM choice; historical full-product
@@ -990,29 +991,55 @@ class ConversationService:
 
     def _declared_route_request(self,text):
         """Survey-and-return on an imported Twin runs the declared-start route (Path B)."""
+        from twinpulse_core.robot_task_plan import task_request
         runner=getattr(self,'declared_routes',None);fleet=self.robot_fleet
         scene=getattr(fleet,'navigation_scene',None)
         if runner is None or not fleet.focused or not scene or scene['geometry'].get('schema')!='scene-navigation-2.0':return False
         value=text.strip().lower()
-        return bool(re.search(r'둘러|탐색|순회|\b(?:survey|explore|patrol|look around)\b',value)
-                    and re.search(r'돌아와|복귀|\b(?:return|come back|go back)\b',value))
+        # Same scene-edit/creation exclusions as the common task hint.
+        if not task_request(value,(fleet.robots.get(fleet.focused) or {}).get('kind')):return False
+        return bool(re.search(r'둘러|탐색|순회|(?:survey|explore|patrol|look around)',value)
+                    and re.search(r'돌아와|복귀|(?:return|come back|go back)',value))
 
     def _start_declared_route(self,body):
+        if any(c['state']=='waiting' for c in self._state['cards']):
+            raise BrokerError('choice_required','Finish the current question before requesting another task.',status=409)
+        if self.declared_routes.active():raise BrokerError('declared_route_active','A route is already running; Stop it first.',status=409)
         self._message('user',body['text'])
-        self._external_started=True
-        try:plan=self.declared_routes.start(self.robot_fleet.focused,self._request_owner)
+        try:plan=self.declared_routes.plan(self.robot_fleet.focused)
         except BrokerError as error:
             self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,request_id=body['request_id'])
             return
-        self._message('assistant','Route planned once on the Twin from the '+('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
-            +': %d stops, %.2f m, %d finite moves, then back to the start heading. Each move uses the normal robot checks; Stop ends the route.'
-            %(len(plan['waypoints']),plan['length_m'],len(plan['steps'])),operation_id=plan['plan_id'])
-        self._event('declared_route_started',plan_id=plan['plan_id'],robot_id=plan['robot_id'],request_id=body['request_id'],
-            waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'])
+        self._declared_route_pending=plan
+        self._event('declared_route_planned',plan_id=plan['plan_id'],robot_id=plan['robot_id'],request_id=body['request_id'],
+            start=plan['start'],start_basis=plan['start_basis'],waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'])
+        card=self._card('declared_route_run','Route planned once on the Twin from the '
+            +('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
+            +': %d stops, %.2f m, %d finite moves, then back to the start heading. Moves: %s. Each move keeps the normal robot checks; Stop ends the route. Run it?'
+            %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),', '.join(s['text'] for s in plan['steps'])),
+            [self._choice('run','Run route'),self._choice('cancel','Cancel')])
+        card['operation_id']=plan['plan_id']
+
+    def _answer_declared_route(self,card,choice):
+        self._external_started=True
+        card.update(state='answered',selected_choice_id=choice['id'])
+        self._message('user',choice['label'])
+        plan=getattr(self,'_declared_route_pending',None);self._declared_route_pending=None
+        if choice['id']=='cancel':return
+        if not plan or plan['plan_id']!=card.get('operation_id'):
+            raise BrokerError('declared_route_expired','Ask for the route again; no movement was sent.',status=409)
+        try:self.declared_routes.start(plan,self._request_owner,context=dict(session_id=self._state['session_id']))
+        except BrokerError as error:
+            self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,plan_id=plan['plan_id'])
+            return
+        self._message('assistant','Route started: %d finite moves.'%len(plan['steps']),operation_id=plan['plan_id'])
+        self._event('declared_route_started',plan_id=plan['plan_id'],robot_id=plan['robot_id'])
 
     def declared_route_finished(self,result):
         with self._lock:
             plan=result['plan']
+            # The run is bound to the chat that confirmed it; a later chat never gets its result.
+            if (result.get('context') or {}).get('session_id')!=self._state['session_id']:return
             self._message('assistant','Route '+result['state'].lower()+': %d of %d moves completed (%s). Odometry-based; not verified localization.'
                 %(result['completed_steps'],len(plan['steps']),result['reason']),operation_id=plan['plan_id'])
             self._event('declared_route_finished',plan_id=plan['plan_id'],state=result['state'],reason=result['reason'],
@@ -1205,6 +1232,9 @@ class ConversationService:
             (card['kind']=='robot_presence' and choice['id']=='sim' or card['kind']=='robot_selection'))
         if 'limit_usd' in body and not direct_generation and (card['kind'] != 'generation_approval' or choice['id'] != 'approve'):
             raise BrokerError('chat_shape_invalid', 'A spending limit is accepted only for this generation approval.', status=400)
+        if card['kind']=='declared_route_run':
+            self._answer_declared_route(card,choice)
+            return
         if card['kind'] in {'robot_task_plan','robot_task_run'}:
             if not self.robot_tasks:raise BrokerError('robot_task_unavailable','Robot task service is unavailable.',status=409)
             self._external_started=True

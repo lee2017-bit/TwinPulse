@@ -68,7 +68,7 @@ def run(fleet,tmp,**kw):
     results=[];clock=[0.]
     def sleep(s):clock[0]+=s
     runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:clock[0],sleep=sleep,poll_s=1.,on_result=results.append,**kw)
-    runner.start(fleet.row['robot_id'],'owner')
+    runner.start(runner.plan(fleet.row['robot_id']),'owner')
     for _ in range(2000):
         if results:break
         time.sleep(.001)
@@ -99,7 +99,7 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         fleet=FakeFleet(['HANG'])
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
-        self.assertEqual(result['reason'],'STEP_TIMEOUT');self.assertEqual(fleet.sent[-1]['action'],'stop')
+        self.assertTrue(result['reason'].startswith('STEP_TIMEOUT:STOP_'));self.assertEqual(fleet.sent[-1]['action'],'stop')
 
     def test_external_stop_between_steps_halts(self):
         import tempfile
@@ -113,15 +113,54 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
             runner,result=run(fleet,tmp)
         self.assertEqual(result['state'],'STOPPED');self.assertEqual(len(fleet.sent),1)
 
+    def test_stop_then_prepare_between_steps_is_detected_by_epoch_change(self):
+        import tempfile
+        fleet=FakeFleet(['COMPLETED']);reads=[]
+        original=fleet.snapshot
+        def snapshot():
+            if len(fleet.sent)==1:
+                reads.append(1)
+                # 1st read after step 1 observes COMPLETED; Stop + Prepare happen before the 2nd.
+                if len(reads)==2:fleet.row.update(reason='TASK_COMPLETED',motion_epoch='after-stop-and-prepare')
+            return original()
+        fleet.snapshot=snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'STOPPED');self.assertEqual(len(fleet.sent),1)
+
     def test_physical_requires_declared_pose_on_current_scene(self):
         from twinpulse_app.declared_route_runner import DeclaredRouteRunner
         from twinpulse_app.command_broker import BrokerError
         fleet=FakeFleet([]);fleet.row.update(kind='physical',display_pose=dict(position_m=[.6,.6,0.],scene_revision='old'))
+        fleet.declared_route_cancel=None
         with self.assertRaisesRegex(BrokerError,'Set the robot position'):
             DeclaredRouteRunner(fleet,'.').plan(fleet.row['robot_id'])
         fleet.row['display_pose']['scene_revision']='rev'
         plan=DeclaredRouteRunner(fleet,'.').plan(fleet.row['robot_id'])
         self.assertEqual(plan['start_basis'],'operator_declared_display_pose')
+
+
+    def test_confirmed_plan_refuses_a_moved_start_pose(self):
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        from twinpulse_app.command_broker import BrokerError
+        fleet=FakeFleet([]);runner=DeclaredRouteRunner(fleet,'.')
+        plan=runner.plan(fleet.row['robot_id'])
+        fleet.row['pose']=dict(position_m=[1.,.6,0.])
+        with self.assertRaisesRegex(BrokerError,'start pose changed'):runner.start(plan,'owner')
+
+    def test_fleet_stop_or_manual_drive_cancels_the_route_before_delivery(self):
+        from tests.integration.test_robot_fleet import Broker
+        from twinpulse_app.robot_fleet import RobotFleet
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet=RobotFleet(Broker(),tmp);cancelled=[]
+            fleet.declared_route_cancel=lambda:cancelled.append(1)
+            for body in (dict(action='stop_all',payload={}),dict(action='command',payload=dict(text='stop'))):
+                try:fleet.action(dict(body,request_id='a'*32,robot_id=None,connection_epoch=None,motion_epoch=None),'owner')
+                except Exception:pass
+            try:fleet.action(dict(action='command',payload=dict(text='forward 10cm'),request_id='b'*32,robot_id=None,connection_epoch=None,motion_epoch=None),'owner')
+            except Exception:pass
+            self.assertEqual(len(cancelled),2)
 
 
 if __name__=='__main__':unittest.main()

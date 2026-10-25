@@ -28,6 +28,11 @@ def _stamp():
     return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
 
 
+def immediate_stop_text(text):
+    try:return isinstance(text,str) and (parse_robot_command(text) or {}).get('action') in {'stop','stop_all'}
+    except BrokerError:return False
+
+
 def parse_robot_command(text):
     """Bounded unit-bearing commands; None means ordinary scene chat.
 
@@ -347,6 +352,10 @@ class RobotFleet:
             raise BrokerError('fleet_shape','Invalid robot request.',status=400)
         encoded=json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False)
         request=body['request_id']
+        cancel_route=getattr(self,'declared_route_cancel',None)
+        if cancel_route is not None and (body['action'] in {'stop','stop_all','disconnect','drive','focus'} or body['action']=='command'
+                and immediate_stop_text(body['payload'].get('text'))):
+            cancel_route()  # before any delivery: the route must not send another step
         with self.lock:
             self._task_admission(body,_task_token)
             if self.closed and body['action'] not in {'stop','stop_all','disconnect'}:

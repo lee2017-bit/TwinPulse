@@ -529,8 +529,11 @@ class FieldGuard:
         tracking=self.tracker.snapshot() if self.tracker else None
         if tracking and tracking['status']=='ESTIMATED' and tracking['sample_s']<self.started:
             # Estimated before this output window began (robot still at rest):
-            # it cannot measure progress of this command. Not evidence either way.
+            # it cannot measure progress of this command. Not evidence either way,
+            # but a required body check may not wait for one indefinitely.
             self.progress.update(body_progress='AWAITING_IN_WINDOW_SAMPLE')
+            if getattr(self,'require_body',False) and now-self.started>self.timing_values['tracking_result_ms']/1000+1.:
+                raise ValueError('FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP')
         elif tracking and tracking['status']=='ESTIMATED':
             if self.body_samples and self.body_samples[0]['epoch']!=tracking['epoch']:self.body_samples=[]
             if not self.body_samples or self.body_samples[-1]['sample_s']!=tracking['sample_s']:
