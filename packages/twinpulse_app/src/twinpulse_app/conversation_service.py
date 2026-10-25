@@ -968,6 +968,7 @@ class ConversationService:
         try:parsed=parse_robot_command(command_text or body['text'])
         except BrokerError:parsed=None
         if parsed and parsed['action'] in {'stop','stop_all'}:
+            if getattr(self,'declared_routes',None) is not None:self.declared_routes.cancel()
             self._robot_task_pending=None
             for card in self._state['cards']:
                 if card['kind'] in {'robot_task_plan','robot_task_run'} and card['state']=='waiting':card['state']='cancelled'
@@ -986,6 +987,37 @@ class ConversationService:
         except BrokerError as error:
             self._message('assistant',str(error))
             self._event('robot_fleet_command_blocked',code=error.code,request_id=body['request_id'])
+
+    def _declared_route_request(self,text):
+        """Survey-and-return on an imported Twin runs the declared-start route (Path B)."""
+        runner=getattr(self,'declared_routes',None);fleet=self.robot_fleet
+        scene=getattr(fleet,'navigation_scene',None)
+        if runner is None or not fleet.focused or not scene or scene['geometry'].get('schema')!='scene-navigation-2.0':return False
+        value=text.strip().lower()
+        return bool(re.search(r'둘러|탐색|순회|\b(?:survey|explore|patrol|look around)\b',value)
+                    and re.search(r'돌아와|복귀|\b(?:return|come back|go back)\b',value))
+
+    def _start_declared_route(self,body):
+        self._message('user',body['text'])
+        self._external_started=True
+        try:plan=self.declared_routes.start(self.robot_fleet.focused,self._request_owner)
+        except BrokerError as error:
+            self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,request_id=body['request_id'])
+            return
+        self._message('assistant','Route planned once on the Twin from the '+('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
+            +': %d stops, %.2f m, %d finite moves, then back to the start heading. Each move uses the normal robot checks; Stop ends the route.'
+            %(len(plan['waypoints']),plan['length_m'],len(plan['steps'])),operation_id=plan['plan_id'])
+        self._event('declared_route_started',plan_id=plan['plan_id'],robot_id=plan['robot_id'],request_id=body['request_id'],
+            waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'])
+
+    def declared_route_finished(self,result):
+        with self._lock:
+            plan=result['plan']
+            self._message('assistant','Route '+result['state'].lower()+': %d of %d moves completed (%s). Odometry-based; not verified localization.'
+                %(result['completed_steps'],len(plan['steps']),result['reason']),operation_id=plan['plan_id'])
+            self._event('declared_route_finished',plan_id=plan['plan_id'],state=result['state'],reason=result['reason'],
+                completed_steps=result['completed_steps'],waypoint_scans=result['waypoint_scans'])
+            self._persist()
 
     def _offer_robot_task(self,body):
         if any(c['state']=='waiting' for c in self._state['cards']):
@@ -1055,6 +1087,9 @@ class ConversationService:
         if self.robot_fleet is not None and body['attachment'] is None and body['mode']=='new':
             from twinpulse_core.robot_task_plan import task_request
             focused_kind=(self.robot_fleet.robots.get(self.robot_fleet.focused) or {}).get('kind')
+            if self._declared_route_request(text):
+                self._start_declared_route(body)
+                return
             if self.robot_tasks and self.robot_fleet.focused and task_request(text,focused_kind):
                 self._offer_robot_task(body)
                 return

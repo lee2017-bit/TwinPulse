@@ -208,6 +208,9 @@ class LocalApiServer:
             self.conversation.robot_fleet=self.robot_fleet
             from .robot_task_service import RobotTaskService
             self.conversation.robot_tasks=RobotTaskService(product_workflow,self.robot_fleet,key_registry,clock=clock)
+            from .declared_route_runner import DeclaredRouteRunner
+            self.conversation.declared_routes=DeclaredRouteRunner(self.robot_fleet,self.robot_fleet.root,
+                on_result=self.conversation.declared_route_finished)
         if workspace_devices is not None:
             robot_diagnostics = workspace_devices.diagnostics
             robot_readiness = workspace_devices.readiness
