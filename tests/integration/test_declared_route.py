@@ -24,6 +24,13 @@ class DeclaredRouteTests(unittest.TestCase):
         self.assertEqual(plan['scope'],'DECLARED_START_MODEL_PLAN_NOT_LOCALIZED')
         self.assertLessEqual(plan['length_m'],8.+1e-9)
 
+    def test_stops_are_in_the_space_the_declared_heading_faces(self):
+        wide=dict(bounds=[0.,0.,8.,3.],obstacles=[],targets=[])
+        plan=plan_survey([4.,1.5,0.],wide,kind='physical',budget_m=8.)
+        self.assertTrue(all(w[0]>=4. for w in plan['waypoints']),plan['waypoints'])
+        plan=plan_survey([4.,1.5,math.pi],wide,kind='physical',budget_m=8.)
+        self.assertTrue(all(w[0]<=4. for w in plan['waypoints']),plan['waypoints'])
+
     def test_compiled_moves_reproduce_route_and_restore_heading(self):
         start=[.6,.6,.3]
         plan=plan_survey(start,room(),kind='physical',budget_m=8.)

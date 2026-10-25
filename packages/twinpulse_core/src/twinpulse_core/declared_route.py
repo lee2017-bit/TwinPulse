@@ -22,10 +22,17 @@ def _reachable(start,geometry,observed_cells,clearance):
     """Observation stops reachable from the start, with their path length (one A* each)."""
     free=None if observed_cells is None else {(math.floor(c[0]/.1),math.floor(c[1]/.1)) for c in observed_cells if c[2]=='free'}
     reachable={}
+    heading=(math.cos(start[2]),math.sin(start[2]))
     for p in observation_candidates(geometry):
         if free is not None and (math.floor(p[0]/.1),math.floor(p[1]/.1)) not in free:continue
-        try:reachable[tuple(p)]=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,clearance_m=clearance))
+        # Survey the space the robot faces (the declared heading), not every
+        # open-plan area behind it.
+        if (p[0]-start[0])*heading[0]+(p[1]-start[1])*heading[1]<0:continue
+        try:length=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,clearance_m=clearance))
         except NoBoundedPath:continue
+        # Same open space as the start: the path is nearly straight. Stops behind
+        # doorways (other rooms, unscanned clutter) are excluded from a room survey.
+        if length<=1.2*math.dist(start[:2],p)+.2:reachable[tuple(p)]=length
     return reachable
 
 
