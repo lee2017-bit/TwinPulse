@@ -566,7 +566,7 @@ class FleetRuntime:
             curve.CreateWidthsAttr([width]);curve.SetWidthsInterpolation('constant')
             curve.CreateDisplayColorAttr([Gf.Vec3f(*color)])
         def ring(x,y,r,n=24):return [(x+r*math.cos(i*math.tau/n),y+r*math.sin(i*math.tau/n)) for i in range(n+1)]
-        def digit(text,x,y,h=.22):
+        def digit(text,x,y,h=.4):
             out=[];w=h/2;ox=x-(len(text)*(w+.06)-.06)/2
             for i,ch in enumerate(text):
                 for seg in self.DIGITS.get(ch,''):
@@ -574,16 +574,16 @@ class FleetRuntime:
                     out.append([(bx+a*w,y+b*h/2-h/2),(bx+c*w,y+d*h/2-h/2)])
             return out
         reached=route.get('reached') or 0
-        curves('Path',[route.get('polyline') or []],(1.,.72,.15),.035,.02)
-        curves('Trace',[route.get('trace') or []],(.1,.85,.45),.03,.03)
+        curves('Path',[route.get('polyline') or []],(1.,.72,.15),.06,.02)
+        curves('Trace',[route.get('trace') or []],(.1,.85,.45),.05,.03)
         stops_todo=[];stops_done=[];labels=[]
         for i,(x,y) in enumerate(route.get('waypoints') or []):
-            (stops_done if i<reached else stops_todo).append(ring(x,y,.16))
-            labels+=digit(str(i+1),x,y+.38)
+            (stops_done if i<reached else stops_todo).append(ring(x,y,.2))
+            labels+=digit(str(i+1),x,y+.5)
         sx,sy=route['start'][:2]
-        curves('Stops',stops_todo,(1.,.55,.1),.04,.025)
-        curves('StopsReached',stops_done,(.1,.85,.45),.04,.026)
-        curves('StopNumbers',labels,(1.,1.,1.),.035,.04)
+        curves('Stops',stops_todo,(1.,.55,.1),.06,.025)
+        curves('StopsReached',stops_done,(.1,.85,.45),.06,.026)
+        curves('StopNumbers',labels,(.1,.1,.1),.06,.04)
         curves('Start',[ring(sx,sy,.2),[(sx,sy),(sx+.3*math.cos(route['start'][2]),sy+.3*math.sin(route['start'][2]))]],(.9,.9,.9),.035,.025)
         curves('Keepouts',[ring(d[0],d[1],d[2]) for d in route.get('keepouts') or []],(.9,.25,.25),.02,.02)
         curves('Candidates',[ring(c['position_xy_m'][0],c['position_xy_m'][1],c['radius_m']+.05) for c in route.get('candidates') or []],(1.,.15,.6),.05,.05)
@@ -592,7 +592,7 @@ class FleetRuntime:
         if points:
             cloud=UsdGeom.Points.Define(stage,prim)
             cloud.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),.18) for p in points])
-            cloud.CreateWidthsAttr([.045]*len(points))
+            cloud.CreateWidthsAttr([.06]*len(points))
             cloud.CreateDisplayColorAttr([Gf.Vec3f(.2,.9,1.)])
             cloud.GetPrim().SetCustomDataByKey('source','PHYSICAL_LIDAR_AT_ODOMETRY_POSE_NOT_REGISTERED' if route.get('kind')=='physical' else 'SIM_LIDAR')
         elif stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
