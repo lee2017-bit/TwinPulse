@@ -12,7 +12,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
   const [size,setSize]=useState(['.35','.3','.4']),[yaw,setYaw]=useState('0'),[margin,setMargin]=useState('.2');
   const [photo,setPhoto]=useState<File|null>(null),[url,setURL]=useState('');
   const [consent,setConsent]=useState(false),[candidate,setCandidate]=useState<EnvironmentCandidateRef|undefined>(),[duplicate,setDuplicate]=useState(false),[photoSHA,setPhotoSHA]=useState('');
-  const [replaceId,setReplaceId]=useState('');const unknownBoxes=state.objects.filter(o=>o.category==='unknown');
+  const [replaceId,setReplaceId]=useState('');const unknownBoxes=state.objects.filter(o=>o.id.startsWith('Added_'));  // added estimates only (LiDAR outline, manual, photo), never scanned meshes
   const proposal=state.photo_proposal;
   useEffect(()=>{let active=true;setPhotoSHA('');if(photo&&crypto.subtle&&typeof photo.arrayBuffer==='function'){
     void photo.arrayBuffer().then(bytes=>crypto.subtle.digest('SHA-256',bytes)).then(hash=>{if(active)setPhotoSHA(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));}).catch(()=>{});
@@ -57,7 +57,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
         </div>)}
       </section>}
       {candidate&&<><p role="status">Reviewing {candidate.candidate_id} · set the center on the map. Catalog size is an estimate.</p>
-        {unknownBoxes.length>0&&<label>Replace a LiDAR outline box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
+        {unknownBoxes.length>0&&<label>Replace an added estimate box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
           const box=unknownBoxes.find(o=>o.id===id);if(box?.position_m){setXY([box.position_m[0].toFixed(3),box.position_m[1].toFixed(3)]);setDuplicate(true);}invalidate();}}>
           <option value="">Keep as a new object</option>{unknownBoxes.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}</select></label>}
         <label><input aria-label="Candidate duplicate reviewed" type="checkbox" checked={duplicate} onChange={e=>{setDuplicate(e.target.checked);invalidate();}}/> I checked that this object is not already represented.</label>

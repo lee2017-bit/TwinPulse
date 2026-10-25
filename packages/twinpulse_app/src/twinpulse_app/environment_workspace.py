@@ -355,8 +355,9 @@ class EnvironmentWorkspace:
                         if candidate['kind']!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
                         base=original_environment
                         if replace_object_id:
-                            if not any(o['item']['id']==replace_object_id and o['item']['kind']=='unknown' for o in original_environment.get('overlays') or []):
-                                raise ValueError('ENVIRONMENT_REPLACE_TARGET_NOT_UNKNOWN_OVERLAY')
+                            # Only an added estimate (LiDAR outline, manual or earlier photo box) can be replaced; scanned meshes never.
+                            if not any(o['item']['id']==replace_object_id for o in original_environment.get('overlays') or []):
+                                raise ValueError('ENVIRONMENT_REPLACE_TARGET_NOT_AN_ADDED_OVERLAY')
                             base=remove_overlay(original_environment,replace_object_id)
                         overlay['evidence']=job['photo'];environment=add_overlay(base,overlay)
                         photo_reference=body['candidate_ref']
