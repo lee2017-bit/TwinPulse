@@ -1066,7 +1066,10 @@ class ConversationService:
     def _plan_declared_route(self,text,request_id,*,stops=None,planned_by=None):
         try:plan=self.declared_routes.plan(self.robot_fleet.focused,stops=stops or None)
         except BrokerError as error:
-            self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,request_id=request_id)
+            detail=str(error)
+            if stops and 'BLOCKED' in detail:detail='A chosen stop is not on free floor with the robot berth ('+detail+'). Click inside the grey floor area, away from walls, and ask again.'
+            elif 'NO_PATH' in detail or 'BLOCKED' in detail:detail='No clear path on the Twin for this request ('+detail+').'
+            self._message('assistant',detail,status='failed');self._event('declared_route_blocked',code=error.code,request_id=request_id)
             return
         plan['planned_by']=planned_by or dict(kind='deterministic',label='Deterministic planner')
         self._declared_route_pending=plan
@@ -1180,9 +1183,11 @@ class ConversationService:
         marker=(job['task_id'],job['state'],job['step_index'],job['segments'])
         if marker==self._robot_task_marker:return
         self._robot_task_marker=marker
+        if job['task_id']==getattr(self,'_route_consumed_task',None):return  # its plan became a Path B route; no task-loop message
         pending=getattr(self,'_route_model_pending',None)
         if pending and job['task_id']==pending['task_id'] and job['state'] in {'READY','FAILED','CANCELLED','HELD'}:
             self._route_model_pending=None;latency=round(time.monotonic()-pending['started'],1);model=str(job.get('model_id') or 'configured planner')
+            self._route_consumed_task=job['task_id']
             if job['state']=='READY':
                 ops=[s.get('op') for s in (job.get('plan') or {}).get('steps') or []]
                 valid=bool(ops) and set(ops)<={'observe','survey','return_to_start','stop'} and any(o in {'observe','survey'} for o in ops)

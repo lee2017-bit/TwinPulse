@@ -115,7 +115,11 @@ export function RoutePreview({preview,picks=[],onPick}:{preview:NonNullable<Ques
   return <svg role="img" aria-label="Planned route on the Twin floor · model plan, not localization" className="route-preview"
     viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6,cursor:onPick?'crosshair':'default'}}
     onClick={onPick?event=>{const box=(event.currentTarget as SVGSVGElement).getBoundingClientRect();
-      const px=(event.clientX-box.left)/box.width*w,py=(event.clientY-box.top)/box.height*h;onPick(Math.round((x0+px)*100)/100,Math.round((y1-py)*100)/100);}:undefined}>
+      const px=(event.clientX-box.left)/box.width*w,py=(event.clientY-box.top)/box.height*h;const wx=x0+px,wy=y1-py;
+      // Snap to the nearest scanned free cell so a click beside a wall still yields a plannable stop.
+      let best:number[]|null=null,bestD=0.45;
+      for(const [cx,cy] of preview.free_cells){const d=Math.hypot(cx-wx,cy-wy);if(d<bestD){bestD=d;best=[cx,cy];}}
+      if(best)onPick(Math.round(best[0]*100)/100,Math.round(best[1]*100)/100);}:undefined}>
     {picks.map(([x,y],i)=><g key={'pick'+i}><circle cx={X(x)} cy={Y(y)} r={0.11} fill="#3fa9f5"/><text x={X(x)+0.14} y={Y(y)-0.1} fontSize={0.22} fill="#3fa9f5">{String.fromCharCode(65+i)}</text></g>)}
     {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
     <polyline points={`${X(sx)},${Y(sy)} ${path}`} fill="none" stroke="#5fd3a6" strokeWidth={0.04} strokeLinejoin="round"/>
@@ -447,12 +451,15 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     if(previous&&!previous.nearBottom)list.current.scrollTop=previous.top;
     else{nearBottom.current=true;list.current.scrollTop=list.current.scrollHeight;setNewUpdates(false);}  // a reopened chat starts at its latest message
   },[state?.project_id]);
-  // Opening the Twin pane or moving the split re-flows the transcript; keep following the latest message.
+  // Follow mode (2026-10-26): while the reader has not scrolled up, keep the latest message in
+  // view whatever re-flows the transcript (Twin pane, split, cards, images). A wheel/touch/key
+  // scroll upward leaves follow mode; scrolling back near the bottom re-enters it.
   useEffect(()=>{
-    if(home||!list.current||!nearBottom.current)return;
-    const node=list.current;const follow=()=>{node.scrollTop=node.scrollHeight;setNewUpdates(false);};
-    follow();const timer=window.setTimeout(follow,250);return()=>window.clearTimeout(timer);
-  },[showTwin,controlView,chatShare,layoutVersion,home]);
+    if(home)return;
+    const timer=window.setInterval(()=>{const node=list.current;if(!node||!nearBottom.current)return;
+      if(node.scrollHeight-node.scrollTop-node.clientHeight>4){node.scrollTop=node.scrollHeight;setNewUpdates(false);}},400);
+    return()=>window.clearInterval(timer);
+  },[home]);
 
   useEffect(() => { if (state) sessionStorage.setItem(`twinpulse.chat.draft.${state.project_id}`, text); }, [text, state?.project_id]);
   useEffect(()=>{const input=composerInput.current;if(!input)return;
@@ -880,7 +887,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
           }}>Twin controls</button>}
         </section>
-        <div ref={list} className="chat-message-list" onScroll={() => { const node = list.current; if (node) nearBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }}>
+        <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
+          onKeyDown={event=>{if(['ArrowUp','PageUp','Home'].includes(event.key))nearBottom.current=false;}}
+          onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80) nearBottom.current = true; }}>
           {!simulationHasOrigin&&simulationCard}
           {state?.restored_session&&<p className="chat-history-note">Saved conversation · previous execution history. Reopening never automatically starts generation or motion.</p>}
           {workflow?.site_draft?.progressive_twin&&<section aria-label="Twin draft acceptance" role="status">
