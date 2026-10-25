@@ -353,7 +353,8 @@ class RobotFleet:
         encoded=json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False)
         request=body['request_id']
         cancel_route=getattr(self,'declared_route_cancel',None)
-        if cancel_route is not None and (body['action'] in {'stop','stop_all','disconnect','drive','focus'} or body['action']=='command'
+        if cancel_route is not None and (body['action'] in {'stop','stop_all','disconnect','drive'}
+                or body['action']=='focus' and body.get('robot_id')!=self.focused or body['action']=='command'
                 and immediate_stop_text(body['payload'].get('text'))):
             cancel_route()  # before any delivery: the route must not send another step
         with self.lock:
@@ -601,6 +602,9 @@ class RobotFleet:
                     if action in {'task','navigate'} and body['action']!='command':
                         raise BrokerError('fleet_task_text_required','Use a bounded robot command.',status=400)
                     self._ready(row,body,epoch=body['action']!='command')
+                    if body['action']=='command' and body.get('motion_epoch') is not None and body['motion_epoch']!=row['motion_epoch']:
+                        # A runner-sent step bound to an epoch a Stop has since replaced.
+                        raise BrokerError('fleet_motion_epoch_changed','Robot was stopped; this step was not sent.',status=409)
                     if self.focused!=identity:
                         raise BrokerError('fleet_focus_changed','Select this robot and wait for selection confirmation before moving.',status=409)
                     if row['control_state'] not in {'READY','DRIVING','PAUSED'}:raise BrokerError('fleet_prepare_required','Prepare the selected robot first.',status=409)

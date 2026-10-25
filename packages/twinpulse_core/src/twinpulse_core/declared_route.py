@@ -161,13 +161,13 @@ def unexplained_scan_discs(start,points,observed_cells,*,wall_margin_m=.2,radius
     def near_blocked(cx,cy):return any((ix,iy) in blocked for ix in range(cx-k,cx+k+1) for iy in range(cy-k,cy+k+1))
     scored=[]
     for flip in (False,True):
-        inside=[(x,y) for px,py,x,y in _scan_world(start,points,flip) if .1<math.hypot(px,py)<=max_range_m]
+        inside=[(x,y) for px,py,x,y in _scan_world(start,points,flip) if .3<math.hypot(px,py)<=max_range_m]
         hits=sum(1 for x,y in inside if near_blocked(*_key(x,y)))
         scored.append((hits/len(inside) if inside else 0.,flip,inside))
     agreement,flip,inside=max(scored,key=lambda v:v[0])
     review.update(agreement=round(agreement,3),lateral_sign=-1 if flip else 1,
         alternative_agreement=round(min(scored,key=lambda v:v[0])[0],3))
-    if agreement<min_agreement:return review
+    if agreement<min_agreement or agreement-review['alternative_agreement']<.1:return review
     seen=set();out=[]
     for x,y in inside:
         cx,cy=_key(x,y)

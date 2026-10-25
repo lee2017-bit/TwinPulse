@@ -23,7 +23,8 @@ ACK_TIMEOUT_S=10.
 PHYSICAL_SETTLE_S=1.5
 MAX_RECOVERIES=2
 RECOVERY_BACKOFF_M=.25
-RECOVERY_KEEPOUT_M=.05  # point obstacle; the route clearance supplies the berth
+RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
+MAX_STEPS_FACTOR=3
 
 
 def step_timeout_s(step):
@@ -42,6 +43,7 @@ class DeclaredRouteRunner:
         self.on_result=on_result;self.lock=threading.Lock();self.current=None;self.cancelled=threading.Event()
         # Any Stop/drive/focus/disconnect through the fleet (UI button, chat, API) cancels the route.
         fleet.declared_route_cancel=self.cancel
+        self.used_declarations=set()  # a declared start is valid for one run only
 
     def active(self):
         with self.lock:return bool(self.current and self.current['state']=='RUNNING')
@@ -56,6 +58,8 @@ class DeclaredRouteRunner:
             declared=row.get('display_pose') or {}
             if declared.get('scene_revision')!=scene['binding'][2] or not _pose3(declared.get('position_m')):
                 raise BrokerError('declared_route_start_required','Set the robot position and heading on this Twin first.',status=409)
+            if declared.get('visual_epoch') in self.used_declarations:
+                raise BrokerError('declared_route_start_required','The robot has moved since this position was set. Set its position and heading on the Twin again.',status=409)
             return list(declared['position_m']),'operator_declared_display_pose'
         start=(row.get('pose') or {}).get('position_m')
         if not _pose3(start):raise BrokerError('declared_route_pose_required','A current SIM pose is required.',status=409)
@@ -100,6 +104,7 @@ class DeclaredRouteRunner:
             if row.get('control_state') not in {'READY','PAUSED'}:
                 raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
             self.cancelled.clear()
+            if row['kind']=='physical':self.used_declarations.add((row.get('display_pose') or {}).get('visual_epoch'))
             self.current=dict(plan=plan,state='RUNNING',completed_steps=0,reason=None,waypoint_scans=[],
                 started_at=time.time(),context=context)
             self._save()
@@ -140,13 +145,16 @@ class DeclaredRouteRunner:
         row=self._row(robot_id)
         if row is None:return ('FAILED','ROBOT_REMOVED'),None,(None,None)
         epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
+        after_stop=previous=='AFTER_STOP'  # recovery: the proximity pause just issued its own Stop
+        if after_stop:previous=None
         # Continuity: after a step the robot must still be exactly where its
         # COMPLETED left it. Physical rows report the completion's own
         # zero/readback as OPERATOR_STOP, so only SIM rows can use the reason;
         # epochs are authoritative for both (any Stop/Prepare/drive issues a new one).
         if previous is not None and (epochs!=previous or row['kind']!='physical' and row.get('reason') not in DONE_REASONS):
             return ('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason'))),row,epochs
-        if previous is not None and 'applied_motion_epoch' in row:
+        if (previous is not None or after_stop) and 'applied_motion_epoch' in row:
+            previous=previous or epochs
             until=self.clock()+10.
             while row.get('applied_motion_epoch')!=row.get('motion_epoch'):
                 if self.cancelled.is_set() or self.clock()>until:return ('STOPPED','PREVIOUS_STOP_NOT_APPLIED'),row,epochs
@@ -177,7 +185,12 @@ class DeclaredRouteRunner:
                     ('ROUTE_CANCELLED' if cancelled else 'STEP_NOT_ACKNOWLEDGED' if unacknowledged else 'STEP_TIMEOUT')+':'+stop),row,epochs
         if command['state']!='COMPLETED':return ('STEP_'+command['state'],str(command.get('reason'))),row,epochs
         if row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)  # robot finishes its zero/readback
-        return ('COMPLETED',None),self._row(robot_id) or row,epochs
+        after=self._row(robot_id) or row
+        # The completion's own zero/readback may rotate the epoch during settle;
+        # adopt it unless a user Stop (cancel hook) happened meanwhile.
+        if after.get('kind')=='physical' and not self.cancelled.is_set() and ((after.get('command') or {}).get('request_id')==request):
+            epochs=(after.get('connection_epoch'),after.get('motion_epoch'))
+        return ('COMPLETED',None),after,epochs
 
     def _run(self,owner):
         """Odometry-closed waypoint following: every step is re-aimed from the measured pose.
@@ -194,6 +207,7 @@ class DeclaredRouteRunner:
             start=plan['start'];goals=[*plan['waypoints'],start[:2]]
             queue=[(list(q),i) for i,leg in enumerate(plan.get('legs') or [plan['polyline']]) for q in leg]
             reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[tuple(d) for d in plan.get('keepouts') or []];recoveries=0
+            steps_left=MAX_STEPS_FACTOR*len(plan['steps'])+10
             while True:
                 pose=plan_pose(start,origin,self._measured(row));step=None
                 while queue and step is None:
@@ -212,6 +226,8 @@ class DeclaredRouteRunner:
                 if step['direction']=='forward':
                     forward+=step['amount']
                     if forward>budget:return self._finish('STOPPED','ROUTE_DISTANCE_BUDGET_EXCEEDED')
+                steps_left-=1
+                if steps_left<0:return self._finish('STOPPED','ROUTE_STEP_BUDGET_EXCEEDED')
                 outcome,row,epochs=self._step(owner,robot_id,step,previous)
                 if (outcome==('STEP_FAILED','FIELD_PROXIMITY_10CM') and step['direction']=='forward'
                         and recoveries<MAX_RECOVERIES):
@@ -221,11 +237,15 @@ class DeclaredRouteRunner:
                     with self.lock:
                         self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=RECOVERY_KEEPOUT_M))
                         self._save()
-                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=RECOVERY_BACKOFF_M),None)
+                    if row and row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)
+                    # Wait for the proximity pause's Stop to be applied before backing off.
+                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=RECOVERY_BACKOFF_M),'AFTER_STOP')
                     if outcome[0]!='COMPLETED':return self._finish('STOPPED','RECOVERY_'+outcome[0]+':'+str(outcome[1]))
                     previous=epochs;pose=plan_pose(start,origin,self._measured(row))
                     # A stop that sits inside the new keepout is skipped; the start is always kept.
-                    remaining=[g for g in goals[reached:-1] if all(math.dist(g[:2],d[:2])>d[2]+.5 for d in discs)]+[goals[-1]]
+                    remaining=[g for g in goals[reached:-1] if all(math.dist(g[:2],d[:2])>d[2]+.65 for d in discs)]+[goals[-1]]
+                    scene=self.fleet.navigation_scene or {}
+                    if not scene or scene['binding'][2]!=plan['scene_revision']:return self._finish('STOPPED','RECOVERY_SCENE_CHANGED')
                     try:legs=replan_legs(pose,remaining,scene.get('geometry') or {},scene.get('observed_cells'),kind=plan['kind'],discs=discs)
                     except (ValueError,KeyError,TypeError) as exc:return self._finish('STOPPED','RECOVERY_REPLAN_FAILED:'+str(exc)[:80])
                     goals=goals[:reached]+remaining
