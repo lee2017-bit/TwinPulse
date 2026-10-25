@@ -106,20 +106,37 @@ export function conversationTurns(state:Pick<ConversationState,'messages'|'cards
   return turns.length?turns:[{id:'empty',messages:[],cards:[]}];
 }
 
+export function RoutePreview({preview}:{preview:NonNullable<QuestionCard['route_preview']>}){
+  const [x0,y0,x1,y1]=preview.bounds,w=x1-x0,h=y1-y0,c=preview.cell_m;
+  // World +Y is drawn up; SVG y grows down.
+  const X=(x:number)=>x-x0,Y=(y:number)=>y1-y,path=preview.polyline.map(p=>`${X(p[0])},${Y(p[1])}`).join(' ');
+  const [sx,sy,syaw]=preview.start;
+  return <svg role="img" aria-label="Planned route on the Twin floor · model plan, not localization" className="route-preview"
+    viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6}}>
+    {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
+    <polyline points={`${X(sx)},${Y(sy)} ${path}`} fill="none" stroke="#5fd3a6" strokeWidth={0.04} strokeLinejoin="round"/>
+    {preview.waypoints.map(([x,y],i)=><g key={i}><circle cx={X(x)} cy={Y(y)} r={0.09} fill="#f2b84b"/>
+      <text x={X(x)+0.12} y={Y(y)-0.1} fontSize={0.22} fill="#f2b84b">{i+1}</text></g>)}
+    <circle cx={X(sx)} cy={Y(sy)} r={0.1} fill="#ffffff"/>
+    <line x1={X(sx)} y1={Y(sy)} x2={X(sx+0.3*Math.cos(syaw))} y2={Y(sy+0.3*Math.sin(syaw))} stroke="#ffffff" strokeWidth={0.05}/>
+    <text x={X(sx)+0.12} y={Y(sy)+0.3} fontSize={0.2} fill="#ffffff">Start</text>
+  </svg>;
+}
+
 export function ActionCard({ card, busy, act, current=true }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean}) {
   const [choice,setChoice]=useState<string|null>(null);
   const preview=card.generation_approval;
   const directOffer=!!preview&&['robot_presence','robot_selection'].includes(card.kind);
   const waiting = card.state === 'waiting' && current;
   if(!waiting||card.kind==='generation_approval')return <section className="chat-question-history" aria-label="Previous question">
-    <p>{card.question}</p><small>{card.choices.find(c=>c.id===card.selected_choice_id)?.label ??
+    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview}/>}<small>{card.choices.find(c=>c.id===card.selected_choice_id)?.label ??
       (card.state==='waiting'?'Waiting for the current step to finish':card.state.replaceAll('_',' '))}</small>
   </section>;
   const enabled=card.choices.filter(c=>c.enabled);
   const selected=enabled.length===1?enabled[0].id:enabled.some(option=>option.id===choice)?choice:null;
   const startsGeneration=['robot_presence','robot_selection'].includes(card.kind)&&(card.kind==='robot_selection'||selected==='sim');
   return <section className="chat-question" aria-label={card.question}>
-    <p>{card.question}</p>
+    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview}/>}
     <small role="status">{busy ? 'Submitting your choice…' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
     {directOffer&&<div className="generation-start-offer">
       <p>Selecting Create Twin starts generation once. {preview.image_count?

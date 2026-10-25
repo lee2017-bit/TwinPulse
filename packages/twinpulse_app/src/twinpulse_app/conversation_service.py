@@ -1019,6 +1019,18 @@ class ConversationService:
             %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),', '.join(s['text'] for s in plan['steps'])),
             [self._choice('run','Run route'),self._choice('cancel','Cancel')])
         card['operation_id']=plan['plan_id']
+        card['route_preview']=self._route_preview(plan)
+
+    def _route_preview(self,plan):
+        """Small top-down map for the card: free floor near the route, stops, path."""
+        xs=[p[0] for p in [plan['start'],*plan['polyline']]];ys=[p[1] for p in [plan['start'],*plan['polyline']]]
+        box=[min(xs)-1.,min(ys)-1.,max(xs)+1.,max(ys)+1.]
+        scene=self.robot_fleet.navigation_scene or {}
+        free=[[round(c[0],2),round(c[1],2)] for c in (scene.get('observed_cells') or [])
+              if c[2]=='free' and box[0]<=c[0]<=box[2] and box[1]<=c[1]<=box[3]][:4000]
+        r=lambda v:[round(x,3) for x in v]
+        return dict(bounds=r(box),free_cells=free,cell_m=.1,start=r(plan['start']),waypoints=[r(w) for w in plan['waypoints']],
+            polyline=[r(p) for p in plan['polyline']],basis=plan['start_basis'],scope=plan['scope'])
 
     def _answer_declared_route(self,card,choice):
         self._external_started=True
