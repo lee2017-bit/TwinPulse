@@ -91,3 +91,12 @@ Nav2/SLAM, new reconstruction models, the photo-fidelity rework, capability rout
 ## Fallback (decide on 10/28)
 
 If the physical return is not achieved by the end of 10/28, film at least 1 minute of the already-working finite moves with LiDAR recording, show the full survey/return in SIM, and state the limitation.
+
+## Progress log (newest last; Project Memory has the user's uncommitted v657 edit, so sprint lines live here)
+
+- 2026-10-25 T1: body-progress window bound to output start, new window clears progress keys, bounded wait for an in-window sample; thresholds unchanged (`4eb49bf`, `20982d3`). The `scene()` freshness change was dropped: Path B does not use the common-task child path.
+- 2026-10-25 T4: 'in place'/'in-place' no longer routes to scene edit (`204c571`).
+- 2026-10-25 T2: no new code. The robot card's existing **Set position** (`set_twin_pose` → `display_pose`, operator estimate, never authority) is the declared start pose.
+- 2026-10-25 T3: declared-route planner/runner plus a Run route card, every-Stop cancel and epoch continuity (`e764395`, `20982d3`, `ad1bf78` regex fix). Installed dev build `20261025T075618Z-aae9422ada4e`, Test/CDP, imported RoomPlan Twin, SIM robot at (1.4725, 1.0526, −0.8204): 4 stops / 3.52 m / 11 moves COMPLETED and returned to start (SIM kinematic; return error 0.000 m / 0.0002 rad). Evidence: `outputs/path-b-20261025/sim06/` (sim01–sim05 failures retained: trigger regex bug, scene not rebuilt after restart).
+- 2026-10-25 Disk: 470 generated build copies and 6 old installed releases removed with user approval (C: 1.7 → 17.2 GiB free); inventory, script and receipt in `outputs/cleanup-20261025/`.
+- Open: route overlay on the Twin, coverage is a local 4-stop loop (not whole room), physical T5 not run.
