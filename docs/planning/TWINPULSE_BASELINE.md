@@ -2,6 +2,8 @@
 
 - 문서 버전: **Baseline v1.0.656**
 
+> **v656 공개 완료 대조:** 원소스commit76261894d70c0c9959cafad9259f4f11e6f5553c/remote tree e3530d9e6fc18d9d20be26056b1412bb932c405b 일치 후2026-10-25T04:37:01Z public/private=false·무인증 main/상태문서 접근을 확인했다. 기존6Release/13asset 불변·새설치/영상 업로드0/원개인자료 제외·보존이다. 기존ZIP3개 hash/content bounded findings0. 전역source header검수의 기존 model-library.css 누락FAIL은 공개문서에 명시하며 테스트제품 source rewrite로 숨기지 않았다. 원개인자료/키/raw·PNG7개는 반영하지 않았고 v655 제품실패를 승격하지 않는다. [공개 결과](../releases/SOURCE_CHECKPOINT_2026-10-25.md) · PROJECT_MEMORY v656. 후행 문서commit은 제품 수정/재빌드가 아니다.
+
 > **2026-10-25 / v656 변경 이력 — 현재 소스/문서 공개 체크포인트 승인.** 사용자가 GitHub 최신 반영과 private→public을 명시 요청했다. [공개용 현재 상태](../STATUS_2026-10-25.md)는 기존 구조와 정확한 v655 부분 이동수집/자율순회·복귀FAIL, 미구현 후속·실행/Test UI 조작/안전·자료 제외를 정리한다. 공개는 제품/HW 인수나 새로운 설치본 발표가 아니다. 원자료·개인사진/USD·키/runtime/outputs·미검토PNG7개를 제외하며 원본 보존/기존 license·ROBOTIS 출처 유지한다. 원Git 이력2582blob 및 신규후보 제한된 키 패턴0건, 기존6Release/13asset도 공개되므로 ZIP hash/content와 synthetic 영상 provenance를 별도 검토한다. 기존 개발경로 문구를 private 원파일 업로드로 오인하지 않는다. 실제 성공은 remote main/tree 및 public 무인증 확인 receipt 기준이며 검토를 곧 완료로 쓰지 않는다. 새Release·모델·실물/설치/시스템/삭제/force push·이력 rewrite0. PROJECT_MEMORY v656과 동시 갱신.
 
 > **2026-10-25 / v655 변경 이력 — 감독 실물 이동 자료 부분 확보, 자율 순회·복귀 FAILED.** 설치1387861a7bfd는 불변이다. 실제 survey task e78663260fa9504d5efa82ab014c7295는 계획용 `_geometry→PhysicalTaskMap.scene` 원500ms gate에서 `TASK_LOCAL_FRESH_RING_REQUIRED_BEFORE_MOTION`/0child 실패했다. child 직전 fresh ring 보완에 도달하지 않은 경로이며 PC 단계 시각 미기록으로 정확 지연은 미확정이다. 사용자 별도 승인 후 기존 UI finite 전진1m·좌90°·전진0.5m·좌1.505504rad 네 건 COMPLETED/Stop true, 복귀 전진0.97m는 .0181729m에서 FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP/Stop true다. wheel progress 합1.516168m/최종 출발점 거리 추정1.085584m·복귀false이며 독립 차체/세계정합·방전체 coverage 인증이 아니다.
