@@ -14,13 +14,16 @@ import threading
 import time
 from uuid import uuid4
 
-from twinpulse_core.declared_route import plan_survey, compile_moves, move_text
+from twinpulse_core.declared_route import plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs
 from .command_broker import BrokerError
 
 DONE_REASONS={'TASK_COMPLETED','TASK_WHEEL_ODOM_TARGET_REACHED'}
 TERMINAL={'COMPLETED','FAILED','CANCELLED','ARRIVED','ESTIMATE_REACHED'}
 ACK_TIMEOUT_S=10.
 PHYSICAL_SETTLE_S=1.5
+MAX_RECOVERIES=2
+RECOVERY_BACKOFF_M=.25
+RECOVERY_KEEPOUT_M=.05  # point obstacle; the route clearance supplies the berth
 
 
 def step_timeout_s(step):
@@ -115,66 +118,117 @@ class DeclaredRouteRunner:
             return 'STOP_SENT'
         except BrokerError as exc:return 'STOP_REJECTED:'+exc.code
 
+    def _measured(self,row):
+        """Wheel-odometry pose (physical rows) or engine pose (SIM rows) as x, y, yaw."""
+        pose=(row or {}).get('pose') or {}
+        if all(isinstance(pose.get(k),(int,float)) for k in ('x','y','yaw')):return [pose['x'],pose['y'],pose['yaw']]
+        value=pose.get('position_m')
+        if not _pose3(value):raise ValueError('ROUTE_POSE_UNAVAILABLE')
+        return list(value)
+
+    def _step(self,owner,robot_id,step,previous):
+        """Send one finite command exactly like a typed one; return (outcome, row, epochs)."""
+        row=self._row(robot_id)
+        if row is None:return ('FAILED','ROBOT_REMOVED'),None,(None,None)
+        epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
+        # Continuity: after a step the robot must still be exactly where its
+        # COMPLETED left it. Physical rows report the completion's own
+        # zero/readback as OPERATOR_STOP, so only SIM rows can use the reason;
+        # epochs are authoritative for both (any Stop/Prepare/drive issues a new one).
+        if previous is not None and (epochs!=previous or row['kind']!='physical' and row.get('reason') not in DONE_REASONS):
+            return ('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason'))),row,epochs
+        if previous is not None and 'applied_motion_epoch' in row:
+            until=self.clock()+10.
+            while row.get('applied_motion_epoch')!=row.get('motion_epoch'):
+                if self.cancelled.is_set() or self.clock()>until:return ('STOPPED','PREVIOUS_STOP_NOT_APPLIED'),row,epochs
+                self.sleep(self.poll_s);row=self._row(robot_id) or {}
+                if (row.get('connection_epoch'),row.get('motion_epoch'))!=previous:
+                    return ('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason'))),row,epochs
+        if row.get('control_state') not in {'READY','PAUSED'}:return ('STOPPED','ROBOT_NOT_READY:'+str(row.get('control_state'))),row,epochs
+        if self.cancelled.is_set():return ('CANCELLED','ROUTE_CANCELLED'),row,epochs
+        request=uuid4().hex;text=move_text(step)
+        try:self.fleet.action(dict(action='command',request_id=request,robot_id=robot_id,connection_epoch=epochs[0],
+                motion_epoch=epochs[1],payload=dict(text=text)),owner)
+        except BrokerError as exc:return ('FAILED','STEP_REJECTED:'+exc.code),row,epochs
+        with self.lock:self.current.setdefault('sent',[]).append(text);self._save()
+        sent=self.clock();deadline=sent+step_timeout_s(step);acknowledged=False
+        while True:
+            self.sleep(self.poll_s)
+            row=self._row(robot_id);command=(row or {}).get('command') or {}
+            if row:epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
+            if command.get('request_id')==request:acknowledged=True
+            if command.get('request_id')==request and command.get('state') in TERMINAL:break
+            # 2026-10-25: a step sent the instant the previous one completed was
+            # never acknowledged. Fail fast; never resend automatically.
+            unacknowledged=not acknowledged and self.clock()-sent>ACK_TIMEOUT_S
+            if self.cancelled.is_set() or self.clock()>deadline or unacknowledged:
+                cancelled=self.cancelled.is_set()  # before our own Stop trips the cancel hook
+                stop=self._stop(robot_id,owner,epochs)
+                return ('CANCELLED' if cancelled else 'FAILED',
+                    ('ROUTE_CANCELLED' if cancelled else 'STEP_NOT_ACKNOWLEDGED' if unacknowledged else 'STEP_TIMEOUT')+':'+stop),row,epochs
+        if command['state']!='COMPLETED':return ('STEP_'+command['state'],str(command.get('reason'))),row,epochs
+        if row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)  # robot finishes its zero/readback
+        return ('COMPLETED',None),self._row(robot_id) or row,epochs
+
     def _run(self,owner):
+        """Odometry-closed waypoint following: every step is re-aimed from the measured pose.
+
+        The step list on the card is the nominal preview. On a robot-side
+        proximity stop during a forward step the robot backs off 15 cm and the
+        rest of the route is re-planned around a keepout at the stop (at most
+        MAX_RECOVERIES times). All other failures stop the route.
+        """
         plan=self.current['plan'];robot_id=plan['robot_id'];previous=None;epochs=(None,None)
+        scene=self.fleet.navigation_scene or {}
         try:
-            for index,step in enumerate(plan['steps']):
-                row=self._row(robot_id)
-                if row is None:return self._finish('FAILED','ROBOT_REMOVED')
-                epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
-                # Continuity: after step 1 the robot must still be exactly where the
-                # last COMPLETED left it (same epochs, completion reason). A Stop,
-                # Prepare, drive or reconnect in between changes one of these.
-                # Physical rows report the completion's own zero/readback as
-                # OPERATOR_STOP, so only SIM rows can use the reason; epochs are
-                # authoritative for both (any Stop/Prepare/drive issues a new one).
-                if previous is not None and (epochs!=previous or row['kind']!='physical' and row.get('reason') not in DONE_REASONS):
-                    return self._finish('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason')))
-                if previous is not None and 'applied_motion_epoch' in row:
-                    # The previous step's stop must be applied (readback) before the next one.
-                    until=self.clock()+10.
-                    while row.get('applied_motion_epoch')!=row.get('motion_epoch'):
-                        if self.cancelled.is_set() or self.clock()>until:
-                            return self._finish('STOPPED','PREVIOUS_STOP_NOT_APPLIED')
-                        self.sleep(self.poll_s);row=self._row(robot_id) or {}
-                        if (row.get('connection_epoch'),row.get('motion_epoch'))!=previous:
-                            return self._finish('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason')))
-                if row.get('control_state') not in {'READY','PAUSED'}:
-                    return self._finish('STOPPED','ROBOT_NOT_READY:'+str(row.get('control_state')))
-                if self.cancelled.is_set():return self._finish('CANCELLED','ROUTE_CANCELLED')
-                request=uuid4().hex
-                body=dict(action='command',request_id=request,robot_id=robot_id,connection_epoch=epochs[0],
-                    motion_epoch=epochs[1],payload=dict(text=step['text']))
-                try:self.fleet.action(body,owner)
-                except BrokerError as exc:return self._finish('FAILED','STEP_REJECTED:'+exc.code)
-                sent=self.clock();deadline=sent+step_timeout_s(step);acknowledged=False
-                while True:
-                    self.sleep(self.poll_s)
-                    row=self._row(robot_id);command=(row or {}).get('command') or {}
-                    if row:epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
-                    if command.get('request_id')==request:acknowledged=True
-                    if command.get('request_id')==request and command.get('state') in TERMINAL:break
-                    # 2026-10-25 physical run: a step sent right after the previous
-                    # completion was never acknowledged and the route waited for
-                    # the whole step timeout. Fail fast instead (no automatic resend).
-                    unacknowledged=not acknowledged and self.clock()-sent>ACK_TIMEOUT_S
-                    if self.cancelled.is_set() or self.clock()>deadline or unacknowledged:
-                        cancelled=self.cancelled.is_set()  # before our own Stop trips the cancel hook
-                        stop=self._stop(robot_id,owner,epochs)
-                        return self._finish('CANCELLED' if cancelled else 'FAILED',
-                            ('ROUTE_CANCELLED' if cancelled else 'STEP_NOT_ACKNOWLEDGED' if unacknowledged else 'STEP_TIMEOUT')+':'+stop)
-                if command['state']!='COMPLETED':
-                    return self._finish('STOPPED','STEP_'+command['state']+':'+str(command.get('reason')))
+            row=self._row(robot_id);origin=self._measured(row)
+            start=plan['start'];goals=[*plan['waypoints'],start[:2]]
+            queue=[(list(q),i) for i,leg in enumerate(plan.get('legs') or [plan['polyline']]) for q in leg]
+            reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[];recoveries=0
+            while True:
+                pose=plan_pose(start,origin,self._measured(row));step=None
+                while queue and step is None:
+                    step=next_move(pose,queue[0][0])
+                    if step is None:
+                        point,leg=queue.pop(0)
+                        if not queue or queue[0][1]!=leg:
+                            reached=leg+1;scan=(row or {}).get('scan') or {}
+                            with self.lock:
+                                self.current['waypoint_scans'].append(dict(stop=leg,pose=[round(v,4) for v in pose],
+                                    scan_sha256=scan.get('raw_sha256') or scan.get('sha256'),frame_sequence=scan.get('frame_sequence')))
+                                self._save()
+                if step is None:
+                    step=heading_move(pose,start[2])
+                    if step is None:break
+                if step['direction']=='forward':
+                    forward+=step['amount']
+                    if forward>budget:return self._finish('STOPPED','ROUTE_DISTANCE_BUDGET_EXCEEDED')
+                outcome,row,epochs=self._step(owner,robot_id,step,previous)
+                if (outcome==('STEP_FAILED','FIELD_PROXIMITY_10CM') and step['direction']=='forward'
+                        and recoveries<MAX_RECOVERIES):
+                    recoveries+=1
+                    blocked=plan_pose(start,origin,self._measured(row))
+                    discs.append((blocked[0]+.25*math.cos(blocked[2]),blocked[1]+.25*math.sin(blocked[2]),RECOVERY_KEEPOUT_M))  # proximity fires within ~.23 m
+                    with self.lock:
+                        self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=RECOVERY_KEEPOUT_M))
+                        self._save()
+                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=RECOVERY_BACKOFF_M),None)
+                    if outcome[0]!='COMPLETED':return self._finish('STOPPED','RECOVERY_'+outcome[0]+':'+str(outcome[1]))
+                    previous=epochs;pose=plan_pose(start,origin,self._measured(row))
+                    # A stop that sits inside the new keepout is skipped; the start is always kept.
+                    remaining=[g for g in goals[reached:-1] if all(math.dist(g[:2],d[:2])>d[2]+.5 for d in discs)]+[goals[-1]]
+                    try:legs=replan_legs(pose,remaining,scene.get('geometry') or {},scene.get('observed_cells'),kind=plan['kind'],discs=discs)
+                    except (ValueError,KeyError,TypeError) as exc:return self._finish('STOPPED','RECOVERY_REPLAN_FAILED:'+str(exc)[:80])
+                    goals=goals[:reached]+remaining
+                    queue=[(list(q),reached+i) for i,leg in enumerate(legs) for q in leg]
+                    continue
+                if outcome[0]!='COMPLETED':
+                    if outcome[0].startswith('STEP_'):return self._finish('STOPPED',outcome[0]+':'+str(outcome[1]))
+                    return self._finish(outcome[0],str(outcome[1]))
                 previous=epochs
-                if row and row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)  # robot finishes its zero/readback
-                with self.lock:
-                    self.current['completed_steps']=index+1
-                    scan=(row or {}).get('scan') or {}
-                    if step['direction']=='forward' and row and row.get('lidar_state')=='STREAMING':
-                        self.current['waypoint_scans'].append(dict(step=index,scan_sha256=scan.get('raw_sha256') or scan.get('sha256'),
-                            frame_sequence=scan.get('frame_sequence')))
-                    self._save()
-            self._finish('COMPLETED','ALL_STEPS_COMPLETED')
+                with self.lock:self.current['completed_steps']+=1;self._save()
+            with self.lock:self.current['end_pose_odometry']=[round(v,4) for v in plan_pose(start,origin,self._measured(row))]
+            self._finish('COMPLETED','ALL_STOPS_AND_RETURN_COMPLETED')
         except Exception as exc:  # never leave a RUNNING record or an unstopped step behind
             stop=self._stop(robot_id,owner,epochs)
             self._finish('FAILED','RUNNER_ERROR:'+type(exc).__name__+':'+stop)

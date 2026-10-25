@@ -56,7 +56,7 @@ class DeclaredRouteTests(unittest.TestCase):
 class FakeFleet:
     """Finite commands complete (or not) per script; Stop flips the robot to OPERATOR_STOP."""
     def __init__(self,outcomes):
-        self.outcomes=list(outcomes);self.sent=[]
+        self.outcomes=list(outcomes);self.sent=[];self.curve=0.;self.fail_reason='X'
         self.row=dict(robot_id='r'*32,kind='sim',control_state='READY',reason=None,connection_epoch='c',motion_epoch='m0',
             pose=dict(position_m=[.6,.6,0.]),command=None,lidar_state='OFF')
         self.navigation_scene=dict(binding=('e','s','rev'),geometry=room(),observed_cells=None)
@@ -67,7 +67,15 @@ class FakeFleet:
         outcome=self.outcomes.pop(0) if self.outcomes else 'COMPLETED'
         if outcome=='HANG':self.row.update(command=dict(request_id=body['request_id'],state='RUNNING'));return
         if outcome=='DROP':return
-        self.row.update(command=dict(request_id=body['request_id'],state=outcome,reason='X'),
+        if outcome=='COMPLETED' and body['action']=='command':
+            # Integrate the finite step (optionally with a left curve on forward legs, like the real robot).
+            step=parse_robot_command(body['payload']['text']);x,y,yaw=self.row['pose']['position_m']
+            if step['direction'] in ('forward','backward'):
+                d=step['amount']*(1 if step['direction']=='forward' else -1);yaw+=self.curve*abs(d)/2
+                x+=d*math.cos(yaw);y+=d*math.sin(yaw);yaw+=self.curve*abs(d)/2
+            else:yaw+=step['amount']*(1 if step['direction']=='left' else -1)
+            self.row['pose']=dict(position_m=[x,y,math.atan2(math.sin(yaw),math.cos(yaw))])
+        self.row.update(command=dict(request_id=body['request_id'],state=outcome,reason='X' if outcome=='COMPLETED' else self.fail_reason),
             reason='TASK_COMPLETED' if outcome=='COMPLETED' else 'OPERATOR_STOP',motion_epoch=body['request_id'])
 
 
@@ -89,8 +97,8 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         fleet=FakeFleet([])
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
-            self.assertEqual(result['state'],'COMPLETED')
-            self.assertEqual([b['payload']['text'] for b in fleet.sent],[s['text'] for s in result['plan']['steps']])
+            self.assertEqual(result['state'],'COMPLETED',result['reason'])
+            self.assertEqual(len(fleet.sent),len(result['plan']['steps']))  # ideal robot: same as the preview
             self.assertTrue(all(b['action']=='command' for b in fleet.sent))
             self.assertTrue(list(Path(tmp,'declared-routes').glob('*.json')))
 
@@ -108,6 +116,27 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
         self.assertTrue(result['reason'].startswith('STEP_TIMEOUT:STOP_'));self.assertEqual(fleet.sent[-1]['action'],'stop')
+
+    def test_odometry_feedback_cancels_a_systematic_left_curve(self):
+        # 2026-10-25: ~2.5 deg + .3 deg per .75 m to the left on forward legs.
+        import tempfile
+        fleet=FakeFleet([]);fleet.curve=math.radians(4)  # 4 deg per metre
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        end=fleet.row['pose']['position_m']
+        self.assertLess(math.dist(end[:2],[.6,.6]),.05)
+        self.assertLess(abs(math.remainder(end[2],math.tau)),.04)
+
+    def test_proximity_stop_backs_off_and_replans_around_a_keepout(self):
+        import tempfile
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='FIELD_PROXIMITY_10CM'
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        texts=[b['payload'].get('text') for b in fleet.sent]
+        self.assertIn('backward 25.0cm',texts)
+        self.assertEqual(len(result['recoveries']),1)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
 
     def test_unacknowledged_step_fails_fast_and_is_not_resent(self):
         import tempfile
