@@ -125,6 +125,10 @@ class DeclaredRouteRunner:
             if row['kind']=='physical':self.used_declarations.add((row.get('display_pose') or {}).get('visual_epoch'))
             self.current=dict(plan=plan,state='RUNNING',completed_steps=0,reason=None,waypoint_scans=[],
                 reached_stops=[],skipped_stops=[],started_at=time.time(),context=context)
+            # 2026-10-26 physical run: the start ring saw the box (3 keepouts) but the stop ring gave
+            # only 2 returns, so no candidate reached the finish card. Start-scan returns count too.
+            seed=[list(d) for d in plan.get('keepouts') or []] if plan['kind']=='physical' and (plan.get('scan_keepouts') or {}).get('used') else []
+            if seed:self.current['_unexplained']=[seed]
             try:self._save()
             except OSError as exc:
                 # 2026-10-25: a full disk here left a phantom RUNNING route that
@@ -137,7 +141,8 @@ class DeclaredRouteRunner:
                 state='RUNNING',reason=None,start=[round(v,4) for v in plan['start']],waypoints=[[round(v,4) for v in w[:2]] for w in plan['waypoints']],
                 polyline=[[round(v,4) for v in plan['start'][:2]]]+[[round(v,4) for v in p[:2]] for p in plan['polyline']],
                 reached=0,reached_stops=[],skipped_stops=[],completed_steps=0,planned_steps=len(plan['steps']),current_step=None,
-                recoveries=0,started_at=self.current['started_at'],finished_at=None,revision=0,pose=None,trace=[],scans=[],candidates=[])
+                recoveries=0,started_at=self.current['started_at'],finished_at=None,revision=0,pose=None,trace=[],scans=[],
+                candidates=cluster_candidates(seed) if seed else [])
         threading.Thread(target=self._run,args=(owner,),daemon=True,name='DeclaredRoute').start()
         return plan
 

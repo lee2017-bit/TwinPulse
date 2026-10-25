@@ -207,6 +207,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const composerSubmissions=useRef(new Map<string,{api:TwinPulseApi;context:string;epoch:number;text:string;textRevision:number;file:File|null;attachmentRevision:number}>());
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [twinRebuilding,setTwinRebuilding]=useState(false);
   const [connectionError,setConnectionError] = useState<string|null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -735,6 +736,14 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   // A saved/edited room without a current chat goal is workspace state, not
   // part of the old generation transcript. Keep its display/route entry at the
   // front of the history; an explicit goal still owns its own route card.
+  // 2026-10-26: after an App restart the imported Twin is not rebuilt in Isaac and the only
+  // path was Import space → Check saved import → Show Twin. Same backend Build, one click here.
+  const rebuildTwin=async()=>{
+    if(twinRebuilding)return;setTwinRebuilding(true);setError(null);
+    try{await api.environmentAction({action:'build',request_id:crypto.randomUUID()});}
+    catch(caught){setError(errorText(caught));}
+    finally{setTwinRebuilding(false);}
+  };
   const simulationHasOrigin=!!(simulationReview?.origin_message_id||state?.simulation_review?.origin_message_id);
   const simulationCard=state?.mode!=='REAL'&&!storageError&&workflow?.site_draft?.artifact_id&&workflow.phase==='draft_ready'?
     <section ref={simulationPanel} id="current-twin-sim-controls" aria-label="Current Twin and SIM preparation" tabIndex={-1}>
@@ -742,6 +751,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <ol><li>In the Digital Twin pane open <strong>Robots → Manage → Add SIM robot</strong> (or select your registered physical robot and set its position on the Twin).</li>
         <li>Select the robot, then <strong>Connect</strong> and <strong>Prepare</strong>.</li>
         <li>Type <strong>Survey the room and come back</strong> here and confirm the route card. Progress appears in chat and next to the Twin.</li></ol>
+      {!roomApplied&&<p><button type="button" disabled={twinRebuilding||!connected||!product?.engine_connected} onClick={()=>void rebuildTwin()}>{twinRebuilding?'Rebuilding Twin in Isaac…':'Rebuild Twin in Isaac'}</button>
+        <small> The imported Twin is not shown in Isaac yet (needed after every App restart). This queues the same Build as Import space → Show Twin; no robot moves.</small></p>}
       <small>Source units and real-world alignment remain uncalibrated; nothing moves until you confirm a route.</small></div>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
       artifactId={workflow.site_draft.artifact_id} product={product} report={setError} review={simulationReview} stopHandle={simStop} showActions={!pendingChoice&&!editLocked&&!feedbackBusy} browserBlocked={!!viewerFault} chatPending={busy||!!delivery||editLocked||feedbackBusy||!sceneObservationFresh} fresh={sceneObservationFresh} sceneWriterActive={showLibrary||editLocked||feedbackBusy}
       operationBusyChanged={simOperationChanged}

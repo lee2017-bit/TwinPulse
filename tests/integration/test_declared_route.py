@@ -428,6 +428,44 @@ class PhysicalRun2026_10_26Tests(unittest.TestCase):
         self.assertEqual(fleet.sent,[])
 
 
+class StartScanCandidateTest(unittest.TestCase):
+    def test_box_seen_at_the_start_becomes_a_candidate_even_if_stops_barely_see_it(self):
+        import tempfile
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0] for ix in range(40) for iy in range(30)]
+        start=[.6,.6,0.];box=[1.7,.7];half=.15
+        ring=[(box[0]+half*math.cos(t)-start[0],box[1]+half*math.sin(t)-start[1]) for t in [i*math.tau/16 for i in range(16)]]
+        walls=[(3.95-start[0],y*.1-start[1]) for y in range(1,30)]+[(x*.1-start[0],2.95-start[1]) for x in range(1,40)]+[(x*.1-start[0],.05-start[1]) for x in range(1,40)]
+        fleet=FakeFleet([]);fleet.navigation_scene['observed_cells']=cells
+        fleet.row.update(kind='physical',lidar_state='STREAMING',capabilities=dict(drive=True),field=dict(blockers=[]),
+            display_pose=dict(scene_revision='rev',position_m=start,visual_epoch='v1'),scan=dict(points=walls+ring,stream_id='s',frame_sequence=1,raw_sha256='x'))
+        results=[];clock=[0.]
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:clock[0],sleep=lambda s:clock.__setitem__(0,clock[0]+s),poll_s=1.,on_result=results.append)
+            plan=runner.plan(fleet.row['robot_id'])
+            self.assertTrue(plan['scan_keepouts']['used']);self.assertGreaterEqual(len(plan['keepouts']),3)
+            runner.start(plan,'owner')
+            self.assertTrue(fleet.route_overlay['candidates'],'start-scan returns cluster before the first stop')
+            for _ in range(4000):
+                if results:break
+                time.sleep(.001)
+        result=results[0]
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        self.assertTrue(any(math.dist(c['position_xy_m'],box)<.15 for c in result['candidates']),result['candidates'])
+
+
+class RouteOverlayPayloadTest(unittest.TestCase):
+    def test_full_overlay_on_change_and_every_two_seconds_else_stub(self):
+        from types import SimpleNamespace
+        from twinpulse_app.robot_fleet import RobotFleet
+        clock=[100.];fleet=SimpleNamespace(clock=lambda:clock[0])
+        route=dict(plan_id='p',revision=1,scene_revision='rev',trace=[[0,0]]*800)
+        first=RobotFleet._route_payload(fleet,dict(route));self.assertNotIn('unchanged',first)
+        clock[0]+=.5;stub=RobotFleet._route_payload(fleet,dict(route));self.assertTrue(stub.get('unchanged'));self.assertNotIn('trace',stub)
+        clock[0]+=2.;self.assertNotIn('unchanged',RobotFleet._route_payload(fleet,dict(route)))
+        clock[0]+=.1;self.assertNotIn('unchanged',RobotFleet._route_payload(fleet,dict(route,revision=2)))
+
+
 class DeclaredRouteChatMessageTests(unittest.TestCase):
     def _service(self):
         import threading

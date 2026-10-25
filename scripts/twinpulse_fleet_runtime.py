@@ -543,6 +543,7 @@ class FleetRuntime:
         if not route:
             if getattr(self,'route_key',None) is not None and stage.GetPrimAtPath(path):stage.RemovePrim(path)
             self.route_key=None;return
+        if route.get('unchanged'):return  # backend sends the full overlay on change and every 2 s
         # The revision changes on every runner update (the trace length alone stops
         # changing at its cap); the key is adopted only after a complete draw so a
         # mid-draw exception cannot freeze a partial overlay.

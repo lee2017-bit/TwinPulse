@@ -891,8 +891,16 @@ class RobotFleet:
                             connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
                             position_m=position,intent=None,task=None,lidar=False,control_state='UNPREPARED'))
             route=getattr(self,'route_overlay',None)
-            route=dict(route) if route and route['scene_revision']==binding[2] else None
+            route=self._route_payload(dict(route)) if route and route['scene_revision']==binding[2] else None
             return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route))
+
+    def _route_payload(self,route):
+        """Full overlay on change and at least every 2 s; otherwise a stub Kit ignores (trace up to 800 points at ~20 Hz)."""
+        key=(route['plan_id'],route.get('revision'));now=self.clock();sent=getattr(self,'_route_sent',None)
+        if sent and sent[0]==key and 0<=now-sent[1]<2.:
+            return dict(plan_id=route['plan_id'],revision=route.get('revision'),scene_revision=route['scene_revision'],unchanged=True)
+        self._route_sent=(key,now)
+        return route
 
     def operation(self,identity,owner=None):
         if not _id(identity):raise BrokerError('fleet_operation_invalid','Invalid operation ID.',status=400)
