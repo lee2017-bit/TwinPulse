@@ -221,7 +221,7 @@ class ConversationService:
                    'robot_goal_confirm':{'confirm','cancel'},'robot_goal_loop':{'loop','finish'},
                    'generation_approval':{'approve','cancel'},'scene_edit_clarify':{'cancel'},
                    'scene_sensor_policy':{'align_only','correct_walls','cancel'},
-                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'},'declared_route_run':{'run','cancel'},'declared_route_obstacles':{'add','move','skip'}}
+                   'robot_task_plan':{'plan','cancel'},'robot_task_run':{'run','cancel'},'declared_route_run':{'run','cancel'},'declared_route_obstacles':{'add','move','skip'},'declared_route_fallback':{'fallback','cancel'}}
         card_ids = set()
         for card in stored["cards"]:
             # SIM-alpha emits a single SIM choice; historical full-product
@@ -255,16 +255,19 @@ class ConversationService:
                     raise ValueError('Simulation target choices are invalid')
                 allowed[card['kind']] = {c['id'] for c in choices}
                 card_allowed = allowed[card['kind']]
+            # Optional choices (2026-10-26: the LiDAR card's "move" offer) must not invalidate
+            # conversations saved before they existed.
+            optional={'declared_route_obstacles':{'move'}}.get(card.get("kind") if isinstance(card,dict) else None,set())
             if (not isinstance(card, dict) or card.get("kind") not in allowed
                     or card.get("state") not in {"waiting", "answered", "expired", "cancelled"}
                     or not isinstance(card.get("choices"), list)
                     or not isinstance(card.get("question"), str)
                     or type(card.get("expected_session_revision")) is not int
-                    or {choice.get("id") for choice in card["choices"] if isinstance(choice, dict)} != card_allowed):
+                    or {choice.get("id") for choice in card["choices"] if isinstance(choice, dict)}-optional != card_allowed-optional):
                 raise ValueError("Conversation question is invalid")
             if (not isinstance(card.get('id'), str) or card['id'] in card_ids
                     or card.get('card_id') != card['id'] or card.get('message_id') not in message_ids
-                    or len(card['choices']) != len(card_allowed)
+                    or len(card['choices']) not in {len(card_allowed),len(card_allowed-optional)}
                     or card.get('selected_choice_id') not in card_allowed | {None}):
                 raise ValueError('Conversation question identity is invalid')
             digest=card.get('related_plan_digest')
@@ -1039,13 +1042,37 @@ class ConversationService:
         if self.declared_routes.active():raise BrokerError('declared_route_active','A route is already running; Stop it first.',status=409)
         self._message('user',body['text'])
         stops=self._route_stops(body['text'])
+        tasks=getattr(self,'robot_tasks',None)
+        if not stops and tasks is not None and getattr(tasks,'registry',None) is not None and not tasks.active():
+            # Hackathon flow: the configured planner (NVIDIA Nemotron via Nebius Token Factory) reads the
+            # instruction first; its validated plan then hands over to the deterministic Path B route.
+            try:job=tasks.propose(body['text'],self._request_owner,body['request_id'])
+            except BrokerError as error:
+                self._message('assistant','The planner could not be called: '+str(error)+' ('+error.code+').')
+                self._offer_route_fallback(body['text'],body['request_id'],'planner unavailable: '+error.code);return
+            self._route_model_pending=dict(request_id=body['request_id'],text=body['text'],task_id=job['task_id'],started=time.monotonic())
+            self._message('assistant','Planning with '+str(job.get('model_id') or 'the configured planner')+' via Nebius Token Factory: one text-only call with the instruction and the capability names (no photos, coordinates or sensor logs). The route itself is then planned on the Twin.')
+            self._event('declared_route_model_planning',task_id=job['task_id'],request_id=body['request_id'])
+            return
+        self._plan_declared_route(body['text'],body['request_id'],stops=stops or None,
+            planned_by=dict(kind='operator_stops',label='Operator stops · no model call') if stops else dict(kind='deterministic',label='Deterministic planner · no model configured'))
+
+    def _offer_route_fallback(self,text,request_id,reason):
+        card=self._card('declared_route_fallback','The model planning step did not complete ('+reason[:200]+'). Use the deterministic Path B planner instead? '
+            'This is labeled as a fallback on the route card; no model is involved and nothing moves until you confirm the route.',
+            [self._choice('fallback','Use deterministic route (fallback)'),self._choice('cancel','Cancel')])
+        card['operation_id']=request_id;self._route_fallback_pending=dict(text=text,request_id=request_id,reason=reason)
+
+    def _plan_declared_route(self,text,request_id,*,stops=None,planned_by=None):
         try:plan=self.declared_routes.plan(self.robot_fleet.focused,stops=stops or None)
         except BrokerError as error:
-            self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,request_id=body['request_id'])
+            self._message('assistant',str(error));self._event('declared_route_blocked',code=error.code,request_id=request_id)
             return
+        plan['planned_by']=planned_by or dict(kind='deterministic',label='Deterministic planner')
         self._declared_route_pending=plan
-        self._event('declared_route_planned',plan_id=plan['plan_id'],robot_id=plan['robot_id'],request_id=body['request_id'],
-            start=plan['start'],start_basis=plan['start_basis'],waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'])
+        self._event('declared_route_planned',plan_id=plan['plan_id'],robot_id=plan['robot_id'],request_id=request_id,
+            start=plan['start'],start_basis=plan['start_basis'],waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'],
+            request_id_text=None,planned_by=plan['planned_by'])
         card=self._card('declared_route_run',('Route planned through your %d chosen stop%s on the Twin from the '%(len(stops),'' if len(stops)==1 else 's') if stops else 'Route planned once on the Twin from the ')
             +('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
             +': %d stops, %.2f m, about %d finite moves, then back to the start heading.%s Moves are re-aimed from wheel odometry; a proximity stop backs off and re-plans. Each move keeps the normal robot checks; Stop ends the route. Run it?'
@@ -1055,6 +1082,7 @@ class ConversationService:
             [self._choice('run','Run route'),self._choice('cancel','Cancel')])
         card['operation_id']=plan['plan_id']
         card['route_preview']=self._route_preview(plan)
+        card['question']=card['question']+' · '+plan['planned_by']['label']
 
     def _route_preview(self,plan):
         """Small top-down map for the card: free floor near the route, stops, path."""
@@ -1152,6 +1180,28 @@ class ConversationService:
         marker=(job['task_id'],job['state'],job['step_index'],job['segments'])
         if marker==self._robot_task_marker:return
         self._robot_task_marker=marker
+        pending=getattr(self,'_route_model_pending',None)
+        if pending and job['task_id']==pending['task_id'] and job['state'] in {'READY','FAILED','CANCELLED','HELD'}:
+            self._route_model_pending=None;latency=round(time.monotonic()-pending['started'],1);model=str(job.get('model_id') or 'configured planner')
+            if job['state']=='READY':
+                ops=[s.get('op') for s in (job.get('plan') or {}).get('steps') or []]
+                valid=bool(ops) and set(ops)<={'observe','survey','return_to_start','stop'} and any(o in {'observe','survey'} for o in ops)
+                try:self.robot_tasks.cancel(owner)  # the plan is consumed here; Path B executes, not the task loop
+                except Exception:pass
+                if valid:
+                    self._message('assistant','Planned by '+model+' via Nebius Token Factory in %.1f s: '%latency+' → '.join(ops)+'. '+str((job.get('plan') or {}).get('explanation') or '')
+                        +' Handing the plan to the Path B route (model plans, deterministic planner lays out the stops; every safety check unchanged). Call log: robot-tasks/'+job['task_id']+' (no keys).',operation_id=job['task_id'])
+                    self._event('declared_route_model_planned',task_id=job['task_id'],model_id=job.get('model_id'),latency_s=latency,ops=ops)
+                    self._plan_declared_route(pending['text'],pending['request_id'],planned_by=dict(kind='model',label='Planned by '+model+' via Nebius Token Factory · %.1f s'%latency,model_id=job.get('model_id'),task_id=job['task_id'],latency_s=latency))
+                else:
+                    self._message('assistant','The planner answered with steps outside the survey capabilities ('+', '.join(map(str,ops))+'); the plan was not used.',status='failed',operation_id=job['task_id'])
+                    self._offer_route_fallback(pending['text'],pending['request_id'],'plan rejected: '+', '.join(map(str,ops)))
+            else:
+                reason=str(job.get('reason') or job['state'])
+                self._message('assistant','Model planning '+job['state'].lower()+' after %.1f s: '%latency+reason[:300]+' (call log: robot-tasks/'+job['task_id']+').',status='failed',operation_id=job['task_id'])
+                self._event('declared_route_model_failed',task_id=job['task_id'],state=job['state'],reason=reason[:300])
+                self._offer_route_fallback(pending['text'],pending['request_id'],reason[:200])
+            self._persist();return
         if job['state']=='READY':
             plan=job['plan'];summary=' → '.join(s['op']+((' '+s['target_kind']) if s['op']=='navigate' else
                 (' '+s['direction']+' '+str(s['amount'])+(' rad' if s['direction'] in {'left','right'} else ' m')) if s['op']=='move_relative' else '') for s in plan['steps'])
@@ -1327,6 +1377,13 @@ class ConversationService:
             raise BrokerError('chat_shape_invalid', 'A spending limit is accepted only for this generation approval.', status=400)
         if card['kind']=='declared_route_run':
             self._answer_declared_route(card,choice)
+            return
+        if card['kind']=='declared_route_fallback':
+            card.update(state='answered',selected_choice_id=choice['id']);self._message('user',choice['label'])
+            pending=getattr(self,'_route_fallback_pending',None);self._route_fallback_pending=None
+            if choice['id']!='fallback':return
+            if not pending or pending['request_id']!=card.get('operation_id'):raise BrokerError('declared_route_expired','Ask for the route again; no movement was sent.',status=409)
+            self._plan_declared_route(pending['text'],pending['request_id'],planned_by=dict(kind='fallback',label='Deterministic fallback · model call failed: '+pending['reason'][:80]))
             return
         if card['kind']=='declared_route_obstacles':
             card.update(state='answered',selected_choice_id=choice['id'])
