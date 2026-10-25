@@ -380,10 +380,10 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           {expanded&&<small>{available?row.connection_state:'STALE'} · {row.control_state} · LiDAR {lidarDiagnosticLabel(row,available)}</small>}
           <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small></span>
       </button>)}
-      {!state?.robots.length&&<p>No fleet robot registered. Add a SIM robot or register a supported physical robot in Robots.</p>}
+      {!state?.robots.length&&<p>No fleet robot registered yet. Add a SIM robot below, or register a supported physical robot in Robots.</p>}
     </div>
     {selectionPending&&<p role="status">Selecting robot · movement paused until its focus receipt arrives.</p>}
-    {expanded&&<details className="robot-fleet-register" onToggle={event=>setShowRegister(event.currentTarget.open)}><summary>Add SIM robot</summary>
+    {(expanded||state&&!state.robots.length)&&<details className="robot-fleet-register" open={!state?.robots.length||undefined} onToggle={event=>setShowRegister(event.currentTarget.open)}><summary>Add SIM robot</summary>
       {showRegister&&<form onSubmit={event=>{event.preventDefault();const position=[Number(x),Number(y),Number(yaw)];
         if(!label.trim()||position.some(value=>!Number.isFinite(value))){setError('Enter a name and finite position values.');return;}
         void action(envelope('register_sim',null,{label:label.trim(),position_m:position}));}}>

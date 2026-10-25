@@ -18,6 +18,7 @@ import {EnvironmentImport} from './EnvironmentImport';
 import { TwinViewport, generationActivityLabel, generationIsIncomplete, generationRetentionRevalidationLabel, inventoryCheckpointSaved, savedGenerationScene, type ViewerFault } from './TwinViewport';
 import {RobotFleet} from './RobotFleet';
 import type {RobotFleetState} from './robot-fleet-types';
+import {DeclaredRouteCard} from './DeclaredRouteCard';
 import { SimulationRunCard } from './SimulationRunCard';
 import { ChatRoomBuild } from './ChatRoomBuild';
 import { ChatInspectionBuild } from './ChatInspectionBuild';
@@ -124,7 +125,7 @@ export function RoutePreview({preview}:{preview:NonNullable<QuestionCard['route_
   </svg>;
 }
 
-export function ActionCard({ card, busy, act, current=true }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean}) {
+export function ActionCard({ card, busy, act, current=true, locked=false }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean;locked?:boolean}) {
   const [choice,setChoice]=useState<string|null>(null);
   const preview=card.generation_approval;
   const directOffer=!!preview&&['robot_presence','robot_selection'].includes(card.kind);
@@ -138,7 +139,7 @@ export function ActionCard({ card, busy, act, current=true }: {card: QuestionCar
   const startsGeneration=['robot_presence','robot_selection'].includes(card.kind)&&(card.kind==='robot_selection'||selected==='sim');
   return <section className="chat-question" aria-label={card.question}>
     <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview}/>}
-    <small role="status">{busy ? 'Submitting your choice…' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
+    <small role="status">{busy ? 'Submitting your choice…' : locked ? 'Waiting for the current App state · choices resume when the connection and scene observation are fresh' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
     {directOffer&&<div className="generation-start-offer">
       <p>Selecting Create Twin starts generation once. {preview.image_count?
         preview.render_review_approved?'Your photo, description and derived Isaac renders go':'Your photo and description go':
@@ -158,15 +159,15 @@ export function ActionCard({ card, busy, act, current=true }: {card: QuestionCar
         {preview.models.map(model=><p key={model.stage}>{model.stage}: {model.model_id} · {model.origin} · output {model.max_output_tokens} · reasoning {model.thinking_mode}</p>)}
       </details>
     </div>}
-    {enabled.length!==1&&<fieldset disabled={busy}><legend>Your choice</legend>
+    {enabled.length!==1&&<fieldset disabled={busy||locked}><legend>Your choice</legend>
       {card.choices.map(option=><label key={option.id}>
         <input type="radio" name={`choice-${card.id}`} value={option.id} disabled={!option.enabled}
           checked={choice===option.id} onChange={()=>setChoice(option.id)}/>{option.label}</label>)}
     </fieldset>}
-    <button type="button" disabled={busy||!selected} onClick={()=>{
+    <button type="button" disabled={busy||locked||!selected} onClick={()=>{
       if(selected)act(card,selected);
     }}>
-      {busy?'Submitting…':startsGeneration?'Create Twin':selected==='approve'?'Continue':enabled.length===1?enabled[0].label:'Continue'}</button>
+      {busy?'Submitting…':locked?'Waiting for App state…':startsGeneration?'Create Twin':selected==='approve'?'Continue':enabled.length===1?enabled[0].label:'Continue'}</button>
     {card.choices.filter(c => !c.enabled).map(c => <small key={c.id}>{c.disabled_reason}</small>)}
   </section>;
 }
@@ -411,14 +412,23 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         }else setWorkflowObservation(previous=>previous?.api===api&&previous.context===requestedContext?{...previous,fresh:false}:null);
       } finally { polling = false; }
     };
-    void (contextVersion||authenticatedApi.current===api?Promise.resolve():api.bootstrap().then(()=>{authenticatedApi.current=api;}))
-      .then(() => { if (active) { authenticated = true; void refresh(); } }).catch(e => { if (active) setConnectionError(errorText(e)); });
+    // A slow backend at first launch used to leave the chat disconnected for good:
+    // retry the one-time bootstrap (read-only) until it succeeds; no action is replayed.
+    let bootstrapping=false;
+    const bootstrap=()=>{
+      if(bootstrapping||!active)return;bootstrapping=true;
+      void (contextVersion||authenticatedApi.current===api?Promise.resolve():api.bootstrap().then(()=>{authenticatedApi.current=api;}))
+        .then(() => { if (active) { authenticated = true; void refresh(); } }).catch(e => { if (active) setConnectionError(errorText(e)); })
+        .finally(()=>{bootstrapping=false;});
+    };
+    bootstrap();
     // Draft restoration depends on the first successful conversation read. It
     // must not gate observation retries: a first-read timeout after startup or
     // project switch otherwise leaves this context permanently disconnected.
     // Only authenticated, single-flight GET observations repeat; no action,
     // draft restoration, movement authority or old-context response is replayed.
-    const timer = window.setInterval(() => { if (active && authenticated) void refresh(); }, 750);
+    let ticks=0;
+    const timer = window.setInterval(() => { if (!active) return; if (authenticated) void refresh(); else if (++ticks % 4 === 0) bootstrap(); }, 750);
     return () => { active = false; window.clearInterval(timer); };
   }, [api,contextVersion,projectActivity.busy]);
 
@@ -537,6 +547,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const send = async () => {
     if(librarySource||file&&imageRole==='asset_reference'){setShowLibrary(true);return;}
     if (inFlight.current || projectActivityRef.current || busy || delivery || !connected || (!text.trim() && !file)) return;
+    if (sendDisabled) return;
     const observingOnly=!file&&(isConversationStatusRequest(text)||isConversationStopRequest(text));
     if(!observingOnly&&!mayStartSceneAction())return;
     if(!observingOnly&&(simOperationBusyRef.current || product?.operations?.some(op=>['accepted','running'].includes(op.status))))return;
@@ -652,7 +663,18 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     'Scene validated but not saved · the draft is only in memory. Build and Run are blocked; reopening may lose this draft. No automatic model retry.' : null;
   const applyError=product?.build_view?.phase==='apply'?displayError:null;
   const browserError=viewerFault?`Browser 3D display unavailable (${viewerFault.code}). Scene and engine receipts are unchanged. Run is blocked while this display error remains; Stop is still available.`:null;
-  const currentStep=pendingChoice?waitingCard.question:feedbackBusy?'Preparing one scene-feedback proposal · nothing is applied yet':
+  // One gate for the Send button and the Enter key: Enter used to bypass the
+  // pending-card, generation and edit-lock checks and submit anyway.
+  const sendDisabled=projectActivity.busy || busy || !!delivery || !connected || (!text.trim() && !file &&!librarySource) ||
+    (!sceneObservationFresh&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
+    (sceneOperationBusy&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
+    (!!pendingChoice && waitingCard?.kind!=='scene_edit_clarify' && !isConversationStatusRequest(text) && !isConversationStopRequest(text) && !isConversationChoiceRequest(text, waitingCard?.kind)) ||
+    ((feedbackBusy||editLocked)&&!isConversationStatusRequest(text)&&!isConversationStopRequest(text)) ||
+    (!!activeJob && !isConversationStatusRequest(text) && (mode==='new' || !!file || !!state?.queued_edit));
+  const routeRunning=fleet?.route?.state==='RUNNING'&&fleet.route.scene_current;
+  const currentStep=pendingChoice?waitingCard.question:
+    routeRunning?`Route running · stop ${fleet!.route!.reached_stops?.length??fleet!.route!.reached} of ${fleet!.route!.total_stops} · ${fleet!.route!.completed_steps} moves · Stop remains available`:
+    feedbackBusy?'Preparing one scene-feedback proposal · nothing is applied yet':
     editLocked?`Twin update · ${editTransaction!.state.replaceAll('_',' ')} · geometry and Run locked`:activeJob?generationActivityLabel(job):
     browserError?'Browser display failed · review display diagnostics; Stop remains available':
     storageError?'Scene not saved · review the storage diagnosis before continuing':
@@ -716,7 +738,11 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const simulationHasOrigin=!!(simulationReview?.origin_message_id||state?.simulation_review?.origin_message_id);
   const simulationCard=state?.mode!=='REAL'&&!storageError&&workflow?.site_draft?.artifact_id&&workflow.phase==='draft_ready'?
     <section ref={simulationPanel} id="current-twin-sim-controls" aria-label="Current Twin and SIM preparation" tabIndex={-1}>
-    {workflow.site_draft.provider_name==='local-environment-import'?<p>Imported space · use the Twin robot controls to add a SIM robot, choose a destination and inspect its scans. Source units and real-world alignment remain uncalibrated.</p>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
+    {workflow.site_draft.provider_name==='local-environment-import'?<div className="chat-import-next-steps"><p><strong>Imported space · next steps</strong></p>
+      <ol><li>In the Digital Twin pane open <strong>Robots → Manage → Add SIM robot</strong> (or select your registered physical robot and set its position on the Twin).</li>
+        <li>Select the robot, then <strong>Connect</strong> and <strong>Prepare</strong>.</li>
+        <li>Type <strong>Survey the room and come back</strong> here and confirm the route card. Progress appears in chat and next to the Twin.</li></ol>
+      <small>Source units and real-world alignment remain uncalibrated; nothing moves until you confirm a route.</small></div>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
       artifactId={workflow.site_draft.artifact_id} product={product} report={setError} review={simulationReview} stopHandle={simStop} showActions={!pendingChoice&&!editLocked&&!feedbackBusy} browserBlocked={!!viewerFault} chatPending={busy||!!delivery||editLocked||feedbackBusy||!sceneObservationFresh} fresh={sceneObservationFresh} sceneWriterActive={showLibrary||editLocked||feedbackBusy}
       operationBusyChanged={simOperationChanged}
       taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/>}</section>:null;
@@ -870,7 +896,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           </article>)}
             {turn.cards.filter(card=>card.kind!=='generation_approval').map(card => <ActionCard key={card.id} card={card}
               current={card.id===waitingCard?.id}
-              busy={!sceneObservationFresh || busy || !!delivery || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}/>)}
+              busy={busy || !!delivery}
+              locked={!sceneObservationFresh || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}/>)}
           {job && turn.id===generationTurn && <section className="chat-tool-progress" role="status"><strong>Scene generation · {job.state}</strong>
             {job.state==='completed'?<details><summary>Generation summary</summary><p>{job.summary}</p></details>:<p>{job.summary}</p>}
             {job.progress&&<p>Stage: {generationActivityLabel(job)} · {job.progress.elapsed_s??0} s · Repairs: {job.progress.repair_count??0}/{job.progress.max_repairs??0}</p>}
@@ -1041,14 +1068,12 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           <footer><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.step,.stp,.iges,.igs,.usd,.usda,.usdc,.usdz,.obj,.stl,.ply,.gltf,.glb" hidden onChange={e => { attachment(e.target.files?.[0]); e.target.value = ''; }}/>
             <button type="button" onClick={() => fileInput.current?.click()} aria-label="Attach image">＋ Attach</button>
             <label className="scene-operation-controls"><span className="sr-only">Scene operation</span><select aria-label="Scene operation" value={mode} onChange={e=>setMode(e.target.value as typeof mode)}><option value="new">New environment</option><option value="add">Add to current</option><option value="change">Change current</option></select></label>
-            <span role="status">{busy ? 'Sending…' : delivery ? 'Check saved result' : pendingChoice ? 'Answer the question above' : activeJob ? 'Generating…' : 'Enter to send · Shift+Enter for a new line'}</span>
+            <span role="status">{busy ? 'Sending…' : delivery ? 'Check saved result' : pendingChoice ? 'Answer the question above' : activeJob ? 'Generating…' :
+              sendDisabled&&(text.trim()||file||librarySource)?(!connected?'App connection pending · sending paused':!sceneObservationFresh?'Waiting for a fresh scene observation · Status and Stop still send':
+                sceneOperationBusy?'Isaac preparation in progress · Status and Stop still send':feedbackBusy||editLocked?'Twin update in progress · Status and Stop still send':'Sending paused'):
+              'Enter to send · Shift+Enter for a new line'}</span>
             {activeJob && <button type="button" disabled={busy || !!delivery} onClick={() => void submit({action:'cancel',request_id:crypto.randomUUID(),operation_id:job.operation_id})}>Stop response</button>}
-            <button type="submit" disabled={projectActivity.busy || busy || !!delivery || !connected || (!text.trim() && !file &&!librarySource) ||
-                (!sceneObservationFresh&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
-                (sceneOperationBusy&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
-                (!!pendingChoice && waitingCard?.kind!=='scene_edit_clarify' && !isConversationStatusRequest(text) && !isConversationStopRequest(text) && !isConversationChoiceRequest(text, waitingCard?.kind)) ||
-                ((feedbackBusy||editLocked)&&!isConversationStatusRequest(text)&&!isConversationStopRequest(text)) ||
-                (!!activeJob && !isConversationStatusRequest(text) && (mode==='new' || !!file || !!state?.queued_edit))}>Send</button>
+            <button type="submit" disabled={sendDisabled}>Send</button>
           </footer>
           {delivery && <button type="button" onClick={() => {
             const original=deliveryOwner.current;
@@ -1083,6 +1108,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           savedScene={acceptedSavedScene}
           sourcePhoto={sourceAttachment?.preview_url?{url:sourceAttachment.preview_url,name:sourceAttachment.name}:null}
           report={setViewerFault} diagnose={id=>{setDiagnosticExecution(id);setShowDiagnostics(true);}}/> : <p role="status">Connecting to the App before starting viewer reception…</p>}
+        <DeclaredRouteCard route={fleet?.route} api={api} onChange={applyFleet} available={fleetAvailable} report={setError}/>
         <RobotFleet api={api} state={fleet} selectedId={fleetSelectedId??fleet?.focused_robot_id??null} onSelect={selectFleetRobot}
           onChange={applyFleet} available={fleetAvailable} error={fleetError} drawerOpen={fleetDrawerOpen} onClose={()=>setFleetDrawerOpen(false)} selectionPending={fleetSelecting}
           layoutVersion={`${layoutVersion}:${chatShare}:${controlView}:${showProjects}:${showTwin}`}/>
