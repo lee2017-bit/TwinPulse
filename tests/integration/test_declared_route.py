@@ -135,6 +135,20 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
             runner,result=run(fleet,tmp)
         self.assertEqual(result['state'],'STOPPED');self.assertEqual(len(fleet.sent),1)
 
+    def test_physical_completion_reason_operator_stop_does_not_halt_the_route(self):
+        # 2026-10-25 physical run: finite completion reports reason OPERATOR_STOP
+        # with unchanged epochs; the route must continue (Stop is an epoch change).
+        import tempfile
+        fleet=FakeFleet([]);fleet.row.update(kind='physical',display_pose=dict(position_m=[.6,.6,0.],scene_revision='rev'))
+        original=fleet.action
+        def action(body,owner):
+            original(body,owner)
+            if body['action']=='command':fleet.row.update(reason='OPERATOR_STOP',applied_motion_epoch=fleet.row['motion_epoch'])
+        fleet.action=action
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+
     def test_physical_requires_declared_pose_on_current_scene(self):
         from twinpulse_app.declared_route_runner import DeclaredRouteRunner
         from twinpulse_app.command_broker import BrokerError

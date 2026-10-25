@@ -123,8 +123,20 @@ class DeclaredRouteRunner:
                 # Continuity: after step 1 the robot must still be exactly where the
                 # last COMPLETED left it (same epochs, completion reason). A Stop,
                 # Prepare, drive or reconnect in between changes one of these.
-                if previous is not None and (epochs!=previous or row.get('reason') not in DONE_REASONS):
+                # Physical rows report the completion's own zero/readback as
+                # OPERATOR_STOP, so only SIM rows can use the reason; epochs are
+                # authoritative for both (any Stop/Prepare/drive issues a new one).
+                if previous is not None and (epochs!=previous or row['kind']!='physical' and row.get('reason') not in DONE_REASONS):
                     return self._finish('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason')))
+                if previous is not None and 'applied_motion_epoch' in row:
+                    # The previous step's stop must be applied (readback) before the next one.
+                    until=self.clock()+10.
+                    while row.get('applied_motion_epoch')!=row.get('motion_epoch'):
+                        if self.cancelled.is_set() or self.clock()>until:
+                            return self._finish('STOPPED','PREVIOUS_STOP_NOT_APPLIED')
+                        self.sleep(self.poll_s);row=self._row(robot_id) or {}
+                        if (row.get('connection_epoch'),row.get('motion_epoch'))!=previous:
+                            return self._finish('STOPPED','ROBOT_CHANGED_BETWEEN_STEPS:'+str(row.get('reason')))
                 if row.get('control_state') not in {'READY','PAUSED'}:
                     return self._finish('STOPPED','ROBOT_NOT_READY:'+str(row.get('control_state')))
                 if self.cancelled.is_set():return self._finish('CANCELLED','ROUTE_CANCELLED')
