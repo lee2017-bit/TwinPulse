@@ -19,6 +19,8 @@ from .command_broker import BrokerError
 
 DONE_REASONS={'TASK_COMPLETED','TASK_WHEEL_ODOM_TARGET_REACHED'}
 TERMINAL={'COMPLETED','FAILED','CANCELLED','ARRIVED','ESTIMATE_REACHED'}
+ACK_TIMEOUT_S=10.
+PHYSICAL_SETTLE_S=1.5
 
 
 def step_timeout_s(step):
@@ -145,19 +147,26 @@ class DeclaredRouteRunner:
                     motion_epoch=epochs[1],payload=dict(text=step['text']))
                 try:self.fleet.action(body,owner)
                 except BrokerError as exc:return self._finish('FAILED','STEP_REJECTED:'+exc.code)
-                deadline=self.clock()+step_timeout_s(step)
+                sent=self.clock();deadline=sent+step_timeout_s(step);acknowledged=False
                 while True:
                     self.sleep(self.poll_s)
                     row=self._row(robot_id);command=(row or {}).get('command') or {}
                     if row:epochs=(row.get('connection_epoch'),row.get('motion_epoch'))
+                    if command.get('request_id')==request:acknowledged=True
                     if command.get('request_id')==request and command.get('state') in TERMINAL:break
-                    if self.cancelled.is_set() or self.clock()>deadline:
+                    # 2026-10-25 physical run: a step sent right after the previous
+                    # completion was never acknowledged and the route waited for
+                    # the whole step timeout. Fail fast instead (no automatic resend).
+                    unacknowledged=not acknowledged and self.clock()-sent>ACK_TIMEOUT_S
+                    if self.cancelled.is_set() or self.clock()>deadline or unacknowledged:
+                        cancelled=self.cancelled.is_set()  # before our own Stop trips the cancel hook
                         stop=self._stop(robot_id,owner,epochs)
-                        return self._finish('CANCELLED' if self.cancelled.is_set() else 'FAILED',
-                            ('ROUTE_CANCELLED' if self.cancelled.is_set() else 'STEP_TIMEOUT')+':'+stop)
+                        return self._finish('CANCELLED' if cancelled else 'FAILED',
+                            ('ROUTE_CANCELLED' if cancelled else 'STEP_NOT_ACKNOWLEDGED' if unacknowledged else 'STEP_TIMEOUT')+':'+stop)
                 if command['state']!='COMPLETED':
                     return self._finish('STOPPED','STEP_'+command['state']+':'+str(command.get('reason')))
                 previous=epochs
+                if row and row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)  # robot finishes its zero/readback
                 with self.lock:
                     self.current['completed_steps']=index+1
                     scan=(row or {}).get('scan') or {}

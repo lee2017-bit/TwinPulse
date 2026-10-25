@@ -66,6 +66,7 @@ class FakeFleet:
         if body['action']=='stop':self.row.update(reason='OPERATOR_STOP');return
         outcome=self.outcomes.pop(0) if self.outcomes else 'COMPLETED'
         if outcome=='HANG':self.row.update(command=dict(request_id=body['request_id'],state='RUNNING'));return
+        if outcome=='DROP':return
         self.row.update(command=dict(request_id=body['request_id'],state=outcome,reason='X'),
             reason='TASK_COMPLETED' if outcome=='COMPLETED' else 'OPERATOR_STOP',motion_epoch=body['request_id'])
 
@@ -107,6 +108,14 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
         self.assertTrue(result['reason'].startswith('STEP_TIMEOUT:STOP_'));self.assertEqual(fleet.sent[-1]['action'],'stop')
+
+    def test_unacknowledged_step_fails_fast_and_is_not_resent(self):
+        import tempfile
+        fleet=FakeFleet(['COMPLETED','DROP'])
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertTrue(result['reason'].startswith('STEP_NOT_ACKNOWLEDGED:'),result['reason'])
+        self.assertEqual([b['action'] for b in fleet.sent],['command','command','stop'])
 
     def test_external_stop_between_steps_halts(self):
         import tempfile
