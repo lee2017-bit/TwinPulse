@@ -1004,7 +1004,7 @@ class ConversationService:
     def _route_candidates_request(self,text):
         value=text.strip().lower()
         return getattr(self,'add_route_obstacles',None) is not None and bool(
-            re.search(r'lidar',value) and re.search(r'(?:add|put|reflect|apply)',value) and re.search(r'twin',value))
+            re.search(r'\blidar\b',value) and re.search(r'\b(?:add|put|reflect|apply)\b',value) and re.search(r'\btwin\b',value))
 
     def _offer_saved_route_candidates(self,body):
         """Re-offer the LiDAR candidates of the latest finished route (e.g. after an App restart)."""
