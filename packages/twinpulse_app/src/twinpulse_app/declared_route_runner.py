@@ -15,7 +15,7 @@ import time
 from uuid import uuid4
 
 from twinpulse_core.declared_route import (plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs,
-    unexplained_scan_discs, scan_world_points, cluster_candidates)
+    unexplained_scan_discs, scan_world_points, cluster_candidates, HEADING_TOLERANCE_RAD, REAIM_TOLERANCE_RAD)
 from .command_broker import BrokerError
 
 DONE_REASONS={'TASK_COMPLETED','TASK_WHEEL_ODOM_TARGET_REACHED'}
@@ -80,6 +80,11 @@ class DeclaredRouteRunner:
         if row is None:raise BrokerError('declared_route_robot_unknown','Select a registered robot.',status=409)
         if row.get('control_state') not in {'READY','PAUSED'}:
             raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
+        if row['kind']=='physical' and not (row.get('capabilities') or {}).get('drive',True):
+            # 2026-10-26: Run route before Arm + Bootstrap stop produced an unacknowledged first step.
+            blockers=((row.get('field') or {}).get('blockers') or [])
+            raise BrokerError('declared_route_field_not_ready','The physical robot cannot drive yet: '
+                +(', '.join(blockers) if blockers else 'field session not ready')+'. In the robot card open Physical setup, confirm supervision and Arm, then run the Bootstrap stop trial, then ask again.',status=409)
         start,basis=self._start_pose(row,scene)
         # SIM: other connected SIM robots stand on the same floor and the engine
         # stops for them, so the plan keeps a berth around each (2026-10-26 sim14/15).
@@ -296,13 +301,16 @@ class DeclaredRouteRunner:
             legs=plan.get('legs') or [plan['polyline']]
             queue=[(list(q),i,goals[i][1] if i<len(goals) else None) for i,leg in enumerate(legs) for q in leg]
             reached=0;forward=0.;budget=plan['length_m']*1.5+1.;discs=[tuple(d) for d in plan.get('keepouts') or []];recoveries=0
-            steps_left=MAX_STEPS_FACTOR*len(plan['steps'])+10
+            steps_left=MAX_STEPS_FACTOR*len(plan['steps'])+10;last_turn=False
             while True:
                 try:pose=plan_pose(start,origin,self._measured(row))
                 except ValueError:return self._finish('STOPPED','ROUTE_POSE_UNAVAILABLE:'+self._stop(robot_id,owner,epochs))
+                # Hysteresis: right after a re-aim turn accept a wider heading band, or a
+                # ~2 deg overshoot per turn ping-pongs left/right forever (2026-10-26 run 4).
+                tolerance=REAIM_TOLERANCE_RAD if last_turn else HEADING_TOLERANCE_RAD
                 step=None
                 while queue and step is None:
-                    step=next_move(pose,queue[0][0])
+                    step=next_move(pose,queue[0][0],tolerance_rad=tolerance)
                     if step is None:
                         point,leg,stop_index=queue.pop(0)
                         if not queue or queue[0][1]!=leg:
@@ -318,8 +326,9 @@ class DeclaredRouteRunner:
                             self._progress('return_reached' if stop_index is None else 'stop_reached',stop=stop_index,
                                 reached=len(self.current['reached_stops']),unexplained=observed.get('unexplained',0))
                 if step is None:
-                    step=heading_move(pose,start[2])
+                    step=heading_move(pose,start[2],tolerance_rad=tolerance)
                     if step is None:break
+                last_turn=step['direction'] in ('left','right')
                 if step['direction']=='forward':
                     forward+=step['amount']
                     if forward>budget:return self._finish('STOPPED','ROUTE_DISTANCE_BUDGET_EXCEEDED')

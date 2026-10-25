@@ -27,7 +27,7 @@
 ## 2. 앱에서 (순서대로)
 
 1. `Start-TwinPulse.cmd` → 왼쪽 Recent chats에서 어젯밤 프로젝트(`Menu action: Import space for SIM · Project-2610222326.usd`, 106 messages, 프로젝트 ID `chat_mvmbjpcn_d8ef3086`) 열기. **앱을 새로 켠 뒤에는 Isaac에 Twin이 자동으로 다시 세워지지 않습니다**: 채팅 안의 **Reopen saved scene** 버튼(없으면 생략) → 상단 **Import space → Check saved import → Show Twin**(패널 안의 버튼; "Import status: failed · Reopen the saved space"가 보이면 Reopen saved scene을 먼저) → Twin 패널에 3D 프레임이 뜨고 Robots 카드의 내비게이션 맵이 `AVAILABLE`이 될 때까지 기다린 뒤 **Close import space**. (어젯밤 SIM 검증도 이 순서로 통과.)
-2. Twin 패널 **Robots**에서 실물 로봇 선택 → **Connect → Prepare**. 상태 READY 확인.
+2. Twin 패널 **Robots**에서 실물 로봇 선택 → **Connect** → LiDAR on → 로봇 카드 **Details → Physical setup**에서 (a) "I am present…" 체크 후 **Prepare**, (b) "I am supervising…" 체크 후 **Arm supervised field session**, (c) "I reviewed the selected trial…" 체크 후 **Run Bootstrap stop**(이동 0). 카드의 차단 사유가 비고 drive 가능이어야 합니다. (06:50 세션: 이 두 단계 없이 Run route를 누르면 첫 명령이 ACK되지 않음 → 이제 경로 요청 자체가 사유를 알려 주며 거절합니다.)
 3. 로봇 카드 **Set position**으로 선언 좌표 입력(위 값). 라벨은 "operator-declared"로 남습니다.
 4. 채팅에 **`Survey the room and come back`** 입력 → 경로 카드(미니맵, "4 stops, 6.42 m, about N finite moves") 확인. **아직 Run route를 누르지 마세요.**
 5. **상자 놓기** — 두 가지 중 하나:
@@ -44,7 +44,7 @@
 ## 3. 녹화 (Physical AI 트랙: 실물 로봇 1분 이상)
 
 - 카메라: 로봇과 상자가 같이 보이게 고정, 전체 1회 주행 연속 촬영(6–7분).
-- 화면: `Start-TwinPulse-Test.cmd`로 시작하면 CDP 검증·스크린샷 도구 사용 가능. OS 녹화(Win+Alt+R) 사용 시 **커서 표시**, 클릭마다 **1–2초 멈춤**, 채팅 메시지가 뜰 때 2초 대기. 녹화 전 디스크 10 GB 재확인(어젯밤 ENOSPC 충돌은 데모 녹화 스크립트의 프레임 파일 때문).
+- 화면: ffmpeg 데스크톱 캡처는 `-movflags +frag_keyframe+empty_moov`를 꼭 넣어 강제 종료에도 파일이 살아남게(06:50 세션 녹화는 이 옵션이 없어 인덱스 손실). `Start-TwinPulse-Test.cmd`로 시작하면 CDP 검증·스크린샷 도구 사용 가능. OS 녹화(Win+Alt+R) 사용 시 **커서 표시**, 클릭마다 **1–2초 멈춤**, 채팅 메시지가 뜰 때 2초 대기. 녹화 전 디스크 10 GB 재확인(어젯밤 ENOSPC 충돌은 데모 녹화 스크립트의 프레임 파일 때문).
 - 라벨은 UI 그대로: declared start + wheel odometry, not localized. 자율 SLAM/방 전체 커버리지라고 말하지 않기.
 
 ## 4. 기대 결과
@@ -68,6 +68,11 @@
 | 전압 경고 | 충전. 보호 해제 금지. |
 
 종료는 항상 **Exit** 버튼(정상 cleanup → 토크 OFF·LiDAR OFF·disconnect 영수증).
+
+## 5b. 06:45–07:25 실물 세션 결과 (`outputs/path-b-20261026/phys08/SESSION.md`)
+
+- 경로 1: Arm/Bootstrap 전 Run → 미ACK(이동 0). 경로 2: 상자 앞 근접 정지 → 25 cm 후진 → 재계획 실패(시작점 막힘). 경로 3: 시작 LiDAR keepout으로 상자 우회, 정지 1 도달 후 175.7° 회전 시간 초과. 경로 4: ±2° 재조준 진동 → 운영자 Stop. 충돌 0, 가드 변경 0, Disconnect 확인, 배터리 12.37 → 11.78 V.
+- 위 네 결함은 세션 직후 코드로 수정(리뷰 문서 #27–#30)하고 새 빌드에 포함했습니다. 충전 후 같은 체크리스트로 재시도하면 됩니다.
 
 ## 6. 어젯밤 바뀐 것 요약 (자세한 목록: `docs/analysis/TWINPULSE_FABLE_QUALITY_REVIEW_2026-10-26.md`)
 

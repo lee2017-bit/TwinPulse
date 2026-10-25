@@ -128,7 +128,13 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             gap_y = max(abs(local_y) - hy, 0.)
             if math.hypot(gap_x, gap_y) <= clearance:
                 return False
-        return all(math.hypot(x - cx, y - cy) > radius + clearance
+        # Escape corridor (2026-10-26 physical recovery): after a proximity stop the
+        # robot backs off only 25 cm, so its own position is still inside the keepout
+        # disc's clearance band and no path could start. Within one clearance of the
+        # start, a keepout disc blocks only its own radius (plus 5 cm); walls, boxes
+        # and unknown cells keep the full clearance.
+        margin = clearance if math.hypot(x - start[0], y - start[1]) > clearance else .05
+        return all(math.hypot(x - cx, y - cy) > radius + margin
                    for cx, cy, radius in discs)
 
     def line_clear(a, b):

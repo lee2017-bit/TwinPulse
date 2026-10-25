@@ -71,7 +71,7 @@ class DeclaredRouteTests(unittest.TestCase):
 class FakeFleet:
     """Finite commands complete (or not) per script; Stop flips the robot to OPERATOR_STOP."""
     def __init__(self,outcomes):
-        self.outcomes=list(outcomes);self.sent=[];self.curve=0.;self.fail_reason='X'
+        self.outcomes=list(outcomes);self.sent=[];self.curve=0.;self.turn_error=0.;self.fail_reason='X'
         self.row=dict(robot_id='r'*32,kind='sim',control_state='READY',reason=None,connection_epoch='c',motion_epoch='m0',
             pose=dict(position_m=[.6,.6,0.]),command=None,lidar_state='OFF')
         self.navigation_scene=dict(binding=('e','s','rev'),geometry=room(),observed_cells=None)
@@ -88,7 +88,7 @@ class FakeFleet:
             if step['direction'] in ('forward','backward'):
                 d=step['amount']*(1 if step['direction']=='forward' else -1);yaw+=self.curve*abs(d)/2
                 x+=d*math.cos(yaw);y+=d*math.sin(yaw);yaw+=self.curve*abs(d)/2
-            else:yaw+=step['amount']*(1 if step['direction']=='left' else -1)
+            else:yaw+=(step['amount']+self.turn_error)*(1 if step['direction']=='left' else -1)
             self.row['pose']=dict(position_m=[x,y,math.atan2(math.sin(yaw),math.cos(yaw))])
         self.row.update(command=dict(request_id=body['request_id'],state=outcome,reason='X' if outcome=='COMPLETED' else self.fail_reason),
             reason='TASK_COMPLETED' if outcome=='COMPLETED' else 'OPERATOR_STOP',motion_epoch=body['request_id'])
@@ -375,6 +375,57 @@ class OtherSimRobotKeepoutTest(unittest.TestCase):
         self.assertIn([mid[0],mid[1],.35],second['keepouts'])
         self.assertGreater(min(math.dist(q[:2],mid[:2]) for q in second['polyline']),.35)
         self.assertNotEqual(second['polyline'],first['polyline'])
+
+
+class PhysicalRun2026_10_26Tests(unittest.TestCase):
+    """Defects seen on the supervised physical run (outputs/path-b-20261026/phys08)."""
+
+    def test_recovery_replan_starts_inside_the_keepout_clearance_band(self):
+        # Robot backed off 25 cm: 0.5 m from the keepout centre, inside radius .25 + clearance .37.
+        from twinpulse_core.declared_route import replan_legs
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0] for ix in range(40) for iy in range(30)]
+        geometry=dict(bounds=[0.,0.,4.,3.],obstacles=[],targets=[])
+        pose=[1.5,1.5,0.];disc=(2.0,1.5,.25)
+        legs=replan_legs(pose,[[1.5,2.5],[.6,.6]],geometry,cells,kind='physical',discs=[disc])
+        self.assertEqual(len(legs),2);self.assertTrue(all(legs))
+        # Once away from the start the full berth is kept again.
+        far=[q for leg in legs for q in leg if math.dist(q[:2],pose[:2])>.4]
+        self.assertTrue(all(math.dist(q[:2],disc[:2])>disc[2]+.35 for q in far))
+
+    def test_turns_are_capped_so_the_robot_deadline_holds(self):
+        from twinpulse_core.declared_route import next_move, heading_move, MAX_TURN_RAD
+        step=next_move([0.,0.,0.],[-1.,0.05])  # ~177 deg
+        self.assertEqual(step['direction'],'left');self.assertAlmostEqual(step['amount'],MAX_TURN_RAD)
+        self.assertAlmostEqual(heading_move([0.,0.,0.],3.0)['amount'],MAX_TURN_RAD)
+        self.assertLess(MAX_TURN_RAD/.2+2.,12.)  # robot-side deadline amount/0.2 rad/s + 2 s
+
+    def test_turn_overshoot_does_not_ping_pong(self):
+        import tempfile
+        fleet=FakeFleet([]);fleet.turn_error=math.radians(2.2)  # every turn overshoots by ~2 deg
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        texts=[b['payload']['text'] for b in fleet.sent if b['action']=='command']
+        turns=[t for t in texts if t.endswith('degrees')]
+        runs=0;longest=0
+        for t in texts:
+            runs=runs+1 if t.endswith('degrees') else 0;longest=max(longest,runs)
+        self.assertLessEqual(longest,3,texts)  # a big turn may be split, but no left/right ping-pong
+        self.assertLess(len(turns),len(texts))
+
+    def test_physical_plan_refuses_until_the_field_session_can_drive(self):
+        import tempfile
+        from twinpulse_app.command_broker import BrokerError
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet([])
+        fleet.row.update(kind='physical',capabilities=dict(drive=False),field=dict(blockers=['FIELD_SUPERVISION_CONFIRMATION_REQUIRED','FIELD_BOOTSTRAP_STOP_REQUIRED']),
+            display_pose=dict(scene_revision='rev',position_m=[.6,.6,0.],visual_epoch='v1'))
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:0.,sleep=lambda s:None,poll_s=1.)
+            with self.assertRaises(BrokerError) as caught:runner.plan(fleet.row['robot_id'])
+        self.assertEqual(caught.exception.code,'declared_route_field_not_ready')
+        self.assertIn('Bootstrap stop',str(caught.exception));self.assertIn('FIELD_SUPERVISION_CONFIRMATION_REQUIRED',str(caught.exception))
+        self.assertEqual(fleet.sent,[])
 
 
 class DeclaredRouteChatMessageTests(unittest.TestCase):

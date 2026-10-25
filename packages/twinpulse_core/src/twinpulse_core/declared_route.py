@@ -22,6 +22,8 @@ PHYSICAL_ROUTE_CLEARANCE_M=.35
 PHYSICAL_STOP_CLEARANCE_M=.6
 ARRIVED_M=.04
 HEADING_TOLERANCE_RAD=.035
+REAIM_TOLERANCE_RAD=.07   # after a re-aim turn: the robot overshoots ~2 deg, so a tighter band oscillates (2026-10-26)
+MAX_TURN_RAD=1.6          # robot-side deadline is amount/0.2 rad/s + 2 s; a 175 deg turn timed out physically (2026-10-26)
 
 
 def _wrap(a):return math.atan2(math.sin(a),math.cos(a))
@@ -120,7 +122,10 @@ def compile_moves(start,polyline,*,final_yaw=None,max_leg_m=MAX_LEG_M):
         nonlocal yaw
         delta=_wrap(target-yaw)
         if abs(delta)>=MIN_TURN_RAD:
-            steps.append(dict(direction='left' if delta>0 else 'right',amount=abs(delta)))
+            # Same cap as the runner (MAX_TURN_RAD) so the preview count matches an ideal run.
+            remaining=abs(delta)
+            while remaining>1e-9:
+                chunk=min(remaining,MAX_TURN_RAD);steps.append(dict(direction='left' if delta>0 else 'right',amount=chunk));remaining-=chunk
         yaw=target
     for gx,gy in polyline:
         distance=math.hypot(gx-x,gy-y)
@@ -221,22 +226,23 @@ def plan_pose(start,odom_origin,odom):
     return [start[0]+lx*c-ly*s,start[1]+lx*s+ly*c,_wrap(start[2]+odom[2]-odom_origin[2])]
 
 
-def next_move(pose,target,*,max_leg_m=MAX_LEG_M):
+def next_move(pose,target,*,max_leg_m=MAX_LEG_M,tolerance_rad=HEADING_TOLERANCE_RAD):
     """One finite step toward target from the measured (odometry) pose; None when reached.
 
     Re-aiming from the measured pose after every leg removes the robot's
-    systematic curve instead of letting it accumulate over the route.
+    systematic curve instead of letting it accumulate over the route. Turns are
+    capped at MAX_TURN_RAD (the rest is re-aimed on the next step).
     """
     distance=math.dist(pose[:2],target[:2])
     if distance<ARRIVED_M:return None
     delta=_wrap(math.atan2(target[1]-pose[1],target[0]-pose[0])-pose[2])
-    if abs(delta)>=HEADING_TOLERANCE_RAD:return dict(direction='left' if delta>0 else 'right',amount=abs(delta))
+    if abs(delta)>=tolerance_rad:return dict(direction='left' if delta>0 else 'right',amount=min(abs(delta),MAX_TURN_RAD))
     return dict(direction='forward',amount=min(distance,max_leg_m))
 
 
-def heading_move(pose,yaw):
+def heading_move(pose,yaw,*,tolerance_rad=HEADING_TOLERANCE_RAD):
     delta=_wrap(yaw-pose[2])
-    return dict(direction='left' if delta>0 else 'right',amount=abs(delta)) if abs(delta)>=HEADING_TOLERANCE_RAD else None
+    return dict(direction='left' if delta>0 else 'right',amount=min(abs(delta),MAX_TURN_RAD)) if abs(delta)>=tolerance_rad else None
 
 
 def replan_legs(pose,goals,geometry,observed_cells=None,*,kind='physical',discs=()):
