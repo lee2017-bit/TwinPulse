@@ -67,7 +67,8 @@
 .is-control-view .chat-current-step { margin:6px 8px 0; padding:5px 8px; }
 .is-control-view .chat-message-list { padding:12px; }
 .is-control-view .chat-composer { width:calc(100% - 16px); margin:6px auto; border-radius:14px; padding:5px 8px; }
-.is-control-view .chat-twin-panel { padding:6px 8px; min-height:0; overflow:hidden; display:grid; grid-template-rows:auto minmax(100px,1fr) auto auto; gap:4px; }
+.is-control-view .chat-twin-panel { padding:6px 8px; min-height:0; overflow:hidden; display:grid; grid-template-rows:auto minmax(260px,1fr) auto auto auto; gap:4px; }
+.chat-twin-panel .declared-route-card { margin:4px 0; padding:8px 12px; max-height:230px; overflow:auto; }.chat-twin-panel .declared-route-card svg { max-height:110px !important; }.chat-twin-panel .declared-route-card p { margin:2px 0; font-size:.85rem; }
 .is-control-view .chat-twin-heading h2 { font-size:13px; }
 .is-control-view .chat-twin-mission-details { margin:0; max-height:90px; overflow:auto; font-size:11px; }
 .is-control-view .twin-live-viewport { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
