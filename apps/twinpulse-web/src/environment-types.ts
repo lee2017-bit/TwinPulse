@@ -39,7 +39,7 @@ export type EnvironmentAction =
   | {action:'model_review';request_id:string;job_id:string;expected_scene_revision:string}
   | {action:'photo_analyze';request_id:string;photo:{name:string;bytes_base64:string};consent:true;expected_scene_revision:string}
   | {action:'photo_cancel';request_id:string;job_id:string}
-  | {action:'photo_candidate_preview';request_id:string;obstacle:EnvironmentObstacle;candidate_ref:EnvironmentCandidateRef;duplicate_reviewed:true;expected_scene_revision:string}
+  | {action:'photo_candidate_preview';request_id:string;obstacle:EnvironmentObstacle;candidate_ref:EnvironmentCandidateRef;duplicate_reviewed:true;expected_scene_revision:string;replace_object_id?:string}
   | {action:'add_overlay_preview';request_id:string;obstacle:EnvironmentObstacle;photo:{name:string;bytes_base64:string}|null;expected_scene_revision:string}
   | {action:'remove_overlay_preview';request_id:string;object_id:string;expected_scene_revision:string}
   | {action:'undo_preview';request_id:string;expected_scene_revision:string};

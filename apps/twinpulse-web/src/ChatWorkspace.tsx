@@ -107,13 +107,16 @@ export function conversationTurns(state:Pick<ConversationState,'messages'|'cards
   return turns.length?turns:[{id:'empty',messages:[],cards:[]}];
 }
 
-export function RoutePreview({preview}:{preview:NonNullable<QuestionCard['route_preview']>}){
+export function RoutePreview({preview,picks=[],onPick}:{preview:NonNullable<QuestionCard['route_preview']>;picks?:number[][];onPick?:(x:number,y:number)=>void}){
   const [x0,y0,x1,y1]=preview.bounds,w=x1-x0,h=y1-y0,c=preview.cell_m;
   // World +Y is drawn up; SVG y grows down.
   const X=(x:number)=>x-x0,Y=(y:number)=>y1-y,path=preview.polyline.map(p=>`${X(p[0])},${Y(p[1])}`).join(' ');
   const [sx,sy,syaw]=preview.start;
   return <svg role="img" aria-label="Planned route on the Twin floor · model plan, not localization" className="route-preview"
-    viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6}}>
+    viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6,cursor:onPick?'crosshair':'default'}}
+    onClick={onPick?event=>{const box=(event.currentTarget as SVGSVGElement).getBoundingClientRect();
+      const px=(event.clientX-box.left)/box.width*w,py=(event.clientY-box.top)/box.height*h;onPick(Math.round((x0+px)*100)/100,Math.round((y1-py)*100)/100);}:undefined}>
+    {picks.map(([x,y],i)=><g key={'pick'+i}><circle cx={X(x)} cy={Y(y)} r={0.11} fill="#3fa9f5"/><text x={X(x)+0.14} y={Y(y)-0.1} fontSize={0.22} fill="#3fa9f5">{String.fromCharCode(65+i)}</text></g>)}
     {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
     <polyline points={`${X(sx)},${Y(sy)} ${path}`} fill="none" stroke="#5fd3a6" strokeWidth={0.04} strokeLinejoin="round"/>
     {(preview.keepouts??[]).map(([x,y],i)=><circle key={'k'+i} cx={X(x)} cy={Y(y)} r={0.06} fill="#e5534b"/>)}
@@ -125,8 +128,10 @@ export function RoutePreview({preview}:{preview:NonNullable<QuestionCard['route_
   </svg>;
 }
 
-export function ActionCard({ card, busy, act, current=true, locked=false }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean;locked?:boolean}) {
+export function ActionCard({ card, busy, act, current=true, locked=false, onRouteVia }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean;locked?:boolean;onRouteVia?:(card:QuestionCard,text:string)=>void}) {
   const [choice,setChoice]=useState<string|null>(null);
+  const [picks,setPicks]=useState<number[][]>([]);
+  const routeCard=card.kind==='declared_route_run'&&!!onRouteVia;
   const preview=card.generation_approval;
   const directOffer=!!preview&&['robot_presence','robot_selection'].includes(card.kind);
   const waiting = card.state === 'waiting' && current;
@@ -138,7 +143,10 @@ export function ActionCard({ card, busy, act, current=true, locked=false }: {car
   const selected=enabled.length===1?enabled[0].id:enabled.some(option=>option.id===choice)?choice:null;
   const startsGeneration=['robot_presence','robot_selection'].includes(card.kind)&&(card.kind==='robot_selection'||selected==='sim');
   return <section className="chat-question" aria-label={card.question}>
-    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview}/>}
+    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview} picks={routeCard?picks:[]} onPick={routeCard?(x,y)=>setPicks(current=>[...current,[x,y]].slice(0,8)):undefined}/>}
+    {routeCard&&<div className="route-pick-tools"><small>Click the map to choose your own stops (A, B, …); the route is re-planned through them and back to the start.</small>
+      {picks.length>0&&<><button type="button" disabled={busy||locked} onClick={()=>onRouteVia!(card,'Survey via '+picks.map(([x,y])=>`(${x}, ${y})`).join(', ')+' and come back')}>Re-plan via {picks.length} stop{picks.length===1?'':'s'}</button>
+        <button type="button" onClick={()=>setPicks([])}>Clear stops</button></>}</div>}
     <small role="status">{busy ? 'Submitting your choice…' : locked ? 'Waiting for the current App state · choices resume when the connection and scene observation are fresh' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
     {directOffer&&<div className="generation-start-offer">
       <p>Selecting Create Twin starts generation once. {preview.image_count?
@@ -915,7 +923,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             {turn.cards.filter(card=>card.kind!=='generation_approval').map(card => <ActionCard key={card.id} card={card}
               current={card.id===waitingCard?.id}
               busy={busy || !!delivery}
-              locked={!sceneObservationFresh || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}/>)}
+              locked={!sceneObservationFresh || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}
+              onRouteVia={(routeCard,viaText)=>{void (async()=>{await choose(routeCard,'cancel');await new Promise(resolve=>setTimeout(resolve,900));
+                await submit({action:'message',request_id:crypto.randomUUID(),text:viaText,attachment:null,mode:'new'});})();}}/>)}
           {job && turn.id===generationTurn && <section className="chat-tool-progress" role="status"><strong>Scene generation · {job.state}</strong>
             {job.state==='completed'?<details><summary>Generation summary</summary><p>{job.summary}</p></details>:<p>{job.summary}</p>}
             {job.progress&&<p>Stage: {generationActivityLabel(job)} · {job.progress.elapsed_s??0} s · Repairs: {job.progress.repair_count??0}/{job.progress.max_repairs??0}</p>}

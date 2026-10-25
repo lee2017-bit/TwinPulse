@@ -316,6 +316,9 @@ class EnvironmentWorkspace:
                     while len(self.previews)>8:self.previews.popitem(last=False)
                 return self.snapshot(preview=preview,lidar_added=added)
             if action in {'move_preview','undo_preview','add_overlay_preview','remove_overlay_preview','photo_candidate_preview'}:
+                # Optional: the photo-recognized object replaces one LiDAR 'unknown' outline box (one object per edit).
+                replace_object_id=body.pop('replace_object_id',None) if action=='photo_candidate_preview' else None
+                if replace_object_id is not None and not isinstance(replace_object_id,str):raise ValueError('ENVIRONMENT_EDIT_SHAPE')
                 expected={'action','request_id','expected_scene_revision'}|(
                     {'object_id','translation_m'} if action=='move_preview' else
                     {'obstacle','photo'} if action=='add_overlay_preview' else
@@ -350,7 +353,12 @@ class EnvironmentWorkspace:
                         if body['duplicate_reviewed'] is not True:raise ValueError('PHOTO_DUPLICATE_REVIEW_REQUIRED')
                         job,candidate=self.photos.reference(body['candidate_ref'],original_environment)
                         if candidate['kind']!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
-                        overlay['evidence']=job['photo'];environment=add_overlay(original_environment,overlay)
+                        base=original_environment
+                        if replace_object_id:
+                            if not any(o['item']['id']==replace_object_id and o['item']['kind']=='unknown' for o in original_environment.get('overlays') or []):
+                                raise ValueError('ENVIRONMENT_REPLACE_TARGET_NOT_UNKNOWN_OVERLAY')
+                            base=remove_overlay(original_environment,replace_object_id)
+                        overlay['evidence']=job['photo'];environment=add_overlay(base,overlay)
                         photo_reference=body['candidate_ref']
                     elif body['photo'] is not None:
                         overlay['evidence']=self._store_overlay_photo(body['photo'])

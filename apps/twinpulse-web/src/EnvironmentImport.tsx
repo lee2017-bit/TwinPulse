@@ -161,10 +161,10 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
           await act({action:'photo_analyze',request_id:crypto.randomUUID(),photo:{name:photo.name,bytes_base64:encoded},consent:true,expected_scene_revision:pendingRevision});
         })}
         cancelPhoto={id=>void perform(async()=>{await act({action:'photo_cancel',request_id:crypto.randomUUID(),job_id:id});setPreview(null);})}
-        preview={(obstacle,photo,candidate)=>void perform(async()=>{
+        preview={(obstacle,photo,candidate,replaceId)=>void perform(async()=>{
           if(photo&&(!/\.(jpe?g|png|webp)$/i.test(photo.name)||photo.size>5*1024*1024))throw new Error('Choose a JPEG, PNG or WebP photo up to 5 MiB.');
           discardProposal();const next=await act(candidate?{action:'photo_candidate_preview',request_id:crypto.randomUUID(),obstacle,
-            candidate_ref:candidate,duplicate_reviewed:true,expected_scene_revision:state.scene_revision!}:
+            candidate_ref:candidate,duplicate_reviewed:true,expected_scene_revision:state.scene_revision!,...(replaceId?{replace_object_id:replaceId}:{})}:
             {action:'add_overlay_preview',request_id:crypto.randomUUID(),obstacle,
             photo:photo?{name:photo.name,bytes_base64:await fileToBase64(photo)}:null,expected_scene_revision:state.scene_revision!});
           if(current())setPreview(next.preview??null);

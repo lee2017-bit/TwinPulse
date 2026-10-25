@@ -488,6 +488,54 @@ class ClusterOutlineTest(unittest.TestCase):
         self.assertAlmostEqual(c['yaw_deg'],30.,delta=3.);self.assertGreater(c['extent_m'][0],.8);self.assertLess(c['extent_m'][1],.3)
 
 
+class OperatorStopsTest(unittest.TestCase):
+    def test_route_through_clicked_stops_then_home(self):
+        from twinpulse_core.declared_route import plan_through
+        plan=plan_through([.6,.6,0.],[[2.5,.8],[1.5,2.2]],room(),kind='physical')
+        self.assertEqual(plan['waypoints'],[[2.5,.8],[1.5,2.2]]);self.assertEqual(plan['polyline'][-1][:2],[.6,.6])
+        self.assertEqual(plan['scope'],'OPERATOR_STOPS_MODEL_PLAN_NOT_LOCALIZED');self.assertEqual(len(plan['legs']),3)
+
+    def test_chat_parses_via_stops_and_routes_them_to_the_declared_route(self):
+        from types import SimpleNamespace
+        from twinpulse_app.conversation_service import ConversationService
+        fleet=SimpleNamespace(focused='r',robots={'r':{'kind':'sim'}},navigation_scene=dict(geometry=dict(schema='scene-navigation-2.0')))
+        self_=SimpleNamespace(declared_routes=object(),robot_fleet=fleet,_route_stops=ConversationService._route_stops)
+        self.assertEqual(ConversationService._route_stops('Survey via (1.2, 0.8), (2, 1.5) and come back'),[[1.2,.8],[2.,1.5]])
+        self.assertTrue(ConversationService._declared_route_request(self_,'Survey via (1.2, 0.8), (2, 1.5) and come back'))
+        self.assertFalse(ConversationService._declared_route_request(self_,'Go via (1.2, 0.8)'))  # no return request
+
+    def test_runner_plans_through_operator_stops(self):
+        import tempfile
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet([])
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:0.,sleep=lambda s:None,poll_s=1.)
+            plan=runner.plan(fleet.row['robot_id'],stops=[[2.5,.8]])
+        self.assertEqual(plan['waypoints'],[[2.5,.8]]);self.assertEqual(plan['scope'],'OPERATOR_STOPS_MODEL_PLAN_NOT_LOCALIZED')
+
+
+class FloorMapAndCorrectionTest(unittest.TestCase):
+    def test_floor_map_lists_free_cells_bounds_and_robot_positions(self):
+        from twinpulse_app.robot_fleet import RobotFleet
+        import threading
+        from types import SimpleNamespace
+        cells=[[.05,.05,'free',0,0,0,0],[.15,.05,'occupied',0,0,0,0]]
+        fleet=SimpleNamespace(lock=threading.Lock(),navigation_scene=dict(binding=('e','s','rev'),geometry=dict(bounds=[0,0,4,3],obstacles=[[1,1,2,2]]),observed_cells=cells),
+            robots={'a':dict(robot_id='a',label='Sim',kind='sim',pose=dict(position_m=[1,1,0])),'b':dict(robot_id='b',label='Phys',kind='physical',display_pose=dict(position_m=[2,2,.5]))})
+        out=RobotFleet.floor_map(fleet)
+        self.assertEqual(out['status'],'AVAILABLE');self.assertEqual(out['free_cells'],[[.05,.05]]);self.assertEqual(out['bounds'],[0,0,4,3])
+        self.assertEqual({r['label']:r['position_m'] for r in out['robots']},{'Sim':[1,1,0],'Phys':[2,2,.5]})
+        fleet.navigation_scene=None;self.assertEqual(RobotFleet.floor_map(fleet)['status'],'UNAVAILABLE')
+
+    def test_candidate_near_an_existing_object_offers_a_position_correction(self):
+        from types import SimpleNamespace
+        from twinpulse_app.api import LocalApiServer as cls
+        objects=[dict(id='Added_1',label='Fan base',category='floor_fan',position_m=[1.0,1.0,.5]),dict(id='floor',label='Floor',category='floor',position_m=[0,0,0])]
+        self_=SimpleNamespace(_environment_workspace=lambda:SimpleNamespace(snapshot=lambda:dict(objects=objects)))
+        matches=cls._route_candidate_matches(self_,[dict(position_xy_m=[1.3,1.1],returns=5),dict(position_xy_m=[3.,3.],returns=4)])
+        self.assertEqual(len(matches),1);self.assertEqual(matches[0]['object_id'],'Added_1');self.assertEqual(matches[0]['translation_m'],[.3,.1,0.])
+
+
 class DeclaredRouteChatMessageTests(unittest.TestCase):
     def _service(self):
         import threading

@@ -130,6 +130,27 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
         first_leg_straight_m=first_leg_m)
 
 
+def plan_through(start,stops,geometry,observed_cells=None,*,kind='physical',discs=()):
+    """Operator-chosen stops (clicked on the floor map) in order, then back to the start.
+
+    Same model paths, clearance and keepouts as the survey; the stops are the
+    operator's request, not an observation plan.
+    """
+    clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
+    pose=list(start);polyline=[];legs=[];waypoints=[]
+    for stop in list(stops)[:8]:
+        goal=[float(stop[0]),float(stop[1])]
+        route=route_to(pose,goal,geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
+        polyline+=route;legs.append([list(q) for q in route]);waypoints.append(goal)
+        last=route[-2] if len(route)>1 else pose;pose=[*route[-1],math.atan2(route[-1][1]-last[1],route[-1][0]-last[0])]
+    if not waypoints:raise ValueError('DECLARED_ROUTE_NO_STOPS')
+    returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
+    polyline+=returning;legs.append([list(q) for q in returning])
+    return dict(start=list(start),waypoints=waypoints,polyline=[list(p) for p in polyline],legs=legs,length_m=route_length(start,polyline),
+        stop_reason='OPERATOR_STOPS',scope='OPERATOR_STOPS_MODEL_PLAN_NOT_LOCALIZED',clearance_m=clearance,keepouts=[list(d) for d in discs],
+        first_leg_straight_m=None)
+
+
 def compile_moves(start,polyline,*,final_yaw=None,max_leg_m=MAX_LEG_M):
     """Turn-then-drive steps whose integration reproduces the polyline."""
     x,y,yaw=start;steps=[]
@@ -292,4 +313,4 @@ def integrate(start,steps):
     return [x,y,yaw]
 
 
-__all__=['SCOPE','plan_survey','compile_moves','move_text','integrate','unexplained_scan_discs','scan_world_points','cluster_candidates','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']
+__all__=['SCOPE','plan_survey','plan_through','compile_moves','move_text','integrate','unexplained_scan_discs','scan_world_points','cluster_candidates','plan_pose','next_move','heading_move','replan_legs','NoBoundedPath']

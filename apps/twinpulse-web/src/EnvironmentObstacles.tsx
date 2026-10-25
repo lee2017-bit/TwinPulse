@@ -6,12 +6,13 @@ import type {EnvironmentObstacle,EnvironmentState,EnvironmentCandidateRef} from 
 const presets:Record<string,[number,number,number]>={floor_fan:[.4,.4,1.1],basket:[.35,.3,.4],bag:[.3,.25,.35],box:[.3,.3,.3],
   clothing_pile:[.35,.25,.15],cable_bundle:[.3,.2,.04],power_adapter:[.12,.08,.05],power_strip:[.3,.08,.05],small_equipment:[.3,.3,.3],unknown:[.3,.3,.3]};
 export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,analyze,cancelPhoto}:{state:EnvironmentState;disabled:boolean;
-  preview:(obstacle:EnvironmentObstacle,photo:File|null,candidate?:EnvironmentCandidateRef)=>void;remove:(id:string)=>void;invalidate:()=>void;
+  preview:(obstacle:EnvironmentObstacle,photo:File|null,candidate?:EnvironmentCandidateRef,replaceId?:string)=>void;remove:(id:string)=>void;invalidate:()=>void;
   analyze:(photo:File)=>void;cancelPhoto:(id:string)=>void}){
   const [kind,setKind]=useState('basket'),[label,setLabel]=useState('Basket'),[xy,setXY]=useState(['0','0']);
   const [size,setSize]=useState(['.35','.3','.4']),[yaw,setYaw]=useState('0'),[margin,setMargin]=useState('.2');
   const [photo,setPhoto]=useState<File|null>(null),[url,setURL]=useState('');
   const [consent,setConsent]=useState(false),[candidate,setCandidate]=useState<EnvironmentCandidateRef|undefined>(),[duplicate,setDuplicate]=useState(false),[photoSHA,setPhotoSHA]=useState('');
+  const [replaceId,setReplaceId]=useState('');const unknownBoxes=state.objects.filter(o=>o.category==='unknown');
   const proposal=state.photo_proposal;
   useEffect(()=>{let active=true;setPhotoSHA('');if(photo&&crypto.subtle&&typeof photo.arrayBuffer==='function'){
     void photo.arrayBuffer().then(bytes=>crypto.subtle.digest('SHA-256',bytes)).then(hash=>{if(active)setPhotoSHA(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));}).catch(()=>{});
@@ -56,6 +57,9 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
         </div>)}
       </section>}
       {candidate&&<><p role="status">Reviewing {candidate.candidate_id} · set the center on the map. Catalog size is an estimate.</p>
+        {unknownBoxes.length>0&&<label>Replace a LiDAR outline box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
+          const box=unknownBoxes.find(o=>o.id===id);if(box?.position_m){setXY([box.position_m[0].toFixed(3),box.position_m[1].toFixed(3)]);setDuplicate(true);}invalidate();}}>
+          <option value="">Keep as a new object</option>{unknownBoxes.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}</select></label>}
         <label><input aria-label="Candidate duplicate reviewed" type="checkbox" checked={duplicate} onChange={e=>{setDuplicate(e.target.checked);invalidate();}}/> I checked that this object is not already represented.</label>
         <button type="button" onClick={()=>{setCandidate(undefined);setDuplicate(false);invalidate();}}>Use manual entry</button></>}
       <label className="library-field">Type<select aria-label="Obstacle type" value={kind} onChange={e=>{const k=e.target.value;setKind(k);setLabel(k.replaceAll('_',' '));setSize(presets[k].map(String));setCandidate(undefined);setDuplicate(false);invalidate();}}>
@@ -66,7 +70,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
       <div className="library-position"><label>Yaw (deg)<input aria-label="Obstacle yaw" type="number" min="-180" max="180" value={yaw} onChange={e=>{setYaw(e.target.value);invalidate();}}/></label>
         <label>Uncertainty (m)<input aria-label="Obstacle uncertainty" type="number" min=".05" max="1" step=".05" value={margin} onChange={e=>{setMargin(e.target.value);invalidate();}}/></label></div>
       <small>Scene X/Y coordinates; bottom on the floor. Catalog sizes are editable estimates. The whole uncertainty footprint must fit the scanned floor. A hidden keepout blocks SIM paths; LiDAR uses visible shapes only.</small>
-      <button type="button" disabled={!valid||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate)}>Preview obstacle</button>
+      <button type="button" disabled={!valid||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate,candidate&&replaceId?replaceId:undefined)}>Preview obstacle</button>
     </fieldset>
     {added.length>0&&<ul style={{paddingInlineStart:20,overflowWrap:'anywhere'}}>{added.map(o=><li key={o.id}>
       {o.label} · {o.category} · {o.evidence?.basis==='photo_estimate'?'photo estimate':o.evidence?.basis==='lidar_estimate'?'LiDAR estimate':'manual estimate'} · not aligned

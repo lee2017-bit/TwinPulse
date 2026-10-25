@@ -10,6 +10,8 @@ import {downloadBlob} from './download-blob';
 import {RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
 import {RobotMotionReview} from './RobotMotionReview';
+import {FloorMap} from './FloorMap';
+import type {FloorMapState} from './robot-fleet-types';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
 import {LidarPointView} from './LidarPointView';
 import {LidarReviewDialog} from './LidarReviewDialog';
@@ -188,6 +190,13 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   const [prepareConfirmed,setPrepareConfirmed]=useState(false),[qualifyConfirmed,setQualifyConfirmed]=useState(false);
   const [markerX,setMarkerX]=useState('0'),[markerY,setMarkerY]=useState('0'),[markerYaw,setMarkerYaw]=useState('0');
   const [markerOpen,setMarkerOpen]=useState(false);
+  const [floor,setFloor]=useState<FloorMapState|null>(null);
+  const floorWanted=showRegister||markerOpen;
+  useEffect(()=>{
+    if(!floorWanted||typeof api.robotFleetFloor!=='function')return;
+    let closed=false;const load=()=>void api.robotFleetFloor().then(next=>{if(!closed)setFloor(next);}).catch(()=>{if(!closed)setFloor(null);});
+    load();const timer=setInterval(load,4000);return()=>{closed=true;clearInterval(timer);};
+  },[api,floorWanted]);
   const [evidenceBusy,setEvidenceBusy]=useState<string|null>(null);
   const importGeneration=useRef(0);
   const operationSummary=useMemo(()=>operation?summarizeOperation(operation):null,[operation]);
@@ -389,6 +398,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         if(!label.trim()||position.some(value=>!Number.isFinite(value))){setError('Enter a name and finite position values.');return;}
         void action(envelope('register_sim',null,{label:label.trim(),position_m:position}));}}>
         <p className="robot-fleet-policy">Model: TurtleBot3 Burger (built-in SIM model). The name is only a label.</p>
+        <FloorMap floor={floor} value={[Number(x)||0,Number(y)||0,Number(yaw)||0]} onChange={(px,py,pyaw)=>{setX(String(px));setY(String(py));setYaw(String(pyaw));}}/>
         <label>Name<input value={label} maxLength={80} onChange={event=>setLabel(event.target.value)} required/></label>
         <div className="robot-fleet-position">{([['X (m)',x,setX],['Y (m)',y,setY],['Yaw (rad)',yaw,setYaw]] as const).map(([name,value,set])=>
           <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
@@ -477,6 +487,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           if(values.some(value=>!value.trim())||position.some(value=>!Number.isFinite(value))){setError('Enter finite X, Y and yaw values for the visualization estimate.');return;}
           void action(envelope('set_twin_pose',robot,{position_m:position}));
         }}>
+          <FloorMap floor={floor} value={[Number(markerX)||0,Number(markerY)||0,Number(markerYaw)||0]} onChange={(px,py,pyaw)=>{setMarkerX(String(px));setMarkerY(String(py));setMarkerYaw(String(pyaw));}}/>
           <div className="robot-fleet-position">{([['Marker X (m)',markerX,setMarkerX],['Marker Y (m)',markerY,setMarkerY],['Marker yaw (rad)',markerYaw,setMarkerYaw]] as const).map(([name,value,set])=>
             <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
           <button aria-label="Place estimated robot marker" disabled={!available||busy||selectionPending}>Place robot</button>

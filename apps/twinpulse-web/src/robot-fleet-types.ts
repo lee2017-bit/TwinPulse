@@ -70,6 +70,9 @@ export type RobotFleetRobot = {
   command?:{request_id:string;text:string;kind:'finite'|'navigate';state:'ACCEPTED'|'PLANNING'|'RUNNING'|'ARRIVED'|'ESTIMATE_REACHED'|'COMPLETED'|'CANCELLED'|'FAILED';
     target_kind?:string;target_label?:string;target_id?:string;goal_xy?:[number,number];waypoints?:[number,number][];remaining_m?:number;reason?:string|null}|null;
 };
+/** Top-down floor for click placement (display scale only, never localization). */
+export type FloorMapState={status:'AVAILABLE'|'UNAVAILABLE';scene_revision:string|null;bounds:number[]|null;free_cells:number[][];cell_m:number;
+  obstacles:number[][];robots:{robot_id:string;label:string;kind:string;position_m:number[]|null}[];label?:string};
 /** Declared-start route progress (display only; the chat card owns the decision). */
 export type DeclaredRouteState = {
   plan_id:string;robot_id:string;kind:'sim'|'physical';state:'RUNNING'|'COMPLETED'|'STOPPED'|'FAILED'|'CANCELLED'|string;reason:string|null;

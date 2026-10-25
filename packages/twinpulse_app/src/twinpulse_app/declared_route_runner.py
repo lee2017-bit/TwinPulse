@@ -14,7 +14,7 @@ import threading
 import time
 from uuid import uuid4
 
-from twinpulse_core.declared_route import (plan_survey, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs,
+from twinpulse_core.declared_route import (plan_survey, plan_through, compile_moves, move_text, plan_pose, next_move, heading_move, replan_legs,
     unexplained_scan_discs, scan_world_points, cluster_candidates, HEADING_TOLERANCE_RAD, REAIM_TOLERANCE_RAD)
 from .command_broker import BrokerError
 
@@ -73,7 +73,7 @@ class DeclaredRouteRunner:
         if not _pose3(start):raise BrokerError('declared_route_pose_required','A current SIM pose is required.',status=409)
         return list(start),'sim_engine_pose'
 
-    def plan(self,robot_id,*,budget_m=None):
+    def plan(self,robot_id,*,budget_m=None,stops=None):
         scene=self.fleet.navigation_scene
         if not scene:raise BrokerError('declared_route_scene_required','Display the imported Twin before planning a route.',status=409)
         row=self._row(robot_id)
@@ -99,7 +99,8 @@ class DeclaredRouteRunner:
             if points:  # a malformed native row must not become a 500
                 scan_review=unexplained_scan_discs(start,points,scene.get('observed_cells'))
                 scan_review.update(stream_id=(row.get('scan') or {}).get('stream_id'),frame_sequence=(row.get('scan') or {}).get('frame_sequence'),points=len(points))
-            plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],
+            if stops:plan=plan_through(start,stops,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],discs=[*scan_review['discs'],*robot_discs])
+            else:plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],
                 budget_m=budget_m or (8. if row['kind']=='physical' else 6.),discs=[*scan_review['discs'],*robot_discs])
             steps=compile_moves(start,plan['polyline'],final_yaw=start[2])
         except (ValueError,KeyError,TypeError) as exc:

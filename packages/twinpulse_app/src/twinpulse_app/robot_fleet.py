@@ -336,6 +336,19 @@ class RobotFleet:
             navigation_scene=self._navigation_summary(engine),route=self._route_summary(),
             policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=INPUT_TTL_MS))
 
+    def floor_map(self):
+        """Top-down floor for placing a robot or route stops by click (display scale, never localization)."""
+        with self.lock:
+            scene=self.navigation_scene
+            if not scene:return dict(status='UNAVAILABLE',scene_revision=None,bounds=None,free_cells=[],cell_m=.1,obstacles=[],robots=[])
+            free=[[round(c[0],2),round(c[1],2)] for c in (scene.get('observed_cells') or []) if c[2]=='free']
+            step=max(1,-(-len(free)//4000));free=free[::step]
+            robots=[dict(robot_id=r['robot_id'],label=r['label'],kind=r['kind'],
+                position_m=((r.get('display_pose') or {}).get('position_m') if r['kind']=='physical' else (r.get('pose') or {}).get('position_m')))
+                for r in self.robots.values()]
+            return dict(status='AVAILABLE',scene_revision=scene['binding'][2],bounds=scene['geometry'].get('bounds'),free_cells=free,cell_m=.1,
+                obstacles=scene['geometry'].get('obstacles') or [],robots=robots,label='FLOOR_MAP_DISPLAY_SCALE_NOT_LOCALIZATION')
+
     def _route_summary(self):
         """Declared-route progress for the web UI (display only; the chat card owns the decision)."""
         route=getattr(self,'route_overlay',None)

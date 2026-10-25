@@ -212,6 +212,8 @@ class LocalApiServer:
             self.conversation.declared_routes=DeclaredRouteRunner(self.robot_fleet,self.robot_fleet.root,
                 on_result=self.conversation.declared_route_finished,on_progress=self.conversation.declared_route_progress)
             self.conversation.add_route_obstacles=self._add_route_obstacles
+            self.conversation.match_route_objects=self._route_candidate_matches
+            self.conversation.move_route_object=self._move_route_object
         if workspace_devices is not None:
             robot_diagnostics = workspace_devices.diagnostics
             robot_readiness = workspace_devices.readiness
@@ -906,6 +908,8 @@ class LocalApiServer:
                 if request.command == 'POST' and parsed.path == '/v1/product/runtime/shutdown':
                     self._require_shape(self._read_json(request), set())
                     return self._json(request, 202, self._request_shutdown())
+                if parsed.path == '/v1/product/robot-fleet/floor' and request.command == 'GET':
+                    return self._json(request,200,self.robot_fleet.floor_map())
                 if parsed.path == '/v1/product/robot-fleet' and request.command in ('GET','POST'):
                     value=(self.robot_fleet.action(gated_body if gated_body is not None else self._read_json(request),session.session_id)
                            if request.command=='POST' else self.robot_fleet.snapshot())
@@ -1637,6 +1641,37 @@ class LocalApiServer:
                 # A lookup failure is not an empty App scene or a physical gate.
                 pass
         return context
+
+    def _route_candidate_matches(self,candidates):
+        """LiDAR candidates that sit near an existing movable Twin object (position correction offer, user applies)."""
+        import math as _math
+        try:objects=self._environment_workspace().snapshot().get('objects') or []
+        except Exception:return []
+        out=[]
+        for index,candidate in enumerate(candidates or []):
+            best=None
+            for item in objects:
+                if item.get('category') in {'floor','wall','ceiling','door','window','opening'}:continue
+                position=item.get('position_m') or []
+                if len(position)<2:continue
+                distance=_math.dist(candidate['position_xy_m'],position[:2])
+                if distance<=.6 and (best is None or distance<best[0]):best=(distance,item)
+            if best:
+                distance,item=best
+                out.append(dict(candidate=index,object_id=item['id'],label=item['label'],distance_m=round(distance,2),
+                    translation_m=[round(candidate['position_xy_m'][0]-item['position_m'][0],3),round(candidate['position_xy_m'][1]-item['position_m'][1],3),0.]))
+        return out
+
+    def _move_route_object(self,owner,plan_id,match):
+        """Shift one existing object to a LiDAR candidate position through the ordinary move preview + Apply."""
+        from uuid import uuid4
+        workspace=self._environment_workspace();revision=workspace.snapshot().get('scene_revision')
+        result=workspace.action(dict(action='move_preview',request_id='lidar-move-'+uuid4().hex,object_id=match['object_id'],
+            translation_m=list(match['translation_m']),expected_scene_revision=revision),owner)
+        preview=result['preview'];identity=preview['operation']['operation_id']
+        operation,digest=workspace.pinned_environment_operation(identity,preview['preview_digest'],owner,claim=True)
+        self._workflow().scene_edit_transaction.start(owner,operation,digest)
+        return identity
 
     def _add_route_obstacles(self,owner,plan_id,candidates):
         """User clicked "Add to Twin" on a route card: preview + Apply through the normal Twin edit transaction.

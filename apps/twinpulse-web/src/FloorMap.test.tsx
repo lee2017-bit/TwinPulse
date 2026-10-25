@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+import {describe,expect,it,vi} from 'vitest';
+import {fireEvent,render,screen} from '@testing-library/react';
+import {FloorMap} from './FloorMap';
+
+const floor={status:'AVAILABLE' as const,scene_revision:'rev',bounds:[0,0,4,2],free_cells:[[0.5,0.5]],cell_m:.1,obstacles:[[1,1,2,2]],robots:[]};
+
+describe('FloorMap',()=>{
+  it('turns a click into floor coordinates and a drag into a heading',()=>{
+    const onChange=vi.fn();
+    render(<FloorMap floor={floor} onChange={onChange}/>);
+    const svg=screen.getByRole('img');
+    svg.getBoundingClientRect=()=>({left:0,top:0,width:400,height:200,right:400,bottom:200,x:0,y:0,toJSON(){}} as DOMRect);
+    (svg as unknown as {setPointerCapture:()=>void}).setPointerCapture=()=>{};
+    fireEvent.pointerDown(svg,{clientX:100,clientY:150,pointerId:1});   // world (1.0, 0.5)
+    fireEvent.pointerMove(svg,{clientX:200,clientY:150,pointerId:1});   // drag +x: heading 0
+    fireEvent.pointerUp(svg,{pointerId:1});
+    expect(onChange).toHaveBeenCalledWith(1,0.5,0);
+  });
+  it('reports picked stops when used for route editing',()=>{
+    const onPick=vi.fn();
+    render(<FloorMap floor={floor} onPick={onPick}/>);
+    const svg=screen.getByRole('img');
+    svg.getBoundingClientRect=()=>({left:0,top:0,width:400,height:200,right:400,bottom:200,x:0,y:0,toJSON(){}} as DOMRect);
+    fireEvent.pointerDown(svg,{clientX:300,clientY:50,pointerId:2});
+    expect(onPick).toHaveBeenCalledWith(3,1.5);
+  });
+  it('says when the floor is unavailable',()=>{
+    render(<FloorMap floor={{...floor,status:'UNAVAILABLE',bounds:null}}/>);
+    expect(screen.getByRole('status').textContent).toContain('unavailable');
+  });
+});
