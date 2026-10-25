@@ -132,7 +132,9 @@ class EnvironmentOverlayTests(unittest.TestCase):
             body=dict(action='lidar_route_preview',request_id='lidar-route-'+'a'*32,
                 obstacles=[dict(label='LiDAR unknown #1 (route stop scan)',position_xy_m=o['position_m'][:2],dimensions_m=[.3,.3,.4],uncertainty_m=.3)],
                 evidence=dict(source_name='a'*32+'.json',sha256='b'*64))
+            body['obstacles'].append(dict(body['obstacles'][0]))
             preview=workspace.action(body,'owner')['preview']
+            self.assertEqual(len(preview['operation']['tool_call']['arguments']['environment']['overlays']),1)
             added=preview['operation']['tool_call']['arguments']['environment']['overlays'][0]
             self.assertEqual(added['item']['kind'],'unknown')
             self.assertEqual(added['evidence'],dict(basis='lidar_estimate',alignment_verified=False,source_name='a'*32+'.json',sha256='b'*64))

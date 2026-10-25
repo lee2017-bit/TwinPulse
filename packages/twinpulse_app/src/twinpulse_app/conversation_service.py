@@ -1298,7 +1298,7 @@ class ConversationService:
                 pending=dict(plan_id=card.get('operation_id'),candidates=None)
             try:
                 operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'])
-                self._message('assistant','Adding %d LiDAR obstacle%s to the Twin (unknown, lidar estimate, not aligned). Follow the Twin update; Undo is available. Ask for the route again to plan around them.'
+                self._message('assistant','Adding %d LiDAR obstacle%s to the Twin (unknown, lidar estimate, not aligned; one object per Twin edit, strongest first). Follow the Twin update; Undo is available. Ask again to add the next one, or ask for the route again to plan around it.'
                     %(count,'' if count==1 else 's'),operation_id=operation)
                 self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation)
             except (BrokerError,ValueError) as error:

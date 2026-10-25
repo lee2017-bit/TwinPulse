@@ -294,7 +294,10 @@ class EnvironmentWorkspace:
                 added=0
                 for index,obstacle in enumerate(body['obstacles'][:8]):
                     xy=obstacle['position_xy_m'];size=obstacle['dimensions_m']
-                    identity='Added_'+hashlib.sha256((request+':%d'%index).encode('utf-8')).hexdigest()[:20]
+                    # One object per Twin edit (the edit contract); stable ID per route candidate so a
+                    # repeated request adds the next candidate instead of a duplicate.
+                    identity='Added_'+hashlib.sha256((body['evidence']['source_name']+':%d'%index).encode('utf-8')).hexdigest()[:20]
+                    if added or any(o['item']['id']==identity for o in environment.get('overlays') or []):continue
                     # A return seen through a doorway or near a wall can sit off the scanned floor:
                     # shrink to the floor if possible, otherwise leave that candidate out.
                     for side,margin in ((size[0],obstacle['uncertainty_m']),(min(size[0],.3),.1),(.2,.05)):
@@ -303,7 +306,7 @@ class EnvironmentWorkspace:
                         try:environment=add_overlay(environment,dict(item=item,uncertainty_m=margin,evidence=dict(evidence)));added+=1;break
                         except ValueError as exc:
                             if 'OUTSIDE_FLOOR' not in str(exc) and 'FLOOR' not in str(exc):raise
-                if not added:raise ValueError('ENVIRONMENT_OVERLAY_OUTSIDE_FLOOR')
+                if not added:raise ValueError("ENVIRONMENT_LIDAR_CANDIDATES_ALREADY_ADDED_OR_OUTSIDE_FLOOR")
                 call=SceneToolCall('imported_space','import_environment',dict(id='imported_space',environment=environment)).to_dict()
                 operation_id='environment_edit_'+hashlib.sha256(request.encode('utf-8')).hexdigest()[:32]
                 preview=self.workflow.preview_scene_edit(operation_id=operation_id,mode='change',target_call_id='imported_space',tool_call=call)

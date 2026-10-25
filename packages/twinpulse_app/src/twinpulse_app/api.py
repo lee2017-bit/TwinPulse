@@ -1644,6 +1644,7 @@ class LocalApiServer:
         Unknown obstacles, lidar_estimate bound to the saved route record, never aligned.
         """
         import hashlib,re as _re
+        from uuid import uuid4
         if not _re.fullmatch('[a-f0-9]{32}',str(plan_id)):raise BrokerError('route_candidates_invalid','Route record is invalid.',status=409)
         record=self.robot_fleet.root/'declared-routes'/(plan_id+'.json')
         raw=record.read_bytes();sha=hashlib.sha256(raw).hexdigest()
@@ -1655,7 +1656,7 @@ class LocalApiServer:
             obstacles.append(dict(label='LiDAR unknown #%d (route stop scan)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
                 dimensions_m=[size,size,.4],uncertainty_m=.3))
         workspace=self._environment_workspace()
-        result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+plan_id,obstacles=obstacles,
+        result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+uuid4().hex,obstacles=obstacles,
             evidence=dict(source_name=plan_id+'.json',sha256=sha)),owner)
         preview=result['preview']
         identity=preview['operation']['operation_id']
