@@ -26,6 +26,7 @@ MAX_RECOVERIES=2
 RECOVERY_BACKOFF_M=.25
 RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
 MAX_STEPS_FACTOR=3
+OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_fleet_runtime.integrate_motion
 TRACE_SPACING_M=.04
 MAX_TRACE_POINTS=800
 OVERLAY_LABEL='DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED'
@@ -80,6 +81,11 @@ class DeclaredRouteRunner:
         if row.get('control_state') not in {'READY','PAUSED'}:
             raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
         start,basis=self._start_pose(row,scene)
+        # SIM: other connected SIM robots stand on the same floor and the engine
+        # stops for them, so the plan keeps a berth around each (2026-10-26 sim14/15).
+        robot_discs=[(r['pose']['position_m'][0],r['pose']['position_m'][1],OTHER_ROBOT_KEEPOUT_M)
+            for r in self.fleet.snapshot()['robots'] if row['kind']=='sim' and r['robot_id']!=robot_id and r.get('kind')=='sim'
+            and r.get('connection_state')=='CONNECTED' and _pose3((r.get('pose') or {}).get('position_m'))]
         # Physical: one stationary LiDAR ring at the declared start adds returns
         # the scanned model cannot explain (leaves, fan base, basket) as keepouts.
         scan_review=dict(used=False,discs=[],reason='NOT_PHYSICAL_OR_NO_SCAN')
@@ -89,12 +95,12 @@ class DeclaredRouteRunner:
                 scan_review=unexplained_scan_discs(start,points,scene.get('observed_cells'))
                 scan_review.update(stream_id=(row.get('scan') or {}).get('stream_id'),frame_sequence=(row.get('scan') or {}).get('frame_sequence'),points=len(points))
             plan=plan_survey(start,scene['geometry'],scene.get('observed_cells'),kind=row['kind'],
-                budget_m=budget_m or (8. if row['kind']=='physical' else 6.),discs=scan_review['discs'])
+                budget_m=budget_m or (8. if row['kind']=='physical' else 6.),discs=[*scan_review['discs'],*robot_discs])
             steps=compile_moves(start,plan['polyline'],final_yaw=start[2])
         except (ValueError,KeyError,TypeError) as exc:
             raise BrokerError('declared_route_unplannable',str(exc)[:160],status=409) from None
         return dict(plan_id=uuid4().hex,robot_id=robot_id,kind=row['kind'],start_basis=basis,
-            scan_keepouts={k:v for k,v in scan_review.items() if k!='discs'},
+            scan_keepouts={k:v for k,v in scan_review.items() if k!='discs'},other_sim_robots=len(robot_discs),
             scene_revision=scene['binding'][2],steps=[dict(s,text=move_text(s)) for s in steps],**plan)
 
     def start(self,plan,owner,*,context=None):

@@ -357,6 +357,26 @@ class DeclaredRouteRobustnessTests(unittest.TestCase):
         self.assertEqual(skipped,[1]);self.assertEqual([g[1] for g in remaining],[2,None])
 
 
+class OtherSimRobotKeepoutTest(unittest.TestCase):
+    def test_a_parked_connected_sim_robot_on_leg_one_is_kept_out_of_the_plan(self):
+        # 2026-10-26 installed SIM checks: two earlier SIM robots parked on the floor stopped the
+        # route with OBSTACLE_STOP; the planner never knew they were there.
+        import tempfile
+        from twinpulse_app.declared_route_runner import DeclaredRouteRunner
+        fleet=FakeFleet([])
+        with tempfile.TemporaryDirectory() as tmp:
+            runner=DeclaredRouteRunner(fleet,tmp,clock=lambda:0.,sleep=lambda s:None,poll_s=1.)
+            first=runner.plan(fleet.row['robot_id'])
+            leg=first['legs'][0];mid=leg[len(leg)//2] if len(leg)>1 else first['waypoints'][0]
+            parked=dict(robot_id='q'*32,kind='sim',connection_state='CONNECTED',control_state='READY',pose=dict(position_m=[mid[0],mid[1],0.]))
+            fleet.snapshot=lambda:dict(robots=[dict(fleet.row),parked])
+            second=runner.plan(fleet.row['robot_id'])
+        self.assertEqual(second['other_sim_robots'],1);self.assertEqual(first['other_sim_robots'],0)
+        self.assertIn([mid[0],mid[1],.35],second['keepouts'])
+        self.assertGreater(min(math.dist(q[:2],mid[:2]) for q in second['polyline']),.35)
+        self.assertNotEqual(second['polyline'],first['polyline'])
+
+
 class DeclaredRouteChatMessageTests(unittest.TestCase):
     def _service(self):
         import threading
