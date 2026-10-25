@@ -345,6 +345,7 @@ class RobotFleet:
               'current_step','recoveries','started_at','finished_at','revision','label','start','waypoints','polyline','pose','keepouts')
         summary={k:deepcopy(route.get(k)) for k in keys}
         summary.update(total_stops=len(route.get('waypoints') or []),trace=list(route.get('trace') or [])[-200:],
+            live_scan=list(route.get('live_scan') or [])[:180],first_leg_straight_m=((route.get('plan') or {}).get('first_leg_straight_m')),
             candidates=len(route.get('candidates') or []),
             scene_current=bool(scene and scene['binding'][2]==route.get('scene_revision')))
         return summary

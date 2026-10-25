@@ -177,7 +177,11 @@ class DeclaredRouteRunner:
         overlay=self.fleet.route_overlay or {};trace=overlay.get('trace') or []
         pose=[round(v,4) for v in pose]
         if not trace or math.dist(trace[-1],pose[:2])>=TRACE_SPACING_M:trace=(trace+[pose[:2]])[-MAX_TRACE_POINTS:]
-        self._overlay(pose=pose,trace=trace)
+        # Live ring at the odometry pose so the Twin shows what the robot sees now (not registration).
+        points=(row.get('scan') or {}).get('points') or []
+        sign=((self.current or {}).get('plan') or {}).get('scan_keepouts',{}).get('lateral_sign') or 1
+        live=scan_world_points(pose,points,sign,max_points=180) if points and row.get('lidar_state')=='STREAMING' else []
+        self._overlay(pose=pose,trace=trace,live_scan=live)
 
     def _observe_stop(self,stop,pose,row):
         """Project this stop's LiDAR ring onto the Twin and collect returns the model lacks."""

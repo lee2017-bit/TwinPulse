@@ -466,6 +466,28 @@ class RouteOverlayPayloadTest(unittest.TestCase):
         clock[0]+=.1;self.assertNotIn('unchanged',RobotFleet._route_payload(fleet,dict(route,revision=2)))
 
 
+class StraightFirstLegTest(unittest.TestCase):
+    def test_first_leg_is_straight_along_the_declared_heading_when_the_floor_allows(self):
+        wide=dict(bounds=[0.,0.,6.,3.],obstacles=[],targets=[])
+        plan=plan_survey([.6,1.5,0.],wide,kind='physical',budget_m=8.)
+        self.assertIsNotNone(plan['first_leg_straight_m']);self.assertGreaterEqual(plan['first_leg_straight_m'],1.)
+        first=plan['waypoints'][0];self.assertLess(abs(first[1]-1.5),.16);self.assertEqual(plan['legs'][0],[first])
+        # Something right in front: no straight leg is forced, the survey still plans.
+        blocked=dict(bounds=[0.,0.,6.,3.],obstacles=[[1.2,1.0,1.6,2.0]],targets=[])
+        plan=plan_survey([.6,1.5,0.],blocked,kind='physical',budget_m=8.)
+        self.assertTrue(plan['waypoints'])
+
+
+class ClusterOutlineTest(unittest.TestCase):
+    def test_elongated_cluster_gets_an_oriented_extent(self):
+        from twinpulse_core.declared_route import cluster_candidates
+        # Returns along a 0.8 m edge rotated 30 degrees.
+        a=math.radians(30);discs=[(2+t*math.cos(a),1+t*math.sin(a),.06) for t in [i*.1-.4 for i in range(9)]]
+        out=cluster_candidates(discs)
+        self.assertEqual(len(out),1);c=out[0]
+        self.assertAlmostEqual(c['yaw_deg'],30.,delta=3.);self.assertGreater(c['extent_m'][0],.8);self.assertLess(c['extent_m'][1],.3)
+
+
 class DeclaredRouteChatMessageTests(unittest.TestCase):
     def _service(self):
         import threading

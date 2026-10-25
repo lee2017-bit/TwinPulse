@@ -437,7 +437,14 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     if(!state||!list.current)return;
     const previous=scrollPositions.current.get(state.project_id);
     if(previous&&!previous.nearBottom)list.current.scrollTop=previous.top;
+    else{nearBottom.current=true;list.current.scrollTop=list.current.scrollHeight;setNewUpdates(false);}  // a reopened chat starts at its latest message
   },[state?.project_id]);
+  // Opening the Twin pane or moving the split re-flows the transcript; keep following the latest message.
+  useEffect(()=>{
+    if(home||!list.current||!nearBottom.current)return;
+    const node=list.current;const follow=()=>{node.scrollTop=node.scrollHeight;setNewUpdates(false);};
+    follow();const timer=window.setTimeout(follow,250);return()=>window.clearTimeout(timer);
+  },[showTwin,controlView,chatShare,layoutVersion,home]);
 
   useEffect(() => { if (state) sessionStorage.setItem(`twinpulse.chat.draft.${state.project_id}`, text); }, [text, state?.project_id]);
   useEffect(()=>{const input=composerInput.current;if(!input)return;

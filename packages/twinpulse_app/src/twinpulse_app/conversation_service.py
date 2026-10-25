@@ -1042,7 +1042,8 @@ class ConversationService:
             +('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
             +': %d stops, %.2f m, about %d finite moves, then back to the start heading.%s Moves are re-aimed from wheel odometry; a proximity stop backs off and re-plans. Each move keeps the normal robot checks; Stop ends the route. Run it?'
             %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),
-              (' Start LiDAR: %d unmodeled returns kept out.'%len(plan.get('keepouts') or [])) if (plan.get('scan_keepouts') or {}).get('used') else ''),
+              (' Start LiDAR: %d unmodeled returns kept out.'%len(plan.get('keepouts') or [])) if (plan.get('scan_keepouts') or {}).get('used') else '')
+            +(' First leg: straight ahead %.2f m (place a test obstacle on that line).'%plan['first_leg_straight_m'] if plan.get('first_leg_straight_m') else ''),
             [self._choice('run','Run route'),self._choice('cancel','Cancel')])
         card['operation_id']=plan['plan_id']
         card['route_preview']=self._route_preview(plan)

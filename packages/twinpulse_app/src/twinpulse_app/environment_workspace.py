@@ -300,9 +300,10 @@ class EnvironmentWorkspace:
                     if added or any(o['item']['id']==identity for o in environment.get('overlays') or []):continue
                     # A return seen through a doorway or near a wall can sit off the scanned floor:
                     # shrink to the floor if possible, otherwise leave that candidate out.
-                    for side,margin in ((size[0],obstacle['uncertainty_m']),(min(size[0],.3),.1),(.2,.05)):
+                    yaw=float(obstacle.get('yaw_deg') or 0.)
+                    for sides,margin in (((size[0],size[1]),obstacle['uncertainty_m']),((min(size[0],.3),min(size[1],.3)),.1),((.2,.2),.05)):
                         item=dict(id=identity,kind='unknown',label=obstacle['label'],catalog_version=room_item_catalog_version('unknown'),
-                            position_m=[*xy,size[2]/2],dimensions_m=[side,side,size[2]],yaw_deg=0.,observation_time_utc=None)
+                            position_m=[*xy,size[2]/2],dimensions_m=[sides[0],sides[1],size[2]],yaw_deg=yaw,observation_time_utc=None)
                         try:environment=add_overlay(environment,dict(item=item,uncertainty_m=margin,evidence=dict(evidence)));added+=1;break
                         except ValueError as exc:
                             if 'OUTSIDE_FLOOR' not in str(exc) and 'FLOOR' not in str(exc):raise

@@ -1655,8 +1655,9 @@ class LocalApiServer:
         obstacles=[]
         for index,candidate in enumerate(candidates[:8]):
             size=round(min(1.2,max(.2,2*candidate['radius_m'])),3)
-            obstacles.append(dict(label='LiDAR unknown #%d (route stop scan)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
-                dimensions_m=[size,size,.4],uncertainty_m=.3))
+            extent=candidate.get('extent_m') or [size,size]  # oriented rough outline when the cluster has one
+            obstacles.append(dict(label='LiDAR unknown #%d (route scan outline)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
+                dimensions_m=[extent[0],extent[1],.4],yaw_deg=float(candidate.get('yaw_deg') or 0.),uncertainty_m=.3))
         workspace=self._environment_workspace()
         result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+uuid4().hex,obstacles=obstacles,
             evidence=dict(source_name=plan_id+'.json',sha256=sha)),owner)

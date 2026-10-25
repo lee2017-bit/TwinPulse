@@ -98,7 +98,21 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
     """Bounded, spread-out observation stops on the model, then back to the declared start."""
     clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
     reachable=_reachable(start,geometry,observed_cells,clearance,PHYSICAL_STOP_CLEARANCE_M if kind=='physical' else 0.,budget_m,discs)
-    pose=list(start);visited=[list(start)];polyline=[];legs=[];waypoints=[];remaining=budget_m;reason=None
+    pose=list(start);visited=[list(start)];polyline=[];legs=[];waypoints=[];remaining=budget_m;reason=None;first_leg_m=None
+    # First leg straight ahead (2026-10-26): the operator places the test obstacle on
+    # the line the robot faces, so stop 1 is the farthest reachable stop on that line
+    # (within 15 cm laterally) that still leaves the return budget.
+    heading=(math.cos(start[2]),math.sin(start[2]))
+    ahead=sorted((p for p in reachable if abs(-(p[0]-start[0])*heading[1]+(p[1]-start[1])*heading[0])<=.15
+                  and (p[0]-start[0])*heading[0]+(p[1]-start[1])*heading[1]>=max(1.,min_spacing_m)
+                  and 2*reachable[p]+.25<=remaining),key=lambda p:-reachable[p])
+    for goal in ahead[:4]:
+        route=[list(goal)]  # a straight leg; the segment itself is re-checked by the planner clearance below
+        try:checked=route_to(start,list(goal),geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
+        except NoBoundedPath:continue
+        if len(checked)!=1:continue  # a detour means the straight line is not clear
+        remaining-=route_length(pose,route);polyline+=route;legs.append([list(q) for q in route]);waypoints.append(list(goal))
+        first_leg_m=round(math.dist(start[:2],goal),3);pose=[*goal,start[2]];visited.append(pose);break
     while len(waypoints)<max_waypoints:
         route,goal=_spread_step(pose,visited,reachable,geometry,observed_cells,remaining,clearance,min_spacing_m,discs)
         if route is None:reason='NO_REACHABLE_STOP_WITH_RETURN_BUDGET';break
@@ -112,7 +126,8 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
     returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
     polyline+=returning;legs.append([list(q) for q in returning])
     return dict(start=list(start),waypoints=waypoints,polyline=[list(p) for p in polyline],legs=legs,
-        length_m=route_length(start,polyline),stop_reason=reason,scope=SCOPE,clearance_m=clearance,keepouts=[list(d) for d in discs])
+        length_m=route_length(start,polyline),stop_reason=reason,scope=SCOPE,clearance_m=clearance,keepouts=[list(d) for d in discs],
+        first_leg_straight_m=first_leg_m)
 
 
 def compile_moves(start,polyline,*,final_yaw=None,max_leg_m=MAX_LEG_M):
@@ -214,7 +229,15 @@ def cluster_candidates(discs,*,cell_m=.3,min_returns=3,max_candidates=8):
         if len(group)<min_returns:continue
         cx=sum(p[0] for p in group)/len(group);cy=sum(p[1] for p in group)/len(group)
         radius=max(.1,max(math.dist((cx,cy),p) for p in group))
-        out.append(dict(position_xy_m=[round(cx,3),round(cy,3)],radius_m=round(min(radius,.6),3),returns=len(group)))
+        # Rough outline (2026-10-26): principal axis of the returns gives an oriented
+        # extent, so the Twin box follows the object's shape instead of a fixed square.
+        sxx=sum((p[0]-cx)**2 for p in group);syy=sum((p[1]-cy)**2 for p in group);sxy=sum((p[0]-cx)*(p[1]-cy) for p in group)
+        yaw=.5*math.atan2(2*sxy,sxx-syy) if len(group)>2 else 0.
+        c,s=math.cos(yaw),math.sin(yaw)
+        along=[(p[0]-cx)*c+(p[1]-cy)*s for p in group];across=[-(p[0]-cx)*s+(p[1]-cy)*c for p in group]
+        extent=[round(max(.2,min(1.2,max(along)-min(along)+.1)),3),round(max(.2,min(1.2,max(across)-min(across)+.1)),3)]
+        out.append(dict(position_xy_m=[round(cx,3),round(cy,3)],radius_m=round(min(radius,.6),3),returns=len(group),
+            extent_m=extent,yaw_deg=round(math.degrees(yaw),1)))
         if len(out)>=max_candidates:break
     return out
 

@@ -547,7 +547,7 @@ class FleetRuntime:
         # The revision changes on every runner update (the trace length alone stops
         # changing at its cap); the key is adopted only after a complete draw so a
         # mid-draw exception cannot freeze a partial overlay.
-        key=(route['plan_id'],route.get('revision'),route.get('state'),route.get('reached'),str(route.get('reached_stops')),
+        key=(route['plan_id'],route.get('revision'),route.get('state'),route.get('reached'),str(route.get('reached_stops')),len(route.get('live_scan') or []),
              len(route.get('trace') or []),len(route.get('scans') or []),
              str(route.get('candidates')),len(route.get('polyline') or []),str(route.get('keepouts')))
         if key==getattr(self,'route_key',None) and stage.GetPrimAtPath(path):return
@@ -599,6 +599,15 @@ class FleetRuntime:
         curves('Start',[ring(sx,sy,.2),[(sx,sy),(sx+.3*math.cos(route['start'][2]),sy+.3*math.sin(route['start'][2]))]],(.9,.9,.9),.035,.025)
         curves('Keepouts',[ring(d[0],d[1],d[2]) for d in route.get('keepouts') or []],(.9,.25,.25),.02,.02)
         curves('Candidates',[ring(c['position_xy_m'][0],c['position_xy_m'][1],c['radius_m']+.05) for c in route.get('candidates') or []],(1.,.15,.6),.05,.05)
+        live=route.get('live_scan') or []
+        prim=path+'/LiveScan'
+        if live and route.get('state')=='RUNNING':
+            cloud=UsdGeom.Points.Define(stage,prim)
+            cloud.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),.16) for p in live])
+            cloud.CreateWidthsAttr([.045]*len(live))
+            cloud.CreateDisplayColorAttr([Gf.Vec3f(1.,.95,.3)])
+            cloud.GetPrim().SetCustomDataByKey('source','LIVE_LIDAR_AT_ODOMETRY_POSE_NOT_REGISTERED')
+        elif stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
         points=[p for s in route.get('scans') or [] for p in s.get('points') or []]
         prim=path+'/StopScans'
         if points:
