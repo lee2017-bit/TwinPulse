@@ -916,7 +916,7 @@ def compile_layout(value, observation, request, reference, *, quality_constraint
     if packing_failures:
         floor_rows=[i for i in rows if i['id'] not in attached]
         centres,packing_search=_bounded_region_repack(floor_rows,footprint,width,length,local_bounds=local_bounds)
-        if centres is None and packing_search['termination_code'] in ('BRANCH_BUDGET_EXHAUSTED','NODE_BUDGET_EXHAUSTED'):
+        if centres is None and packing_search.get('termination_code') in ('BRANCH_BUDGET_EXHAUSTED','NODE_BUDGET_EXHAUSTED'):  # a search result without the code never retries
             first_search=packing_search
             centres,packing_search=_bounded_region_repack(floor_rows,footprint,width,length,
                 local_bounds=local_bounds,max_nodes=2048,branch_cap=96,timeout_s=2.)
