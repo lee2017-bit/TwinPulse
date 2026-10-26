@@ -29,6 +29,7 @@ MAX_STEPS_FACTOR=3
 OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_fleet_runtime.integrate_motion
 TRACE_SPACING_M=.04
 MAX_TRACE_POINTS=800
+MAX_DRIVE_POINTS=2500  # display-only during-drive LiDAR returns kept per route
 OVERLAY_LABEL='DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED'
 
 
@@ -182,7 +183,15 @@ class DeclaredRouteRunner:
         points=(row.get('scan') or {}).get('points') or []
         sign=((self.current or {}).get('plan') or {}).get('scan_keepouts',{}).get('lateral_sign') or 1
         live=scan_world_points(pose,points,sign,max_points=180) if points and row.get('lidar_state')=='STREAMING' else []
-        self._overlay(pose=pose,trace=trace,live_scan=live)
+        # During-drive returns are kept as a display layer (odometry smears them; decisions use stop scans only).
+        drive=overlay.get('drive_scan') or []
+        if live:
+            seen={(round(p[0]/.1),round(p[1]/.1)) for p in drive};fresh=[]
+            for p in live:
+                key=(round(p[0]/.1),round(p[1]/.1))
+                if key not in seen:seen.add(key);fresh.append(p)
+            if fresh:drive=(drive+fresh)[-MAX_DRIVE_POINTS:]
+        self._overlay(pose=pose,trace=trace,live_scan=live,drive_scan=drive)
 
     def _observe_stop(self,stop,pose,row):
         """Project this stop's LiDAR ring onto the Twin and collect returns the model lacks."""
@@ -207,6 +216,10 @@ class DeclaredRouteRunner:
             if overlay and overlay['plan_id']==self.current['plan']['plan_id']:
                 self.current['candidates']=overlay.get('candidates') or []
                 self.current['stop_scans']=overlay.get('scans') or []
+                absorb=getattr(self.fleet,'absorb_route_layer',None)
+                if absorb:
+                    try:absorb(overlay)
+                    except Exception:pass  # display layer only
             self.current.pop('_unexplained',None)
             self.current.update(state=state,reason=reason,finished_at=time.time())
             try:self._save()

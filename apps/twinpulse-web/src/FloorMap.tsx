@@ -24,6 +24,10 @@ export function FloorMap({floor,value,onChange,height=220,picks=[],onPick}:{floo
       onPointerUp={()=>{if(!drag)return;onChange?.(Math.round(drag.x*1000)/1000,Math.round(drag.y*1000)/1000,Math.round(drag.yaw*1000)/1000);setDrag(null);}}>
       {floor.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
       {floor.obstacles.map(([a,b,d,e],i)=><rect key={'o'+i} x={X(a)} y={Y(e)} width={d-a} height={e-b} fill="#6b4a3a" opacity={0.8}/>)}
+      {floor.lidar_layer?.drive_points.map(([x,y],i)=><rect key={'d'+i} x={X(x)-0.02} y={Y(y)-0.02} width={0.04} height={0.04} fill="#bfb34d" opacity={0.55}/>)}
+      {floor.lidar_layer?.stop_points.map(([x,y],i)=><rect key={'s'+i} x={X(x)-0.025} y={Y(y)-0.025} width={0.05} height={0.05} fill="#33e6ff" opacity={0.85}/>)}
+      {floor.lidar_layer?.moved.map(m=><g key={'m'+m.object_id}><circle cx={X(m.position_xy_m[0])} cy={Y(m.position_xy_m[1])} r={0.22} fill="none" stroke="#c060ff" strokeWidth={0.05}/>
+        <text x={X(m.position_xy_m[0])+0.26} y={Y(m.position_xy_m[1])+0.06} fontSize={0.16} fill="#e0c0ff">{m.label.slice(0,16)} · LiDAR estimate</text></g>)}
       {floor.robots.filter(r=>r.position_m&&r.position_m.length>=2).map(r=><g key={r.robot_id}>
         <circle cx={X(r.position_m![0])} cy={Y(r.position_m![1])} r={0.1} fill={r.kind==='physical'?'#f2b84b':'#5fd3a6'} opacity={0.7}/>
         <text x={X(r.position_m![0])+0.12} y={Y(r.position_m![1])-0.1} fontSize={0.18} fill="#c8d0d8">{r.label.slice(0,14)}</text></g>)}
@@ -31,6 +35,6 @@ export function FloorMap({floor,value,onChange,height=220,picks=[],onPick}:{floo
       {current&&<g><circle cx={X(current.x)} cy={Y(current.y)} r={0.12} fill="#3fa9f5"/>
         <line x1={X(current.x)} y1={Y(current.y)} x2={X(current.x+0.35*Math.cos(current.yaw))} y2={Y(current.y+0.35*Math.sin(current.yaw))} stroke="#3fa9f5" strokeWidth={0.06}/></g>}
     </svg>
-    <small>{onChange?'Click to place the robot, drag to set its heading · ':''}{onPick?'Click to add a route stop · ':''}operator estimate, not localized</small>
+    <small>{onChange?'Click to place the robot, drag to set its heading · ':''}{onPick?'Click to add a route stop · ':''}operator estimate, not localized{floor.lidar_layer&&(floor.lidar_layer.stop_points.length>0||floor.lidar_layer.drive_points.length>0)?` · LiDAR layer: ${floor.lidar_layer.routes} route${floor.lidar_layer.routes===1?'':'s'} (declared start + odometry, display only)`:''}</small>
   </div>;
 }

@@ -10,9 +10,9 @@ import {EnvironmentAlignment} from './EnvironmentAlignment';
 import {EnvironmentSurvey} from './EnvironmentSurvey';
 
 const describe=(error:unknown)=>error instanceof Error?error.message:String(error);
-export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,enabled=true}:{
+export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,enabled=true,autoApply=false}:{
   api:TwinPulseApi;initialFile?:File|null;close:()=>void;onReady:(workflow:WorkflowState)=>void|Promise<void>;
-  onSubmitted?:()=>void;enabled?:boolean;
+  onSubmitted?:()=>void;enabled?:boolean;autoApply?:boolean;  // Twin-edit auto-apply: a successful preview is applied without the Apply click
 }){
   const [state,setState]=useState<EnvironmentState|null>(null),[error,setError]=useState<string|null>(null);
   const [file,setFile]=useState<File|null>(initialFile??null),[units,setUnits]=useState<''|'m'|'cm'|'mm'>('');
@@ -119,6 +119,12 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   });
   const editable=state?.status==='imported'&&!!state.scene_revision;
   const blocked=busy||unknown||!!pendingEdit||!enabled;
+  const autoApplied=useRef<string|null>(null);
+  useEffect(()=>{  // Twin-edit auto-apply (chat setting): the same transaction path as the Apply button, once per preview
+    const operationId=preview?.operation?.operation_id;
+    if(!autoApply||!preview||typeof operationId!=='string'||blocked||modelRunning||autoApplied.current===operationId)return;
+    autoApplied.current=operationId;applyPreview();
+  });
   return <section className="library-workspace" aria-label="Import space" style={{margin:'8px 16px',padding:'12px',border:'1px solid #cbd7df',borderRadius:12,maxHeight:'45vh',overflow:'auto',background:'#fff',color:'#172836'}}>
     <header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong>Import space · USD</strong><button type="button" onClick={close}>Close import space</button></header>
     <p>Keep the source geometry as your SIM environment. Inspect locally, import, then show the Twin.</p>
@@ -201,6 +207,7 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
     {preview&&<section aria-label="Space edit preview"><strong>Before / after · meters</strong>
       {Object.keys({...preview.affected_before,...preview.affected_after}).map(id=><p key={id}>{id}: {preview.affected_before[id]?.position_m.join(', ')??'absent'} → {preview.affected_after[id]?.position_m.join(', ')??'absent'}</p>)}
       <small>{preview.preserved_object_count} objects preserved. Previous task plans will be invalidated.</small>
+      {autoApply&&<p role="status">Twin-edit auto-apply is on: this preview is applied automatically (Engine ACK, Undo available).</p>}
       <button type="button" disabled={blocked||modelRunning} onClick={applyPreview}>Apply space edit</button><button type="button" disabled={busy||!!pendingEdit} onClick={()=>{setPreview(null);discardProposal();}}>Cancel space edit</button></section>}
     {pendingEdit&&<p role="status">{checking?'Checking engine ACK, saved revision and current frame…':'Edit result is unconfirmed. Use Check saved import.'} Operation: {pendingEdit.operationId}</p>}
     {transaction&&<p role="status">Edit {transaction.state} · Engine ACK {transaction.engine_acknowledged?'confirmed':'pending'} · Saved {transaction.durable_committed?'yes':'pending'} · Current frame {transaction.current_frame?'confirmed':'pending'}</p>}

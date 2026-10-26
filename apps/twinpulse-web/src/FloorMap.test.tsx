@@ -30,3 +30,19 @@ describe('FloorMap',()=>{
     expect(screen.getByRole('status').textContent).toContain('unavailable');
   });
 });
+
+describe('FloorMap LiDAR layer',()=>{
+  it('draws stop points, drive points and LiDAR-move markers from the session layer as display only',()=>{
+    const layer={scene_revision:'rev',stop_points:[[1,1],[1.1,1]],drive_points:[[2,1]],routes:2,revision:3,label:'DECLARED_START_PLUS_ODOMETRY_DISPLAY_ONLY_NOT_REGISTERED',
+      moved:[{object_id:'Added_1',label:'Fan base',position_xy_m:[3,1],distance_m:.3,basis:'lidar_estimate_unverified'}]};
+    const {container}=render(<FloorMap floor={{...floor,lidar_layer:layer}}/>);
+    expect(container.querySelectorAll('rect[fill="#33e6ff"]')).toHaveLength(2);
+    expect(container.querySelectorAll('rect[fill="#bfb34d"]')).toHaveLength(1);
+    expect(screen.getByText('Fan base · LiDAR estimate')).toBeTruthy();
+    expect(screen.getByText(/LiDAR layer: 2 routes \(declared start \+ odometry, display only\)/)).toBeTruthy();
+  });
+  it('draws nothing extra without a layer',()=>{
+    const {container}=render(<FloorMap floor={floor}/>);
+    expect(container.querySelectorAll('rect[fill="#33e6ff"]')).toHaveLength(0);
+  });
+});

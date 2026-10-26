@@ -59,6 +59,7 @@ export interface GenerationQualityReview {status?:string;candidate_revision?:str
 export interface ConversationState {
   schema_version: 'conversation-1.0'; session_id: string; project_id: string; context_id?: string; revision: number; cursor: number;
   mode: 'SIM' | 'REAL' | null; robot_id: string | null; physical_authority: false;
+  twin_edit_approval?:'review'|'auto';  // Twin-edit approval only; never robot motion authority
   restore_error: {code: string; message: string} | null;
   restored_session?: boolean;
   budgeted_generation_available?:boolean;
@@ -127,7 +128,8 @@ export type ConversationAction =
       attachment: { name: string; media_type: string; content_base64: string } | null }
   | { action: 'answer'; request_id: string; card_id: string; choice_id: string; expected_session_revision: number; expires_at_ms?:number;limit_usd?:string }
   | { action: 'cancel'; request_id: string; operation_id: string }
-  | { action:'generation_retry'; request_id:string; operation_id:string };
+  | { action:'generation_retry'; request_id:string; operation_id:string }
+  | { action:'twin_edit_approval'; request_id:string; mode:'review'|'auto' };
 export type RobotCheckAction = {action:'robot_check';request_id:string}
   | {action:'inspection_check';request_id:string}
   | {action:'robot_collect';request_id:string;expires_at_ms:number;confirmed_source_transfer:true}

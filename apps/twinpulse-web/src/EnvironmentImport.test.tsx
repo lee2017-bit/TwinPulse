@@ -404,3 +404,21 @@ describe('space edit transaction transport',()=>{
     expect(request.mock.calls.filter(([path])=>path==='/v1/product/scene-edit/apply')).toHaveLength(1);
   });
 });
+
+describe('Twin-edit auto-apply',()=>{
+  it('applies a previewed obstacle through the normal Apply path once, and never without the setting',async()=>{
+    const preview={operation:{operation_id:'op-1'},preview_digest:'d',result_revision:'scene-b',affected_before:{},affected_after:{Added_x:{position_m:[1,1,.15]}},preserved_object_count:1} as unknown as SceneEditPreview;
+    const state={...snapshot('imported'),objects:[]};
+    for(const auto of [false,true]){
+      const h=harness(state);h.api.environmentAction=vi.fn(async(_body:EnvironmentAction)=>({...state,preview}));
+      const view=render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} autoApply={auto}/>);
+      await screen.findByRole('button',{name:'Preview obstacle'});
+      fireEvent.change(screen.getByLabelText('Obstacle X'),{target:{value:'1'}});fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'1'}});
+      fireEvent.click(screen.getByRole('button',{name:'Preview obstacle'}));
+      await screen.findByRole('button',{name:'Apply space edit'});
+      if(auto){await waitFor(()=>expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1));await act(async()=>{});expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1);}  // once, not on every render
+      else{await act(async()=>{});expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();}
+      view.unmount();
+    }
+  });
+});
