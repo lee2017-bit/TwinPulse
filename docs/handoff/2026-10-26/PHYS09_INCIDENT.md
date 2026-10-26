@@ -37,3 +37,7 @@ Inferred (not verified, robot is off): a robot-side storage problem (Raspberry P
 - Driver log `outputs/path-b-20261026/demo-sim/ui-actions.jsonl`; screenshots `H1…H4-connected.png`; recording `rec-physical.mp4`, `rec-physical-part0.mp4`
 
 No credentials, hostnames or tokens appear in this log.
+
+## Resolution check (2026-10-26 22:22Z, installed build 20261026T125513Z, no motion)
+
+Robot SD card after the operator-approved prune of 37 sessions with complete PC copies: 15 G, 7.6 G used, **5.9 G available** (was 0). Five-minute link soak through the App (`scripts/soak_physical_link.mjs`, `outputs/soak/soak-20261026T222210Z.json`): Connect → 12.41 V → LiDAR STREAMING for 5 min at **10.04 Hz**, 299 samples, 0 DEGRADED, 0 disconnects, max telemetry age 125 ms, no FAULT or REJECTED line → Disconnect with `cleanup_confirmed: true` and a `receipt.json` on the robot (session `ce95417d…`, 97 MB). The journal write fault did not recur.
