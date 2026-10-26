@@ -991,3 +991,69 @@ class SimObstacleSectionCacheTest(unittest.TestCase):
         # Twin geometry epoch, so no return ever landed on the box and no candidate appeared.
         source=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
         self.assertIn("geometry_epoch=(self.identity,self.navigation_geometry_epoch,getattr(self,'sim_obstacle_key',None))",source)
+
+
+class SimLoopStageContractTest(unittest.TestCase):
+    """One pass over the SIM demo loop, one asserted contract per stage (2026-10-26, after each stage had only been unit-tested apart).
+
+    1 obstacle placed in Isaac   -> the motion guard / LiDAR section include it, the Twin model does not
+    2 robot meets it             -> OBSTACLE_STOP backs off 40 cm, re-plans round a 0.40 m keepout, completes
+    3 stop-point LiDAR sees it   -> an unexplained ring of returns becomes one candidate (>=3 returns) at the box
+    4 Auto-apply                 -> every edit runs as its own transaction; the LAST confirmed frame triggers the re-plan
+    5 re-plan                    -> a fresh plan request carries planned_by auto_replan and the chat says so
+    """
+    def test_each_stage_contract_holds_in_one_pass(self):
+        import importlib.util,sys,tempfile,threading
+        from types import SimpleNamespace
+        from twinpulse_app.robot_fleet import checked_sim_obstacle
+        from twinpulse_core.declared_route import unexplained_scan_discs,cluster_candidates
+        from twinpulse_app.conversation_service import ConversationService
+        # 1 Isaac-side SIM obstacle: validated payload -> motion-guard box; the Twin model (SceneObjects) never gains it.
+        spec=importlib.util.spec_from_file_location('fleet_runtime_contract','scripts/twinpulse_fleet_runtime.py')
+        runtime=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runtime;spec.loader.exec_module(runtime)
+        item=checked_sim_obstacle(dict(position_m=[1.2,1.0],size_m=[.5,.5,.5],label='Box on leg 1'),0)
+        self.assertEqual(item['source'],'SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN')
+        guard=runtime.sim_obstacle_boxes([item]);self.assertEqual(len(guard),1)
+        self.assertAlmostEqual(guard[0][0],.95);self.assertAlmostEqual(guard[0][3],1.25)
+        self.assertNotIn('object_id',item)  # a SIM-world obstacle is never a Twin SceneObject
+        # 2 proximity stop in SIM recovers (the physical 25 cm values are untouched: a separate assertion keeps them).
+        from twinpulse_app import declared_route_runner as drr
+        self.assertEqual((drr.RECOVERY_KEEPOUT_M,drr.RECOVERY_BACKOFF_M),(.25,.25))
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='OBSTACLE_STOP'
+        with tempfile.TemporaryDirectory() as tmp:runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason']);self.assertEqual(len(result['recoveries']),1)
+        self.assertIn('backward 40.0cm',[b['payload'].get('text') for b in fleet.sent])
+        # 3 the stop-point scan explains the walls but not the box: exactly one candidate with >=3 returns sits on the box.
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0] for ix in range(40) for iy in range(30)]
+        start=[.6,.6,0.];box=item['position_m'][:2];half=.25
+        ring=[(box[0]+half*math.cos(t)-start[0],box[1]+half*math.sin(t)-start[1]) for t in [i*math.tau/16 for i in range(16)]]
+        walls=[(3.95-start[0],y*.1-start[1]) for y in range(1,30)]+[(x*.1-start[0],2.95-start[1]) for x in range(1,40)]+[(x*.1-start[0],.05-start[1]) for x in range(1,40)]
+        review=unexplained_scan_discs(start,walls+ring,cells);self.assertTrue(review['used'],review)
+        candidates=cluster_candidates(review['discs'])
+        self.assertEqual(len(candidates),1,candidates);self.assertGreaterEqual(candidates[0]['returns'],3)
+        self.assertLess(math.dist(candidates[0]['position_xy_m'],box),.2)
+        # 4+5 Auto-apply through the REAL transaction sync: each COMMITTED frame drives the next edit, the last one drives the re-plan.
+        messages=[];applied=[];transactions=[]
+        s=SimpleNamespace(_lock=threading.Lock(),_state=dict(session_id='s',messages=[],cards=[],twin_edit_approval='auto',scene_feedback=None),_request_owner='o',
+            _feedback_service=None,_feedback_outcome=None,_edit_transaction_marker=None,
+            robot_fleet=SimpleNamespace(focused='r'),declared_routes=SimpleNamespace(active=lambda:False),_last_route_text='Survey the warehouse and come back',
+            _message=lambda role,content,**kw:messages.append(dict(role=role,content=content,status=kw.get('status','completed'),operation_id=kw.get('operation_id'))) or s._state['messages'].append(messages[-1]),
+            _event=lambda name,**kw:None,_persist=lambda:None,
+            match_route_objects=lambda candidates:[],
+            add_route_obstacles=lambda owner,plan_id,candidates,exclude=():applied.append(('add',len(candidates))) or ('op-add',len(candidates)),
+            _plan_declared_route=lambda text,request_id,**kw:applied.append(('plan',text,kw['planned_by']['kind'])),
+            workflow=SimpleNamespace(scene_edit_transaction=SimpleNamespace(snapshot=lambda owner:transactions[-1] if transactions else None)))
+        s._choice=ConversationService._choice;s._card=lambda *a,**k:self.fail('auto mode must not ask')
+        for name in ('_apply_next_auto_edit','_auto_replan','declared_route_finished','_sync_feedback'):setattr(s,name,getattr(ConversationService,name).__get__(s))
+        plan=dict(plan_id='p'*32,waypoints=[[1,1],[2,1]])
+        s.declared_route_finished(dict(plan=plan,state='COMPLETED',reason='ALL_STOPS_AND_RETURN_COMPLETED',completed_steps=9,context=dict(session_id='s'),
+            waypoint_scans=[],reached_stops=[0,1],skipped_stops=[],candidates=candidates))
+        self.assertEqual(applied,[('add',1)]);self.assertTrue(s._auto_replan_pending)  # one box: the only edit started at once
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame=None));s._sync_feedback('o')
+        self.assertEqual(applied,[('add',1)])  # ACK without a frame: nothing more yet
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
+        self.assertEqual(applied[-1],('plan','Survey the warehouse and come back','auto_replan'));self.assertFalse(s._auto_replan_pending)
+        self.assertTrue(any('Twin updated, saved and its current 3D frame confirmed.' in m['content'] for m in messages))
+        self.assertTrue(any('re-planning "Survey the warehouse and come back"' in m['content'] for m in messages))
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
+        self.assertEqual(len([a for a in applied if a[0]=='plan']),1)  # the same frame never re-plans twice
