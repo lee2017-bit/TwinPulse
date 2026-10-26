@@ -30,6 +30,7 @@ OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_f
 TRACE_SPACING_M=.04
 MAX_TRACE_POINTS=800
 MAX_DRIVE_POINTS=2500  # display-only during-drive LiDAR returns kept per route
+PROXIMITY_STOP_REASONS={'FIELD_PROXIMITY_10CM','OBSTACLE_STOP'}  # physical field guard / Isaac SIM body-contact stop
 OVERLAY_LABEL='DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED'
 
 
@@ -358,7 +359,9 @@ class DeclaredRouteRunner:
                 steps_left-=1
                 if steps_left<0:return self._finish('STOPPED','ROUTE_STEP_BUDGET_EXCEEDED')
                 outcome,row,epochs=self._step(owner,robot_id,step,previous)
-                if (outcome==('STEP_FAILED','FIELD_PROXIMITY_10CM') and step['direction']=='forward'
+                # A SIM robot meets an unmodelled object as an engine OBSTACLE_STOP (body + stop skin), the physical
+                # robot as its own FIELD_PROXIMITY_10CM pause: both recover the same way (2026-10-26 SIM-world test box).
+                if (outcome[0]=='STEP_FAILED' and outcome[1] in PROXIMITY_STOP_REASONS and step['direction']=='forward'
                         and recoveries<MAX_RECOVERIES):
                     recoveries+=1
                     blocked=plan_pose(start,origin,self._measured(row))

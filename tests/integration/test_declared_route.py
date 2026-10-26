@@ -967,3 +967,16 @@ class SimObstacleBoxesTest(unittest.TestCase):
         namespace={};exec(source[source.index('def sim_obstacle_boxes'):source.index('def observe_startup')],namespace)
         boxes=namespace['sim_obstacle_boxes']([dict(position_m=[-2.07,2.06],size_m=[.5,.5,.5]),dict(position_m=[1,1],size_m=[.4,.4,.1])])
         self.assertEqual([tuple(round(v,3) for v in b) for b in boxes],[(-2.32,1.81,-1.82,2.31)])
+
+
+class SimObstacleStopRecoveryTest(unittest.TestCase):
+    def test_sim_engine_obstacle_stop_backs_off_and_replans_like_a_physical_proximity_stop(self):
+        # 2026-10-26: the SIM-world test box ended the route with STEP_FAILED:OBSTACLE_STOP instead of recovering.
+        import tempfile
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='OBSTACLE_STOP'
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        texts=[b['payload'].get('text') for b in fleet.sent]
+        self.assertIn('backward 25.0cm',texts)
+        self.assertEqual(len(result['recoveries']),1)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
