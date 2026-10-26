@@ -938,3 +938,11 @@ class RobotWorkspaceFromGeneratedTwinTest(unittest.TestCase):
             self.assertTrue(any(p.name=='environment-source.bin' for p in (root/'projects'/'robot_demo').rglob('*')))
             with self.assertRaises(FileExistsError):
                 create_robot_workspace(catalog,'robot_demo',request_id=str(uuid4()),objects=self._objects(),scene_id='factory_1',profile_id='default',source_project_id='chat_src')
+
+
+class ApiAttributeRegressionTest(unittest.TestCase):
+    def test_routes_never_read_a_project_id_attribute_the_server_does_not_have(self):
+        # 2026-10-26: the first robot-workspace click failed with AttributeError on self.project_id (the broker owns it).
+        source=open(Path(__file__).resolve().parents[2]/'packages'/'twinpulse_app'/'src'/'twinpulse_app'/'api.py',encoding='utf-8').read()
+        self.assertNotIn('self.project_id',source)
+        self.assertIn("source_project_id=self._workflow()._broker.project_id",source)
