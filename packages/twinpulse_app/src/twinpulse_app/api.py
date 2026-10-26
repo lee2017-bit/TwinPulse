@@ -632,7 +632,7 @@ class LocalApiServer:
                     if draft.site.scene.environment is not None:raise BrokerError('twin_export_unavailable','This Twin is already an imported space.',status=409)
                     try:text=generated_twin_usda(draft.site.scene.objects,scene_id=draft.site.scene.id)
                     except ValueError as error:raise BrokerError('twin_export_invalid',str(error),status=409) from None
-                    content=text.encode('utf-8');name='twin-%s.usda'%self.project_id
+                    content=text.encode('utf-8');name='twin-%s.usda'%self._workflow()._broker.project_id
                     request.send_response(200);request.send_header('Content-Type','text/plain; charset=utf-8')
                     request.send_header('Content-Disposition','attachment; filename="%s"'%name);request.send_header('X-TwinPulse-Export-Name',name)
                     request.send_header('X-TwinPulse-Context',self.context_id);request.send_header('Content-Length',str(len(content)))
@@ -840,7 +840,7 @@ class LocalApiServer:
                     from .project_catalog import create_robot_workspace
                     try:
                         result = create_robot_workspace(self.project_catalog, self._string(body, "project_id"), request_id=self._string(body, "request_id"),
-                            objects=draft.site.scene.objects, scene_id=draft.site.scene.id, profile_id=self._workflow()._profile_id, source_project_id=self.project_id)
+                            objects=draft.site.scene.objects, scene_id=draft.site.scene.id, profile_id=self._workflow()._profile_id, source_project_id=self._workflow()._broker.project_id)
                     except FileExistsError as error:
                         raise BrokerError("project_exists", "Project name already exists", status=409) from error
                     except ValueError as error:
