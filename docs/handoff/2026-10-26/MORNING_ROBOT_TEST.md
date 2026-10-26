@@ -6,10 +6,10 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 설치된 빌드 ID | `20261025T224738Z-b05f44b2f990` (channel **development**, physical_robot=true; 06:50 세션 결함 4개 + 리뷰 #9/#23/#25/#31 수정 포함) |
-| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `0f019ad` (+ 사용자 미커밋 문서 2개) |
+| 설치된 빌드 ID | `20261026T034429Z-7321cb659b9d` (channel **development**, physical_robot=true; 10/26 낮: LiDAR 레이어·어두운 LiDAR 박스·일치/이동 판정·Twin edits Review/Auto-apply 토글 포함, §2b) |
+| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `d25ca79` + 외관 수정 1건 (main에는 PR #1까지 머지됨; 이 두 커밋은 아직 브랜치에만) |
 | 이전 빌드(롤백용, 보존) | `20261025T162952Z-62f7a3f1e698`, `20261025T120155Z-cb02064b5674` (밤 빌드 `20261025T182006Z`는 06:50 세션 후 새 빌드로 대체·정리) |
-| 설치 로그 | `outputs/path-b-20261026/install22.log`, 빌드 로그 `outputs/path-b-20261026/build22.log` (이전: install20/21); 설치본 SIM 여정 PASS 증거 `outputs/path-b-20261026/sim16/` (3 stops, 12 moves, 복귀 오차 0.4 mm) |
+| 설치 로그 | `outputs/path-b-20261026/install33.log`, 빌드 로그 `outputs/path-b-20261026/build33.log`; 빌드 32 설치본 SIM 확인 증거 `outputs/path-b-20261026/demo-sim/S1..S6-*.png`, `ui-actions.jsonl` (Auto-apply 토글, SIM 조사 3정지 완주, 레이어 414/465점, Clear 후 null) |
 
 최종 설치본 검증: Test 모드 기동 → Isaac 연결 30 s → 설치 UI 스모크 6/6 PASS(`outputs/path-b-20261026/smoke20b/`) → Exit 정상 종료. 이 검사가 프로젝트 목록에 빈 "New chat" 항목 하나를 남겼을 수 있습니다(무시 가능). 중간 빌드 `20261025T172753Z-6ad052bdf3f6`은 정리했고 이전 두 빌드는 보존.
 
