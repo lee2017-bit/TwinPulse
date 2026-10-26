@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Supplementary no-device regressions for status latency and queued expiry."""
 from tests.integration import test_r5_product_api
 from tests.integration.test_http_mutation_lifecycle import HttpMutationLifecycleTests

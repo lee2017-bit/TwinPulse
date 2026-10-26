@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Replay of the 2026-10-26 factory generation that stalled (REPAIR_STALLED) with no live model calls.
 
 Saved evidence (tests/fixtures/repair_stall_2026-10-26/): the checkpoint draft, the semantic-compile diagnosis

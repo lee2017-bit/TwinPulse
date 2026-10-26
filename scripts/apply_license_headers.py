@@ -33,7 +33,10 @@ EXTRA = (
     "apps/twinpulse-web/index.html",
 )
 SUFFIXES = {".py", ".ts", ".tsx", ".mjs", ".css", ".cpp", ".hpp", ".sh", ".ps1", ".cmd", ".toml", ".html"}
-EXCLUDED_DIRS = {"build", "checks", "dist", "node_modules", "__pycache__", ".pytest_cache", ".git", "outputs", "artifacts"}
+# guard_base is the ROBOTIS TurtleBot3 node tree (its LICENSE/NOTICE and the retained ROBOTIS file
+# notices cover it); a TwinPulse header there would misattribute it, and any byte change under
+# guard_base re-identifies the robot output-guard build (guard_runtime.sources).
+EXCLUDED_DIRS = {"build", "checks", "dist", "node_modules", "__pycache__", ".pytest_cache", ".git", "outputs", "artifacts", "guard_base"}
 FIELDS = (
     "SPDX-FileCopyrightText: 2026 Jaewon Lee",
     "SPDX-License-Identifier: Apache-2.0",
