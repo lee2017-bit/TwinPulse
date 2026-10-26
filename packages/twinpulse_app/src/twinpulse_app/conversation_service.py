@@ -1223,10 +1223,10 @@ class ConversationService:
                     operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'],exclude=exclude)
                     self._message('assistant','Auto-applied (Twin-edit auto-apply): adding one LiDAR outline box (unknown, lidar estimate, not aligned; strongest unexplained candidate first). Undo last edit reverts it.',operation_id=operation)
                     self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation,auto=True)
-                self._auto_route_edits=queue;return
+                self._auto_route_edits=queue;self._auto_replan_pending=not queue;return  # re-plan once the last edit's frame is confirmed
             except (BrokerError,ValueError) as error:
                 self._message('assistant','Twin-edit auto-apply skipped one edit: '+str(error)[:200])
-        self._auto_route_edits=[]
+        self._auto_route_edits=[];self._auto_replan_pending=False
         self._auto_replan()
 
     def _auto_replan(self):
@@ -2039,6 +2039,7 @@ class ConversationService:
                         self._message('assistant',text+' Previous goal plans remain invalid; request a fresh goal.',
                             status='completed' if frame_confirmed else 'pending',operation_id=operation_id)
                     if frame_confirmed and getattr(self,'_auto_route_edits',None):self._apply_next_auto_edit()
+                    elif frame_confirmed and getattr(self,'_auto_replan_pending',False):self._auto_replan_pending=False;self._auto_replan()
                 elif state in {'ROLLED_BACK','ENGINE_STATE_UNKNOWN'}:
                     self._auto_route_edits=[]
                     self._message('assistant',('Previous saved revision was restored with a compensation engine ACK.' if state=='ROLLED_BACK' else

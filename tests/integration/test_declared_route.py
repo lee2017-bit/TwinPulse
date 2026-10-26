@@ -835,9 +835,11 @@ class TwinEditAutoApplyTest(unittest.TestCase):
         self.assertEqual(applied,[('move','Added_1')])  # the first edit starts at once
         self.assertIn('Twin-edit auto-apply: moving "Fan base" to the LiDAR estimate, adding 1 outline box.',messages[1][1])
         self.assertTrue(any('Auto-applied (Twin-edit auto-apply): moving "Fan base"' in m[1] for m in messages))
+        self.assertFalse(s._auto_replan_pending)
         s._apply_next_auto_edit()  # the transaction sync calls this once the move is COMMITTED with its frame
         self.assertEqual(applied[1],('add',(0,1)))  # matched candidates (moved or aligned) are never boxed
-        s._apply_next_auto_edit()
+        self.assertTrue(s._auto_replan_pending)  # the last edit started: the sync re-plans when its frame is confirmed
+        s._auto_replan_pending=False;s._auto_replan()
         self.assertEqual(applied[-1],('plan','auto_replan'));self.assertEqual(s._auto_route_edits,[])
         self.assertTrue(any('re-planning "Survey the room and come back"' in m[1] for m in messages))
         self.assertIn('declared_route_auto_apply',[e[0] for e in events])
