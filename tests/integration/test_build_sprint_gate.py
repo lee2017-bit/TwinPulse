@@ -14,6 +14,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
 import build_windows_exe as build
+import verify_sprint as gate
 
 
 def git(root,*args):
@@ -65,6 +66,63 @@ class SprintGateTests(unittest.TestCase):
         with patch.object(build,'ROOT',self.root), patch.object(sys,'argv',['build','--output-dir',str(out),'--skip-sprint-gate']), \
                 patch.object(build,'version',return_value='0.0'):
             with self.assertRaisesRegex(ValueError,'^BUILD_TOOL_VERSION_MISMATCH$'):build.main()
+
+
+class VerifySprintEvaluationTests(unittest.TestCase):
+    REPORT=("..F.E\n======================================================================\n"
+            "FAIL: test_a (test_mod.Case.test_a)\n----\nAssertionError: 1 != 2\n\n"
+            "ERROR: test_b (test_mod.Case.test_b) (target='x.y')\n----\nKeyError: 'k'\n\n"
+            "ERROR: test_loader (unittest.loader._FailedTest.test_loader)\n----\nImportError\n\n"
+            "FAIL: test_a (test_mod.Case.test_a) [sub=1]\n----\n\nRan 5 tests\n\nFAILED (failures=2, errors=2)\n")
+
+    def test_failure_ids_are_parsed_from_unittest_text_including_subtests_and_loader_errors(self):
+        self.assertEqual(gate.parse_failures(self.REPORT),
+            ['test_mod.Case.test_a','test_mod.Case.test_b','unittest.loader._FailedTest.test_loader'])
+        self.assertEqual(gate.parse_failures('....\nOK\n'),[])
+
+    def test_required_steps_need_exit_zero_and_other_steps_allow_only_baseline_failures(self):
+        results=[dict(name='robot_safety_test_prefix',required=True,exit_code=0,failures=[]),
+                 dict(name='integration_robot_path',required=True,exit_code=1,failures=['tests.integration.test_physical_live_session.T.test_x']),
+                 dict(name='provider',required=False,exit_code=1,failures=['p.T.old','p.T.new']),
+                 dict(name='core',required=False,exit_code=1,failures=[]),
+                 dict(name='integration',required=False,exit_code=1,failures=['i.T.old'])]
+        baseline={'provider':['p.T.old','p.T.fixed'],'integration':['i.T.old']}
+        verdict=gate.evaluate(results,baseline)
+        self.assertEqual(verdict['status'],'FAIL')
+        self.assertEqual(verdict['verdicts'],dict(robot_safety_test_prefix='PASS',integration_robot_path='FAIL',provider='FAIL',core='FAIL',integration='PASS'))
+        self.assertEqual(verdict['new_failures'],dict(integration_robot_path=['tests.integration.test_physical_live_session.T.test_x'],
+                                                      provider=['p.T.new'],core=['<exit 1>']))
+        self.assertEqual(verdict['baseline_failures'],dict(provider=['p.T.old'],integration=['i.T.old']))
+        self.assertEqual(verdict['fixed_since_baseline'],dict(provider=['p.T.fixed']))
+        results[1].update(exit_code=0,failures=[]);results[2]['failures']=['p.T.old'];results[3]['exit_code']=0
+        self.assertEqual(gate.evaluate(results,baseline)['status'],'PASS')
+        # Without any baseline every failure outside the required steps is new.
+        self.assertEqual(gate.evaluate(results,None)['new_failures'],dict(provider=['p.T.old'],integration=['i.T.old']))
+        # A required step is never excused by a baseline entry.
+        results[1].update(exit_code=1,failures=['tests.integration.test_robot_health.T.test_y'])
+        self.assertEqual(gate.evaluate(results,{'integration_robot_path':['tests.integration.test_robot_health.T.test_y']})['status'],'FAIL')
+
+    def test_required_integration_modules_cover_the_robot_path_and_the_gate_itself(self):
+        modules=gate.required_integration_modules(ROOT)
+        for name in ('test_physical_live_session','test_physical_fleet_adapter','test_robot_health','test_robot_fleet',
+                     'test_live_bootstrap_roundtrip','test_build_sprint_gate','test_license_policy','test_fleet_diagnostics'):
+            self.assertIn('tests.integration.'+name,modules)
+        self.assertNotIn('tests.integration.test_a2_project_catalog',modules)
+        rows=gate.steps(ROOT,'py',skip_web=True)
+        self.assertEqual([r['name'] for r in rows],['compileall','robot_safety_test_prefix','robot_safety_test_suffix',
+                                                    'integration_robot_path','core','provider','integration'])
+        self.assertEqual([r['required'] for r in rows],[True,True,True,True,False,False,False])
+        self.assertEqual(rows[3]['argv'][:4],['py','-B','-m','unittest']);self.assertEqual(rows[3]['argv'][4:],modules)
+        self.assertEqual(gate.steps(ROOT,'py')[4]['name'],'web')
+
+    def test_baseline_file_round_trip_and_schema_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'baseline.json'
+            self.assertIsNone(gate.load_baseline(path))
+            gate.write_json(path,dict(schema=gate.BASELINE_SCHEMA,run_id='r',head='h',failures={'core':['c.T.x']}))
+            self.assertEqual(gate.load_baseline(path)['failures'],{'core':['c.T.x']})
+            path.write_text('\ufeff'+json.dumps(dict(schema='other')),encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'SPRINT_BASELINE_SCHEMA'):gate.load_baseline(path)
 
 
 if __name__=='__main__':unittest.main()
