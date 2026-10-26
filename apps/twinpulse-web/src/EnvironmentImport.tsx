@@ -162,7 +162,8 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
         })}
         cancelPhoto={id=>void perform(async()=>{await act({action:'photo_cancel',request_id:crypto.randomUUID(),job_id:id});setPreview(null);})}
         preview={(obstacle,photo,candidate,replaceId)=>void perform(async()=>{
-          if(photo&&(!/\.(jpe?g|png|webp)$/i.test(photo.name)||photo.size>5*1024*1024))throw new Error('Choose a JPEG, PNG or WebP photo up to 5 MiB.');
+          // A photo-recognized candidate carries its own analyzed photo as evidence; the optional reference photo only matters for a manual box.
+          if(!candidate&&photo&&(!/\.(jpe?g|png|webp)$/i.test(photo.name)||photo.size>5*1024*1024))throw new Error('Choose a JPEG, PNG or WebP photo up to 5 MiB.');
           discardProposal();const next=await act(candidate?{action:'photo_candidate_preview',request_id:crypto.randomUUID(),obstacle,
             candidate_ref:candidate,duplicate_reviewed:true,expected_scene_revision:state.scene_revision!,...(replaceId?{replace_object_id:replaceId}:{})}:
             {action:'add_overlay_preview',request_id:crypto.randomUUID(),obstacle,
