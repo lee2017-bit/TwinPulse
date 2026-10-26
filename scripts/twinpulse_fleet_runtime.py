@@ -153,7 +153,9 @@ class FleetRuntime:
             try:
                 sensor,height,path=sensor_pose(stage,self.ROOT+'/Robot_'+identity)
                 diagnostic.update(sensor_pose_wall_s=time.monotonic()-started,sensor_pose_cpu_s=time.thread_time()-cpu)
-                geometry_epoch=(self.identity,self.navigation_geometry_epoch)
+                # SIM-world test obstacles are not Twin geometry (no navigation epoch), but the rays must see them:
+                # their set is part of the section cache key (2026-10-26: the cached section never included the box).
+                geometry_epoch=(self.identity,self.navigation_geometry_epoch,getattr(self,'sim_obstacle_key',None))
                 if geometry_epoch!=self.sensor_geometry_epoch:
                     self.sensor_sections={};self.sensor_geometry_epoch=geometry_epoch
                 key=round(height,9);hit=key in self.sensor_sections

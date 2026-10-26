@@ -981,3 +981,11 @@ class SimObstacleStopRecoveryTest(unittest.TestCase):
         self.assertEqual(len(result['recoveries']),1)
         self.assertEqual(result['state'],'COMPLETED',result['reason'])
         self.assertEqual(result['recoveries'][0]['keepout_m'],.4)  # SIM keepout covers a whole 0.5 m box
+
+
+class SimObstacleSectionCacheTest(unittest.TestCase):
+    def test_lidar_section_cache_key_includes_the_sim_obstacle_set(self):
+        # 2026-10-26: the SIM box was authored and the motion guard saw it, but the LiDAR section was cached per
+        # Twin geometry epoch, so no return ever landed on the box and no candidate appeared.
+        source=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        self.assertIn("geometry_epoch=(self.identity,self.navigation_geometry_epoch,getattr(self,'sim_obstacle_key',None))",source)
