@@ -76,7 +76,7 @@ export type RobotFleetRobot = {
 export type LidarLayerState={scene_revision:string|null;stop_points:number[][];drive_points:number[][];routes:number;revision:number;label:string;
   moved:{object_id:string;label:string;position_xy_m:number[];distance_m:number;basis:string}[]};
 export type FloorMapState={status:'AVAILABLE'|'UNAVAILABLE';scene_revision:string|null;bounds:number[]|null;free_cells:number[][];cell_m:number;
-  obstacles:number[][];robots:{robot_id:string;label:string;kind:string;position_m:number[]|null}[];label?:string;lidar_layer?:LidarLayerState|null};
+  obstacles:number[][];robots:{robot_id:string;label:string;kind:string;position_m:number[]|null}[];label?:string;lidar_layer?:LidarLayerState|null;sim_obstacles?:SimObstacle[]};
 /** Declared-start route progress (display only; the chat card owns the decision). */
 export type DeclaredRouteState = {
   plan_id:string;robot_id:string;kind:'sim'|'physical';state:'RUNNING'|'COMPLETED'|'STOPPED'|'FAILED'|'CANCELLED'|string;reason:string|null;
@@ -86,13 +86,18 @@ export type DeclaredRouteState = {
 };
 export type RobotFleetState = {
   schema_version:'robot-fleet-1.0';revision:number;focused_robot_id:string|null;robots:RobotFleetRobot[];route?:DeclaredRouteState|null;
+  sim_obstacles?:SimObstacle[];  // Isaac SIM world only, never in the Twin model
   last_command:{request_id:string;operation_id:string|null;robot_id:string|null;status:string;message:string}|null;
   capabilities:{sim:boolean;physical:boolean};policy:{linear_m_s:number;angular_rad_s:number;input_expiry_ms:number};
   navigation_scene?:{status:'AVAILABLE'|'UNAVAILABLE';kind:'imported'|'legacy'|null;source_sha256:string|null;
     units_basis:string|null;meters_per_unit:number|null;geometry_revision:string|null;scene_revision:string|null;physical_accuracy:'UNQUALIFIED'};
 };
+/** A test box that exists only in the Isaac SIM world: SIM LiDAR and the proximity stop see it, the Twin model and planner do not. */
+export type SimObstacle={id:string;label:string;position_m:number[];size_m:number[];source:string};
 type FleetPayloads = {
   clear_lidar_layer:Record<string,never>;  // drops the session LiDAR display layer; nothing moves
+  sim_obstacle:{label:string;position_m:number[];size_m:number[]};
+  clear_sim_obstacles:Record<string,never>;
   register_sim:{label:string;position_m:[number,number,number]};focus:Record<string,never>;
   connect:Record<string,never>;disconnect:Record<string,never>;prepare:Record<string,never>|{confirmed:true};
   qualify:{confirmed:true};profile:{profile:Record<string,unknown>};

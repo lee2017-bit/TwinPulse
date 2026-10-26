@@ -41,17 +41,24 @@
 7. 완료 카드 `LiDAR at the stops saw N objects the Twin does not have…` → **Add to Twin**(한 번에 1개, 가장 강한 후보부터). Twin 갱신(Undo 가능) 확인. 상자가 아닌 후보(로봇 자신, 벽 근처 잡음)는 **Skip**.
 8. 로봇을 시작 마크로 되돌려 놓고(또는 종료 위치를 다시 **Set position**), 다시 **`Survey the room and come back`** → 새 경로 카드가 상자를 피해 가는지(미니맵·Isaac) 확인. SIM으로도 같은 문장을 보내 비교 가능.
 
-## 2a. 데모 테이크는 New chat에서 시작 (2026-10-26 사용자 지적)
+## 2a. 데모 테이크: New chat → 공장 사진 → Twin → 로봇 작업공간 (2026-10-26 사용자 결정)
 
-기존 채팅을 열어 시작하지 않는다. 녹화 첫 동작부터 다음 순서(모두 화면에 보이게):
+SIM 전용 데모는 **사용자 집 USD를 쓰지 않는다.** 공장 사진(퍼블릭도메인, `outputs/path-b-20261026/factory-photo/SOURCE.md`)에서 Twin을 바로 만든다. 녹화 첫 동작부터 다음 순서(모두 화면에 보이게):
 
-1. 사이드바 **☰** 접기(Twin이 화면 오른쪽 큰 쪽을 차지하도록; 기본 분할은 1400 px 이상 창에서 채팅 40 / Twin 60) → 왼쪽 **＋ New chat** → "New chat ready."
-2. 채팅 **＋ Attach**로 `Project-2610222326.usd` 첨부 → "How will you use this USD file?" → **Import space** → Source units **Meters (m)** → **Inspect space** → "Inspection ready" → **Import space** → **Show Twin** → Twin 패널에 Isaac 렌더(Isaac connected).
-3. Import space 패널 **Added obstacles** → 참조 사진 첨부 → "Allow photo analysis" 체크 → **Analyze photo**(DeepSeek 관찰자 1회) → **Review Candidate_n** → 중심 X/Y 입력, duplicate 검토 체크 → **Preview obstacle** → **Apply space edit**(또는 Auto-apply) ×2–3 → 빠진 물체가 Twin에 들어감.
-4. 채팅 Current step 옆 **Twin edits → Auto-apply**(새 채팅은 Review로 시작하므로 화면에서 전환). 이후 §2의 2번(Connect → Prepare → Arm → Bootstrap stop)부터 계속.
-5. 채팅은 열릴 때 이미 최신 메시지에 있어야 한다(스크롤 내려가는 모습이 보이면 결함; 빌드 34에서 수정, 35에서 검증). Import space 패널은 채팅 열 안에 열리므로 Twin은 항상 오른쪽 전체 높이(빌드 35).
+1. 사이드바 **☰** 접기 → **＋ New chat** → "New chat ready."
+2. 채팅 **＋ Attach**로 공장 사진 첨부 + 프롬프트(치수 주체를 방 명사로: "an estimated 12 by 8 metre **warehouse** …") → Send → "Do you have a physical robot?" → **Simulation only** → **Create Twin** → 생성 진행 카드(Nemotron 플래너 + DeepSeek 관찰자, 약 2–3분; 화면에 단계·개수 진행 표시) → Twin이 Isaac에 표시.
+3. **Use as robot workspace** 클릭 → 새 채팅(프로젝트)으로 전환, 같은 공장이 임포트형 작업공간(근사 박스)으로 Isaac에 다시 세워짐("Robot workspace ready."). 생성 채팅은 그대로 보존된다.
+4. Current step 옆 **Twin edits → Auto-apply**.
+5. Twin 패널 **Robots → Manage → Add SIM robot**: 바닥 지도 클릭·드래그로 위치/방향 → Add → 선택 → **Connect → Prepare → LiDAR on**.
+6. 채팅 **`Survey the warehouse and come back`** → Nemotron 카드("Planned by nvidia/nemotron-3-super-120b-a12b via Nebius Token Factory · N s") 확인.
+7. **SIM-world test obstacle**(Robots → Manage → SIM-world test obstacle): 1구간 중간 좌표에 0.5 m 상자. Isaac 세계에만 있고 Twin 모델·계획기는 모른다.
+8. **Run route** → 상자 앞 근접 정지(SIM: 몸체 반경 .105 + 스킨 .10) → SIM 40 cm 후진·keepout .40 재계획(실물 25 cm는 그대로) → 정지점 LiDAR → 완주·복귀.
+9. 완료 후 Auto-apply: `Auto-applied (Twin-edit auto-apply): adding one LiDAR outline box` → 어두운 회색 박스 → (격자 재구축 뒤) `re-planning "Survey the warehouse and come back"` 새 경로 카드 → **Run route** → 상자를 피해 완주. 저장된 작업공간을 다시 열면 Reopen saved scene → Rebuild Twin in Isaac → 로봇 select/Connect/Prepare/LiDAR을 다시 한다(연결·권한은 저장되지 않음).
+10. Import space → Added obstacles → 공장 사진 분석 → 후보 선택 → "Replace an added estimate box" = LiDAR unknown #1 → 제거 커밋 → 후보 배치 커밋(사진 색 반영).
 
-드라이버 `outputs/path-b-20261026/demo-sim/demo.mjs`의 해당 동작: `sidebar off`, `new-chat`, `attach-usd <usd>`, `inspect-usd m`, `import-usd`, `show-twin`, `photo <jpg>`, `review-candidate new <x> <y> <n>`, `apply-edit`, `set-twin-edits auto`, `split 40`, `scroll-probe`.
+실물 세션(§2)은 같은 순서로 하되 2–3 대신 실물 방 USD를 Import space로 들여오고(§2 1–3), 로봇은 실물을 Connect→Prepare→Arm→Bootstrap stop 한다.
+
+드라이버 `outputs/path-b-20261026/demo-sim/factory_take.sh`(REC=1이면 녹화) / 동작: `new-chat`, `send-photo <jpg> <prompt>`, `create-twin`, `wait-generation`, `use-workspace`, `set-twin-edits auto`, `add-sim x y yaw`, `sim-obstacle x y w d h <label>`, `run`, `wait-route`, `photo`, `select-replace`, `review-candidate`, `apply-edit`. 검토 도구: `still_segments.py`(5초 이상 정지 구간), `cut_segments.py`(정지 구간을 "SKIPPED m:ss" 표시로 대체).
 
 ## 2b. 다음 실물 세션 추가 항목 (2026-10-26 낮에 구현, 빌드 32 이후)
 

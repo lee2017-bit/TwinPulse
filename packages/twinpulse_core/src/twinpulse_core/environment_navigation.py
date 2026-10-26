@@ -44,6 +44,9 @@ def convex_overlap_area(left,right):
     return area(poly)
 
 
+NAVIGATION_CELL_BUDGET=40000
+
+
 def navigation_cells(meshes,resolution=.1,*,keepout_polygons=()):
     floor=[];obstacles=[];targets=[]
     for mesh in meshes:
@@ -70,7 +73,8 @@ def navigation_cells(meshes,resolution=.1,*,keepout_polygons=()):
     iy0=math.floor(min(p[1] for p in all_points)/resolution)-1
     ix1=math.ceil(max(p[0] for p in all_points)/resolution)+1
     iy1=math.ceil(max(p[1] for p in all_points)/resolution)+1
-    if (ix1-ix0)*(iy1-iy0)>10000:raise ValueError('ENVIRONMENT_NAVIGATION_CELL_BUDGET')
+    # 40000 cells at 0.1 m = a 20 m x 20 m floor: a generated 12 x 8 m warehouse (2026-10-26) exceeded the old 10000.
+    if (ix1-ix0)*(iy1-iy0)>NAVIGATION_CELL_BUDGET:raise ValueError('ENVIRONMENT_NAVIGATION_CELL_BUDGET')
     coverage={};blocked=set();pieces={};ambiguous=set()
     def each_cell(poly):
         a=max(ix0,math.floor(min(p[0] for p in poly)/resolution-1e-8))

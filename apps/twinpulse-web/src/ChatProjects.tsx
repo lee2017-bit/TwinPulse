@@ -6,9 +6,9 @@ import {flushSync} from 'react-dom';
 import { ApiError, TwinPulseApi } from './api';
 import type { ProjectCatalogState } from './types';
 
-export function ChatProjects({api, launcherReady, operationBusy, report, advanced, currentProject, currentConversation, openCurrent, newChatRequest=0, apiReady=true, activityChanged, onProjectChanged, onNewChatReady}: {
+export function ChatProjects({api, launcherReady, operationBusy, report, advanced, currentProject, currentConversation, openCurrent, newChatRequest=0, workspaceRequest=0, apiReady=true, activityChanged, onProjectChanged, onNewChatReady}: {
   api:TwinPulseApi; launcherReady:boolean; operationBusy:boolean; report:(reason:string)=>void; advanced:()=>void;
-  currentProject?:string; openCurrent?:()=>void; newChatRequest?:number;
+  currentProject?:string; openCurrent?:()=>void; newChatRequest?:number; workspaceRequest?:number;  // robot workspace from the current generated Twin
   currentConversation?:{display_name:string;message_count:number;last_message_at:string|null};
   apiReady?:boolean;
   activityChanged?:(activity:{busy:boolean;message:string|null})=>void;
@@ -26,7 +26,7 @@ export function ChatProjects({api, launcherReady, operationBusy, report, advance
   const readOwner=useRef({api,context:api.context});readOwner.current={api,context:api.context};
   const alive=useRef(true);
   const lock=useRef(false);
-  const lastNewChatRequest=useRef(0);
+  const lastNewChatRequest=useRef(0);const lastWorkspaceRequest=useRef(0);
   const newChatAttempt=useRef<{target:string;created:boolean}|null>(null);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const readProjects=async(active=()=>true)=>{
@@ -68,21 +68,21 @@ export function ChatProjects({api, launcherReady, operationBusy, report, advance
       else {setSwitching(true);setResult('Project switch response unknown. Check the saved outcome before another request.');}
     } finally{lock.current=false;setBusy(false);}
   };
-  const newChat=async()=>{
+  const newChat=async(robotWorkspace=false)=>{
     if(!apiReady||lock.current||operationBusy||switching||!launcherReady||typeof api.createProject!=='function')return;
-    const attempt=newChatAttempt.current??{target:`chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0,8)}`,created:false};
+    const attempt=newChatAttempt.current??{target:`${robotWorkspace?'robot':'chat'}_${Date.now().toString(36)}_${crypto.randomUUID().slice(0,8)}`,created:false};
     newChatAttempt.current=attempt;
     const target=attempt.target;
     lock.current=true;flushSync(()=>{activityChanged?.({busy:true,message:'Preparing a new chat…'});setBusy(true);setResult('Preparing a new chat…');});
     try {
-      if(!attempt.created){const created=await api.createProject(target);setCatalog(created.catalog);attempt.created=true;}
+      if(!attempt.created){const created=robotWorkspace?await api.createRobotWorkspace(target,crypto.randomUUID()):await api.createProject(target);setCatalog(created.catalog);attempt.created=true;}
       setSwitching(true);setResult('Opening a new chat…');
       const selected=await api.switchProject(target);
       if(selected.status==='switched'){
         await onProjectChanged?.(selected);
         onNewChatReady?.();
         setCatalog(previous=>previous?{...previous,active_project_id:target,projects:previous.projects.map(row=>({...row,active:row.project_id===target}))}:previous);
-        setSwitching(false);setResult('New chat ready.');
+        setSwitching(false);setResult(robotWorkspace?'Robot workspace ready.':'New chat ready.');
         newChatAttempt.current=null;
       }
     } catch(error) {
@@ -100,6 +100,9 @@ export function ChatProjects({api, launcherReady, operationBusy, report, advance
     // child observers before the first POST, including home-screen New chat.
     queueMicrotask(()=>{if(active&&newChatRequest>lastNewChatRequest.current){lastNewChatRequest.current=newChatRequest;void newChat();}});
     }return()=>{active=false;};},[newChatRequest]);
+  useEffect(()=>{let active=true;if(workspaceRequest>lastWorkspaceRequest.current){
+    queueMicrotask(()=>{if(active&&workspaceRequest>lastWorkspaceRequest.current){lastWorkspaceRequest.current=workspaceRequest;void newChat(true);}});
+    }return()=>{active=false;};},[workspaceRequest]);
   const reason=!apiReady?'Connecting to the App before loading saved conversations.':operationBusy?'Finish the active operation before switching projects.':!launcherReady?'Wait for Isaac startup before opening another project.':switching?'Opening the selected conversation.':null;
   const currentReadError=listReadError?.api===api&&listReadError.context===api.context?listReadError.message:null;
   const filtered=(catalog?.projects??[]).map(project=>project.active&&currentConversation?{...project,...currentConversation}:project)

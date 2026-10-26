@@ -1,0 +1,441 @@
+{
+"schema_version": "geometry-diagnostic-1.0",
+"issues": [
+{
+"code": "PHOTO_MODEL_EXCEEDS_ROOM_HEIGHT",
+"path": "$.objects.rack_1.dimensions_m[2]",
+"target_ids": [
+"rack_1"
+],
+"related_ids": [
+"$room"
+],
+"issue_id": "f34fe052f5fd9dd9b0b25c70b7662100bdfbb77301069a4ae2e68077f3dbacb3",
+"stage": "geometry",
+"severity": "error",
+"check_status": "failed",
+"repairable": true,
+"actual": 4.04,
+"expected": {
+"max_m": 4.0,
+"nominal_height_m": 4.0,
+"basis": "expanded_factory_geometry"
+},
+"violation_m": 0.040000000000000036
+}
+],
+"issue_count": 1,
+"issues_truncated": false,
+"blocked_checks": [
+{
+"check": "packing",
+"blocked_by": "f34fe052f5fd9dd9b0b25c70b7662100bdfbb77301069a4ae2e68077f3dbacb3"
+},
+{
+"check": "placement",
+"blocked_by": "f34fe052f5fd9dd9b0b25c70b7662100bdfbb77301069a4ae2e68077f3dbacb3"
+}
+],
+"physical_authority": false,
+"check_ledger_version": "geometry-check-ledger-1.0",
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checks": [
+{
+"check_id": "input_contract",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "passed",
+"blocked_by": [],
+"issue_refs": [],
+"depends_on": []
+},
+{
+"check_id": "model_relations",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "failed",
+"blocked_by": [],
+"issue_refs": [
+"f34fe052f5fd9dd9b0b25c70b7662100bdfbb77301069a4ae2e68077f3dbacb3"
+],
+"depends_on": [
+"input_contract"
+]
+},
+{
+"check_id": "floor_packing",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations"
+]
+},
+{
+"check_id": "support_packing",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations",
+"floor_packing"
+]
+},
+{
+"check_id": "attachment_placement",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations",
+"floor_packing",
+"support_packing"
+]
+},
+{
+"check_id": "tool_executor",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations",
+"floor_packing",
+"support_packing",
+"attachment_placement"
+]
+},
+{
+"check_id": "placement_validation",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations",
+"floor_packing",
+"support_packing",
+"attachment_placement",
+"tool_executor"
+]
+},
+{
+"check_id": "evidence_binding",
+"target_ids": [
+"blind_1_i1_0224cfb270",
+"blind_1_i2_d5440e0839",
+"bollard_1",
+"bollard_2",
+"box_group_1_i1_ddc273adf5",
+"box_group_1_i2_cd6ed86b49",
+"box_group_1_i3_7a46b6a5e1",
+"box_group_1_i4_75978f33fb",
+"box_group_1_i5_6aa981f2ea",
+"crate_1",
+"frame_1",
+"guard_1",
+"hook_1",
+"pallet_1",
+"pallet_floor_1_i1_c5030c64f2",
+"pallet_floor_1_i2_e63cb33ea8",
+"pallet_floor_1_i3_03674d399f",
+"pallet_wall_1",
+"panel_1",
+"rack_1",
+"stacker_1",
+"stand_1_i1_a511a3d0d8",
+"stand_1_i2_a812b74d99",
+"wall_fixture_1"
+],
+"dependency_fields": [
+"$.room",
+"$.inventory",
+"$.objects"
+],
+"candidate_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"checker_revision": "geometry-check-ledger-1.0",
+"compiler_revision": "semantic-scene-compiler-1.8",
+"library_revision": "environment-model-library-1.2",
+"status": "blocked",
+"blocked_by": [
+"model_relations"
+],
+"issue_refs": [],
+"depends_on": [
+"input_contract",
+"model_relations",
+"floor_packing",
+"support_packing",
+"attachment_placement",
+"tool_executor",
+"placement_validation"
+]
+}
+],
+"mandatory_checks": [
+"input_contract",
+"model_relations",
+"floor_packing",
+"support_packing",
+"attachment_placement",
+"tool_executor",
+"placement_validation",
+"evidence_binding"
+],
+"checks_complete": false,
+"checks_truncated": false
+}

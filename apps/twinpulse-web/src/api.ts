@@ -150,6 +150,13 @@ export class TwinPulseApi {
     return this.readState(`/v1/product/simulation/request/${encodeURIComponent(requestId)}`);
   }
   viewportState():Promise<import('./viewport-types').ViewportState>{return this.readState('/v1/product/viewport');}
+  /** The generated Twin as a USDA of approximate boxes, for Import space in a new chat (robot workspace). */
+  async environmentExportUsda():Promise<{blob:Blob;name:string}>{
+    const response=await this.imageRequest('/v1/product/environment/export-usda',new AbortController().signal);
+    if(!response.ok)await parseResponse<never>(response);
+    const bytes=await response.arrayBuffer();if(bytes.byteLength>10*1024*1024)throw new ApiError('twin_export_invalid','Export exceeds 10 MiB.');
+    return {blob:new Blob([bytes],{type:'text/plain'}),name:response.headers.get('X-TwinPulse-Export-Name')??'twin.usda'};
+  }
   async conversationImage(path:string):Promise<Blob>{
     if(!/^\/v1\/product\/conversation\/image\/[a-zA-Z0-9_-]{1,100}$/.test(path))
       throw new ApiError('conversation_image_invalid','Invalid source image identity.');
@@ -693,6 +700,10 @@ export class TwinPulseApi {
   }
   createProject(project_id: string): Promise<{ created_project_id: string; catalog: ProjectCatalogState }> {
     return this.boundedProjectAction("/v1/product/projects/create", { project_id });
+  }
+  /** One click from a generated Twin: a new project whose saved scene is that Twin as an imported robot workspace. */
+  createRobotWorkspace(project_id: string, request_id: string): Promise<{ created_project_id: string; catalog: ProjectCatalogState; object_count: number; physical_authority: false }> {
+    return this.request("/v1/product/projects/create-robot-workspace", { project_id, request_id });
   }
   createManualRoomProject(value: {
     project_id: string; request_id: string; prompt: string; media_type: string;

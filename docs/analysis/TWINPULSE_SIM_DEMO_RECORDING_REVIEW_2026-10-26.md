@@ -45,3 +45,23 @@ The user watched the published file and reported three problems. Causes found fr
 | 3 | Demo must start from a new chat with USD and photos, not an existing chat | The published take reopened the saved project. | Runbook §2a and the driver start with New chat → attach USD → Meters → Inspect → Import → Show Twin → photo analysis → candidates placed → Twin edits set to Auto-apply on screen. | `frames-verify35/002-0011.5s-new_chat.jpg` … `008-0045.3s-show_twin.jpg`, `013-0067.9s-shot_W2_photo_candidates.jpg`, `023-0211.6s-set_twin_edits_auto.jpg` | PASS |
 
 The published `twinpulse-sim-demo-2026-10-26.mp4` still shows the old layout and the saved-chat start; the next full take (physical session, runbook §2a/§2b) replaces it. Live model calls after this follow-up: planner 9, photo observer 6 (limit 100).
+
+
+## Factory SIM demo take (2026-10-26 evening) — pre-release `sim-factory-demo-2026-10-26`
+
+User decisions after the afternoon take: SIM-only demo = a **factory** photo (public-domain NIST AGV photo, `outputs/path-b-20261026/factory-photo/SOURCE.md`), never the home USD; start from New chat; show robot placement and driving; no still screen longer than 5 s; fix root causes instead of re-recording. Recording `twinpulse-sim-factory-demo-2026-10-26.mp4` (8:56, 1920×1080; mobile 1280×720 copy), two parts joined with an on-screen title card.
+
+| # | Checked | Evidence (frames / driver log) | Result |
+|---|---|---|---|
+| A | Factory photo → Twin from New chat, live generation | part 1 0:00–~3:40: ＋ New chat, photo attached, "Simulation only", 24-object generation (planner + observer, 12 calls) | PASS |
+| B | Digital Twin not clipped / not tiny | window 0,0,1920,1080 (DPI-aware arrange), Control-view render ≥40vh (`0b8b1f4`); contact sheets show the full render | PASS (letterboxed 3:2 render inside the wide panel remains) |
+| C | Robot placed, Connect/Prepare/LiDAR, Nemotron route, SIM box, proximity stop → 40 cm back-off → keepout re-plan → return | route 1: 19 moves, 1 recovery, reached 1/3 (stops 2–3 skipped after the stop), 2 LiDAR candidates | PASS |
+| C2 | LiDAR candidates auto-added as Twin boxes (Auto-apply) | two "Auto-applied … LiDAR outline box" + "Twin updated … frame confirmed" | PASS |
+| C3 | Automatic re-plan after the auto edits | part 1 ended here: `declared_route_scene_required` because the grid was still rebuilding → fixed in `410de82`; part 2 shows the route requested again on the updated Twin (planner call), 3/3 stops + return | PASS with honest cut (auto re-plan itself not on video) |
+| C4 | Photo upgrade of a LiDAR box | part 2: Replace → removal auto-committed → candidate placed at the box centre → second commit | PASS |
+| D | No still segment > 5 s | pixel-count detector (`still_segments.py`): 20 + 12 segments played at 8× with a banner; final scan 2 segments of 5.0 s and 5.5 s | PASS (5.5 s remains) |
+| E | Robot stops before touching the box | OBSTACLE_STOP at 10 cm skin, back-off 40 cm (`SimObstacleStopRecoveryTest`) | PASS |
+
+Root causes fixed today (all with tests): grid budget 10000→40000 cells (12×8 m factory), SIM obstacle re-authoring every tick, SIM box never authored (NameError), OBSTACLE_STOP not treated as proximity stop, SIM keepout/back-off .45/.40, LiDAR section cache ignoring SIM obstacles, auto re-plan skipped after the last queued edit, **repair patch schema required a `recipe_parameters` key that stored objects drop → every geometry repair of builtin/warehouse objects failed and the first factory take stalled (`7bf92bd`, replay test on the saved patches)**, auto re-plan before the rebuilt grid (`410de82`). One-pass stage contract test: `SimLoopStageContractTest`.
+
+Live model calls today (planner + observer): generation 12 + 12 (one stalled take), routes 6, photo observer 4; cumulative ≈ 87 of the 200 approved.

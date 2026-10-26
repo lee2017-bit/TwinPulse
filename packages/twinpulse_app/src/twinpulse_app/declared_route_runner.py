@@ -25,11 +25,15 @@ PHYSICAL_SETTLE_S=1.5
 MAX_RECOVERIES=2
 RECOVERY_BACKOFF_M=.25
 RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
+SIM_RECOVERY_OFFSET_M=.45  # SIM contact stop: body .105 + skin .10 = the obstacle face is ~.2 m ahead
+SIM_RECOVERY_KEEPOUT_M=.40
+SIM_RECOVERY_BACKOFF_M=.40  # the robot came from there; .25 left its start inside the keepout's clearance band (GRID_EDGE_BLOCKED)
 MAX_STEPS_FACTOR=3
 OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_fleet_runtime.integrate_motion
 TRACE_SPACING_M=.04
 MAX_TRACE_POINTS=800
 MAX_DRIVE_POINTS=2500  # display-only during-drive LiDAR returns kept per route
+PROXIMITY_STOP_REASONS={'FIELD_PROXIMITY_10CM','OBSTACLE_STOP'}  # physical field guard / Isaac SIM body-contact stop
 OVERLAY_LABEL='DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED'
 
 
@@ -358,19 +362,25 @@ class DeclaredRouteRunner:
                 steps_left-=1
                 if steps_left<0:return self._finish('STOPPED','ROUTE_STEP_BUDGET_EXCEEDED')
                 outcome,row,epochs=self._step(owner,robot_id,step,previous)
-                if (outcome==('STEP_FAILED','FIELD_PROXIMITY_10CM') and step['direction']=='forward'
+                # A SIM robot meets an unmodelled object as an engine OBSTACLE_STOP (body + stop skin), the physical
+                # robot as its own FIELD_PROXIMITY_10CM pause: both recover the same way (2026-10-26 SIM-world test box).
+                if (outcome[0]=='STEP_FAILED' and outcome[1] in PROXIMITY_STOP_REASONS and step['direction']=='forward'
                         and recoveries<MAX_RECOVERIES):
                     recoveries+=1
                     blocked=plan_pose(start,origin,self._measured(row))
-                    discs.append((blocked[0]+.25*math.cos(blocked[2]),blocked[1]+.25*math.sin(blocked[2]),RECOVERY_KEEPOUT_M))  # proximity fires within ~.23 m
+                    # Physical proximity fires ~.23 m before contact; the SIM engine stops at body contact (radius + skin),
+                    # so its keepout sits further ahead and wider to cover a whole unmodelled box (2026-10-26 SIM box test).
+                    offset,radius=(.25,RECOVERY_KEEPOUT_M) if (row or {}).get('kind')=='physical' else (SIM_RECOVERY_OFFSET_M,SIM_RECOVERY_KEEPOUT_M)
+                    discs.append((blocked[0]+offset*math.cos(blocked[2]),blocked[1]+offset*math.sin(blocked[2]),radius))
                     with self.lock:
-                        self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=RECOVERY_KEEPOUT_M))
+                        self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=radius))
                         self._save()
                     self._overlay(recoveries=recoveries)
                     self._progress('recovery',at=[round(v,4) for v in blocked],recoveries=recoveries)
                     if row and row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)
                     # Wait for the proximity pause's Stop to be applied before backing off.
-                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=RECOVERY_BACKOFF_M),'AFTER_STOP')
+                    backoff=RECOVERY_BACKOFF_M if (row or {}).get('kind')=='physical' else SIM_RECOVERY_BACKOFF_M  # SIM: clear the wider keepout's clearance band
+                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=backoff),'AFTER_STOP')
                     if outcome[0]!='COMPLETED':return self._finish('STOPPED','RECOVERY_'+outcome[0]+':'+str(outcome[1]))
                     previous=epochs;pose=plan_pose(start,origin,self._measured(row))
                     # A stop that sits inside the new keepout is skipped (and reported); the start is always kept.

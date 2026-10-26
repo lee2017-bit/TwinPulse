@@ -529,3 +529,77 @@ class ProjectCatalog:
             return dict(summary)
         except (OSError, ValueError, TypeError, UnicodeError):
             return {**fallback, 'conversation_status': 'unavailable'}
+
+
+
+def create_robot_workspace(catalog: "ProjectCatalog", project_id: str, *, request_id: str, objects, scene_id: str,
+                           profile_id: str, source_project_id: str) -> dict[str, object]:
+    """One click from a generated (photo/text) Twin: a new project whose saved scene is that Twin as an imported space.
+
+    The generated project is never changed (an existing scene is never overwritten). The new project carries the
+    exported USDA as its archived source and the same boxes as an imported environment, so routes, LiDAR candidates
+    and Twin edits work there. Dimensions stay the generator's estimates; nothing is measured or built here.
+    """
+    from twinpulse_core import InputRevision
+    from twinpulse_core.revisions import InputArtifactStore
+    from twinpulse_core.scene_tools import SceneToolCall
+    from twinpulse_core.site_tools import SiteToolPlan
+    from .site_draft import SiteDraftRecord
+    from .twin_export import generated_twin_environment, generated_twin_usda
+
+    project_id = checked_project_id(project_id)
+    if project_id == "default":
+        raise ValueError("default project already exists")
+    try:
+        if str(UUID(request_id)) != request_id:
+            raise ValueError("invalid request ID")
+    except (TypeError, ValueError) as error:
+        raise ValueError("request_id must be a canonical UUID") from error
+    source_name = "twin-" + source_project_id + ".usda"
+    usda = generated_twin_usda(objects, scene_id=scene_id).encode("utf-8")
+    environment = generated_twin_environment(objects, usda, source_name=source_name, scene_id=scene_id)
+    transactions = catalog._checked_child(catalog.root, "project-transactions")
+    locks = catalog._checked_child(transactions, "locks")
+    workspaces = catalog._checked_child(transactions, "workspaces")
+    projects = catalog._checked_child(catalog.root, "projects")
+    destination = projects / project_id
+    lock_path = locks / (project_id + ".lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    try:
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError("project name already exists")
+        stage = workspaces / str(uuid4())
+        staged_root = stage / "staged-state"
+        staged_root.mkdir(parents=True, exist_ok=False)
+        ProjectCatalog(staged_root, "default").create_empty(project_id)
+        store = ProjectStore.for_project(staged_root, project_id)
+        revision = InputRevision.create(prompt="Robot workspace from generated Twin " + str(scene_id) + " of project " + source_project_id +
+                                        " (export " + source_name + " SHA256 " + environment["source_sha256"] + "; approximate boxes, metres)",
+                                        images=(), measurement_constraints=(), profile_id=profile_id,
+                                        generation_settings={"request_schema": "environment-static-1.0"})
+        plan = SiteToolPlan("ImportedSpace", "Imported static space from a generated Twin; dimensions are estimates and real alignment requires review",
+                            "Generated boxes exported as USD, not photo reconstruction",
+                            (SceneToolCall("imported_space", "import_environment", dict(id="imported_space", environment=environment)),), plan_version="2.4")
+        record = SiteDraftRecord.create(request_id=request_id, provider_name="local-environment-import", model_id="existing-openusd-static",
+                                        image_count=0, input_revision=revision, plan=plan)
+        folder = InputArtifactStore(store.input_root()).save(revision, ())
+        with (folder / "environment-source.bin").open("xb") as stream:
+            stream.write(usda)
+        store.save(ProjectRecord(project_id, revision, site_draft=record))
+        checked = ProjectStore.for_project(staged_root, project_id).load()
+        if checked is None or checked.site_draft is None:
+            raise ValueError("staged robot workspace has no validated draft")
+        (staged_root / "projects" / project_id / "creation_receipt.json").write_text(json.dumps({
+            "schema_version": "robot-workspace-creation-1.0", "project_id": project_id, "request_id": request_id,
+            "source_project_id": source_project_id, "source_sha256": environment["source_sha256"]}, sort_keys=True), encoding="utf-8")
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError("project name already exists")
+        os.rename(staged_root / "projects" / project_id, destination)
+        published = ProjectStore.for_project(catalog.root, project_id).load()
+        if published is None or published.site_draft != checked.site_draft:
+            raise ValueError("published robot workspace failed validation")
+        return {"created_project_id": project_id, "catalog": catalog.snapshot(), "source": "generated_twin_export",
+                "source_project_id": source_project_id, "object_count": len(environment["meshes"]), "physical_authority": False, "build_allowed": False}
+    finally:
+        lock_path.unlink()

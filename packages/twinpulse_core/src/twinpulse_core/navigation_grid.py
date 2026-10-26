@@ -11,7 +11,7 @@ from .revisions import canonical_sha256
 
 
 def encode_navigation_grid(cells, resolution=.1):
-    if (not isinstance(cells,list) or not 1<=len(cells)<=10000
+    if (not isinstance(cells,list) or not 1<=len(cells)<=40000
             or type(resolution) not in (int,float) or resolution!=.1):
         raise ValueError('NAVIGATION_GRID_INPUT')
     positions={}
@@ -42,9 +42,9 @@ def checked_navigation_grid(value,bounds=None):
             or not isinstance(value['origin_cell'],list) or len(value['origin_cell'])!=2
             or any(type(v) is not int or abs(v)>1010 for v in value['origin_cell'])
             or not isinstance(value['size'],list) or len(value['size'])!=2
-            or any(type(v) is not int or not 1<=v<=10000 for v in value['size'])
-            or value['size'][0]*value['size'][1]>10000
-            or not isinstance(value['free_bits'],str) or len(value['free_bits'])>1672
+            or any(type(v) is not int or not 1<=v<=40000 for v in value['size'])
+            or value['size'][0]*value['size'][1]>40000
+            or not isinstance(value['free_bits'],str) or len(value['free_bits'])>6700
             or not isinstance(value['sha256'],str)):
         raise ValueError('NAVIGATION_GRID_CONTRACT')
     data={k:v for k,v in value.items() if k!='sha256'}

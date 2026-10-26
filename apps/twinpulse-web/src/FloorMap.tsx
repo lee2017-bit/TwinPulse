@@ -24,6 +24,8 @@ export function FloorMap({floor,value,onChange,height=220,picks=[],onPick}:{floo
       onPointerUp={()=>{if(!drag)return;onChange?.(Math.round(drag.x*1000)/1000,Math.round(drag.y*1000)/1000,Math.round(drag.yaw*1000)/1000);setDrag(null);}}>
       {floor.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
       {floor.obstacles.map(([a,b,d,e],i)=><rect key={'o'+i} x={X(a)} y={Y(e)} width={d-a} height={e-b} fill="#6b4a3a" opacity={0.8}/>)}
+      {floor.sim_obstacles?.map(o=><g key={o.id}><rect x={X(o.position_m[0])-o.size_m[0]/2} y={Y(o.position_m[1])-o.size_m[1]/2} width={o.size_m[0]} height={o.size_m[1]} fill="#8c1d18" opacity={0.75} stroke="#ff6b5e" strokeWidth={0.03} strokeDasharray="0.08 0.05"/>
+        <text x={X(o.position_m[0])+o.size_m[0]/2+0.05} y={Y(o.position_m[1])+0.06} fontSize={0.16} fill="#ffb3ad">{o.label.slice(0,16)} · SIM only</text></g>)}
       {floor.lidar_layer?.drive_points.map(([x,y],i)=><rect key={'d'+i} x={X(x)-0.02} y={Y(y)-0.02} width={0.04} height={0.04} fill="#bfb34d" opacity={0.55}/>)}
       {floor.lidar_layer?.stop_points.map(([x,y],i)=><rect key={'s'+i} x={X(x)-0.025} y={Y(y)-0.025} width={0.05} height={0.05} fill="#33e6ff" opacity={0.85}/>)}
       {floor.lidar_layer?.moved.map(m=><g key={'m'+m.object_id}><circle cx={X(m.position_xy_m[0])} cy={Y(m.position_xy_m[1])} r={0.22} fill="none" stroke="#c060ff" strokeWidth={0.05}/>

@@ -86,6 +86,23 @@ def parse_robot_command(text):
     return None
 
 
+SIM_OBSTACLE_LIMIT=8
+
+def checked_sim_obstacle(payload,index):
+    """Validate one SIM-world test obstacle: label, floor centre (x, y) and box size (w, d, h) in metres."""
+    if not isinstance(payload,dict) or set(payload)!={'label','position_m','size_m'}:
+        raise BrokerError('fleet_shape','Expected label, position_m [x, y] and size_m [w, d, h].',status=400)
+    label=payload['label']
+    if not isinstance(label,str) or not 1<=len(label.strip())<=80:raise BrokerError('fleet_shape','Label must be 1-80 characters.',status=400)
+    position=payload['position_m'];size=payload['size_m']
+    if (not isinstance(position,list) or len(position)!=2 or any(type(v) not in (int,float) or not math.isfinite(v) or abs(v)>50 for v in position)
+            or not isinstance(size,list) or len(size)!=3 or any(type(v) not in (int,float) or not .1<=v<=3. for v in size)):
+        raise BrokerError('fleet_shape','Position needs two finite metres; size needs three values between 0.1 and 3 m.',status=400)
+    if index>=SIM_OBSTACLE_LIMIT:raise BrokerError('fleet_shape','At most %d SIM obstacles.'%SIM_OBSTACLE_LIMIT,status=409)
+    return dict(id='simobs_%d_%s'%(index,uuid4().hex[:8]),label=label.strip(),position_m=[round(float(position[0]),3),round(float(position[1]),3)],
+        size_m=[round(float(v),3) for v in size],source='SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN')
+
+
 def lidar_layer_payload(layer,scene_revision,*,limit=None):
     """Session LiDAR display layer for the floor map / Isaac (declared start + odometry; never navigation input)."""
     if not layer or layer['scene_revision']!=scene_revision:return None
@@ -117,6 +134,7 @@ class RobotFleet:
         self._navigation_pin=None
         self.physical_navigation_reviews={} # Session-only; saved estimates never restore route authority.
         self.lidar_layer=None # Session-only display layer of route LiDAR points (declared start + odometry); never navigation input.
+        self.sim_obstacles=[] # Session-only test obstacles that exist in the Isaac SIM world only (never in the Twin model or saved).
         from .fleet_recorder import FleetSnapshotWriter
         self.snapshot_writer=FleetSnapshotWriter()
         self.definitions=self.root/'robot-fleet.json'
@@ -342,7 +360,7 @@ class RobotFleet:
                 age=None if row['_at'] is None else max(0,(self.clock()-row['_at'])*1000)
                 public['telemetry_age_ms']=age;public['battery']['age_ms']=age
             values.append(public)
-        return dict(schema_version='robot-fleet-1.0',revision=self.revision,focused_robot_id=self.focused,
+        return dict(schema_version='robot-fleet-1.0',revision=self.revision,focused_robot_id=self.focused,sim_obstacles=deepcopy(self.sim_obstacles),
             robots=values,last_command=deepcopy(self.last_command),capabilities=dict(sim=True,physical=self.physical is not None),
             navigation_scene=self._navigation_summary(engine),route=self._route_summary(),
             policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=INPUT_TTL_MS))
@@ -359,7 +377,7 @@ class RobotFleet:
                 for r in self.robots.values()]
             return dict(status='AVAILABLE',scene_revision=scene['binding'][2],bounds=scene['geometry'].get('bounds'),free_cells=free,cell_m=.1,
                 obstacles=scene['geometry'].get('obstacles') or [],robots=robots,label='FLOOR_MAP_DISPLAY_SCALE_NOT_LOCALIZATION',
-                lidar_layer=lidar_layer_payload(getattr(self,'lidar_layer',None),scene['binding'][2],limit=2500))
+                lidar_layer=lidar_layer_payload(getattr(self,'lidar_layer',None),scene['binding'][2],limit=2500),sim_obstacles=deepcopy(getattr(self,'sim_obstacles',[])))
 
     LIDAR_LAYER_LABEL='DECLARED_START_PLUS_ODOMETRY_DISPLAY_ONLY_NOT_REGISTERED'
     LIDAR_LAYER_CAP=6000
@@ -541,6 +559,13 @@ class RobotFleet:
                 except OSError:
                     self.robots.pop(identity,None);self.focused=previous_focus
                     raise
+            elif action=='sim_obstacle':
+                # SIM-world test obstacle: a box the Isaac SIM LiDAR and proximity stop can see but the Twin model does
+                # not know, so a SIM route meets a real mismatch (the physical "box on leg 1" rehearsal). Session-only.
+                self.sim_obstacles=self.sim_obstacles+[checked_sim_obstacle(payload,len(self.sim_obstacles))]
+            elif action=='clear_sim_obstacles':
+                if payload not in (None,{}):raise BrokerError('fleet_shape','No payload.',status=400)
+                self.sim_obstacles=[]
             elif action=='clear_lidar_layer':
                 if payload not in (None,{}):raise BrokerError('fleet_shape','No payload.',status=400)
                 self.lidar_layer=None  # display layer only; nothing moves
@@ -961,7 +986,7 @@ class RobotFleet:
             if layer and sent==(layer['scene_revision'],layer['revision']):layer=dict(revision=layer['revision'],unchanged=True)  # Kit keeps its copy
             elif layer:self._layer_sent=(layer['scene_revision'],layer['revision'])
             else:self._layer_sent=None
-            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route,lidar_layer=layer))
+            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route,lidar_layer=layer,sim_obstacles=deepcopy(self.sim_obstacles)))
 
     def _route_payload(self,route):
         """Full overlay on change and at least every 2 s; otherwise a stub Kit ignores (trace up to 800 points at ~20 Hz)."""

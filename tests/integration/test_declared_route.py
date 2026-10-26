@@ -149,7 +149,7 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
         texts=[b['payload'].get('text') for b in fleet.sent]
-        self.assertIn('backward 25.0cm',texts)
+        self.assertIn('backward 40.0cm',texts)
         self.assertEqual(len(result['recoveries']),1)
         self.assertEqual(result['state'],'COMPLETED',result['reason'])
 
@@ -835,9 +835,11 @@ class TwinEditAutoApplyTest(unittest.TestCase):
         self.assertEqual(applied,[('move','Added_1')])  # the first edit starts at once
         self.assertIn('Twin-edit auto-apply: moving "Fan base" to the LiDAR estimate, adding 1 outline box.',messages[1][1])
         self.assertTrue(any('Auto-applied (Twin-edit auto-apply): moving "Fan base"' in m[1] for m in messages))
+        self.assertFalse(s._auto_replan_pending)
         s._apply_next_auto_edit()  # the transaction sync calls this once the move is COMMITTED with its frame
         self.assertEqual(applied[1],('add',(0,1)))  # matched candidates (moved or aligned) are never boxed
-        s._apply_next_auto_edit()
+        self.assertTrue(s._auto_replan_pending)  # the last edit started: the sync re-plans when its frame is confirmed
+        s._auto_replan_pending=False;s._auto_replan()
         self.assertEqual(applied[-1],('plan','auto_replan'));self.assertEqual(s._auto_route_edits,[])
         self.assertTrue(any('re-planning "Survey the room and come back"' in m[1] for m in messages))
         self.assertIn('declared_route_auto_apply',[e[0] for e in events])
@@ -855,3 +857,209 @@ class TwinEditAutoApplyTest(unittest.TestCase):
         from twinpulse_app.conversation_service import ConversationService
         source=inspect.getsource(ConversationService.__init__)
         self.assertIn('stored.setdefault("twin_edit_approval","review")',source)
+
+
+class SimWorldObstacleTest(unittest.TestCase):
+    """A test box that exists only in the Isaac SIM world: SIM LiDAR and the proximity stop see it, the Twin model does not."""
+    def test_payload_is_validated_and_labelled_sim_only(self):
+        from twinpulse_app.robot_fleet import checked_sim_obstacle, SIM_OBSTACLE_LIMIT
+        from twinpulse_app.command_broker import BrokerError
+        item=checked_sim_obstacle(dict(label=' Box on leg 1 ',position_m=[1.19,-0.22],size_m=[.4,.4,.4]),0)
+        self.assertEqual(item['label'],'Box on leg 1');self.assertEqual(item['position_m'],[1.19,-.22]);self.assertEqual(item['source'],'SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN')
+        self.assertTrue(item['id'].startswith('simobs_0_'))
+        for bad in (dict(label='x',position_m=[1,2],size_m=[.05,.4,.4]),dict(label='',position_m=[1,2],size_m=[.4,.4,.4]),dict(label='x',position_m=[1],size_m=[.4,.4,.4]),dict(label='x',position_m=[1,2])):
+            with self.assertRaises(BrokerError):checked_sim_obstacle(bad,0)
+        with self.assertRaises(BrokerError):checked_sim_obstacle(dict(label='x',position_m=[1,2],size_m=[.4,.4,.4]),SIM_OBSTACLE_LIMIT)
+
+    def test_runtime_rays_and_motion_guard_include_the_sim_obstacle_root_but_the_twin_model_does_not(self):
+        import inspect
+        from twinpulse_app import lidar_scene_geometry
+        source=inspect.getsource(lidar_scene_geometry.scene_section)
+        self.assertIn("/World/TwinPulse/Fleet/SimObstacles",source)
+        runtime=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        self.assertIn("boxes=self._bounds(stage)+list(getattr(self,'sim_obstacle_boxes',[]))",runtime)  # proximity stop sees it
+        self.assertNotIn("SimObstacles",runtime[runtime.index('def _navigation_scene'):runtime.index('def _navigation_scene')+2500])  # the planner grid does not
+
+
+class GeneratedTwinExportTest(unittest.TestCase):
+    """A photo/text-generated Twin exports as import-ready boxes (floor top at z=0, category-carrying prim names)."""
+    def test_boxes_become_categorised_triangle_meshes(self):
+        from twinpulse_core.models import SceneObject, Transform, ShapeSpec
+        from twinpulse_app.twin_export import generated_twin_usda
+        objects=[SceneObject('floor','floor',Transform((0.,0.,-.05)),ShapeSpec('box',(12.,8.,.1))),
+                 SceneObject('left_wall','wall',Transform((-6.,0.,1.75)),ShapeSpec('box',(.08,8.,3.5))),
+                 SceneObject('Rack_1_post_0_a','rack',Transform((-.2,-.4,.75)),ShapeSpec('box',(.1,.1,1.5))),
+                 SceneObject('Pallet_1','equipment',Transform((2.,-2.,.07),(0.,0.,30.)),ShapeSpec('box',(1.2,.8,.14))),
+                 SceneObject('Cart_1_keepout','equipment',Transform((3.,3.,.2)),ShapeSpec('box',(.5,.5,.4))),
+                 SceneObject('agv','robot',Transform((0.,0.,.2)),ShapeSpec('box',(.6,.4,.4)))]
+        text=generated_twin_usda(objects,scene_id='factory_1')
+        self.assertIn('def Mesh "floor"',text);self.assertIn('def Mesh "wall1"',text);self.assertIn('def Mesh "storage1"',text);self.assertIn('def Mesh "unknown1"',text)
+        self.assertNotIn('Cart_1_keepout',text);self.assertNotIn('"agv"',text)
+        self.assertIn('metersPerUnit = 1',text);self.assertIn('upAxis = "Z"',text)
+        self.assertEqual(text.count('faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]'),4)
+        floor=text[text.index('def Mesh "floor"'):text.index('def Mesh "wall1"')]
+        zs=[float(t.split(',')[2].strip(') ')) for t in floor.split('points = [')[1].split(']')[0].split('), (')]
+        self.assertAlmostEqual(max(zs),0.,places=4)  # floor top on the plane the import expects
+        self.assertAlmostEqual(min(zs),-.1,places=4)
+        with self.assertRaises(ValueError):generated_twin_usda(objects[1:])
+
+
+class RobotWorkspaceFromGeneratedTwinTest(unittest.TestCase):
+    """One click: a generated Twin becomes a new project whose saved scene is the same boxes as an imported space."""
+    def _objects(self):
+        from twinpulse_core.models import SceneObject, Transform, ShapeSpec
+        return [SceneObject('floor','floor',Transform((0.,0.,-.05)),ShapeSpec('box',(12.,8.,.1))),
+                SceneObject('left_wall','wall',Transform((-6.,0.,1.75)),ShapeSpec('box',(.08,8.,3.5))),
+                SceneObject('Rack_1_post_0_a','rack',Transform((-.2,-.4,.75)),ShapeSpec('box',(.1,.1,1.5))),
+                SceneObject('Pallet_1','equipment',Transform((2.,-2.,.07),(0.,0.,30.)),ShapeSpec('box',(1.2,.8,.14)))]
+
+    def test_environment_contract_matches_the_exported_usda(self):
+        import hashlib
+        from twinpulse_app.twin_export import generated_twin_usda, generated_twin_environment
+        usda=generated_twin_usda(self._objects(),scene_id='f').encode('utf-8')
+        env=generated_twin_environment(self._objects(),usda,source_name='twin-x.usda',scene_id='f')
+        self.assertEqual(env['source_sha256'],hashlib.sha256(usda).hexdigest());self.assertEqual(env['units_basis'],'authored')
+        self.assertEqual([m['category'] for m in env['meshes']],['floor','wall','storage','unknown'])
+        self.assertEqual([m['label'] for m in env['meshes']],['floor','wall1','storage1','unknown1'])
+        self.assertTrue(all(len(m['triangles'])==12 and len(m['points_m'])==8 for m in env['meshes']))
+
+    def test_catalog_creates_a_new_project_with_an_imported_site_draft(self):
+        import tempfile
+        from uuid import uuid4
+        from twinpulse_app.project_catalog import ProjectCatalog, create_robot_workspace
+        from twinpulse_app.project_store import ProjectStore
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);catalog=ProjectCatalog(root,'default')
+            result=create_robot_workspace(catalog,'robot_demo',request_id=str(uuid4()),objects=self._objects(),scene_id='factory_1',
+                profile_id='default',source_project_id='chat_src')
+            self.assertEqual(result['created_project_id'],'robot_demo');self.assertEqual(result['object_count'],4);self.assertIs(result['physical_authority'],False)
+            record=ProjectStore.for_project(root,'robot_demo').load()
+            self.assertIsNotNone(record.site_draft);self.assertEqual(record.site_draft.provider_name,'local-environment-import')
+            self.assertIsNotNone(record.site_draft.site.scene.environment)
+            self.assertEqual(record.site_draft.site.scene.environment['source_name'],'twin-chat_src.usda')
+            self.assertTrue(any(p.name=='environment-source.bin' for p in (root/'projects'/'robot_demo').rglob('*')))
+            with self.assertRaises(FileExistsError):
+                create_robot_workspace(catalog,'robot_demo',request_id=str(uuid4()),objects=self._objects(),scene_id='factory_1',profile_id='default',source_project_id='chat_src')
+
+
+class ApiAttributeRegressionTest(unittest.TestCase):
+    def test_routes_never_read_a_project_id_attribute_the_server_does_not_have(self):
+        # 2026-10-26: the first robot-workspace click failed with AttributeError on self.project_id (the broker owns it).
+        source=open(Path(__file__).resolve().parents[2]/'packages'/'twinpulse_app'/'src'/'twinpulse_app'/'api.py',encoding='utf-8').read()
+        self.assertNotIn('self.project_id',source)
+        self.assertIn("source_project_id=self._workflow()._broker.project_id",source)
+
+
+class SimObstacleSyncIdempotenceTest(unittest.TestCase):
+    def test_unchanged_obstacle_set_authors_nothing_and_leaves_bounds_clean(self):
+        # 2026-10-26: re-authoring an empty set every tick kept the motion bounds dirty, the imported-Twin grid rebuilt
+        # every update, ticks exceeded 250 ms and SIM robots never finished warming up.
+        source=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        body=source[source.index('def _sync_sim_obstacles'):source.index('def _draw_lidar_layer')]
+        self.assertIn("if key==getattr(self,'sim_obstacle_key',None):return",body)
+        self.assertLess(body.index("if key==getattr(self,'sim_obstacle_key',None):return"),body.index('UsdGeom.Xform.Define'))
+
+
+class SimObstacleBoxesTest(unittest.TestCase):
+    def test_boxes_follow_position_and_size_and_skip_flat_items(self):
+        # 2026-10-26: a nested comprehension in the runtime raised NameError, so the SIM box was never authored in Isaac.
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('fleet_runtime_boxes',Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py')
+        source=open(spec.origin,encoding='utf-8').read()
+        namespace={};exec(source[source.index('def sim_obstacle_boxes'):source.index('def observe_startup')],namespace)
+        boxes=namespace['sim_obstacle_boxes']([dict(position_m=[-2.07,2.06],size_m=[.5,.5,.5]),dict(position_m=[1,1],size_m=[.4,.4,.1])])
+        self.assertEqual([tuple(round(v,3) for v in b) for b in boxes],[(-2.32,1.81,-1.82,2.31)])
+
+
+class SimObstacleStopRecoveryTest(unittest.TestCase):
+    def test_sim_engine_obstacle_stop_backs_off_and_replans_like_a_physical_proximity_stop(self):
+        # 2026-10-26: the SIM-world test box ended the route with STEP_FAILED:OBSTACLE_STOP instead of recovering.
+        import tempfile
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='OBSTACLE_STOP'
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        texts=[b['payload'].get('text') for b in fleet.sent]
+        self.assertIn('backward 40.0cm',texts)  # SIM backs off further than the physical 25 cm
+        self.assertEqual(len(result['recoveries']),1)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        self.assertEqual(result['recoveries'][0]['keepout_m'],.4)  # SIM keepout covers a whole 0.5 m box
+
+
+class SimObstacleSectionCacheTest(unittest.TestCase):
+    def test_lidar_section_cache_key_includes_the_sim_obstacle_set(self):
+        # 2026-10-26: the SIM box was authored and the motion guard saw it, but the LiDAR section was cached per
+        # Twin geometry epoch, so no return ever landed on the box and no candidate appeared.
+        source=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        self.assertIn("geometry_epoch=(self.identity,self.navigation_geometry_epoch,getattr(self,'sim_obstacle_key',None))",source)
+
+
+class SimLoopStageContractTest(unittest.TestCase):
+    """One pass over the SIM demo loop, one asserted contract per stage (2026-10-26, after each stage had only been unit-tested apart).
+
+    1 obstacle placed in Isaac   -> the motion guard / LiDAR section include it, the Twin model does not
+    2 robot meets it             -> OBSTACLE_STOP backs off 40 cm, re-plans round a 0.40 m keepout, completes
+    3 stop-point LiDAR sees it   -> an unexplained ring of returns becomes one candidate (>=3 returns) at the box
+    4 Auto-apply                 -> every edit runs as its own transaction; the LAST confirmed frame triggers the re-plan
+    5 re-plan                    -> a fresh plan request carries planned_by auto_replan and the chat says so
+    """
+    def test_each_stage_contract_holds_in_one_pass(self):
+        import importlib.util,sys,tempfile,threading
+        from types import SimpleNamespace
+        from twinpulse_app.robot_fleet import checked_sim_obstacle
+        from twinpulse_core.declared_route import unexplained_scan_discs,cluster_candidates
+        from twinpulse_app.conversation_service import ConversationService
+        # 1 Isaac-side SIM obstacle: validated payload -> motion-guard box; the Twin model (SceneObjects) never gains it.
+        spec=importlib.util.spec_from_file_location('fleet_runtime_contract','scripts/twinpulse_fleet_runtime.py')
+        runtime=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runtime;spec.loader.exec_module(runtime)
+        item=checked_sim_obstacle(dict(position_m=[1.2,1.0],size_m=[.5,.5,.5],label='Box on leg 1'),0)
+        self.assertEqual(item['source'],'SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN')
+        guard=runtime.sim_obstacle_boxes([item]);self.assertEqual(len(guard),1)
+        self.assertAlmostEqual(guard[0][0],.95);self.assertAlmostEqual(guard[0][3],1.25)
+        self.assertNotIn('object_id',item)  # a SIM-world obstacle is never a Twin SceneObject
+        # 2 proximity stop in SIM recovers (the physical 25 cm values are untouched: a separate assertion keeps them).
+        from twinpulse_app import declared_route_runner as drr
+        self.assertEqual((drr.RECOVERY_KEEPOUT_M,drr.RECOVERY_BACKOFF_M),(.25,.25))
+        fleet=FakeFleet(['COMPLETED']*3+['FAILED']);fleet.fail_reason='OBSTACLE_STOP'
+        with tempfile.TemporaryDirectory() as tmp:runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason']);self.assertEqual(len(result['recoveries']),1)
+        self.assertIn('backward 40.0cm',[b['payload'].get('text') for b in fleet.sent])
+        # 3 the stop-point scan explains the walls but not the box: exactly one candidate with >=3 returns sits on the box.
+        cells=[[(ix+.5)*.1,(iy+.5)*.1,'occupied' if ix in (0,39) or iy in (0,29) else 'free',0,0,0,0] for ix in range(40) for iy in range(30)]
+        start=[.6,.6,0.];box=item['position_m'][:2];half=.25
+        ring=[(box[0]+half*math.cos(t)-start[0],box[1]+half*math.sin(t)-start[1]) for t in [i*math.tau/16 for i in range(16)]]
+        walls=[(3.95-start[0],y*.1-start[1]) for y in range(1,30)]+[(x*.1-start[0],2.95-start[1]) for x in range(1,40)]+[(x*.1-start[0],.05-start[1]) for x in range(1,40)]
+        review=unexplained_scan_discs(start,walls+ring,cells);self.assertTrue(review['used'],review)
+        candidates=cluster_candidates(review['discs'])
+        self.assertEqual(len(candidates),1,candidates);self.assertGreaterEqual(candidates[0]['returns'],3)
+        self.assertLess(math.dist(candidates[0]['position_xy_m'],box),.2)
+        # 4+5 Auto-apply through the REAL transaction sync: each COMMITTED frame drives the next edit, the last one drives the re-plan.
+        messages=[];applied=[];transactions=[]
+        s=SimpleNamespace(_lock=threading.Lock(),_state=dict(session_id='s',messages=[],cards=[],twin_edit_approval='auto',scene_feedback=None),_request_owner='o',
+            _feedback_service=None,_feedback_outcome=None,_edit_transaction_marker=None,
+            robot_fleet=SimpleNamespace(focused='r',navigation_scene=None),declared_routes=SimpleNamespace(active=lambda:False),_last_route_text='Survey the warehouse and come back',
+            _message=lambda role,content,**kw:messages.append(dict(role=role,content=content,status=kw.get('status','completed'),operation_id=kw.get('operation_id'))) or s._state['messages'].append(messages[-1]),
+            _event=lambda name,**kw:None,_persist=lambda:None,
+            match_route_objects=lambda candidates:[],
+            add_route_obstacles=lambda owner,plan_id,candidates,exclude=():applied.append(('add',len(candidates))) or ('op-add',len(candidates)),
+            _plan_declared_route=lambda text,request_id,**kw:applied.append(('plan',text,kw['planned_by']['kind'])),
+            workflow=SimpleNamespace(scene_edit_transaction=SimpleNamespace(snapshot=lambda owner:transactions[-1] if transactions else None)))
+        s._choice=ConversationService._choice;s._card=lambda *a,**k:self.fail('auto mode must not ask')
+        for name in ('_apply_next_auto_edit','_auto_replan','declared_route_finished','_sync_feedback'):setattr(s,name,getattr(ConversationService,name).__get__(s))
+        plan=dict(plan_id='p'*32,waypoints=[[1,1],[2,1]])
+        s.declared_route_finished(dict(plan=plan,state='COMPLETED',reason='ALL_STOPS_AND_RETURN_COMPLETED',completed_steps=9,context=dict(session_id='s'),
+            waypoint_scans=[],reached_stops=[0,1],skipped_stops=[],candidates=candidates))
+        self.assertEqual(applied,[('add',1)]);self.assertTrue(s._auto_replan_pending)  # one box: the only edit started at once
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame=None));s._sync_feedback('o')
+        self.assertEqual(applied,[('add',1)])  # ACK without a frame: nothing more yet
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
+        self.assertEqual(applied,[('add',1)]);self.assertFalse(s._auto_replan_pending);self.assertIsNotNone(s._auto_replan_ready)  # frame confirmed, grid not yet rebuilt: no plan
+        s._sync_feedback('o');self.assertEqual(applied,[('add',1)])  # still waiting for the navigation scene
+        s.robot_fleet.navigation_scene=dict(binding=('e','s','rev2'),geometry={});s._sync_feedback('o')
+        self.assertEqual(applied[-1],('plan','Survey the warehouse and come back','auto_replan'));self.assertIsNone(s._auto_replan_ready)
+        self.assertTrue(any('Twin updated, saved and its current 3D frame confirmed.' in m['content'] for m in messages))
+        self.assertTrue(any('re-planning "Survey the warehouse and come back"' in m['content'] for m in messages))
+        transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
+        self.assertEqual(len([a for a in applied if a[0]=='plan']),1)  # the same frame never re-plans twice
+        # 6 a grid that never comes back gives up honestly after the wait instead of pending forever
+        s._auto_replan_ready=__import__('time').monotonic()-1000;s.robot_fleet.navigation_scene=None;s._sync_feedback('o')
+        self.assertIsNone(s._auto_replan_ready);self.assertIn('Auto re-plan skipped',messages[-1]['content']);self.assertEqual(len([a for a in applied if a[0]=='plan']),1)

@@ -261,6 +261,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const [showProjects,setShowProjects] = useState(window.innerWidth>=1000);
   const [home,setHome]=useState(false);
   const [newChatRequest,setNewChatRequest]=useState(0);
+  const [workspaceRequest,setWorkspaceRequest]=useState(0);const workspaceAutoBuild=useRef(false);
   const [projectActivity,setProjectActivity]=useState<{busy:boolean;message:string|null}>({busy:false,message:null});
   const projectActivityRef=useRef(false);
   const projectActivityChanged=useCallback((activity:{busy:boolean;message:string|null})=>{projectActivityRef.current=activity.busy;setProjectActivity(activity);},[]);
@@ -775,6 +776,11 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   // front of the history; an explicit goal still owns its own route card.
   // 2026-10-26: after an App restart the imported Twin is not rebuilt in Isaac and the only
   // path was Import space → Check saved import → Show Twin. Same backend Build, one click here.
+  // One-click robot workspace: once the new imported project is open and Isaac is connected, queue its Build.
+  useEffect(()=>{
+    if(!workspaceAutoBuild.current||!workflow||workflow.site_draft?.provider_name!=='local-environment-import'||!connected||!product?.engine_connected||twinRebuilding||projectActivity.busy)return;
+    workspaceAutoBuild.current=false;void rebuildTwin();
+  });
   const rebuildTwin=async()=>{
     if(twinRebuilding)return;setTwinRebuilding(true);setError(null);
     try{await api.environmentAction({action:'build',request_id:crypto.randomUUID()});}
@@ -790,10 +796,14 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         <li>Type <strong>Survey the room and come back</strong> here and confirm the route card. Progress appears in chat and next to the Twin.</li></ol>
       {!roomApplied&&<p><button type="button" disabled={twinRebuilding||!connected||!product?.engine_connected} onClick={()=>void rebuildTwin()}>{twinRebuilding?'Rebuilding Twin in Isaac…':'Rebuild Twin in Isaac'}</button>
         <small> The imported Twin is not shown in Isaac yet (needed after every App restart). This queues the same Build as Import space → Show Twin; no robot moves.</small></p>}
-      <small>Source units and real-world alignment remain uncalibrated; nothing moves until you confirm a route.</small></div>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
+      <small>Source units and real-world alignment remain uncalibrated; nothing moves until you confirm a route.</small></div>:<>
+    <div className="chat-import-next-steps"><p><strong>Robot workspace</strong></p>
+      <p><button type="button" disabled={projectActivity.busy||!connected} onClick={()=>{workspaceAutoBuild.current=true;setWorkspaceRequest(value=>value+1);}}>Use as robot workspace</button>
+        <small> Opens a new chat whose Twin is this generated scene as an imported space (approximate boxes, estimated dimensions) and shows it in Isaac, so routes, LiDAR candidates and Twin edits run there. This chat and Twin stay unchanged; no robot moves.</small></p></div>
+    <SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
       artifactId={workflow.site_draft.artifact_id} product={product} report={setError} review={simulationReview} stopHandle={simStop} showActions={!pendingChoice&&!editLocked&&!feedbackBusy} browserBlocked={!!viewerFault} chatPending={busy||!!delivery||editLocked||feedbackBusy||!sceneObservationFresh} fresh={sceneObservationFresh} sceneWriterActive={showLibrary||editLocked||feedbackBusy}
       operationBusyChanged={simOperationChanged}
-      taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/>}</section>:null;
+      taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/></>}</section>:null;
   const restartLauncher = async (cancel: boolean) => {
     if (launcherRequest) return;
     setLauncherRequest(cancel ? 'Cancelling startup…' : 'Requesting an owned restart…');
@@ -846,7 +856,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       operationBusy={!sceneObservationFresh||busy||!!delivery||activeJob||feedbackBusy||editLocked||sceneOperationBusy||goalBusy||!!inspection?.busy||!!taskLoop?.worker_active}
       report={setError} advanced={advanced} currentProject={state?.project_id}
       currentConversation={state?.messages.length?{display_name:state.messages.find(row=>row.role==='user')?.content.trim().replace(/\s+/g,' ').slice(0,80)||'Photo Twin',message_count:state.messages.length,last_message_at:state.messages.at(-1)?.created_at??null}:undefined}
-      openCurrent={()=>{setHome(false);if(window.innerWidth<1000)setShowProjects(false);}} newChatRequest={newChatRequest}/></div>
+      openCurrent={()=>{setHome(false);if(window.innerWidth<1000)setShowProjects(false);}} newChatRequest={newChatRequest} workspaceRequest={workspaceRequest}/></div>
     <Activity mode={projectActivity.busy?'hidden':'visible'}><div className="chat-main-shell">
     {showChecks && <section className="chat-checklist" aria-label="Runtime checklist">
       <h2>Runtime checklist</h2><DeviceLogStorage api={api}/><p>File integrity and current runtime readiness are separate checks. A matching file does not authorize motion.</p><ul>

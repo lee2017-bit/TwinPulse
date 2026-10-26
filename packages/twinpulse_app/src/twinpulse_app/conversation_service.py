@@ -29,6 +29,8 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+AUTO_REPLAN_GRID_WAIT_S=180  # auto re-plan waits this long for the rebuilt navigation grid after the last auto edit
+
 class ConversationService:
     def __init__(self, workflow, path: Path, *, clock=time.monotonic):
         self.workflow, self.path = workflow, path
@@ -1223,10 +1225,10 @@ class ConversationService:
                     operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'],exclude=exclude)
                     self._message('assistant','Auto-applied (Twin-edit auto-apply): adding one LiDAR outline box (unknown, lidar estimate, not aligned; strongest unexplained candidate first). Undo last edit reverts it.',operation_id=operation)
                     self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation,auto=True)
-                self._auto_route_edits=queue;return
+                self._auto_route_edits=queue;self._auto_replan_pending=not queue;return  # re-plan once the last edit's frame is confirmed
             except (BrokerError,ValueError) as error:
                 self._message('assistant','Twin-edit auto-apply skipped one edit: '+str(error)[:200])
-        self._auto_route_edits=[]
+        self._auto_route_edits=[];self._auto_replan_pending=False;self._auto_replan_ready=None
         self._auto_replan()
 
     def _auto_replan(self):
@@ -2012,6 +2014,15 @@ class ConversationService:
                     and message.get('operation_id') in confirmed_edits):
                 message['status']='completed';settled=True
         if settled:self._persist()
+        ready=getattr(self,'_auto_replan_ready',None)
+        if ready is not None:
+            # After the last auto-applied edit is confirmed the engine rebuilds the navigation grid for the new
+            # revision; the fleet's navigation scene is empty meanwhile and a plan would be refused
+            # (declared_route_scene_required, seen on the 2026-10-26 factory take). Re-plan on the tick that has it.
+            if getattr(self.robot_fleet,'navigation_scene',None):self._auto_replan_ready=None;self._auto_replan()
+            elif time.monotonic()-ready>AUTO_REPLAN_GRID_WAIT_S:
+                self._auto_replan_ready=None
+                self._message('assistant','Auto re-plan skipped: the Twin navigation grid was not ready within %d s. Ask for the route again.'%AUTO_REPLAN_GRID_WAIT_S,status='failed')
         transaction=self.workflow.scene_edit_transaction.snapshot(owner)
         if transaction:
             marker=(transaction.get('operation_id'),transaction['state'],transaction.get('current_frame'),transaction.get('error'))
@@ -2039,6 +2050,7 @@ class ConversationService:
                         self._message('assistant',text+' Previous goal plans remain invalid; request a fresh goal.',
                             status='completed' if frame_confirmed else 'pending',operation_id=operation_id)
                     if frame_confirmed and getattr(self,'_auto_route_edits',None):self._apply_next_auto_edit()
+                    elif frame_confirmed and getattr(self,'_auto_replan_pending',False):self._auto_replan_pending=False;self._auto_replan_ready=time.monotonic()  # the grid is rebuilt first; see the sync tick above
                 elif state in {'ROLLED_BACK','ENGINE_STATE_UNKNOWN'}:
                     self._auto_route_edits=[]
                     self._message('assistant',('Previous saved revision was restored with a compensation engine ACK.' if state=='ROLLED_BACK' else
