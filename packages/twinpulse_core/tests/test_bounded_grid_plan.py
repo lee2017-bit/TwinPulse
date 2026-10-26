@@ -82,7 +82,9 @@ class BoundedGridPlanTests(unittest.TestCase):
             plan_bounded_grid(start,goal,bounds,boxes,resolution=.1,clearance=.22,max_waypoints=1)
 
     def test_explicit_large_sim_direct_path_preserves_default_grid_budget(self):
-        bounds = (-5., 5., -6., 6.)
+        # 2026-10-26: the default budget covers a 12 x 8 m factory floor (40000 cells); this 24 x 24 m floor at
+        # 0.10 m (57600 cells) still exceeds it, so the guard and the explicit direct-path opt-in are unchanged.
+        bounds = (-12., 12., -12., 12.)
         with self.assertRaisesRegex(NoBoundedPath, 'GRID_BUDGET_EXCEEDED'):
             plan_bounded_grid((0., 0.), (0., .4), bounds, resolution=.10, clearance=.22)
         self.assertEqual(plan_bounded_grid((0., 0.), (0., .4), bounds,
