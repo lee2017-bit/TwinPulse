@@ -147,6 +147,7 @@ class R3ApplicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(service.record)
             self.assertEqual(service.last_event.code, "superseded_result")
             self.assertFalse(service.snapshot(b.revision).build_allowed)
+            service.diagnostics.flush()  # drain the diagnostics writer before TemporaryDirectory removes the tree (WinError 145 on Windows)
 
     async def test_failure_and_cancel_preserve_prior_draft_but_block_new_input(self) -> None:
         with TemporaryDirectory(prefix="case-", dir=TEST_TMP) as directory:
@@ -188,6 +189,7 @@ class R3ApplicationTests(unittest.IsolatedAsyncioTestCase):
                     engine_session_id="engine-1", stage_epoch="stage-1",
                     control_lease_id="lease-1", current_input=prepared.revision,
                 )
+            service.diagnostics.flush()  # drain the diagnostics writer before TemporaryDirectory removes the tree (WinError 145 on Windows)
 
     async def test_settings_migrate_once_without_secret_or_bidirectional_sync(self) -> None:
         with TemporaryDirectory(prefix="case-", dir=TEST_TMP) as directory:

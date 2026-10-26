@@ -115,6 +115,7 @@ class H2b2Tests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(Exception, "no authorized robot mission"):
                 broker.submit("product", {"client_request_id": "bad-run", "command_type": "run",
                                           "expected_applied_revision": scene.revision})
+            app.diagnostics.flush()  # drain the diagnostics writer before TemporaryDirectory removes the tree (WinError 145 on Windows)
 
     async def test_optional_robot_mission_roundtrip_preserves_goal_without_run_authority(self):
         with TemporaryDirectory() as directory:
