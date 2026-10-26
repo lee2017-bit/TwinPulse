@@ -624,6 +624,7 @@ class ProtocolTests(unittest.TestCase):
         from teleop_ros import RosLink
         link=RosLink.__new__(RosLink);link.rows=[{'t':0.} for _ in range(10000)]
         link.anchor=[0,0];link.changed=0.;link.persistent_manual=True;link.release_observing=True
+        link.sensor_t=link.guard_t=0.  # receipt clocks that __init__ sets (90a7b82); this bare link skips __init__
         link.node=NS(get_clock=lambda:NS(now=lambda:NS(nanoseconds=10**10)))
         msg=NS(left_encoder=1,right_encoder=1,torque=False,battery=12.,header=NS(stamp=NS(sec=10,nanosec=0)))
         link._sensor(msg);self.assertEqual(len(link.rows),10001)
@@ -663,7 +664,7 @@ class ProtocolTests(unittest.TestCase):
             link=teleop_ros.RosLink(NS())
             subscriptions['odom'](message());subscriptions['/scan'](message('scan'))
             snapshot=link.navigation_snapshot()
-        self.assertEqual(set(subscriptions),{'sensor_state','motion_guard/status','odom','/scan','/tf','/tf_static'})
+        self.assertEqual(set(subscriptions),{'sensor_state','motion_guard/status','motion_guard/timing','odom','/scan','/tf','/tf_static'})  # motion_guard/timing: applied output timing (f3b7cf8)
         self.assertEqual(len(publishers),1);self.assertEqual(calls,['init'])
         self.assertEqual(snapshot['scan']['frame_id'],'base_scan')
         self.assertEqual(snapshot['odom']['child_frame_id'],'base_footprint')
@@ -684,7 +685,11 @@ class ProtocolTests(unittest.TestCase):
         decision=mission.step(pose,scan,.1,command_created_s=.05)
         self.assertTrue(decision['allowed'])
         link.publish(decision['linear_m_s'],decision['angular_rad_s'],.05)
-        self.assertEqual(sent[-1].header.stamp.nanosec,950000000)
+        # publish() re-measures the source age at the output boundary ("account for work in this final output
+        # boundary"), so the stamp is older than 0.05 s by the real elapsed work: 1 ns here, ~26 us on a slow
+        # container. Allow up to 5 ms of that work; the stamp can never be younger than the declared age.
+        stamp_lag_ns=950000000-sent[-1].header.stamp.nanosec
+        self.assertGreaterEqual(stamp_lag_ns,0);self.assertLessEqual(stamp_lag_ns,5_000_000)
         lost=mission.step(pose,None,.11,command_created_s=.1)
         self.assertFalse(lost['allowed']);self.assertEqual(lost['linear_m_s'],0.)
         # Same guarded output function, no enable/qualification fabricated by mission.

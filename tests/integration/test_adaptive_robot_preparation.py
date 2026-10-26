@@ -15,8 +15,8 @@ from tempfile import TemporaryDirectory
 import unittest
 
 ROOT=Path(__file__).resolve().parents[2]
-for folder in (ROOT/'scripts',ROOT/'packages/twinpulse_robot_safety'):
-    sys.path.insert(0,str(folder))
+for folder in (ROOT/'scripts',ROOT/'packages/twinpulse_robot_safety',ROOT/'packages/twinpulse_core/src',ROOT/'packages/twinpulse_app/src',ROOT/'packages/twinpulse_provider/src'):
+    sys.path.insert(0,str(folder))  # importable with -m unittest from the repo root, like the other robot-path modules
 from robot_source_identity import bundle_files
 from twinpulse_core.adaptive_mission_contract import adaptive_scope,adaptive_bootstrap
 from twinpulse_core.mission_contract import document_hash
