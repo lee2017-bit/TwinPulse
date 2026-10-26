@@ -1828,6 +1828,16 @@ class LocalApiServer:
                                 message=str(error) if isinstance(error,KeyRegistryError) else '키는 저장했습니다. 모델 목록 확인 또는 기본 조합 적용이 실패했으며 다른 모델로 전환하지 않았습니다.')
                         value.update(network_called=bool(setup['metadata_gets']),default_setup=setup)
                     return value
+                if action == 'refresh_catalog':
+                    if set(body) != {'action', 'key_id'} or not isinstance(body['key_id'], str):
+                        raise BrokerError('request_shape_invalid', '모델 목록 갱신 요청 형식이 잘못되었습니다.', status=400)
+                    if self.product_workflow is not None and (self.product_workflow.snapshot().get('phase') == 'generating'
+                            or self.product_workflow.has_active_generation() or self.broker.has_pending_operations()):
+                        raise BrokerError('generation_busy', '현재 생성 또는 장면 작업이 끝난 뒤 모델 목록을 갱신하세요.', status=409)
+                    from .provider_onboarding import refresh_model_catalog
+                    changed = self.product_workflow.provider_settings_changed if self.product_workflow is not None else lambda: None
+                    refreshed = refresh_model_catalog(self._key_registry, body['key_id'], changed)
+                    return {**self._key_registry.state(), 'network_called': True, 'catalog_refresh': refreshed}
                 if action == 'stage_routing':
                     if set(body) != {'action', 'route'}:
                         raise BrokerError('request_shape_invalid', '단계 설정 요청 형식이 잘못되었습니다.', status=400)

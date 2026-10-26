@@ -9,7 +9,7 @@ from tests.integration.test_provider_key_registry import Credential
 from twinpulse_app.key_registry import KeyRegistry
 from twinpulse_app.settings import JsonProviderSettingsStore,provider_settings_preset
 from twinpulse_app.credentials import DEFAULT_CREDENTIAL_TARGET
-from twinpulse_app.provider_onboarding import configure_first_nebius_key
+from twinpulse_app.provider_onboarding import configure_first_nebius_key,refresh_model_catalog
 from twinpulse_app.stage_routing import StageRoutingSettings
 
 class OnboardingTests(unittest.TestCase):
@@ -49,5 +49,38 @@ class OnboardingTests(unittest.TestCase):
             configure_first_nebius_key(self.registry,self.key,lambda:None,get=unavailable)
         self.assertFalse(StageRoutingSettings(self.registry).path.exists())
         self.assertTrue(self.registry.state()['entries'][-1]['configured'])
+
+    def test_refresh_adds_newly_visible_image_models_and_keeps_the_saved_choices(self):
+        configure_first_nebius_key(self.registry,self.key,lambda:None,get=self.get)
+        def wider(url,credential):
+            result,sha=self.get(url,credential)
+            if url.endswith('models_info'):
+                result[0]['flavors'].append(dict(model_id='nvidia/Nemotron-3_5-Super-VL',use_cases=['text','image'],
+                    max_model_len=131072,input_price_per_million_tokens=.2,output_price_per_million_tokens=.6))
+            else:result['data'].append(dict(id='nvidia/Nemotron-3_5-Super-VL'))
+            return result,'c'*64
+        self.calls=[];changed=[]
+        result=refresh_model_catalog(self.registry,self.key,lambda:changed.append(True),get=wider)
+        self.assertEqual(result['state'],'refreshed');self.assertEqual(len(self.calls),2);self.assertEqual(result['model_count'],3)
+        self.assertEqual(result['image_models'],['deepseek-ai/DeepSeek-V4.1-Flash','nvidia/Nemotron-3_5-Super-VL'])
+        routes=StageRoutingSettings(self.registry);route=routes.load()
+        self.assertEqual(route['observer']['model_id'],'deepseek-ai/DeepSeek-V4.1-Flash')  # the saved choice never moves by itself
+        state=routes.state(self.registry.state()['entries'])
+        self.assertIn('nvidia/Nemotron-3_5-Super-VL',[o['model_id'] for o in state['options']['observer']])
+        self.assertEqual(changed,[True])
+        # choosing the new photo model now validates against the fresh pinned catalog
+        observer={k:v for k,v in route['observer'].items() if k!='harness_profile'}  # a profile is bound to its model; the UI drops it on a model change
+        routes.save(dict(route,observer=dict(observer,model_id='nvidia/Nemotron-3_5-Super-VL')),lambda:None)
+        self.assertEqual(routes.load()['observer']['model_id'],'nvidia/Nemotron-3_5-Super-VL')
+    def test_refresh_that_drops_the_saved_model_restores_the_previous_list(self):
+        configure_first_nebius_key(self.registry,self.key,lambda:None,get=self.get)
+        path=StageRoutingSettings(self.registry).path.with_name('stage_model_catalog.json');before=path.read_bytes()
+        def narrower(url,credential):
+            result,sha=self.get(url,credential)
+            if url.endswith('/models'):result={'data':[dict(id='nvidia/nemotron-3-super-120b-a12b')]}
+            return result,sha
+        with self.assertRaises(Exception):refresh_model_catalog(self.registry,self.key,lambda:None,get=narrower)
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(StageRoutingSettings(self.registry).load()['observer']['model_id'],'deepseek-ai/DeepSeek-V4.1-Flash')
 
 if __name__=='__main__':unittest.main()
