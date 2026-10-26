@@ -11,7 +11,7 @@ import path from 'node:path';
 
 export async function measureSessionGate(page,label){
  return page.evaluate(label=>{
-  const dock=[...document.querySelectorAll('.robot-fleet-drawer')].find(e=>e.getAttribute('aria-label')==='Control '+label);
+  const dock=[...document.querySelectorAll('.robot-fleet-drawer')].find(e=>(e.getAttribute('aria-label')||'').startsWith('Control '+label));  // labels may contain ' · ' themselves
   const card=dock?.closest('.robot-fleet'),gate=dock?.querySelector('.robot-fleet-session-gate'),link=dock?.querySelector('.robot-fleet-link-status');
   if(!card||!gate)return {found:false,card:!!card,gate:!!gate};
   const r=gate.getBoundingClientRect(),c=card.getBoundingClientRect();
@@ -49,8 +49,8 @@ if(import.meta.url===`file:///${process.argv[1].replace(/\\/g,'/')}`||process.ar
  await page.waitForTimeout(1200);
  const region=page.getByRole('region',{name:'Robot fleet',exact:true});
  const row=region.getByRole('button',{name:new RegExp(prefix+'.* Physical')}).last();
- const label=(await row.getAttribute('title'))?.split(' · ')[0]??prefix;
- if(!(await page.getByRole('region',{name:'Control '+label,exact:true}).count())){await row.click();await page.waitForTimeout(1500);}
+ const label=prefix;
+ if(!(await page.getByRole('region',{name:new RegExp('^Control '+prefix)}).count())){await row.click();await page.waitForTimeout(1500);}
  const cv=page.getByRole('button',{name:'Control view',exact:true});
  if(await cv.count()&&!(await page.evaluate(()=>!!document.querySelector('.is-control-view')))){await cv.click();await page.waitForTimeout(1500);}
  fs.mkdirSync(outDir,{recursive:true});
