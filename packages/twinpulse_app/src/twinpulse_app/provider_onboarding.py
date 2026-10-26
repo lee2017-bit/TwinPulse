@@ -85,3 +85,66 @@ def _configure_first_nebius_key(registry,key_id,changed,*,get):
         else:write(previous)
         raise
     return dict(state='applied',metadata_gets=2,message='Flash/Super configured from current account metadata. Generation quality and provider output maximum are not guaranteed.')
+
+
+def refresh_model_catalog(registry,key_id,changed,*,get=metadata):
+    """Re-read the account's model list (two metadata GETs, no inference) and freeze every visible text model.
+
+    The saved observer/planner choices are kept; only the pinned catalog digest moves to the fresh list, so a
+    different image-capable model (e.g. a Nemotron VL) can be chosen in Model routing. Nothing is dispatched.
+    """
+    calls=0
+    def counted(url,credential):
+        nonlocal calls
+        calls+=1
+        return get(url,credential)
+    try:return _refresh_model_catalog(registry,key_id,changed,get=counted)
+    except Exception as error:
+        error.metadata_gets=calls
+        raise
+
+def _refresh_model_catalog(registry,key_id,changed,*,get):
+    routes=StageRoutingSettings(registry)
+    settings=registry.settings_for_entry(key_id)
+    if routes.provider(settings)!='nebius':raise KeyRegistryError('catalog_provider_unsupported','모델 목록 갱신은 Nebius 키에서만 지원합니다.')
+    credential=registry.resolve(settings)
+    info,source_sha=get('https://api.tokenfactory.nebius.com/private/v1/models_info',credential)
+    account,_=get('https://api.tokenfactory.nebius.com/v1/models',credential)
+    visible={r['id'] for r in account['data']};rows=[];seen=set()
+    for group in info:
+        for item in group.get('flavors',[]):
+            model=item.get('model_id');uses=set(item.get('use_cases',[]))
+            if (model in seen or model not in visible or 'text' not in uses or type(item.get('max_model_len')) is not int or item['max_model_len']<=0
+                    or not all(isinstance(item.get(k),(int,float)) for k in ('input_price_per_million_tokens','output_price_per_million_tokens'))):
+                continue
+            seen.add(model)
+            rows.append(dict(provider='nebius',model_id=model,visible=True,use_cases=sorted(uses),context_tokens=item['max_model_len'],
+                input_per_million=str(item['input_price_per_million_tokens']),output_per_million=str(item['output_price_per_million_tokens'])))
+    if not rows:raise KeyRegistryError('catalog_empty','계정에서 사용 가능한 텍스트 모델을 찾지 못했습니다.',409)
+    from twinpulse_provider.model_contracts import catalog_from_inventory,catalog_sha
+    now=datetime.now(timezone.utc)
+    catalog=catalog_from_inventory(dict(created_at=now.isoformat(),catalog_sha256=source_sha,models=rows),valid_until=(now+timedelta(days=7)).isoformat())
+    path=routes.path.with_name('stage_model_catalog.json');previous=path.read_bytes() if path.exists() else None
+    temporary=path.with_name('.'+path.name+'.'+uuid4().hex+'.tmp')
+    def write(payload):
+        try:
+            with temporary.open('xb') as stream:stream.write(payload);stream.flush();os.fsync(stream.fileno())
+            os.replace(temporary,path)
+        finally:temporary.unlink(missing_ok=True)
+    route=routes.load()
+    try:
+        write(json.dumps(catalog).encode('utf-8'))
+        if route is not None:
+            # The saved route is pinned to the old digest, so routes.save() (which re-reads the previous route)
+            # cannot be used once the file moved: validate the re-pinned route against the fresh list and store it.
+            with registry.lock:
+                selected=routes.validate(dict(route,model_catalog_sha256=catalog_sha(catalog)))  # raises if a saved model disappeared
+                routes._save(selected)
+    except Exception:
+        if previous is None:path.unlink(missing_ok=True)
+        else:write(previous)
+        raise
+    if route is not None:changed()
+    image_models=[r['model_id'] for r in catalog['models'] if 'image' in r['modalities']]
+    return dict(state='refreshed',metadata_gets=2,model_count=len(catalog['models']),image_models=image_models,
+        verified_at=catalog['verified_at'],message='Model list refreshed from current account metadata (%d models, %d accept images). Saved choices unchanged; no inference started.'%(len(catalog['models']),len(image_models)))

@@ -194,7 +194,7 @@ describe('RobotFleet field integration (supplementary UI contract only)',()=>{
     await act(async()=>{fireEvent.click(button('Stop'));});expect(action.mock.calls.at(-1)?.[0]).toMatchObject({action:'stop',robot_id:'test-robot'});
   });
   it('shows backend per-case rejection without auto-resend or relaxing protected-drive capability',async()=>{
-    const {action}=integration(robot(),true);confirm();await act(async()=>{fireEvent.click(button('Run Bootstrap stop'));});
+    const {action}=integration(robot(),true);fireEvent.click(checkbox(/I reviewed the Bootstrap stop trial scope/));await act(async()=>{fireEvent.click(button('Run Bootstrap stop'));});  // the Bootstrap trial lives in the session gate (PHYS09)
     expect(screen.getByRole('alert').textContent).toBe('FIELD_STOP_RECEIPT_REQUIRED');expect(action).toHaveBeenCalledOnce();
     expect(button('Hold forward').disabled).toBe(true);expect(button('Run Bootstrap stop').disabled).toBe(true);
   });

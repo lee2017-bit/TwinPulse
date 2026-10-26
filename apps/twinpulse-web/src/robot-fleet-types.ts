@@ -51,6 +51,8 @@ export type RobotFleetRobot = {
   live_heartbeat?:boolean;
   controller_state?:string|null;
   cleanup_confirmed?:boolean|null;
+  link_detail?:string|null; recording_failure_reason?:string|null;
+  control_owner_state?:'ACTIVE'|'EXITED_RECONNECT_REQUIRED'|null; last_reported_lidar_state?:string|null; lidar_state_source?:'robot'|'pc_after_exit';
   sensor_frame?:Record<string,unknown>|null;
   telemetry_diagnostic?:Record<string,unknown>|null;
   motion_observation?:Record<string,unknown>|null;

@@ -27,9 +27,11 @@ const numericFields=[
 type Draft=Record<typeof numericFields[number][0],string>&{angle_sign:string;provenance:FieldSetupConfig['provenance']};
 const initialDraft:Draft={footprint_radius_m:'0.12',sensor_x_m:'0',sensor_y_m:'0',sensor_yaw_rad:'0',angle_sign:'1',wheel_metres_per_tick:String(2*Math.PI*.033/4096),wheel_separation_m:'0.16',provenance:'reference'};
 type FieldAction=Extract<RobotFleetAction,{action:'field_setup'|'field_arm'|'field_test'|'field_review'}>;
-type Props={robot:RobotFleetRobot;available:boolean;busy:boolean;onAction:(action:FieldAction['action'],payload:FieldAction['payload'])=>void;onOpenLogs:()=>void};
+type Props={robot:RobotFleetRobot;available:boolean;busy:boolean;onAction:(action:FieldAction['action'],payload:FieldAction['payload'])=>void;onOpenLogs:()=>void;
+  /** false when the parent renders FieldSessionGate itself (RobotFleet): Arm and Bootstrap stop then appear only in that gate. */
+  includeGate?:boolean};
 const pretty=(value:unknown)=>JSON.stringify(value,null,2);
-export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props){
+export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs,includeGate=true}:Props){
   const [draft,setDraft]=useState<Draft>(initialDraft),[axesReviewed,setAxesReviewed]=useState(false);
   const [supervised,setSupervised]=useState(false),[testConfirmed,setTestConfirmed]=useState(false),[error,setError]=useState<string|null>(null);
   const [reviewTrial,setReviewTrial]=useState(''),[observed,setObserved]=useState<FieldObservation|''>(''),[clearance,setClearance]=useState('');
@@ -97,11 +99,13 @@ export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props
       {field?.blockers.length?<ul>{field.blockers.map((blocker,index)=><li key={index}>{blocker}</li>)}</ul>:<p>{field?'No field blockers reported; the server still checks each trial and its stop receipt.':'No current field receipt. Settings alone do not grant test authority.'}</p>}
     </section>
     <p role="status">{field?.armed?'Explicit supervision armed':'Supervision not armed'} · remaining {typeof field?.remaining_s==='number'&&Number.isFinite(field.remaining_s)?Math.max(0,Math.floor(field.remaining_s)):'unknown'} s (maximum 900 s). Stop and key release zero/OFF the motors and discard old movement. The current supervision session survives ordinary releases; each movement needs fresh input. LiDAR Off, disconnect, boot or config changes end supervision; reconnect never restores it.</p>
+    {includeGate?<>
     <label className="robot-fleet-confirm"><input type="checkbox" checked={supervised} onChange={event=>setSupervised(event.target.checked)}/>I am supervising, charging is unplugged, the space is clear, and I can immediately power off the physical robot.</label>
     <button type="button" disabled={!live||!hasConfig||!supervised||!!running} onClick={()=>{setSupervised(false);onAction('field_arm',{confirmed:true});}}>Arm supervised field session</button>
+    </>:<p>Arm and Bootstrap stop are in the session gate above the details (always visible).</p>}
     <p>Policy caps 0.03 m/s · 0.20 rad/s, not measured values. <span aria-label="Current field timing">Input expiry {robot.timing_values?.input_ttl_ms??'not loaded'} ms · applied output timeout {robot.output_timing?.output_timeout_ms??'not confirmed'} ms.</span> Arming uses the saved config, not unsaved edits. Bootstrap stop does not require a prior stop receipt; subsequent motion requires its current durable receipt and native directional coverage.</p>
     <label className="robot-fleet-confirm"><input type="checkbox" checked={testConfirmed} onChange={event=>setTestConfirmed(event.target.checked)}/>I reviewed the selected trial scope and explicitly confirm one supervised test.</label>
-    <ol aria-label="Available field test cases">{fieldTestCases.map(test=><li key={test.id}><strong>{test.label}</strong><p>{test.scope}</p><button type="button" disabled={!live||!hasConfig||!testConfirmed||!!running} onClick={()=>{setTestConfirmed(false);onAction('field_test',{case:test.id,confirmed:true});}}>Run {test.label}</button></li>)}</ol>
+    <ol aria-label="Available field test cases">{fieldTestCases.filter(test=>includeGate||test.id!=='bootstrap_stop').map(test=><li key={test.id}><strong>{test.label}</strong><p>{test.scope}</p><button type="button" disabled={!live||!hasConfig||!testConfirmed||!!running} onClick={()=>{setTestConfirmed(false);onAction('field_test',{case:test.id,confirmed:true});}}>Run {test.label}</button></li>)}</ol>
     <small>Each click requests one bounded case; no automatic retries or next-case chaining. Backend prerequisites apply separately to collection, bootstrap and armed motion.</small>
     {active&&<p role="status">Active trial {active.trial_id} · {active.case} · {active.status} · {active.reason??'No reason reported'}</p>}
     <details><summary>Stop receipt · {field?.stop_receipt?'recorded':'unavailable'}</summary><pre>{pretty(field?.stop_receipt??null)}</pre></details>
@@ -131,4 +135,29 @@ export function RobotFieldTests({robot,available,busy,onAction,onOpenLogs}:Props
     {active?.status==='PENDING_PERSISTENCE'&&<p role="status">Result pending disk acknowledgement · not a durable PASS or driving permission.</p>}
     <small>Reviewed stream members: field-config.json, field-trials.json, field-stop.json, field-tracking.json, field-commits.jsonl. Trial decisions and exact-byte write acknowledgements must be combined with a complete writer receipt; pending data alone is not PASS. These are raw_source events inside the runtime segments and receipt.json, not separate file-download URLs. Missing members remain missing evidence.</small>
   </section>;
+}
+
+/** Always-visible supervisor gate for a physical robot: Arm and the Bootstrap stop trial with one line per blocker.
+ *  Same payloads as before ({confirmed:true}); confirmations reset on every connection/motion epoch change. */
+export function FieldSessionGate({robot,available,busy,onAction}:Omit<Props,'onOpenLogs'>){
+  const [supervised,setSupervised]=useState(false),[bootstrapConfirmed,setBootstrapConfirmed]=useState(false);
+  const field=robot.field,hasConfig=!!field?.config;
+  const savedConfigKey=field?.config_sha256??(field?.config?JSON.stringify(field.config):'');
+  useEffect(()=>{setSupervised(false);setBootstrapConfirmed(false);},[robot.connection_epoch,robot.motion_epoch,savedConfigKey,field?.armed]);
+  const enabled=available&&!busy,live=enabled&&fleetRobotFresh(robot);
+  const active=field?.active_trial,running=active?.status==='RUNNING'||active?.status==='PENDING_PERSISTENCE';
+  const blocker=(confirmed:boolean,what:string)=>!available?'Fleet state unavailable; refresh before sending an action.':busy?'Another request is in flight.':
+    !fleetRobotFresh(robot)?`Waiting for a fresh heartbeat · link ${robot.connection_state} · ${robot.link_detail??robot.reason??'no reason reported'}`:
+    !hasConfig?'Save a reviewed supervised setup first (Details → Simple supervised setup).':running?`Trial ${active?.case} is still ${active?.status}.`:
+    !confirmed?`Tick the confirmation to enable ${what}.`:null;
+  const armBlocker=blocker(supervised,'Arm'),bootstrapBlocker=blocker(bootstrapConfirmed,'Run Bootstrap stop');
+  return <>
+    <label className="robot-fleet-confirm"><input type="checkbox" checked={supervised} onChange={event=>setSupervised(event.target.checked)}/>I am supervising, charging is unplugged, the space is clear, and I can immediately power off the physical robot.</label>
+    <div className="robot-fleet-gate-row"><button type="button" disabled={!live||!hasConfig||!supervised||!!running} onClick={()=>{setSupervised(false);onAction('field_arm',{confirmed:true});}}>Arm supervised field session</button>
+      <span>{field?.armed?'Explicit supervision armed':'Supervision not armed'}</span>{armBlocker&&<p className="robot-fleet-gate-blocker" role="status">{armBlocker}</p>}</div>
+    <label className="robot-fleet-confirm"><input type="checkbox" checked={bootstrapConfirmed} onChange={event=>setBootstrapConfirmed(event.target.checked)}/>I reviewed the Bootstrap stop trial scope and explicitly confirm one supervised test.</label>
+    <div className="robot-fleet-gate-row"><button type="button" disabled={!live||!hasConfig||!bootstrapConfirmed||!!running} onClick={()=>{setBootstrapConfirmed(false);onAction('field_test',{case:'bootstrap_stop',confirmed:true});}}>Run Bootstrap stop</button>
+      <span>{fieldTestCases[0].scope}</span>{bootstrapBlocker&&<p className="robot-fleet-gate-blocker" role="status">{bootstrapBlocker}</p>}</div>
+    {active&&<p role="status">Active trial {active.trial_id} · {active.case} · {active.status} · {active.reason??'No reason reported'}</p>}
+  </>;
 }

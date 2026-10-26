@@ -22,6 +22,8 @@ from .library_asset_store import atomic_json
 from .single_photo_scope import SinglePhotoScope
 
 
+PHOTO_CANDIDATE_OUTPUT_TOKENS=16000  # per photo-candidate call, reasoning tokens included; the route cap still bounds it
+
 class EnvironmentPhotoReview:
     def __init__(self,parent):
         self.parent=parent;self.root=parent.root/'photo-proposals';self.job=None;self.thread=None;self.token=None;self.owner=None
@@ -187,7 +189,9 @@ class EnvironmentPhotoReview:
             service=build_configured_stage_service(parent.registry,evidence_root=folder/'provider-evidence')
             if service is None or not isinstance(service._provider,BudgetedPipeline):raise ValueError('ENVIRONMENT_BUDGETED_ROUTE_REQUIRED')
             provider=service._provider;route=StageRoutingSettings(parent.registry).load()
-            provider.stage_output_token_caps['observer']=min(4000,provider.stage_output_token_caps['observer'])
+            # Candidate lists are short, but a photo model with hidden reasoning spends its budget before the answer
+            # (Nemotron 3.5 Super VL hit `length` at 4000 with an empty final, 2026-10-26), so allow room for it.
+            provider.stage_output_token_caps['observer']=min(PHOTO_CANDIDATE_OUTPUT_TOKENS,provider.stage_output_token_caps['observer'])
             request=GenerationRequest(job['request_id'],json.dumps(dict(existing_props=existing),ensure_ascii=False),
                 images=(ImageInput(job['photo']['source_name'],mime,raw),),schema_version=VERSION,diagnostics=trace)
             request=replace(request,inference_scope=SinglePhotoScope('photo-proposal:'+uuid4().hex,input_digest(request),

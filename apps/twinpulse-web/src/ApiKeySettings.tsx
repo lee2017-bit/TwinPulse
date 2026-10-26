@@ -14,6 +14,7 @@ export type ProviderKeyList = {
   default_setup?: {state:'applied'|'unavailable';metadata_gets:number;code?:string;message?:string};
   harness_editor?: {stage:'observer'|'planner';key_id:string;model_id:string;profile:HarnessProfile;reference:HarnessReference|null;available:HarnessReference[]};
   harness_saved?: {stage:'observer'|'planner';reference:HarnessReference;profile:HarnessProfile};
+  catalog_refresh?: {state:'refreshed';metadata_gets:number;model_count:number;image_models:string[];verified_at:string;message:string};
 };
 type StageChoice={key_id:string;model_id:string;max_output_tokens?:number;thinking_mode?:'default'|'disabled';harness_profile?:HarnessReference|null};
 type GenerationPolicy={schema_version:'generation-policy-1.0';per_call_timeout_s:number;total_timeout_s:number;
@@ -87,7 +88,7 @@ export function ApiKeySettings({api,close}: {api:TwinPulseApi;close:()=>void}) {
           setNotice(`Key saved. ${setup.state==='applied'?
             'Default Flash/Super models applied for the next generation.':`Default Flash/Super setup unavailable. ${reason}`} `+
             `Model metadata requests: ${setup.metadata_gets}. No inference or robot command started.`);
-        }else setNotice(message);
+        }else setNotice(value.catalog_refresh?.message??message);
         setRemove(null);
       }
     } catch (caught) {
@@ -207,6 +208,11 @@ export function ApiKeySettings({api,close}: {api:TwinPulseApi;close:()=>void}) {
         {!route&&<p>Register a key for each stage first.</p>}
         {route&&<p className="stage-route-summary">Photo: {modelLabel(route.observer.model_id)} → Planning and repair: {modelLabel(route.planner.model_id)}
           {JSON.stringify(route)!==JSON.stringify(list.stage_routing.route)&&' · Unsaved selection'}</p>}
+        <button disabled={busy||!list.entries.some(e=>e.configured&&e.provider_profile!=='openai')} onClick={()=>{
+          const entry=list.entries.find(e=>e.configured&&(route?.observer.key_id===e.id))??list.entries.find(e=>e.configured&&e.provider_profile!=='openai');
+          if(entry)void action({action:'refresh_catalog',key_id:entry.id},'Model list refreshed.');
+        }}>Refresh model list · 2 metadata requests</button>
+        <p>Re-reads the account's visible models so a newer photo or planning model can be chosen above. Saved choices are kept; no inference starts.</p>
         <button disabled={busy||!list.stage_routing.recommended} onClick={()=>{
           const recommended=list.stage_routing!.recommended;
           if(recommended)setRoute({...recommended,...(!recommended.generation_policy&&route?.generation_timeout_s!==undefined?{generation_timeout_s:route.generation_timeout_s}:{}),
