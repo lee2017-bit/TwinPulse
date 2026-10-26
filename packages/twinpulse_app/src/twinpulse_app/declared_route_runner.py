@@ -295,7 +295,7 @@ class DeclaredRouteRunner:
         """Odometry-closed waypoint following: every step is re-aimed from the measured pose.
 
         The step list on the card is the nominal preview. On a robot-side
-        proximity stop during a forward step the robot backs off 15 cm and the
+        proximity stop during a forward step the robot backs off 25 cm and the
         rest of the route is re-planned around a keepout at the stop (at most
         MAX_RECOVERIES times). All other failures stop the route.
         """
