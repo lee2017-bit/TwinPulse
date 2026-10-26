@@ -5,6 +5,8 @@
 import os
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import subprocess
@@ -92,6 +94,32 @@ class RobotHealthTests(unittest.TestCase):
         self.assertIn('def health_snapshot(board=None)', script)
         with self.assertRaises(ValueError):
             payload('humble', 86, False, True)
+
+    def test_storage_snapshot_is_read_only_and_a_low_disk_needs_attention(self):
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions = Path(tmp) / 'sessions'
+            (sessions / 'a' / 'native').mkdir(parents=True)
+            (sessions / 'a' / 'events-000000.jsonl').write_bytes(b'x' * 2048)
+            (sessions / 'a' / 'native' / 'raw-000000.bin').write_bytes(b'y' * 1024)
+            (sessions / 'b').mkdir(); (sessions / 'b' / 'receipt.json').write_bytes(b'z' * 512)
+            (sessions / 'stray-file').write_bytes(b'w')
+            value = h.storage_snapshot(usage=SimpleNamespace(total=29 * gib, used=0, free=int(.5 * gib)), sessions_dir=sessions)
+            self.assertEqual((value['state'], value['sessions_count'], value['sessions_walk_complete']), ('LOW', 2, True))
+            self.assertEqual((value['root_free_gib'], value['root_total_gib']), (.5, 29.0))
+            self.assertEqual(value['sessions_gib'], round(3584 / gib, 2))
+            self.assertEqual(value['sessions_dir'], str(sessions))
+            self.assertEqual(sorted(p.name for p in sessions.iterdir()), ['a', 'b', 'stray-file'])  # nothing pruned
+            self.assertEqual((sessions / 'a' / 'events-000000.jsonl').stat().st_size, 2048)
+            ok = h.storage_snapshot(usage=SimpleNamespace(total=29 * gib, used=0, free=2 * gib), sessions_dir=Path(tmp) / 'missing')
+            self.assertEqual((ok['state'], ok['sessions_count'], ok['sessions_gib']), ('OK', 0, 0.0))
+        health = {'board': h.parse_board_snapshot(SNAPSHOT), 'processes': [], 'guard_artifact_verified': True, 'storage': value}
+        self.assertEqual(h.summarize_health(health)['status'], 'NEEDS_ATTENTION')
+        self.assertEqual([i for i in health['issues'] if i.startswith('Robot disk low: 0.5 GiB free')][0],
+                         'Robot disk low: 0.5 GiB free; move or prune old session evidence before a session (Prune-Robot-Sessions).')
+        health = {'board': h.parse_board_snapshot(SNAPSHOT), 'processes': [], 'guard_artifact_verified': True, 'storage': ok}
+        self.assertEqual(h.summarize_health(health)['status'], 'IDLE_SNAPSHOT_OK')
+        self.assertIn('def storage_snapshot(', payload('humble', 86, True, True))
 
     def test_multiple_topics_are_ambiguous_even_with_root_topic(self):
         msg = 'sensor_msgs/msg/LaserScan'

@@ -56,7 +56,9 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         command=captured[0]
         self.assertIn('-C',command)
         for fixed in ('BatchMode=yes','StrictHostKeyChecking=yes','IdentitiesOnly=yes','ForwardAgent=no',
-                      'ClearAllForwardings=yes','ProxyCommand=none','ProxyJump=none'):
+                      'ClearAllForwardings=yes','ProxyCommand=none','ProxyJump=none',
+                      # phys09 review: a Wi-Fi stall must be seen by ssh within ~30 s, not after the OS TCP timeout
+                      'ServerAliveInterval=5','ServerAliveCountMax=6','TCPKeepAlive=yes'):
             self.assertIn(fixed,command)
         self.assertEqual(session.timing_values['input_ttl_ms'],INPUT_TTL_MS)
 
@@ -218,6 +220,69 @@ class PhysicalLiveSessionTests(unittest.TestCase):
         self.assertEqual(value['telemetry_diagnostic']['reason'],'SESSION_CLOSED_HISTORICAL')
         self.assertIsNone(value['telemetry_diagnostic']['source_age_s']);self.assertFalse(value['live_heartbeat'])
         self.session.cleanup_confirmed=True;self.assertEqual(self.session.snapshot()['lidar_state'],'OFF')
+
+    def test_link_detail_explains_every_non_connected_state_for_the_operator(self):
+        self.session.context=None
+        value=self.session.snapshot()
+        self.assertEqual((value['connection_state'],value['link_detail'],value['control_owner_state']),('DEGRADED','no session context',None))
+        self.session.context=dict(self.context,worker_sha256='a'*64)
+        value=self.session.snapshot()
+        self.assertEqual((value['connection_state'],value['link_detail']),('CONNECTING','waiting for the first heartbeat'))
+        self.heartbeat()
+        value=self.session.snapshot()
+        self.assertEqual((value['connection_state'],value['link_detail'],value['control_owner_state']),('CONNECTED',None,'ACTIVE'))
+        self.assertEqual(value['lidar_state_source'],'robot');self.assertIsNone(value['robot_storage'])
+        self.now+=2.5
+        value=self.session.snapshot()
+        self.assertEqual((value['connection_state'],value['link_detail']),('DEGRADED','no fresh heartbeat for 2500 ms (limit 2500 ms)'))
+        self.session.receive(self.event(**deepcopy(self.session.last)))  # fresh heartbeat, stale watch reply
+        value=self.session.snapshot()
+        self.assertEqual((value['connection_state'],value['link_detail']),
+                         ('DEGRADED','watch round-trip slower than 500 ms or no watch reply within 2500 ms'))
+        self.session.closed=True;self.session.error='REMOTE_EXIT_WITHOUT_CLEANUP'
+        self.session.remote_stderr_tail='FLEET_WORKER_REJECTED:OSError:ENOSPC:No space left on device:/home/ubuntu/x'
+        value=self.session.snapshot()
+        self.assertEqual(value['connection_state'],'DISCONNECTED')
+        self.assertEqual(value['link_detail'],'REMOTE_EXIT_WITHOUT_CLEANUP · FLEET_WORKER_REJECTED:OSError:ENOSPC:No space left on device:/home/ubuntu/x')
+        self.assertEqual(value['remote_stderr_tail'],self.session.remote_stderr_tail)
+        self.assertIsNone(value['control_owner_state'])
+        self.assertEqual((value['lidar_state'],value['lidar_state_source'],value['last_reported_lidar_state']),('FAULT','pc_after_exit','OFF'))
+
+    def test_robot_recording_fault_marks_the_control_owner_exited_while_the_link_is_still_up(self):
+        self.heartbeat()
+        storage=dict(free_bytes=100*1024*1024,reserve_bytes=512*1024*1024,state='LOW')
+        self.session.receive(self.event(**dict(deepcopy(self.session.last),blockers=['RECORDING_INCOMPLETE'],drive_ready=False,
+            recording_failure_reason='SESSION_DISK_LOW',storage=storage)))
+        value=self.session.snapshot()
+        self.assertEqual(value['connection_state'],'CONNECTED')
+        self.assertEqual(value['control_owner_state'],'EXITED_RECONNECT_REQUIRED')
+        self.assertEqual(value['recording_failure_reason'],'SESSION_DISK_LOW')
+        self.assertEqual(value['robot_storage'],storage);self.assertFalse(value['drive_ready'])
+        # Terminal cleanup carries the reason when the last heartbeat did not.
+        self.session.receive(self.event(**dict(deepcopy(self.session.last),blockers=[],recording_failure_reason=None,storage=None)))
+        self.assertEqual(self.session.snapshot()['control_owner_state'],'ACTIVE')
+        self.session.receive(self.event('cleanup',subsystem='session',confirmed=True,recording_complete=False,
+            recording_failure_reason='SESSION_JOURNAL_APPEND_REJECTED'))
+        value=self.session.snapshot()
+        self.assertEqual(value['recording_failure_reason'],'SESSION_JOURNAL_APPEND_REJECTED')
+        self.assertEqual(value['control_owner_state'],'EXITED_RECONNECT_REQUIRED')
+
+    def test_stderr_tail_is_the_last_lines_bounded_and_printable(self):
+        from twinpulse_app.physical_live_session import stderr_tail
+        path=Path(self.tmp.name)/'ssh-stderr.log'
+        self.assertIsNone(stderr_tail(path))
+        path.write_bytes(b'');self.assertIsNone(stderr_tail(path))
+        path.write_bytes(b'\n  \n')
+        self.assertIsNone(stderr_tail(path))
+        rejected=b'FLEET_WORKER_REJECTED:OSError:ENOSPC:No space left on device:/home/ubuntu/s\x1b[0m'
+        path.write_bytes(b'x'*5000+b'\nWarning: Permanently added\n\n'+rejected+b'\n\n')
+        tail=stderr_tail(path)
+        self.assertTrue(tail.endswith('FLEET_WORKER_REJECTED:OSError:ENOSPC:No space left on device:/home/ubuntu/s?[0m'),tail)
+        self.assertIn('Warning: Permanently added | FLEET_WORKER_REJECTED',tail)
+        self.assertLessEqual(len(tail),600);self.assertNotIn('\n',tail)
+        self.assertEqual(len(stderr_tail(path,limit=40)),40)
+        path.write_bytes(b'FLEET_WORKER_CLEANUP:{"confirmed":false,"reason":"SESSION_DISK_LOW"}\n')
+        self.assertEqual(stderr_tail(path),'FLEET_WORKER_CLEANUP:{"confirmed":false,"reason":"SESSION_DISK_LOW"}')
 
     def test_reported_incomplete_cleanup_is_not_a_missing_ack_or_complete_record(self):
         self.session.receive(self.event('cleanup',subsystem='session',confirmed=False,recording_complete=True,
@@ -708,6 +773,30 @@ class FleetPhysicalEnvelopeTests(unittest.TestCase):
         self.assertEqual(value['battery']['estimated_percent'],72.2)
         self.assertEqual(value['battery']['estimate_method'],'robotis_opencr_voltage_10_5_to_12_3_v1')
         self.assertFalse(value['battery']['capacity_measured'])
+
+    def test_fleet_row_passes_link_detail_owner_state_and_storage_through_and_marks_ended_rows(self):
+        original=self.live.snapshot
+        storage=dict(free_bytes=100*1024*1024,reserve_bytes=512*1024*1024,state='LOW')
+        def degraded():
+            value=original();value.update(connection_state='DEGRADED',live_heartbeat=False,
+                link_detail='no fresh heartbeat for 3000 ms (limit 2500 ms)',remote_stderr_tail=None,
+                recording_failure_reason='SESSION_DISK_LOW',control_owner_state='EXITED_RECONNECT_REQUIRED',
+                last_reported_lidar_state='STREAMING',lidar_state_source='robot',robot_storage=storage)
+            return value
+        self.live.snapshot=degraded
+        self.action('focus');row=self.action('connect')['robots'][0]
+        self.assertEqual(row['connection_state'],'DEGRADED')
+        self.assertEqual(row['link_detail'],'no fresh heartbeat for 3000 ms (limit 2500 ms)')
+        self.assertEqual(row['reason'],'no fresh heartbeat for 3000 ms (limit 2500 ms)')
+        self.assertEqual(row['control_owner_state'],'EXITED_RECONNECT_REQUIRED')
+        self.assertEqual(row['recording_failure_reason'],'SESSION_DISK_LOW')
+        self.assertEqual((row['last_reported_lidar_state'],row['lidar_state_source']),('STREAMING','robot'))
+        self.assertEqual(row['robot_storage'],storage);self.assertIsNone(row['remote_stderr_tail'])
+        self.live.closed=True
+        row=self.fleet.snapshot()['robots'][0]
+        self.assertEqual(row['connection_state'],'DISCONNECTED')
+        self.assertIsNone(row['control_owner_state']);self.assertEqual(row['lidar_state_source'],'pc_after_exit')
+        self.assertEqual(row['last_reported_lidar_state'],'STREAMING')
 
     def test_saved_display_changes_apply_to_existing_session_without_transport_or_age_reset(self):
         from twinpulse_core.robot_battery import battery_display_config

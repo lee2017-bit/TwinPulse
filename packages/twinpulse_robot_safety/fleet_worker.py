@@ -12,6 +12,7 @@ from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES
 from twinpulse_core.robot_lineage import checked_twin_context
 from twinpulse_core.robot_timing_profile import checked_profile as checked_timing_profile,values_of,digest as timing_digest
 import base64
+import errno
 import hashlib
 import json
 import math
@@ -20,6 +21,7 @@ from pathlib import Path
 import queue
 import re
 import secrets
+import shutil
 import signal
 import sys
 import threading
@@ -172,8 +174,40 @@ class SegmentedWriter:
     def close(self):self._finish()
 
 
+SESSION_DISK_RESERVE_BYTES=512*1024*1024  # a session is refused below this free space (phys09: ENOSPC closed the journal mid-run)
+SESSION_DISK_FAULT_BYTES=128*1024*1024    # a running session fails closed here, before the writer meets ENOSPC
+
+
+def session_storage(path=None,usage=shutil.disk_usage):
+    """Free bytes on the volume holding the session evidence. Read-only; never prunes."""
+    root=Path.home() if path is None else Path(path)
+    try:
+        free=int(usage(str(root)).free)
+        return dict(free_bytes=free,reserve_bytes=SESSION_DISK_RESERVE_BYTES,
+                    state='LOW' if free<SESSION_DISK_RESERVE_BYTES else 'OK')
+    except OSError as exc:
+        return dict(free_bytes=None,reserve_bytes=SESSION_DISK_RESERVE_BYTES,state='UNKNOWN',reason=reason_code(exc))
+
+
+def rejection_detail(exc):
+    """One stderr line for a refused start: reason code plus errno/strerror/path for OSError.
+
+    phys09 (2026-10-26) left only 'FLEET_WORKER_REJECTED:OSError' on the PC while the
+    SD card was full; the PC must be able to read the failure class from this line.
+    """
+    parts=[reason_code(exc)]
+    if isinstance(exc,OSError):
+        parts.append((errno.errorcode.get(exc.errno) or str(exc.errno)) if exc.errno is not None else 'NO_ERRNO')
+        parts.append(str(exc.strerror or '')[:80]);parts.append(str(exc.filename or '')[:160])
+    return ':'.join(re.sub(r'[^\x20-\x7e]','?',part) for part in parts)[:300]
+
+
+def stderr_receipt(line):
+    os.write(2,line.encode('utf-8'))
+
+
 class FleetWorker:
-    def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream,line_writer=None):
+    def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream,line_writer=None,receipt_writer=None):
         self.context=checked_context(context);self.directory=Path(directory);self.clock=clock
         self.lock=threading.RLock();self.sequence=0;self.last_command=0;self.cancel=threading.Event()
         self.recording_failed=False;self.recording_failure_reason=None;self.cleanup_confirmed=False
@@ -181,7 +215,13 @@ class FleetWorker:
         self.journal=RobotJournal(self.directory/'unused',max_bytes=EVENT_ARCHIVE_BYTES,capacity=16384,
             max_pending_bytes=16*1024*1024,
             opener=lambda _:self.disk,buffered=True)
-        self.protocol=ProtocolOutbox(writer,max_messages=512,max_bytes=4*1024*1024,buffered=True,line_writer=line_writer)
+        # 8192 messages / 64 MiB: raw LiDAR chunks are now coalesced (native_stream), and a
+        # transient PC stall must not latch PROTOCOL_QUEUE_FULL within seconds (phys09 review).
+        # The robot-local journal stays authoritative; motion still pauses on the presence TTL.
+        self.protocol=ProtocolOutbox(writer,max_messages=8192,max_bytes=64*1024*1024,buffered=True,line_writer=line_writer)
+        self.receipt_writer=receipt_writer or (lambda line:None)
+        self.storage_probe=lambda:session_storage(self.directory)
+        self.storage=self.storage_probe()
         self.emit_timing=dict(events=0,maximum_payload_prepare_s=0.,maximum_order_lock_wait_s=0.)
         self.native=native_factory(self.directory/'native',self.emit)
         self.control=control_factory(self.context,self.directory,self.emit,self.native,clock=clock)
@@ -293,10 +333,21 @@ class FleetWorker:
         elif action=='close':self.cancel.set();self.control.submit(value)
         else:self.control.submit(value)
 
+    def _sample_storage(self):
+        # Read-only statvfs every idle tick: the heartbeat shows free space before it runs out,
+        # and the session fails closed with a named reason instead of a 0-byte manifest.
+        storage=self.storage_probe()
+        with self.lock:self.storage=storage
+        free=storage.get('free_bytes')
+        if free is not None and free<SESSION_DISK_FAULT_BYTES:self._recording_fault('SESSION_DISK_LOW')
+        return storage
+
     def _idle_board(self):
         from runtime import HOME,ownership,read_board,verify_release
         from robot_health import parse_board_snapshot
         while not self.cancel.is_set():
+            try:self._sample_storage()
+            except Exception:pass
             if self._control_flags()['control_state']=='UNPREPARED':
                 began=self.clock()
                 with self.board_lock:self.board_read_status={'state':'READING','started_s':began}
@@ -348,8 +399,8 @@ class FleetWorker:
         sensor_frame=None if frame is None else {'source':'physical_native_sensor_unaligned',
             'age_ms':(self.clock()-frame['timing']['receipt_end_s'])*1000,'age_basis':'serial_receipt',
             'acquisition_timing':frame['timing'],'complete':frame['complete'],'nodes_sha256':frame['nodes_sha256']}
-        with self.lock:emission=dict(self.emit_timing)
-        return dict(status,boot_id=self.context['boot_id'],release_id=self.context['release_id'],sensor_frame=sensor_frame,event_emission=emission,
+        with self.lock:emission=dict(self.emit_timing);storage=dict(self.storage)
+        return dict(status,boot_id=self.context['boot_id'],release_id=self.context['release_id'],sensor_frame=sensor_frame,event_emission=emission,storage=storage,
             worker_sha256=self.context['worker_sha256'],battery=battery,lidar_state=self.native.snapshot()['lidar_state'],lidar=self.native.snapshot(),
             live_heartbeat=True,recording=self.journal.status(),new_integration_hardware_acceptance='NOT_RUN')
 
@@ -430,6 +481,13 @@ class FleetWorker:
                 'recording_failure_reason':self.recording_failure_reason,
                 'journal':journal,'source_export':source_export},record=False)
             except Exception:pass
+            # The same verdict on stderr: when the stdout outbox is latched the PC still
+            # sees why the worker ended (ssh-stderr.log). Never a PC cleanup confirmation.
+            try:self.receipt_writer('FLEET_WORKER_CLEANUP:'+json.dumps(dict(confirmed=self.cleanup_confirmed,reason=fault,
+                recording_complete=recording_complete,recording_failure_reason=self.recording_failure_reason,
+                control_state=control.get('control_state'),lidar_state=native.get('lidar_state'),
+                journal_error=journal.get('error')),allow_nan=False,separators=(',',':'))+'\n')
+            except Exception:pass
             self.protocol.close(timeout=2.)
         return 0 if self.cleanup_confirmed else 2
 
@@ -440,13 +498,19 @@ def main():
     if len(first)>65536 or not first.endswith(b'\n'):raise ValueError('START_LINE_BOUND')
     context=checked_context(json.loads(first))
     if context['worker_sha256']!=os.environ.get('TWINPULSE_FLEET_BUNDLE_SHA256'):raise ValueError('WORKER_BUNDLE_MISMATCH')
+    # Refuse a session on a nearly full SD card before any release, board or device access
+    # (phys09: the journal met ENOSPC mid-run and the PC saw only 'OSError').
+    storage=session_storage(Path.home())
+    if storage['state']=='LOW':
+        raise ValueError('SESSION_DISK_LOW_%dMB_FREE'%((storage['free_bytes'] or 0)//(1024*1024)))
     from runtime import HOME,verify_release
     context['boot_id']=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     context['release_id']=verify_release((HOME/'current').resolve(strict=True))['source_id']
     directory=Path.home()/'.local/share/twinpulse/fleet/sessions'/context['operation_id']
     directory.mkdir(parents=True,exist_ok=False,mode=0o700)
     # Context enrichment is robot-owned, never accepted from PC stdin.
-    worker=FleetWorker({k:v for k,v in context.items() if k not in {'boot_id','release_id'}},directory,stdout_emit,line_writer=stdout_emit_line)
+    worker=FleetWorker({k:v for k,v in context.items() if k not in {'boot_id','release_id'}},directory,stdout_emit,line_writer=stdout_emit_line,
+        receipt_writer=stderr_receipt)
     worker.context.update(boot_id=context['boot_id'],release_id=context['release_id'])
     worker.control.context=worker.context
     for name in ('SIGINT','SIGTERM','SIGHUP'):
@@ -457,7 +521,7 @@ def main():
 if __name__=='__main__':
     try:result=main()
     except BaseException as exc:
-        os.write(2,('FLEET_WORKER_REJECTED:'+reason_code(exc)+'\n').encode())
+        os.write(2,('FLEET_WORKER_REJECTED:'+rejection_detail(exc)+'\n').encode())
         result=2
     # The daemon stdin reader may still own a BufferedReader lock after Close.
     # All device owners and evidence have already been finalized by run().

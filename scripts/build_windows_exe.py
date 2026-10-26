@@ -50,6 +50,31 @@ def reuse_desktop(package, destination, sources):
     return dict(electron=manifest['tools']['Electron'],source_build_id=verified['build_id'])
 
 
+def sprint_gate_receipt(root,max_age_s=2*3600):
+    """Refuse to build unless Verify-Sprint passed on this exact commit recently (phys09 review P0-8).
+
+    A fix that was never run through its own test suite reached installed builds 33-52 on
+    2026-10-26 (a red regression test sat on main). The receipt is written by scripts/verify_sprint.ps1.
+    """
+    path=root/'outputs/verify-sprint/latest.json'
+    if not path.is_file():
+        raise ValueError('SPRINT_GATE_RECEIPT_MISSING: run Verify-Sprint.cmd first (or --skip-sprint-gate)')
+    receipt=json.loads(path.read_text(encoding='utf-8-sig'))
+    head=subprocess.run(['git','-C',str(root),'rev-parse','HEAD'],stdout=subprocess.PIPE,check=True,text=True).stdout.strip()
+    dirty=subprocess.run(['git','-C',str(root),'status','--porcelain','--untracked-files=no'],stdout=subprocess.PIPE,check=True,text=True).stdout.strip()
+    if receipt.get('status')!='PASS':
+        raise ValueError('SPRINT_GATE_FAILED: last Verify-Sprint run did not pass (%s)'%receipt.get('run_id'))
+    if receipt.get('head')!=head:
+        raise ValueError('SPRINT_GATE_STALE_COMMIT: receipt is for %s, HEAD is %s; run Verify-Sprint.cmd again'%(receipt.get('head'),head))
+    if receipt.get('dirty') or dirty:
+        # The tested tree and the built tree must be the same tree: commit, then Verify-Sprint, then build.
+        raise ValueError('SPRINT_GATE_DIRTY_TREE: tracked files changed since/at the Verify-Sprint run; commit and run Verify-Sprint.cmd again')
+    finished=datetime.strptime(receipt['finished_utc'],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc)-finished).total_seconds()>max_age_s:
+        raise ValueError('SPRINT_GATE_STALE_TIME: receipt older than %d min; run Verify-Sprint.cmd again'%(max_age_s//60))
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=Path, required=True)
@@ -57,10 +82,14 @@ def main():
     parser.add_argument('--package-only',action='store_true',help='Build the verified local package without a redundant distribution ZIP.')
     parser.add_argument('--reuse-desktop-from',type=Path,
         help='Verified immutable prior package with identical desktop sources; same-volume hard links only.')
+    parser.add_argument('--skip-sprint-gate',action='store_true',
+        help='Build without a fresh Verify-Sprint PASS receipt (emergency only; the receipt check is the default).')
     args = parser.parse_args()
     output = args.output_dir.resolve()
     if output.exists():
         raise ValueError('BUILD_OUTPUT_ALREADY_EXISTS')
+    if not args.skip_sprint_gate:
+        sprint_gate_receipt(ROOT)
     if version('PyInstaller') != '6.22.3' or version('Pillow') != '12.3.0':
         raise ValueError('BUILD_TOOL_VERSION_MISMATCH')
     # A pre-existing dist can be older than the very sources copied below.

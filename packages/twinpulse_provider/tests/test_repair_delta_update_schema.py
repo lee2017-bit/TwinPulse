@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """Replay of the 2026-10-26 factory generation that stalled (REPAIR_STALLED) with no live model calls.
 
 Saved evidence (tests/fixtures/repair_stall_2026-10-26/): the checkpoint draft, the semantic-compile diagnosis
@@ -41,8 +44,14 @@ class RepairDeltaUpdateSchemaTest(unittest.TestCase):
         slots=batch_schema(draft['inventory'],['rack_1','bollard_1'],recipes=draft.get('model_recipes'),
             selections={i:v['model_id'] for i,v in draft['objects'].items()})['properties']
         for identity,slot in slots.items():
-            self.assertEqual(slot['properties'].get('recipe_parameters'),{'type':'null'},identity)
-            self.assertNotIn('recipe_parameters',slot['required'],identity)
+            selected=draft['objects'][identity]['model_id']
+            if selected.startswith('local.') and selected in (draft.get('model_recipes') or {}):
+                # A recipe-bound local model keeps its parameter object: that key can hold a value.
+                self.assertEqual(slot['properties']['recipe_parameters']['type'],'object',identity)
+                self.assertIn('recipe_parameters',slot['required'],identity)
+            else:
+                self.assertEqual(slot['properties'].get('recipe_parameters'),{'type':'null'},identity)
+                self.assertNotIn('recipe_parameters',slot['required'],identity)
             self.assertIn('dimensions_m',slot['required'],identity)
 
 

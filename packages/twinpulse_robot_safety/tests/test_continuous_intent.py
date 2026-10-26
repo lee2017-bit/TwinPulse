@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """No-device regressions for the recorded arm/expiry failures and nonce generations."""
 from pathlib import Path
 import sys

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """No-device computation/late-result tests; not actual Isaac acceptance."""
 from threading import Event
 from types import SimpleNamespace

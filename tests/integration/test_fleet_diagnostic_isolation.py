@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """No Kit/device: optional diagnostic sink must not block robot exchange."""
 from tests.integration import test_r4_bridge_api as _source_paths
 from scripts.twinpulse_live_viewport import LiveViewportPublisher

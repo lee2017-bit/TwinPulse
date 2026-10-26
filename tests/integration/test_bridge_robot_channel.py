@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
 """No Kit/robot: real authenticated loopback report socket lifecycle."""
 from tests.integration import test_r4_bridge_api as base
 from tests.integration.test_bridge_lease_rotation import BridgeClient

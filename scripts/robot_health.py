@@ -116,6 +116,40 @@ def board_snapshot():
         return {'status': 'UNKNOWN', 'reason': 'board_snapshot_unavailable', 'error_type': type(exc).__name__}
 
 
+SESSION_EVIDENCE_DIR = Path.home() / '.local/share/twinpulse/fleet/sessions'
+STORAGE_LOW_GIB = 1.0  # below this the pre-session check reports NEEDS_ATTENTION (fleet worker refuses under 512 MiB)
+
+
+def storage_snapshot(usage=None, sessions_dir=SESSION_EVIDENCE_DIR, limit_s=5.0):
+    """Read-only free-space and session-evidence totals; never deletes. Bounded walk time."""
+    started = time.monotonic()
+    usage = usage or shutil.disk_usage('/')
+    count = total = 0; complete = True
+    try:
+        if sessions_dir.is_dir():
+            for entry in sorted(sessions_dir.iterdir()):
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                count += 1
+                for root, dirs, files in os.walk(entry):
+                    for name in files:
+                        try:
+                            total += (Path(root) / name).stat().st_size
+                        except OSError:
+                            pass
+                    if time.monotonic() - started > limit_s:
+                        complete = False; break
+                if not complete:
+                    break
+    except OSError:
+        complete = False
+    free_gib = round(usage.free / 1024**3, 2)
+    return {'root_free_gib': free_gib, 'root_total_gib': round(usage.total / 1024**3, 2),
+            'state': 'LOW' if free_gib < STORAGE_LOW_GIB else 'OK',
+            'sessions_dir': str(sessions_dir), 'sessions_count': count,
+            'sessions_gib': round(total / 1024**3, 2), 'sessions_walk_complete': complete}
+
+
 def health_snapshot(board=None):
     started = time.monotonic()
     processes = []
@@ -135,6 +169,7 @@ def health_snapshot(board=None):
     except ValueError:
         temperature = None
     usage = shutil.disk_usage('/')
+    storage = storage_snapshot(usage)
     try:
         installed = deployment()
     except (OSError, ValueError, KeyError, TypeError):
@@ -144,7 +179,7 @@ def health_snapshot(board=None):
             'observed_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'boot_id': read_text_or_none('/proc/sys/kernel/random/boot_id'),
             'uptime': read_text_or_none('/proc/uptime'), 'cpu_temperature_c': temperature,
-            'root_free_gib': round(usage.free / 1024**3, 2),
+            'root_free_gib': round(usage.free / 1024**3, 2), 'storage': storage,
             'serial_devices': sorted(p.name for p in Path('/dev').glob('ttyACM*')) + sorted(p.name for p in Path('/dev').glob('ttyUSB*')),
             'processes': processes, 'guard_artifact_verified': guard_installed, 'deployment': installed,
             'board': board_snapshot() if board is None else board, 'motion_authorized': False,
@@ -176,6 +211,9 @@ def summarize_health(health):
             issues.append('Running base executable is not the qualified guarded build.')
     if not health['guard_artifact_verified']:
         issues.append('Qualified guarded executable is unavailable or changed.')
+    storage = health.get('storage') or {}
+    if storage.get('state') == 'LOW':
+        issues.append('Robot disk low: %s GiB free; move or prune old session evidence before a session (Prune-Robot-Sessions).' % storage.get('root_free_gib'))
     health['issues'] = issues
     health['status'] = 'NEEDS_ATTENTION' if issues else 'IDLE_SNAPSHOT_OK'
     if health['status'] == 'IDLE_SNAPSHOT_OK' and health['processes']:

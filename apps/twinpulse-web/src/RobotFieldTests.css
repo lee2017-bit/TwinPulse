@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jaewon Lee
+ * SPDX-License-Identifier: Apache-2.0
+ * Source: https://github.com/lee2017-bit/TwinPulse
+ */
 .robot-field-tests {margin:12px 0;padding:10px;border:1px solid var(--border,#39465b);border-radius:8px;font-size:.8rem;}
 .robot-field-tests h5 {margin:8px 0;}
 .robot-field-tests p,.robot-field-tests small {overflow-wrap:anywhere;}
