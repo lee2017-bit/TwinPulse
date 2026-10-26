@@ -89,7 +89,11 @@ def _scene_object(item: SceneObject, limits: ValidationLimits) -> None:
             _fail(f"dynamic object {item.id} requires a valid positive mass_kg")
     elif item.mass_kg is not None:
         _fail(f"static object {item.id} must not define mass_kg")
-    if item.asset_id is not None and item.asset_id not in limits.allowed_asset_ids:
+    if item.asset_id is not None and item.asset_id.startswith('color:'):
+        from .room_items import parse_display_color_tag
+        if parse_display_color_tag(item.asset_id) is None:
+            _fail(f"display colour tag is invalid: {item.asset_id}")
+    elif item.asset_id is not None and item.asset_id not in limits.allowed_asset_ids:
         _fail(f"asset_id is not allowlisted: {item.asset_id}")
 
 

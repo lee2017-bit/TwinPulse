@@ -632,6 +632,14 @@ class PhotoColorTest(unittest.TestCase):
         with self.assertRaises(SceneToolPlanError):expand_room_item(dict(item,display_color=[2,0,0]))
         self.assertIsNone(parse_display_color_tag('burger_v1'))
 
+    def test_colour_tagged_visual_part_passes_scene_validation_without_a_library_asset(self):
+        from twinpulse_core.models import SceneObject, Transform, ShapeSpec
+        from twinpulse_core.validation import validate_scene_geometry, ValidationLimits
+        box=SceneObject('Added_'+'a'*20+'_visual_0','equipment',Transform((1.,1.,.15),(0.,0.,0.)),ShapeSpec('box',(.3,.3,.3)),asset_id='color:0.520,0.310,0.200')
+        validate_scene_geometry('scene',(box,),ValidationLimits(max_objects=None))  # no library asset needed for a colour tag
+        with self.assertRaises(Exception):
+            validate_scene_geometry('scene',(SceneObject('x','equipment',Transform((1.,1.,.15),(0.,0.,0.)),ShapeSpec('box',(.3,.3,.3)),asset_id='color:9,9,9'),),ValidationLimits(max_objects=None))
+
     def test_photo_crop_color_is_the_crop_median(self):
         import io
         from PIL import Image
