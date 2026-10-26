@@ -105,7 +105,7 @@ def collect_readonly(host, user, distro='auto', domain_id=86, health=True, board
     if not ssh:
         return {"status": "SSH_CLIENT_MISSING", "motion_authorized": False}
     command = [ssh, "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
-               "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
+               "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=6", "-o", "TCPKeepAlive=yes",
                "-o", "StrictHostKeyChecking=" + ("yes" if batch else "ask"),
                "-o", "BatchMode=" + ("yes" if batch else "no"),
                "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
@@ -169,6 +169,11 @@ def main():
     print(result.get('health', {}).get('status', result['status']) + "\nReport: " + str(page))
     if 'health' in result:
         print('Sensor streams: ' + result['status'] + '; physical motion permission: not granted')
+        storage = result['health'].get('storage') or {}
+        if storage:
+            print('Robot disk: %s GiB free (%s); session evidence: %s sessions, %s GiB (%s)' % (
+                storage.get('root_free_gib'), storage.get('state'), storage.get('sessions_count'),
+                storage.get('sessions_gib'), storage.get('sessions_dir')))
     if args.open_report:
         webbrowser.open(page.as_uri())
     if profiled:

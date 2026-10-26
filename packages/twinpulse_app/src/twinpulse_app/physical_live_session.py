@@ -226,6 +226,19 @@ class StreamEvidence:
         return self.snapshot()
 
 
+def stderr_tail(path,limit=600):
+    """Last non-empty ssh stderr lines (e.g. FLEET_WORKER_REJECTED:OSError:ENOSPC:...), bounded, printable."""
+    try:
+        with Path(path).open('rb') as stream:
+            stream.seek(0,os.SEEK_END);size=stream.tell();stream.seek(max(0,size-4096));raw=stream.read()
+    except (OSError,ValueError):return None
+    lines=[line.strip() for line in raw.decode('utf-8',errors='replace').splitlines() if line.strip()]
+    if not lines:return None
+    text=' | '.join(lines[-3:])
+    text=''.join(ch if 0x20<=ord(ch)<0x7f or ord(ch)>0x9f else '?' for ch in text)
+    return text[-limit:]
+
+
 class PhysicalLiveSession:
     def __init__(self, source_root, archive_root, *, identity, known_hosts,
                  process_factory=subprocess.Popen, clock=time.monotonic, wall=time.time,on_timing_measurement=None):
@@ -253,7 +266,7 @@ class PhysicalLiveSession:
         self.device_identity=None
         self.sequence = self.command_sequence = 0
         self.events = []; self.error = None; self.closed = False; self.closing = False; self.cleanup_confirmed = False
-        self.terminal_cleanup = None;self.remote_exit_code = None
+        self.terminal_cleanup = None;self.remote_exit_code = None;self.remote_stderr_tail=None
         self.close_request_id=None
         self.stop_event = threading.Event()
 
@@ -296,7 +309,9 @@ class PhysicalLiveSession:
             command = [ssh, '-T', '-C', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                        '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'ForwardAgent=no',
                        '-o', 'ClearAllForwardings=yes', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none',
-                       '-o', 'ConnectTimeout=6', '-o', 'ServerAliveInterval=3', '-o', 'ServerAliveCountMax=2',
+                       # 5 s x 6 = 30 s before ssh gives up: a 7 s home Wi-Fi gap must not end the session
+                       # (motion already pauses on the robot's 500 ms presence TTL; phys09 review P0-6).
+                       '-o', 'ConnectTimeout=6', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=6', '-o', 'TCPKeepAlive=yes',
                        '-o', 'UserKnownHostsFile=' + str(self.known_hosts), '-i', str(self.identity),
                        '-p', str(endpoint.port), '--', endpoint.user + '@' + endpoint.host,
                        '/bin/bash -c ' + shlex.quote(
@@ -400,6 +415,8 @@ class PhysicalLiveSession:
                 code = self.process.wait(timeout=8)
                 stderr_reader.join(timeout=2)
                 if stderr_reader.is_alive():self.evidence.error=self.evidence.error or 'SSH_STDERR_FLUSH_PENDING'
+                tail=stderr_tail(stderr)
+                with self.lock:self.remote_stderr_tail=tail
                 self._classify_remote_exit(code)
         except Exception as error:
             with self.lock: self.error = self.error or type(error).__name__ + ':' + str(error)[:100]
@@ -433,6 +450,8 @@ class PhysicalLiveSession:
             with self.lock: self.closed = True
 
     def _classify_remote_exit(self, code):
+        # stderr tail (FLEET_WORKER_REJECTED:... / FLEET_WORKER_CLEANUP:...) is attached to link_detail
+        # by snapshot(); it is diagnostic text only and never marks cleanup confirmed.
         with self.lock:
             self.remote_exit_code=code
             if code or not self.cleanup_confirmed:
@@ -766,8 +785,24 @@ class PhysicalLiveSession:
             scan_age=None if self.scan_at is None else max(0,(self.clock()-self.scan_at)*1000)
             heartbeat_limit_ms=max(2500,self.timing_values['operator_presence_ms'])
             verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<heartbeat_limit_ms/1000
+            stderr_tail_value=self.remote_stderr_tail
+            # Why the link is not CONNECTED, for the operator (display only; admission is unchanged).
+            if closed:link_detail=' · '.join(x for x in (self.error,stderr_tail_value) if x) or None
+            elif self.context is None:link_detail='no session context'
+            elif self.error:link_detail=self.error
+            elif age is None:link_detail='waiting for the first heartbeat'
+            elif age>=heartbeat_limit_ms:link_detail='no fresh heartbeat for %d ms (limit %d ms)'%(age,heartbeat_limit_ms)
+            elif not verified:link_detail='watch round-trip slower than 500 ms or no watch reply within %d ms'%heartbeat_limit_ms
+            else:link_detail=None
+            recording_failure_reason=last.get('recording_failure_reason') or (terminal_cleanup or {}).get('recording_failure_reason')
+            blockers=last.get('blockers') if isinstance(last.get('blockers'),list) else []
+            control_owner_state=(None if closed or age is None else
+                'EXITED_RECONNECT_REQUIRED' if recording_failure_reason or 'RECORDING_INCOMPLETE' in blockers else 'ACTIVE')
             status=dict(connection_state='DISCONNECTED' if closed else 'DEGRADED' if self.context is None else 'CONNECTING' if age is None and not self.error else
                          'CONNECTED' if verified and age is not None and age<heartbeat_limit_ms and not self.error else 'DEGRADED',
+                         link_detail=link_detail,remote_stderr_tail=stderr_tail_value,
+                         recording_failure_reason=recording_failure_reason,control_owner_state=control_owner_state,
+                         robot_storage=deepcopy(last.get('storage')) if isinstance(last.get('storage'),dict) else None,
                          live_heartbeat=verified and age is not None and age<heartbeat_limit_ms and not closed and not self.error,
                          heartbeat_freshness_ms=heartbeat_limit_ms,
                          telemetry_age_ms=age, telemetry_sequence=self.sequence,
@@ -791,9 +826,13 @@ class PhysicalLiveSession:
                 value['motion_observation']=deepcopy(terminal_observation['observation'])
                 value['motion_observation_receipt']=deepcopy(terminal_observation['receipt'])
         value['motion_observation_projection_error']=observation_error
+        value['last_reported_lidar_state']=value.get('lidar_state')
+        value['lidar_state_source']='robot'
         if closed:
-            value['last_reported_lidar_state']=value.get('lidar_state')
+            # After an unconfirmed exit the robot never reported FAULT: the PC substitutes it for the
+            # drive guard. The source tag lets the UI say "unknown after exit" instead.
             value['lidar_state']='OFF' if cleanup_confirmed else 'FAULT'
+            value['lidar_state_source']='pc_after_exit'
             value['scan']=None
             diagnostic=value.get('telemetry_diagnostic')
             if isinstance(diagnostic,dict):

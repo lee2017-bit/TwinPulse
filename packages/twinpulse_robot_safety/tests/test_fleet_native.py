@@ -113,6 +113,7 @@ class DecoderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stream=NativeStream(tmp,lambda k,v:events.append((k,v)),channel_factory=lambda:channel,
                 segment_bytes=1024,maximum_bytes=4096)
+            stream.raw_coalesce_s=0.  # one archived chunk per read: this test pins the writer on the first one
             try:
                 with patch.object(NativeCaptureSink,'write',blocked):
                     stream.start();self.assertTrue(entered.wait(1.))
@@ -198,6 +199,7 @@ class DecoderTests(unittest.TestCase):
                 release.set()
                 if stream.archive:original_close(stream.archive,timeout=2.)
 
+    @unittest.skipUnless((ROOT/'outputs/robot-obstacle-prior-20261017').is_dir(),'saved 2026-10-17 recordings are not in this checkout (outputs/ is untracked)')
     def test_saved_full_recordings_match_corrected_vendor_every_node(self):
         saved=ROOT/'outputs/robot-obstacle-prior-20261017'
         expected=ROOT/'outputs/robot-fleet-20261017/decoder-results-03'
@@ -252,11 +254,72 @@ class DecoderTests(unittest.TestCase):
             stream.start();stream.thread.join(2)
             self.assertEqual(stream.snapshot()['lidar_state'],'OFF')
             result=stream.snapshot()['manifest'];self.assertTrue(result['complete'])
-            self.assertEqual(result['bytes_received'],1040);self.assertEqual(len(result['segments']),2)
-            raws=[v for kind,v in events if kind=='raw'];self.assertEqual(len(raws),4)
+            self.assertEqual(result['bytes_received'],1040)
+            # Four immediate reads coalesce into one archived chunk (<=8 KiB, <100 ms) that keeps
+            # every read's receipt window; the sink stores it as one 1040-byte segment.
+            raws=[v for kind,v in events if kind=='raw'];self.assertEqual(len(raws),1)
+            self.assertEqual((raws[0]['length'],raws[0]['read_count'],len(raws[0]['reads'])),(1040,4,4))
+            self.assertEqual(sum(r[2] for r in raws[0]['reads']),1040)
+            self.assertEqual(raws[0]['receipt_start_s'],raws[0]['reads'][0][0]);self.assertEqual(len(result['segments']),1)
+            self.assertEqual(sum(s['bytes'] for s in result['segments']),1040)
             scans=[v for kind,v in events if kind=='scan'];self.assertTrue(scans)
             self.assertEqual(scans[0]['timing']['basis'],'serial_receipt_unqualified')
             self.assertIsNone(scans[0]['timing']['acquisition_earliest_s'])
+
+    def test_raw_coalescing_keeps_exact_contiguous_bytes_and_flushes_on_quiet_reads(self):
+        """One 'raw' event per coalesced run of reads: exact bytes, contiguous offsets, per-chunk SHA,
+        every original read window retained; a quiet read flushes what is pending (phys09: one
+        event per 10 ms read filled the 512-message PC outbox within seconds)."""
+        events=[];chunks=[packet(count=40,ring=True)+packet(count=40) for _ in range(3)]
+        reads=[chunks[0],chunks[1],b'',chunks[2]]
+        class Channel:
+            cleanup=staticmethod(nullcontext)
+            def __init__(self):self.n=0
+            def configure(self):pass
+            def write(self,v):return len(v)
+            def read(self,_):
+                self.n+=1
+                if self.n<=len(reads):return reads[self.n-1]
+                stream.stop();return b''
+            def drain(self,_):return 0
+            def restore(self):return True
+            def close(self):pass
+        with tempfile.TemporaryDirectory() as tmp:
+            stream=NativeStream(tmp,lambda kind,data:events.append((kind,data)),channel_factory=Channel,
+                                segment_bytes=1024,maximum_bytes=8192)
+            stream.raw_coalesce_bytes=100000;stream.raw_coalesce_s=10.
+            stream.start();stream.thread.join(2)
+            raws=[v for kind,v in events if kind=='raw']
+            self.assertEqual([r['length'] for r in raws],[len(chunks[0])+len(chunks[1]),len(chunks[2])])
+            self.assertEqual([r['offset'] for r in raws],[0,len(chunks[0])+len(chunks[1])])
+            self.assertEqual([r['chunk_index'] for r in raws],[0,1])
+            self.assertEqual([r['read_count'] for r in raws],[2,1])
+            joined=b''.join(base64.b64decode(r['base64']) for r in raws)
+            self.assertEqual(joined,b''.join(chunks))
+            for r in raws:
+                data=base64.b64decode(r['base64'])
+                self.assertEqual(r['sha256'],hashlib.sha256(data).hexdigest())
+                self.assertEqual(sum(w[2] for w in r['reads']),len(data))
+                self.assertEqual(r['receipt_start_s'],r['reads'][0][0]);self.assertLessEqual(r['reads'][-1][1],r['receipt_end_s'])
+            manifest=stream.snapshot()['manifest'];self.assertTrue(manifest['complete'])
+            self.assertEqual(manifest['bytes_received'],len(joined))
+            self.assertEqual(sum(s['bytes'] for s in manifest['segments']),len(joined))
+            # Byte threshold: a smaller cap flushes per read again (bounded event size).
+            events.clear();Channel.n=0
+            stream2=NativeStream(Path(tmp)/'second',lambda kind,data:events.append((kind,data)),channel_factory=Channel,
+                                 segment_bytes=1024,maximum_bytes=8192)
+            stream2.raw_coalesce_bytes=len(chunks[0]);stream2.raw_coalesce_s=10.
+            globals()['stream']=stream2
+            def read2(self_,_):
+                self_.n+=1
+                if self_.n<=len(reads):return reads[self_.n-1]
+                stream2.stop();return b''
+            Channel.read=read2
+            stream2.start();stream2.thread.join(2)
+            raws=[v for kind,v in events if kind=='raw']
+            self.assertEqual([r['length'] for r in raws],[len(chunks[0]),len(chunks[1]),len(chunks[2])])
+            self.assertEqual([r['offset'] for r in raws],[0,len(chunks[0]),len(chunks[0])+len(chunks[1])])
+            self.assertTrue(stream2.snapshot()['manifest']['complete'])
 
 
 class ProfileAndGuardTests(unittest.TestCase):

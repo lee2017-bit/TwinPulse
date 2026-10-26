@@ -281,9 +281,10 @@ class UnpreparedPauseJsonTests(unittest.TestCase):
         original=worker.protocol.send_prepared
         def observe(line):
             original(line);row=json.loads(line);data=row['data']
-            if row['kind']=='command' and data.get('status')=='COMPLETED':
-                if data.get('request_id')=='initial-setup':setup_done.set()
-                if data.get('request_id')=='first-stop':stop_done.set()
+            if row['kind']=='command' and data.get('status')=='COMPLETED' and data.get('request_id')=='initial-setup':setup_done.set()
+            # Without a link there is no zero/OFF readback: the Stop is reported UNCONFIRMED and
+            # then REJECTED:TASK_STOP_READBACK_UNCONFIRMED. The REJECTED row is its final receipt.
+            if row['kind']=='command' and data.get('status')=='REJECTED' and data.get('request_id')=='first-stop':stop_done.set()
         worker.protocol.send_prepared=observe
         owner.queue.put_nowait(dict(action='field_setup',request_id='initial-setup',payload={'config':config}))
         tracker=S(snapshot=lambda:{},close=lambda:{'worker_reaped':True,'thread_reaped':True})
@@ -298,7 +299,12 @@ class UnpreparedPauseJsonTests(unittest.TestCase):
                 self.assertTrue(stop_done.wait(2),'Pre-Prepare Stop did not complete on the same worker: '+
                     repr([(r['kind'],r['data'].get('action'),r['data'].get('reason'),r['data'].get('status')) for r in worker.protocol.rows[-5:]]))
                 self.assertTrue(owner.thread.is_alive());self.assertIsNone(owner.link)
-                self.assertEqual(owner.snapshot()['applied_motion_epoch'],'stopped-epoch')
+                stop_rows=[r['data'] for r in worker.protocol.rows if r['kind']=='command' and r['data'].get('request_id')=='first-stop']
+                self.assertEqual([r['status'] for r in stop_rows],['UNCONFIRMED','REJECTED'])
+                self.assertEqual(stop_rows[-1]['reason'],'TASK_STOP_READBACK_UNCONFIRMED')
+                self.assertFalse(stop_rows[0]['zero_off_readback_confirmed']);self.assertEqual(stop_rows[0]['motion_epoch'],'stopped-epoch')
+                # An unconfirmed Stop never grants the epoch; the owner stays UNPREPARED and alive.
+                self.assertIsNone(owner.snapshot()['applied_motion_epoch']);self.assertEqual(owner.snapshot()['control_state'],'UNPREPARED')
                 self.assertFalse(owner.gate.active);self.assertEqual(owner.last_publish,float('-inf'))
             finally:
                 stop_submitted.set();owner.cancel.set();owner.thread.join(2)
@@ -345,10 +351,15 @@ class UnpreparedPauseJsonTests(unittest.TestCase):
         result=owner._drain_commands(dict(action='stop',request_id='own-stop',
             motion_epoch='exact-stop-epoch',payload={}))
         self.assertEqual(result,1);self.assertEqual(owner.queue.qsize(),1)
-        self.assertEqual(owner.snapshot()['applied_motion_epoch'],'exact-stop-epoch')
-        self.assertEqual(worker.protocol.rows[-1]['data'],
-            dict(request_id='own-stop',action='stop',status='COMPLETED',
-                 event_delivery=worker.protocol.rows[-1]['data']['event_delivery']))
+        # The Stop's own epoch is kept on its receipt; without a link there is no zero/OFF readback,
+        # so it is UNCONFIRMED, then REJECTED, and applied_motion_epoch is never granted.
+        receipt=owner.snapshot()['stop_receipt']
+        self.assertEqual((receipt['request_id'],receipt['motion_epoch'],receipt['zero_off_readback_confirmed']),('own-stop','exact-stop-epoch',False))
+        self.assertIsNone(owner.snapshot()['applied_motion_epoch'])
+        rows=[r['data'] for r in worker.protocol.rows if r['kind']=='command' and r['data'].get('request_id')=='own-stop']
+        self.assertEqual([r['status'] for r in rows],['UNCONFIRMED','REJECTED'])
+        self.assertEqual(rows[-1]['reason'],'TASK_STOP_READBACK_UNCONFIRMED');self.assertEqual(rows[-1]['action'],'stop')
+        self.assertEqual(worker.protocol.rows[-1]['data'],rows[-1])
         self.assertFalse(owner.gate.active);self.assertIsNone(owner.direction)
 
     def test_other_nonfinite_diagnostic_still_fails_strict_json_and_latches_recording(self):

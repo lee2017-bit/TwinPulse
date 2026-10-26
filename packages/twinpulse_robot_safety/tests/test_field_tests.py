@@ -243,18 +243,19 @@ class FieldTests(unittest.TestCase):
 
     def test_motion_prerequisites_are_separate_and_no_restore_on_configuration(self):
         native=SimpleNamespace(latest_frame=lambda:ring(),snapshot=lambda:dict(lidar_state='STREAMING'))
-        owner=RobotControl(dict(robot_id='b'*32,binding_sha256='a'*64),'.',lambda *_:None,native,clock=lambda:1.)
+        owner=RobotControl(dict(robot_id='b'*32,binding_sha256='a'*64,operation_id='o'*32,connection_epoch='c'*32),'.',lambda *_:None,native,clock=lambda:1.)
         self.assertIn('FIELD_CONFIG_REVIEW_REQUIRED',owner._field_blockers())
-        owner.field_config=config();owner.link=SimpleNamespace(sensor_t=1.,enabled=False,sensor=SimpleNamespace(torque=False))
+        owner.field_config=config();owner.link=SimpleNamespace(sensor_t=1.,enabled=False,sensor=SimpleNamespace(torque=False),release=lambda:None)
         owner.field_until=5.
         self.assertEqual(owner._field_blockers(),['FIELD_BOOTSTRAP_STOP_REQUIRED'])
         self.assertEqual(owner._field_blockers(receipt=False),[])
         for direction,wanted in [('forward',(.03,0.)),('backward',(-.03,0.)),('left',(0.,.2)),('right',(0.,-.2))]:
             owner.field_mode=True;self.assertEqual(owner._velocity(direction),wanted)
-        owner._command(dict(action='stop',payload={},motion_epoch='new'))
+        owner._command(dict(action='stop',payload={},motion_epoch='new',request_id='stop-1'))
         self.assertEqual(owner.field_until,5.)
         self.assertIsNone(owner.direction);self.assertFalse(owner.gate.active)
 
+    @unittest.skipUnless((ROOT/'outputs/robot-obstacle-prior-20261017').is_dir(),'saved 2026-10-17 recordings are not in this checkout (outputs/ is untracked)')
     def test_saved_native_original_rings_can_be_validated_without_pipeline_measurement(self):
         raw=(ROOT/'outputs/robot-obstacle-prior-20261017/sensor-only-raw-18/raw.bin').read_bytes()
         decoder=NativeDecoder();packets=[]

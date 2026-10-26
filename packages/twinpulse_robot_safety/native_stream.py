@@ -207,6 +207,10 @@ class NativeCaptureSink:
     def close(self):self._finish()
 
 
+RAW_COALESCE_BYTES=8192   # one raw event per <=8 KiB or 100 ms of serial bytes instead of one per read
+RAW_COALESCE_S=.1         # (50-100 events/s filled the 512-message PC outbox in seconds; phys09 review)
+
+
 class NativeStream:
     def __init__(self, directory, emit, *, channel_factory=None, clock=time.monotonic,
                  timing_profile=None, segment_bytes=1024*1024, maximum_bytes=256*1024*1024):
@@ -222,6 +226,7 @@ class NativeStream:
         self.frame = None; self.complete_frame = None; self.stream_id = None
         self.archive=None;self.archive_failure=None
         self._frame_packets = []; self._complete_start = False
+        self.raw_coalesce_bytes=RAW_COALESCE_BYTES;self.raw_coalesce_s=RAW_COALESCE_S
 
     def snapshot(self):
         with self.lock:
@@ -291,14 +296,16 @@ class NativeStream:
             channel.configure(); started = True
             if channel.write(START) != len(START):raise ValueError('NATIVE_START_INCOMPLETE')
             with self.lock:self.state['lidar_state'] = 'STREAMING'
-            while not self.cancel.is_set():
-                archive.check()
-                before = self.clock(); data = channel.read(.05); received = self.clock()
-                if not data:continue
-                if len(data) > 65536 or offset+len(data) > self.maximum_bytes:
-                    raise ValueError('NATIVE_RECORDING_CAPACITY')
+            pending=bytearray();pending_reads=[];coalesce_bytes=min(self.raw_coalesce_bytes,self.segment_bytes);coalesce_s=self.raw_coalesce_s
+            def flush_pending(end):
+                # One archived/emitted chunk per coalesced run of reads. Every original read keeps
+                # its own receipt window and length in `reads`; bytes, offsets and SHA are exact.
+                nonlocal pending,pending_reads,chunk_index,offset
+                if not pending:return
+                data=bytes(pending)
                 metadata = dict(stream_id=self.stream_id, chunk_index=chunk_index, offset=offset,
-                    length=len(data), receipt_start_s=before, receipt_end_s=received,
+                    length=len(data), receipt_start_s=pending_reads[0][0], receipt_end_s=end,
+                    reads=pending_reads[:64],read_count=len(pending_reads),
                     sha256=hashlib.sha256(data).hexdigest())
                 raw_event=dict(metadata,base64=base64.b64encode(data).decode())
                 # Queue admission precedes decode; bounded capacity and sticky
@@ -306,12 +313,23 @@ class NativeStream:
                 archive.append_prepared(json.dumps(raw_event,separators=(',',':'))+'\n','native_chunk')
                 self.emit('raw',raw_event)
                 chunk_index += 1; offset += len(data)
+                pending=bytearray();pending_reads=[]
+            while not self.cancel.is_set():
+                archive.check()
+                before = self.clock(); data = channel.read(.05); received = self.clock()
+                if data:
+                    if len(data) > 65536 or offset+len(pending)+len(data) > self.maximum_bytes:
+                        raise ValueError('NATIVE_RECORDING_CAPACITY')
+                    pending+=data;pending_reads.append([before,received,len(data)])
+                if pending and (not data or len(pending)>=coalesce_bytes or received-pending_reads[0][0]>=coalesce_s):
+                    flush_pending(received)
+                if not data:continue
                 decode_started=time.perf_counter()
                 packets=decoder.feed(data, received)
                 decode_s=time.perf_counter()-decode_started
                 self._accept_packets(packets)
                 with self.lock:
-                    self.state.update(bytes_received=offset, checksum_errors=decoder.errors, unframed_bytes=decoder.noise_bytes,
+                    self.state.update(bytes_received=offset+len(pending), checksum_errors=decoder.errors, unframed_bytes=decoder.noise_bytes,
                         unframed_segments=decoder.unframed_segments,
                         last_read_wait_s=received-before,last_decode_s=decode_s)
                     frame = self.frame
@@ -325,6 +343,7 @@ class NativeStream:
                         raw_sha256=frame['raw_sha256'],raw_digest_basis=frame['raw_digest_basis'],
                         source_byte_span=frame['source_byte_span'],nodes_sha256=frame['nodes_sha256'],quality=frame['quality']))
                     last_emit = received
+            flush_pending(self.clock())
         except BaseException as exc:
             error = str(exc) if isinstance(exc, (ValueError, OSError)) else type(exc).__name__
             archive_error=archive.status()['error'] if archive is not None else None

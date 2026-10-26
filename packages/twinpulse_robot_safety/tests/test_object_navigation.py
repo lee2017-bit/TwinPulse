@@ -42,7 +42,7 @@ class ContractTests(unittest.TestCase):
 class ControlTests(unittest.TestCase):
     def setUp(self):
         self.events=[];self.calls=[]
-        self.owner=RobotControl(dict(project_id='project'),'.',lambda *e:self.events.append(e),SimpleNamespace(),clock=lambda:1.)
+        self.owner=RobotControl(dict(project_id='project',operation_id='o'*32,connection_epoch='c'*32),'.',lambda *e:self.events.append(e),SimpleNamespace(),clock=lambda:1.)
         o=self.owner;o.field_mode=True;o.tracker=SimpleNamespace(snapshot=tracking)
         o._movement_ready=lambda:None;o._safety=lambda:None
         o.link=SimpleNamespace(enabled=False,sensor=SimpleNamespace(torque=False),
