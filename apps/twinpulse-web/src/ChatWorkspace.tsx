@@ -244,7 +244,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const [launcherRequest, setLauncherRequest] = useState<string | null>(null);
   const [showTwin, setShowTwin] = useState(window.innerWidth >= 1000);
   const [controlView,setControlView]=useState(false);
-  const [chatShare,setChatShare]=useState(55);
+  // Wide windows give the Digital Twin the larger share (2026-10-26 user review: the Twin looked small next to the chat).
+  const [chatShare,setChatShare]=useState(()=>typeof window!=='undefined'&&window.innerWidth>=1400?40:55);
   const [layoutVersion,setLayoutVersion]=useState(0);
   const columns=useRef<HTMLElement|null>(null);
   const splitPointer=useRef<number|null>(null);
@@ -449,12 +450,22 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     return () => { active = false; window.clearInterval(timer); };
   }, [api,contextVersion,projectActivity.busy]);
 
-  useEffect(()=>{
+  useLayoutEffect(()=>{  // before paint: a (re)opened chat is already at its latest message, never seen scrolling down
     if(!state||!list.current)return;
     const previous=scrollPositions.current.get(state.project_id);
     if(previous&&!previous.nearBottom)list.current.scrollTop=previous.top;
-    else{nearBottom.current=true;list.current.scrollTop=list.current.scrollHeight;setNewUpdates(false);}  // a reopened chat starts at its latest message
-  },[state?.project_id]);
+    else{nearBottom.current=true;list.current.scrollTop=list.current.scrollHeight;setNewUpdates(false);}
+  },[state?.project_id,home]);
+  // Follow mode keeps the bottom pinned synchronously on every transcript re-flow (messages, cards, images,
+  // Twin pane or split changes) while the reader has not scrolled up; the 400 ms tick below is only a backstop.
+  useLayoutEffect(()=>{
+    const node=list.current;if(home||!node||typeof ResizeObserver==='undefined'||typeof MutationObserver==='undefined')return;
+    const pin=()=>{if(nearBottom.current&&node.scrollHeight-node.scrollTop-node.clientHeight>4){node.scrollTop=node.scrollHeight;}};
+    const sizes=new ResizeObserver(pin);sizes.observe(node);for(const child of Array.from(node.children))sizes.observe(child);
+    const tree=new MutationObserver(records=>{for(const r of records)r.addedNodes.forEach(n=>{if(n instanceof Element&&n.parentElement===node)sizes.observe(n);});pin();});
+    tree.observe(node,{childList:true,subtree:true,characterData:true});pin();
+    return()=>{sizes.disconnect();tree.disconnect();};
+  },[home,state?.project_id]);
   // Follow mode (2026-10-26): while the reader has not scrolled up, keep the latest message in
   // view whatever re-flows the transcript (Twin pane, split, cards, images). A wheel/touch/key
   // scroll upward leaves follow mode; scrolling back near the bottom re-enters it.
@@ -819,9 +830,6 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <button type="button" onClick={()=>{setLibrarySource(usdPurposeSource);setUsdPurposeSource(null);setShowLibrary(true);}}>Library asset</button>
       <button type="button" onClick={()=>setUsdPurposeSource(null)}>Cancel USD attachment</button>
     </section>}
-    {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
-      enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
-      onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
     {showLibrary&&<ModelLibrary key={contextVersion} api={api} close={()=>setShowLibrary(false)}
       initialImport={librarySource} initialReference={imageRole==='asset_reference'?file:null} initialPrompt={text}
       sceneRevision={workflowFresh?workflow?.site_draft?.revision??null:null} placementEnabled={idleFlow&&connected&&engineReady&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
@@ -895,6 +903,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
           }}>Twin controls</button>}
         </section>
+        {/* The import panel lives in the chat column so the Digital Twin keeps its full height on the right (2026-10-26 user review). */}
+        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
+          enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
+          onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
         <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
           onKeyDown={event=>{if(['ArrowUp','PageUp','Home'].includes(event.key))nearBottom.current=false;}}
           onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80) nearBottom.current = true; }}>
