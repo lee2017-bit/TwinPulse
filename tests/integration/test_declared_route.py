@@ -900,3 +900,41 @@ class GeneratedTwinExportTest(unittest.TestCase):
         self.assertAlmostEqual(max(zs),0.,places=4)  # floor top on the plane the import expects
         self.assertAlmostEqual(min(zs),-.1,places=4)
         with self.assertRaises(ValueError):generated_twin_usda(objects[1:])
+
+
+class RobotWorkspaceFromGeneratedTwinTest(unittest.TestCase):
+    """One click: a generated Twin becomes a new project whose saved scene is the same boxes as an imported space."""
+    def _objects(self):
+        from twinpulse_core.models import SceneObject, Transform, ShapeSpec
+        return [SceneObject('floor','floor',Transform((0.,0.,-.05)),ShapeSpec('box',(12.,8.,.1))),
+                SceneObject('left_wall','wall',Transform((-6.,0.,1.75)),ShapeSpec('box',(.08,8.,3.5))),
+                SceneObject('Rack_1_post_0_a','rack',Transform((-.2,-.4,.75)),ShapeSpec('box',(.1,.1,1.5))),
+                SceneObject('Pallet_1','equipment',Transform((2.,-2.,.07),(0.,0.,30.)),ShapeSpec('box',(1.2,.8,.14)))]
+
+    def test_environment_contract_matches_the_exported_usda(self):
+        import hashlib
+        from twinpulse_app.twin_export import generated_twin_usda, generated_twin_environment
+        usda=generated_twin_usda(self._objects(),scene_id='f').encode('utf-8')
+        env=generated_twin_environment(self._objects(),usda,source_name='twin-x.usda',scene_id='f')
+        self.assertEqual(env['source_sha256'],hashlib.sha256(usda).hexdigest());self.assertEqual(env['units_basis'],'authored')
+        self.assertEqual([m['category'] for m in env['meshes']],['floor','wall','storage','unknown'])
+        self.assertEqual([m['label'] for m in env['meshes']],['floor','wall1','storage1','unknown1'])
+        self.assertTrue(all(len(m['triangles'])==12 and len(m['points_m'])==8 for m in env['meshes']))
+
+    def test_catalog_creates_a_new_project_with_an_imported_site_draft(self):
+        import tempfile
+        from uuid import uuid4
+        from twinpulse_app.project_catalog import ProjectCatalog, create_robot_workspace
+        from twinpulse_app.project_store import ProjectStore
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);catalog=ProjectCatalog(root,'default')
+            result=create_robot_workspace(catalog,'robot_demo',request_id=str(uuid4()),objects=self._objects(),scene_id='factory_1',
+                profile_id='default',source_project_id='chat_src')
+            self.assertEqual(result['created_project_id'],'robot_demo');self.assertEqual(result['object_count'],4);self.assertIs(result['physical_authority'],False)
+            record=ProjectStore.for_project(root,'robot_demo').load()
+            self.assertIsNotNone(record.site_draft);self.assertEqual(record.site_draft.provider_name,'local-environment-import')
+            self.assertIsNotNone(record.site_draft.site.scene.environment)
+            self.assertEqual(record.site_draft.site.scene.environment['source_name'],'twin-chat_src.usda')
+            self.assertTrue(any(p.name=='environment-source.bin' for p in (root/'projects'/'robot_demo').rglob('*')))
+            with self.assertRaises(FileExistsError):
+                create_robot_workspace(catalog,'robot_demo',request_id=str(uuid4()),objects=self._objects(),scene_id='factory_1',profile_id='default',source_project_id='chat_src')

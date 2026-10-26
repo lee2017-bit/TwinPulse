@@ -701,6 +701,10 @@ export class TwinPulseApi {
   createProject(project_id: string): Promise<{ created_project_id: string; catalog: ProjectCatalogState }> {
     return this.boundedProjectAction("/v1/product/projects/create", { project_id });
   }
+  /** One click from a generated Twin: a new project whose saved scene is that Twin as an imported robot workspace. */
+  createRobotWorkspace(project_id: string, request_id: string): Promise<{ created_project_id: string; catalog: ProjectCatalogState; object_count: number; physical_authority: false }> {
+    return this.request("/v1/product/projects/create-robot-workspace", { project_id, request_id });
+  }
   createManualRoomProject(value: {
     project_id: string; request_id: string; prompt: string; media_type: string;
     photo_base64: string; width_m: number; length_m: number; wall_height_m: number;

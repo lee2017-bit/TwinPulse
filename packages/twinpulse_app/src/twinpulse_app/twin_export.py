@@ -68,3 +68,38 @@ def generated_twin_usda(objects,*,scene_id='generated_twin'):
 
 
 __all__=['generated_twin_usda','EXPORT_SCHEMA']
+
+
+def generated_twin_environment(objects,usda_bytes,*,source_name,scene_id='generated_twin'):
+    """The same boxes as a validated imported-environment contract (what the inspection worker would produce).
+
+    Prim names carry the categories (floor, wall, storage for racks, unknown otherwise); colours follow the kind.
+    The USDA bytes are the archived source, so provenance stays checkable.
+    """
+    import hashlib
+    from twinpulse_core.environment_source import SCHEMA, checked_environment
+    counters={};meshes=[];floor_seen=False
+    for obj in objects:
+        kind=str(getattr(obj,'kind','') or '');shape=getattr(obj,'shape',None);transform=getattr(obj,'transform',None)
+        if kind in _SKIP_KINDS or shape is None or transform is None or getattr(shape,'type','')!='box':continue
+        identity=str(getattr(obj,'id',''))
+        if identity.endswith('_keepout'):continue
+        dims=tuple(float(v) for v in shape.dimensions_m)
+        if len(dims)!=3 or any(not math.isfinite(v) or v<=0 for v in dims):continue
+        position=tuple(float(v) for v in transform.position_m);yaw=float(transform.rotation_rpy_deg[2]) if transform.rotation_rpy_deg else 0.
+        category=_CATEGORY_BY_KIND.get(kind,'unknown')
+        if category=='floor':
+            if floor_seen:continue
+            name='floor';floor_seen=True;position=(position[0],position[1],-dims[2]/2)
+        else:
+            counters[category]=counters.get(category,0)+1;name='%s%d'%(category,counters[category])
+        path='/World/'+name
+        meshes.append(dict(id='Env_'+hashlib.sha256(path.encode()).hexdigest()[:20],source_path=path,category=category,label=name,
+            points_m=[[round(v,4) for v in p] for p in _box_vertices(position,dims,yaw)],triangles=[list(t) for t in _TRIANGLES],
+            color_rgb=[float(c) for c in _COLOR_BY_KIND.get(kind,(.6,.6,.62))],translation_m=[0.,0.,0.]))
+    if not floor_seen:raise ValueError('GENERATED_TWIN_FLOOR_REQUIRED')
+    return checked_environment(dict(schema_version=SCHEMA,source_name=source_name,source_sha256=hashlib.sha256(usda_bytes).hexdigest(),
+        source_up_axis='Z',source_meters_per_unit=1.,meters_per_unit=1.,units_basis='authored',floor_offset_m=0.,meshes=meshes))
+
+
+__all__.append('generated_twin_environment')

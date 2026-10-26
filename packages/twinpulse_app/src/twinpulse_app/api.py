@@ -828,6 +828,24 @@ class LocalApiServer:
                     except OSError as error:
                         raise BrokerError("project_store_unavailable", "Local project creation failed", status=409) from error
                     return self._json(request, 201, result)
+                if request.command == "POST" and parsed.path == "/v1/product/projects/create-robot-workspace":
+                    # One click from a generated Twin: a new project with that Twin as an imported robot workspace.
+                    if self.project_catalog is None:
+                        raise BrokerError("project_catalog_unavailable", "Local project catalog is unavailable", status=409)
+                    body = self._read_json(request)
+                    self._require_shape(body, {"project_id", "request_id"})
+                    application=self._workflow()._application;draft=application.site_draft
+                    if draft is None or draft.site.scene.environment is not None:
+                        raise BrokerError("robot_workspace_unavailable", "Create a Twin from a photo or text first; an imported space is already a robot workspace.", status=409)
+                    from .project_catalog import create_robot_workspace
+                    try:
+                        result = create_robot_workspace(self.project_catalog, self._string(body, "project_id"), request_id=self._string(body, "request_id"),
+                            objects=draft.site.scene.objects, scene_id=draft.site.scene.id, profile_id=self._workflow()._profile_id, source_project_id=self.project_id)
+                    except FileExistsError as error:
+                        raise BrokerError("project_exists", "Project name already exists", status=409) from error
+                    except ValueError as error:
+                        raise BrokerError("robot_workspace_invalid", str(error)[:200], status=409) from error
+                    return self._json(request, 201, result)
                 if request.command == "POST" and parsed.path == "/v1/product/projects/create-bedroom":
                     if self.project_catalog is None:
                         raise BrokerError("project_catalog_unavailable", "Local project catalog is unavailable", status=409)
