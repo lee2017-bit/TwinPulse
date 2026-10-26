@@ -1,0 +1,1122 @@
+{
+"schema_version": "semantic-scene-1.0",
+"summary": "Factory floor approx 12 m × 8 m with concrete floor, pale block walls, high ceiling; industrial pallet racks with boxes line the right wall, a workbench and yellow safety bollard on the left, and an open AGV lane down the centre.",
+"room": {
+"width_m": 12,
+"length_m": 8,
+"height_m": 4.0
+},
+"inventory": [
+{
+"id": "rack_1",
+"kind": "rack",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"rack_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "box_group_1_i1_ddc273adf5",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"box_group_1_i1_ddc273adf5"
+],
+"user_quote": null
+}
+},
+{
+"id": "box_group_1_i2_cd6ed86b49",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"box_group_1_i2_cd6ed86b49"
+],
+"user_quote": null
+}
+},
+{
+"id": "box_group_1_i3_7a46b6a5e1",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"box_group_1_i3_7a46b6a5e1"
+],
+"user_quote": null
+}
+},
+{
+"id": "box_group_1_i4_75978f33fb",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"box_group_1_i4_75978f33fb"
+],
+"user_quote": null
+}
+},
+{
+"id": "box_group_1_i5_6aa981f2ea",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"box_group_1_i5_6aa981f2ea"
+],
+"user_quote": null
+}
+},
+{
+"id": "crate_1",
+"kind": "box",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"crate_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "pallet_1",
+"kind": "pallet",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"pallet_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "pallet_floor_1_i1_c5030c64f2",
+"kind": "pallet",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"pallet_floor_1_i1_c5030c64f2"
+],
+"user_quote": null
+}
+},
+{
+"id": "pallet_floor_1_i2_e63cb33ea8",
+"kind": "pallet",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"pallet_floor_1_i2_e63cb33ea8"
+],
+"user_quote": null
+}
+},
+{
+"id": "pallet_floor_1_i3_03674d399f",
+"kind": "pallet",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"pallet_floor_1_i3_03674d399f"
+],
+"user_quote": null
+}
+},
+{
+"id": "stand_1_i1_a511a3d0d8",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"stand_1_i1_a511a3d0d8"
+],
+"user_quote": null
+}
+},
+{
+"id": "stand_1_i2_a812b74d99",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"stand_1_i2_a812b74d99"
+],
+"user_quote": null
+}
+},
+{
+"id": "stacker_1",
+"kind": "small_equipment",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"stacker_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "panel_1",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"panel_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "bollard_1",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"bollard_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "bollard_2",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"bollard_2"
+],
+"user_quote": null
+}
+},
+{
+"id": "guard_1",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"guard_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "pallet_wall_1",
+"kind": "pallet",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"pallet_wall_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "frame_1",
+"kind": "unknown",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"frame_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "hook_1",
+"kind": "small_equipment",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"hook_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "wall_fixture_1",
+"kind": "wall_fixture",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"wall_fixture_1"
+],
+"user_quote": null
+}
+},
+{
+"id": "blind_1_i1_0224cfb270",
+"kind": "window_blind",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"blind_1_i1_0224cfb270"
+],
+"user_quote": null
+}
+},
+{
+"id": "blind_1_i2_d5440e0839",
+"kind": "window_blind",
+"source": {
+"basis": "visual",
+"observation_ids": [
+"blind_1_i2_d5440e0839"
+],
+"user_quote": null
+}
+}
+],
+"objects": {
+"rack_1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.rack",
+"dimensions_m": [
+1.0,
+1.0,
+4.0
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+},
+"warehouse_parameters": {
+"bay_count": 2,
+"level_count": 2
+}
+},
+"pallet_1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.pallet",
+"dimensions_m": [
+1.2,
+1.0,
+0.15
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"crate_1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+1.2,
+0.8,
+0.6
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "pallet_1",
+"part": "deck",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"box_group_1_i1_ddc273adf5": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+0.5,
+0.5,
+0.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "rack_1",
+"part": "shelf_2",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"box_group_1_i2_cd6ed86b49": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+0.5,
+0.5,
+0.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "rack_1",
+"part": "shelf_2",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"box_group_1_i3_7a46b6a5e1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+0.5,
+0.5,
+0.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "rack_1",
+"part": "shelf_2",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"box_group_1_i4_75978f33fb": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+0.4,
+0.3,
+0.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "rack_1",
+"part": "shelf_2",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"box_group_1_i5_6aa981f2ea": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.box",
+"dimensions_m": [
+0.4,
+0.3,
+0.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "surface",
+"parent_id": "rack_1",
+"part": "shelf_2",
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"pallet_floor_1_i1_c5030c64f2": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.pallet",
+"dimensions_m": [
+1.2,
+1.0,
+0.15
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"pallet_floor_1_i2_e63cb33ea8": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.pallet",
+"dimensions_m": [
+1.2,
+1.0,
+0.15
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"pallet_floor_1_i3_03674d399f": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.pallet",
+"dimensions_m": [
+1.2,
+1.0,
+0.15
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"panel_1": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "common.unknown",
+"dimensions_m": [
+0.6,
+0.2,
+2.0
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"pallet_wall_1": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "warehouse.pallet",
+"dimensions_m": [
+1.2,
+1.0,
+0.15
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"hook_1": {
+"region": "rear_left",
+"yaw_deg": 0,
+"model_id": "common.small_equipment",
+"dimensions_m": [
+0.2,
+0.2,
+0.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"stand_1_i1_a511a3d0d8": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.unknown",
+"dimensions_m": [
+0.6,
+0.4,
+0.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"stand_1_i2_a812b74d99": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.unknown",
+"dimensions_m": [
+0.6,
+0.4,
+0.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"stacker_1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "common.small_equipment",
+"dimensions_m": [
+0.6,
+0.6,
+2.0
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"wall_fixture_1": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "common.wall_fixture",
+"dimensions_m": [
+0.1,
+0.1,
+1.5
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "wall",
+"parent_id": "rear_wall",
+"part": null,
+"anchor": "centre",
+"elevation_m": 2.0
+}
+},
+"blind_1_i1_0224cfb270": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "home.window_blind",
+"dimensions_m": [
+0.05,
+1.5,
+1.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "wall",
+"parent_id": "right_wall",
+"part": null,
+"anchor": "centre",
+"elevation_m": 1.0
+}
+},
+"blind_1_i2_d5440e0839": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "home.window_blind",
+"dimensions_m": [
+0.05,
+1.5,
+1.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "wall",
+"parent_id": "right_wall",
+"part": null,
+"anchor": "centre",
+"elevation_m": 1.0
+}
+},
+"guard_1": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "common.unknown",
+"dimensions_m": [
+0.5,
+2.0,
+1.0
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"frame_1": {
+"region": "middle_centre",
+"yaw_deg": 0,
+"model_id": "common.unknown",
+"dimensions_m": [
+0.5,
+0.5,
+0.2
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+}
+},
+"bollard_1": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "local.830361779608ac8f83396984",
+"dimensions_m": [
+0.2,
+0.2,
+1.0
+],
+"variant": "standard",
+"finish": "recipe_materials",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+},
+"recipe_parameters": {
+"width": 0.2,
+"depth": 0.2,
+"height": 1.0
+}
+},
+"bollard_2": {
+"region": "middle_left",
+"yaw_deg": 0,
+"model_id": "local.5ab256d29c30f18c9ec723d2",
+"dimensions_m": [
+0.15,
+0.15,
+1.0
+],
+"variant": "standard",
+"finish": "recipe_materials",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+},
+"recipe_parameters": {
+"width": 0.15,
+"depth": 0.15,
+"height": 1.0
+}
+}
+},
+"state": "DRAFT_INCOMPLETE",
+"physical_authority": false,
+"model_recipes": {
+"local.830361779608ac8f83396984": {
+"schema_version": "model-recipe-1.0",
+"interpreter_version": "model-recipe-compiler-1.1",
+"title": "Safety Bollard",
+"family": "warehouse",
+"kind": "unknown",
+"parameters": [
+{
+"name": "width",
+"type": "number",
+"minimum": 0.05,
+"maximum": 2.0,
+"default": 0.2
+},
+{
+"name": "depth",
+"type": "number",
+"minimum": 0.05,
+"maximum": 2.0,
+"default": 0.2
+},
+{
+"name": "height",
+"type": "number",
+"minimum": 0.2,
+"maximum": 3.0,
+"default": 1.0
+}
+],
+"parts": [
+{
+"id": "bollard",
+"center": [
+{
+"op": "mul",
+"args": [
+"width",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+0.5
+]
+}
+],
+"size": [
+{
+"op": "mul",
+"args": [
+"width",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+1
+]
+}
+],
+"material": "metal",
+"support_top": false,
+"repeat": null
+}
+]
+},
+"local.5ab256d29c30f18c9ec723d2": {
+"schema_version": "model-recipe-1.0",
+"interpreter_version": "model-recipe-compiler-1.1",
+"title": "Yellow Bollard",
+"family": "warehouse",
+"kind": "unknown",
+"parameters": [
+{
+"name": "width",
+"type": "number",
+"minimum": 0.05,
+"maximum": 0.5,
+"default": 0.1
+},
+{
+"name": "depth",
+"type": "number",
+"minimum": 0.05,
+"maximum": 0.5,
+"default": 0.1
+},
+{
+"name": "height",
+"type": "number",
+"minimum": 0.5,
+"maximum": 3.0,
+"default": 1.0
+}
+],
+"parts": [
+{
+"id": "bollard_body",
+"center": [
+{
+"op": "mul",
+"args": [
+"width",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+0.5
+]
+}
+],
+"size": [
+{
+"op": "mul",
+"args": [
+"width",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+1
+]
+}
+],
+"material": "white",
+"support_top": false,
+"repeat": null
+}
+]
+}
+},
+"model_selections": {
+"rack_1": "warehouse.rack",
+"stand_1_i1_a511a3d0d8": "common.unknown",
+"stand_1_i2_a812b74d99": "common.unknown",
+"panel_1": "common.unknown",
+"guard_1": "common.unknown",
+"frame_1": "common.unknown",
+"bollard_1": "local.830361779608ac8f83396984",
+"bollard_2": "local.5ab256d29c30f18c9ec723d2"
+},
+"model_definition_work": {
+"bollard_1": {
+"state": "validated",
+"last_attempt_id": "a4c0b47b46f8489c84427df1f00cf525",
+"failure": null,
+"attempt_ids": [
+"a4c0b47b46f8489c84427df1f00cf525"
+],
+"contract_sha256": "4f9731c50b4cff91c0ba3ca421cad2701ce2d137235f58d173103d7e9618bd61",
+"validated_recipe": {
+"schema_version": "model-recipe-1.0",
+"interpreter_version": "model-recipe-compiler-1.1",
+"title": "Safety Bollard",
+"family": "warehouse",
+"kind": "unknown",
+"parameters": [
+{
+"name": "width",
+"type": "number",
+"minimum": 0.05,
+"maximum": 2.0,
+"default": 0.2
+},
+{
+"name": "depth",
+"type": "number",
+"minimum": 0.05,
+"maximum": 2.0,
+"default": 0.2
+},
+{
+"name": "height",
+"type": "number",
+"minimum": 0.2,
+"maximum": 3.0,
+"default": 1.0
+}
+],
+"parts": [
+{
+"id": "bollard",
+"center": [
+{
+"op": "mul",
+"args": [
+"width",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+0.5
+]
+}
+],
+"size": [
+{
+"op": "mul",
+"args": [
+"width",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+1
+]
+}
+],
+"material": "metal",
+"support_top": false,
+"repeat": null
+}
+]
+},
+"validated_support_bindings": {},
+"model_id": "local.830361779608ac8f83396984"
+},
+"bollard_2": {
+"state": "validated",
+"last_attempt_id": "1883d77830ac4077a48ebe5c7c246286",
+"failure": null,
+"attempt_ids": [
+"1883d77830ac4077a48ebe5c7c246286"
+],
+"contract_sha256": "8d4ad90b344e36a824c666ceea87c9cf225af66b7b092174c9aac7a3997f8368",
+"validated_recipe": {
+"schema_version": "model-recipe-1.0",
+"interpreter_version": "model-recipe-compiler-1.1",
+"title": "Yellow Bollard",
+"family": "warehouse",
+"kind": "unknown",
+"parameters": [
+{
+"name": "width",
+"type": "number",
+"minimum": 0.05,
+"maximum": 0.5,
+"default": 0.1
+},
+{
+"name": "depth",
+"type": "number",
+"minimum": 0.05,
+"maximum": 0.5,
+"default": 0.1
+},
+{
+"name": "height",
+"type": "number",
+"minimum": 0.5,
+"maximum": 3.0,
+"default": 1.0
+}
+],
+"parts": [
+{
+"id": "bollard_body",
+"center": [
+{
+"op": "mul",
+"args": [
+"width",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+0.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+0.5
+]
+}
+],
+"size": [
+{
+"op": "mul",
+"args": [
+"width",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"depth",
+1.0
+]
+},
+{
+"op": "mul",
+"args": [
+"height",
+1
+]
+}
+],
+"material": "white",
+"support_top": false,
+"repeat": null
+}
+]
+},
+"validated_support_bindings": {},
+"model_id": "local.5ab256d29c30f18c9ec723d2"
+}
+},
+"model_resolution_done": true
+}

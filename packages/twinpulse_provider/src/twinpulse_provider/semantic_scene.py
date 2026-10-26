@@ -191,8 +191,11 @@ def batch_schema(inventory, identities, *, recipes=None, selections=None):
                     fields['variant']={'enum':selected_manifest['variants']}
                     fields['finish']={'enum':selected_manifest['finishes']}
                 if 'recipe_parameters' in fields:fields['recipe_parameters']={'type':'null'}
+        # Stored objects drop a null recipe_parameters (layout_for), so an update of a
+        # builtin/warehouse object must not REQUIRE that key: every geometry repair of such an
+        # object was SEMANTIC_VARIANT_INVALID and generations stalled (2026-10-26 factory take).
         slots[identity] = {'type': 'object', 'additionalProperties': False,
-                          'required': list(fields), 'properties': fields}
+                          'required': [key for key,shape in fields.items() if shape!={'type':'null'}], 'properties': fields}
     return {'type': 'object', 'additionalProperties': False,
             'required': list(slots), 'properties': slots}
 

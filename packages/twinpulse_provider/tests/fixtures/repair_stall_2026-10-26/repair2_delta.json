@@ -1,0 +1,39 @@
+{
+"patch_version": "semantic-delta-1.0",
+"base_revision": "035d49e5c8be446217ef77c84642a6b148341bd7ba2af3ee16d281df9fa56783",
+"changes": {
+"box_group_1_i1_ddc273adf5": null,
+"box_group_1_i2_cd6ed86b49": null,
+"box_group_1_i3_7a46b6a5e1": null,
+"box_group_1_i4_75978f33fb": null,
+"box_group_1_i5_6aa981f2ea": null,
+"rack_1": {
+"region": "middle_right",
+"yaw_deg": 0,
+"model_id": "warehouse.rack",
+"dimensions_m": [
+1.0,
+1.0,
+3.9
+],
+"variant": "standard",
+"finish": "catalog_default",
+"placement": {
+"relation": "floor",
+"parent_id": null,
+"part": null,
+"anchor": "centre",
+"elevation_m": null
+},
+"warehouse_parameters": {
+"bay_count": 2,
+"level_count": 2
+}
+}
+},
+"room": {
+"width_m": 12,
+"length_m": 8,
+"height_m": 4.0
+}
+}
