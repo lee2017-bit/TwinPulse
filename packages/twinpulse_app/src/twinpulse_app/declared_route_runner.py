@@ -25,6 +25,8 @@ PHYSICAL_SETTLE_S=1.5
 MAX_RECOVERIES=2
 RECOVERY_BACKOFF_M=.25
 RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
+SIM_RECOVERY_OFFSET_M=.45  # SIM contact stop: body .105 + skin .10 = the obstacle face is ~.2 m ahead
+SIM_RECOVERY_KEEPOUT_M=.40
 MAX_STEPS_FACTOR=3
 OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_fleet_runtime.integrate_motion
 TRACE_SPACING_M=.04
@@ -365,9 +367,12 @@ class DeclaredRouteRunner:
                         and recoveries<MAX_RECOVERIES):
                     recoveries+=1
                     blocked=plan_pose(start,origin,self._measured(row))
-                    discs.append((blocked[0]+.25*math.cos(blocked[2]),blocked[1]+.25*math.sin(blocked[2]),RECOVERY_KEEPOUT_M))  # proximity fires within ~.23 m
+                    # Physical proximity fires ~.23 m before contact; the SIM engine stops at body contact (radius + skin),
+                    # so its keepout sits further ahead and wider to cover a whole unmodelled box (2026-10-26 SIM box test).
+                    offset,radius=(.25,RECOVERY_KEEPOUT_M) if (row or {}).get('kind')=='physical' else (SIM_RECOVERY_OFFSET_M,SIM_RECOVERY_KEEPOUT_M)
+                    discs.append((blocked[0]+offset*math.cos(blocked[2]),blocked[1]+offset*math.sin(blocked[2]),radius))
                     with self.lock:
-                        self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=RECOVERY_KEEPOUT_M))
+                        self.current.setdefault('recoveries',[]).append(dict(at=[round(v,4) for v in blocked],keepout_m=radius))
                         self._save()
                     self._overlay(recoveries=recoveries)
                     self._progress('recovery',at=[round(v,4) for v in blocked],recoveries=recoveries)

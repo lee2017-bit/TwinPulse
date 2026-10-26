@@ -980,3 +980,4 @@ class SimObstacleStopRecoveryTest(unittest.TestCase):
         self.assertIn('backward 25.0cm',texts)
         self.assertEqual(len(result['recoveries']),1)
         self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        self.assertEqual(result['recoveries'][0]['keepout_m'],.4)  # SIM keepout covers a whole 0.5 m box
