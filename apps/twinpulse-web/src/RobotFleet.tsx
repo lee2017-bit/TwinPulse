@@ -7,7 +7,7 @@ import type {TwinPulseApi} from './api';
 import {CONTROL_INPUT_TTL_MS} from './robot-control-timing';
 import {isRobotTaskRequest} from './robot-task-intent';
 import {downloadBlob} from './download-blob';
-import {RobotFieldTests} from './RobotFieldTests';
+import {FieldSessionGate,RobotFieldTests} from './RobotFieldTests';
 import {RobotOperationDiagnostics} from './RobotOperationDiagnostics';
 import {RobotMotionReview} from './RobotMotionReview';
 import {FloorMap} from './FloorMap';
@@ -247,7 +247,14 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     setPrepareConfirmed(false);setQualifyConfirmed(false);
     setMarkerX('0');setMarkerY('0');setMarkerYaw('0');setMarkerOpen(false);
   },[api,context,selectedId]);
-  useEffect(()=>{setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);},[robot?.connection_epoch]);
+  const previousEpoch=useRef<string|null|undefined>(undefined);const [epochNotice,setEpochNotice]=useState<string|null>(null);
+  useEffect(()=>{
+    setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);
+    // A new connection epoch clears every supervisor tick; say so instead of silently unticking (PHYS09).
+    if(previousEpoch.current!==undefined&&previousEpoch.current!==robot?.connection_epoch)setEpochNotice('Confirmations reset: new connection epoch');
+    previousEpoch.current=robot?.connection_epoch;
+  },[robot?.connection_epoch]);
+  useEffect(()=>{setEpochNotice(null);previousEpoch.current=undefined;},[selectedId]);
   useEffect(()=>{setOperation(null);},[logOperationId]);
   useEffect(()=>{if(!drawerOpen)release.current();},[drawerOpen]);
   // Layout changes invalidate the current gesture; moving a console never
@@ -447,6 +454,23 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <button type="button" disabled={busy||selectionPending||!available||!adapterAvailable||!robot.capabilities.lidar||!fleetRobotFresh(robot)} aria-pressed={available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)} onClick={()=>{
           release.current();void action(envelope('lidar',robot,{enabled:!['STREAMING','STARTING'].includes(robot.lidar_state)}));}} aria-label={`Turn LiDAR ${available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}`} title="Change sensor state; visualization hiding is separate">LiDAR {available&&fresh&&['STREAMING','STARTING'].includes(robot.lidar_state)?'off':'on'}</button>
       </div>
+      {physical&&<section className="robot-fleet-session-gate" aria-label="Physical session gate">
+        <h5>Supervised session gate</h5>
+        {robot.connection_state!=='CONNECTED'&&<p role="alert" className="robot-fleet-link-status">Link {robot.connection_state} · {robot.link_detail??robot.reason??'no detail reported'} · Disconnect, then Connect to start a new session</p>}
+        {robot.control_owner_state==='EXITED_RECONNECT_REQUIRED'&&<p role="alert" className="robot-fleet-link-status">Recording fault on the robot ({robot.recording_failure_reason??'reason not reported'}) · controls closed · Disconnect, then Connect</p>}
+        {epochNotice&&<p role="status">{epochNotice}</p>}
+        <label className="robot-fleet-confirm"><input type="checkbox" checked={prepareConfirmed} onChange={event=>setPrepareConfirmed(event.target.checked)}/>I am present and confirm zero-command controller preparation.</label>
+        {(()=>{const why=!available?'Fleet state unavailable; refresh before sending an action.':!adapterAvailable?'Physical adapter missing in this build.':busy||selectionPending?'Another request is in flight.':
+          !fresh?`Waiting for a fresh heartbeat · link ${robot.connection_state} · ${robot.link_detail??robot.reason??'no reason reported'}`:
+          !robot.capabilities.prepare?`Prepare blocked by the robot: ${robot.setup?.blockers.length?robot.setup.blockers.map(b=>scalar(b,120)).join(' · '):'no setup receipt yet'}`:
+          robot.control_state==='ARMING'?'Preparing…':!prepareConfirmed?'Tick "I am present" to enable Prepare.':null;
+          return why?<p className="robot-fleet-gate-blocker" role="status">Prepare: {why}</p>:null;})()}
+        <label className="robot-fleet-confirm"><input type="checkbox" checked={qualifyConfirmed} onChange={event=>setQualifyConfirmed(event.target.checked)}/>I am supervising the robot with the required clear space and confirm the stop qualification movement.</label>
+        <div className="robot-fleet-gate-row"><button type="button" disabled={!canSetup||!robot.capabilities.qualify||!qualifyConfirmed} onClick={()=>{
+          release.current();setQualifyConfirmed(false);void action(envelope('qualify',robot,{confirmed:true}));}}>Run same-boot stop qualification</button>
+          {(!canSetup||!robot.capabilities.qualify||!qualifyConfirmed)&&<p className="robot-fleet-gate-blocker" role="status">{!fresh?`Waiting for a fresh heartbeat · link ${robot.connection_state} · ${robot.link_detail??robot.reason??'no reason reported'}`:!robot.capabilities.qualify?'Qualification blocked by the robot (see Physical setup blockers).':!qualifyConfirmed?'Tick the supervision confirmation to enable it.':'Another request is in flight.'}</p>}</div>
+        <FieldSessionGate robot={robot} available={available&&adapterAvailable&&!selectionPending} busy={busy} onAction={(name,payload)=>{release.current();void action(envelope(name,robot,payload));}}/>
+      </section>}
       <div className="robot-fleet-control-primary">
         <div className="robot-fleet-pad" role="group" aria-label="Hold to drive" tabIndex={0}
           onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))release.current();}}
@@ -537,15 +561,12 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <p className="robot-fleet-policy">Connect keeps one authenticated SSH session and starts no motor or sensor. Fresh heartbeat and measured voltage do not grant driving permission. Reconnect requires Disconnect first.</p>
         {!robot.capabilities.drive&&<p role="status">Protected manual movement is unavailable until the runtime grants drive capability. The separate supervised field-test path has its own explicit admission below. Status, Stop and operation logs remain available.</p>}
       </>}
-      {physical&&<RobotFieldTests key={`${context}:${robot.robot_id}`} robot={robot} available={available&&adapterAvailable&&!selectionPending} busy={busy}
+      {physical&&<RobotFieldTests key={`${context}:${robot.robot_id}`} robot={robot} available={available&&adapterAvailable&&!selectionPending} busy={busy} includeGate={false}
         onAction={(name,payload)=>{release.current();void action(envelope(name,robot,payload));}} onOpenLogs={()=>void logs()}/>}
       {physical&&<details className="robot-physical-setup">
         <summary>Physical setup · {scalar(robot.setup?.runtime_state)}</summary>
         <p>Prepare opens the reviewed controller in zero-command mode. Qualification performs the existing supervised stop test and may move the robot. Each requires a new explicit confirmation; neither runs on Connect or reconnect.</p>
-        <label className="robot-fleet-confirm"><input type="checkbox" checked={prepareConfirmed} onChange={event=>setPrepareConfirmed(event.target.checked)}/>I am present and confirm zero-command controller preparation.</label>
-        <label className="robot-fleet-confirm"><input type="checkbox" checked={qualifyConfirmed} onChange={event=>setQualifyConfirmed(event.target.checked)}/>I am supervising the robot with the required clear space and confirm the stop qualification movement.</label>
-        <button type="button" disabled={!canSetup||!robot.capabilities.qualify||!qualifyConfirmed} onClick={()=>{
-          release.current();setQualifyConfirmed(false);void action(envelope('qualify',robot,{confirmed:true}));}}>Run same-boot stop qualification</button>
+        <p>The supervisor confirmations, Prepare, stop qualification, Arm and Bootstrap stop are in the session gate under the buttons above (always visible).</p>
         <section aria-label="Physical setup blockers">
           <h5>Setup requirements</h5>
           {robot.setup?.blockers.length?<ul>{robot.setup.blockers.map((blocker,index)=><li key={`${index}-${blocker}`}>{scalar(blocker,500)}</li>)}</ul>:

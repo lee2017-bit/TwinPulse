@@ -815,6 +815,12 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     const {action}=setup(physicalState(degraded));
     const reconnect=screen.getByRole('button',{name:'Disconnect to reconnect'});
     expect((reconnect as HTMLButtonElement).disabled).toBe(true);fireEvent.click(reconnect);expect(action).not.toHaveBeenCalled();
+    // PHYS09: the link reason stays on screen and the supervisor gate is still rendered (not hidden in a collapsed Details box)
+    expect(screen.getByText(/Link DEGRADED/).textContent).toContain('Disconnect, then Connect to start a new session');
+    const gate=screen.getByLabelText('Physical session gate');
+    expect(gate.querySelector('input[type=checkbox]')).not.toBeNull();
+    expect((screen.getByRole('button',{name:'Arm supervised field session'}) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByText(/Waiting for a fresh heartbeat · link DEGRADED/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button',{name:'Disconnect'}));
     await waitFor(()=>expect(action.mock.calls[0][0]).toMatchObject({action:'disconnect',robot_id:'a',connection_epoch:'connection-a'}));
   });

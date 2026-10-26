@@ -15,7 +15,11 @@ export type DiagnosticRow={index:number;kind:string;categories:DiagnosticCategor
   computeMs:number|null;computeIdentity:string|null};
 export type DiagnosticProjection={rows:DiagnosticRow[];sourceEvents:number;rawOmitted:number;unverifiedIdentities:number};
 export function lidarDiagnosticLabel(robot:RobotFleetRobot,available=true){
-  return available&&fleetRobotFresh(robot)?robot.lidar_state:`No current stream · last reported ${robot.lidar_state}`;
+  if(available&&fleetRobotFresh(robot))return robot.lidar_state;
+  // After a remote exit without cleanup the PC holds no sensor truth: say so instead of echoing the last robot value as a fault.
+  if(robot.kind==='physical'&&robot.connection_state==='DISCONNECTED'&&robot.cleanup_confirmed!==true)
+    return `unknown · runtime exited without cleanup (last robot value ${robot.last_reported_lidar_state??robot.lidar_state}) · check whether the LDS is spinning`;
+  return `No current stream · last reported ${robot.lidar_state}`;
 }
 const ms=(value:unknown)=>{const n=measured(value,1000);return n===null?'not recorded':`${n.toFixed(2)} ms`;};
 function rowFor(event:Record<string,unknown>,index:number):DiagnosticRow|null{
