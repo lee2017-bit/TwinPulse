@@ -5,6 +5,15 @@ import time
 from twinpulse_core.robot_survey import SIM_BODY_RADIUS_M,SIM_STOP_SKIN_M,SIM_STOP_SUBSTEP_TRAVEL_M
 
 
+def sim_obstacle_boxes(items):
+    """Motion-guard rectangles (x0, y0, x1, y1) of SIM-world test obstacles tall enough to reach the guard slice."""
+    boxes=[]
+    for item in items:
+        x,y=float(item['position_m'][0]),float(item['position_m'][1]);w,d,h=(float(v) for v in item['size_m'])
+        if h>=.18:boxes.append((x-w/2,y-d/2,x+w/2,y+d/2))
+    return boxes
+
+
 def observe_startup(robot,created,dt,capture_pending):
     if not created and not robot.get('startup_ready',False):
         eligible=robot.get('render_observed',False) and not capture_pending and 0<dt<.25
@@ -588,8 +597,7 @@ class FleetRuntime:
             cube.AddTranslateOp().Set(Gf.Vec3d(float(x),float(y),float(h)/2));cube.AddScaleOp().Set(Gf.Vec3f(float(w),float(d),float(h)))
             cube.CreateDisplayColorAttr([Gf.Vec3f(.55,.12,.1)])
             cube.GetPrim().SetCustomDataByKey('source','SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN');cube.GetPrim().SetCustomDataByKey('label',item.get('label') or '')
-        self.sim_obstacle_boxes=[(float(x)-float(w)/2,float(y)-float(d)/2,float(x)+float(w)/2,float(y)+float(d)/2)
-                                 for x,y in [tuple(i['position_m']) for i in items] for w,d,h in [tuple(i['size_m'])] if h>=.18]
+        self.sim_obstacle_boxes=sim_obstacle_boxes(items)
         self.sim_obstacle_key=key;self.bounds_dirty=True  # the motion guard boxes must include them at once
 
     def _draw_lidar_layer(self,stage,layer):

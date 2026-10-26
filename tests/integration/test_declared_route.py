@@ -956,3 +956,14 @@ class SimObstacleSyncIdempotenceTest(unittest.TestCase):
         body=source[source.index('def _sync_sim_obstacles'):source.index('def _draw_lidar_layer')]
         self.assertIn("if key==getattr(self,'sim_obstacle_key',None):return",body)
         self.assertLess(body.index("if key==getattr(self,'sim_obstacle_key',None):return"),body.index('UsdGeom.Xform.Define'))
+
+
+class SimObstacleBoxesTest(unittest.TestCase):
+    def test_boxes_follow_position_and_size_and_skip_flat_items(self):
+        # 2026-10-26: a nested comprehension in the runtime raised NameError, so the SIM box was never authored in Isaac.
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('fleet_runtime_boxes',Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py')
+        source=open(spec.origin,encoding='utf-8').read()
+        namespace={};exec(source[source.index('def sim_obstacle_boxes'):source.index('def observe_startup')],namespace)
+        boxes=namespace['sim_obstacle_boxes']([dict(position_m=[-2.07,2.06],size_m=[.5,.5,.5]),dict(position_m=[1,1],size_m=[.4,.4,.1])])
+        self.assertEqual([tuple(round(v,3) for v in b) for b in boxes],[(-2.32,1.81,-1.82,2.31)])
