@@ -116,9 +116,13 @@ export function RoutePreview({preview,picks=[],onPick}:{preview:NonNullable<Ques
     viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6,cursor:onPick?'crosshair':'default'}}
     onClick={onPick?event=>{const box=(event.currentTarget as SVGSVGElement).getBoundingClientRect();
       const px=(event.clientX-box.left)/box.width*w,py=(event.clientY-box.top)/box.height*h;const wx=x0+px,wy=y1-py;
-      // Snap to the nearest scanned free cell so a click beside a wall still yields a plannable stop.
-      let best:number[]|null=null,bestD=0.45;
-      for(const [cx,cy] of preview.free_cells){const d=Math.hypot(cx-wx,cy-wy);if(d<bestD){bestD=d;best=[cx,cy];}}
+      // Snap to the nearest scanned free cell that has free floor all around it (the robot
+      // needs its berth), so a click beside a wall still yields a plannable stop.
+      const key=(x:number,y:number)=>`${Math.round(x*10)},${Math.round(y*10)}`;
+      const free=new Set(preview.free_cells.map(([cx,cy])=>key(cx,cy)));
+      const interior=(cx:number,cy:number)=>{for(let i=-3;i<=3;i++)for(let j=-3;j<=3;j++){if(i*i+j*j>10)continue;if(!free.has(key(cx+i*c,cy+j*c)))return false;}return true;};
+      let best:number[]|null=null,bestD=0.7;
+      for(const [cx,cy] of preview.free_cells){const d=Math.hypot(cx-wx,cy-wy);if(d<bestD&&interior(cx,cy)){bestD=d;best=[cx,cy];}}
       if(best)onPick(Math.round(best[0]*100)/100,Math.round(best[1]*100)/100);}:undefined}>
     {picks.map(([x,y],i)=><g key={'pick'+i}><circle cx={X(x)} cy={Y(y)} r={0.11} fill="#3fa9f5"/><text x={X(x)+0.14} y={Y(y)-0.1} fontSize={0.22} fill="#3fa9f5">{String.fromCharCode(65+i)}</text></g>)}
     {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
