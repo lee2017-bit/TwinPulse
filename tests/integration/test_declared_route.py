@@ -946,3 +946,13 @@ class ApiAttributeRegressionTest(unittest.TestCase):
         source=open(Path(__file__).resolve().parents[2]/'packages'/'twinpulse_app'/'src'/'twinpulse_app'/'api.py',encoding='utf-8').read()
         self.assertNotIn('self.project_id',source)
         self.assertIn("source_project_id=self._workflow()._broker.project_id",source)
+
+
+class SimObstacleSyncIdempotenceTest(unittest.TestCase):
+    def test_unchanged_obstacle_set_authors_nothing_and_leaves_bounds_clean(self):
+        # 2026-10-26: re-authoring an empty set every tick kept the motion bounds dirty, the imported-Twin grid rebuilt
+        # every update, ticks exceeded 250 ms and SIM robots never finished warming up.
+        source=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        body=source[source.index('def _sync_sim_obstacles'):source.index('def _draw_lidar_layer')]
+        self.assertIn("if key==getattr(self,'sim_obstacle_key',None):return",body)
+        self.assertLess(body.index("if key==getattr(self,'sim_obstacle_key',None):return"),body.index('UsdGeom.Xform.Define'))

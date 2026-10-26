@@ -569,7 +569,13 @@ class FleetRuntime:
         from pxr import Gf, UsdGeom
         path=self.ROOT+'/SimObstacles'
         key=tuple((i['id'],tuple(i['position_m']),tuple(i['size_m'])) for i in items)
-        if key==getattr(self,'sim_obstacle_key',None) and (items or not stage.GetPrimAtPath(path)):return
+        # Unchanged set: nothing to author. (Authoring every tick marked the motion bounds dirty every tick, and on an
+        # imported Twin the navigation grid rebuild made each update slower than 250 ms, so SIM robots never left
+        # ISAAC_MODEL_WARMING_UP — seen 2026-10-26 on the factory robot workspace.)
+        if key==getattr(self,'sim_obstacle_key',None):return
+        if not items:
+            if stage.GetPrimAtPath(path):stage.RemovePrim(path)
+            self.sim_obstacle_boxes=[];self.sim_obstacle_key=key;self.bounds_dirty=True;return
         root=UsdGeom.Xform.Define(stage,path).GetPrim()
         root.SetCustomDataByKey('source','SIM_WORLD_TEST_OBSTACLES_NOT_IN_TWIN');root.SetCustomDataByKey('motionAuthorized',False)
         wanted={'Obs_'+i['id'] for i in items}
