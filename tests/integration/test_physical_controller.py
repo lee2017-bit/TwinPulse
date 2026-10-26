@@ -688,8 +688,9 @@ class ProtocolTests(unittest.TestCase):
         # publish() re-measures the source age at the output boundary ("account for work in this final output
         # boundary"), so the stamp is older than 0.05 s by the real elapsed work: 1 ns here, ~26 us on a slow
         # container. Allow up to 5 ms of that work; the stamp can never be younger than the declared age.
+        # (float age*1e9 truncation can land 1 ns either side; allow 1 us of that, never more than 5 ms of work)
         stamp_lag_ns=950000000-sent[-1].header.stamp.nanosec
-        self.assertGreaterEqual(stamp_lag_ns,0);self.assertLessEqual(stamp_lag_ns,5_000_000)
+        self.assertGreaterEqual(stamp_lag_ns,-1_000);self.assertLessEqual(stamp_lag_ns,5_000_000)
         lost=mission.step(pose,None,.11,command_created_s=.1)
         self.assertFalse(lost['allowed']);self.assertEqual(lost['linear_m_s'],0.)
         # Same guarded output function, no enable/qualification fabricated by mission.
