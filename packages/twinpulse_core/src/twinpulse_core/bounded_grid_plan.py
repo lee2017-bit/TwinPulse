@@ -54,7 +54,7 @@ def _finite_pair(value):
 
 
 def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05,
-                      clearance=.30, max_cells=10000, max_expansions=8000,
+                      clearance=.30, max_cells=40000, max_expansions=32000,
                       max_waypoints=16, observed_cells=None, cell_size_m=.10, checked_route=None,
                       allow_direct_over_grid_budget=False):
     """A* with inflated obstacles, fixed budgets and collision-checked segments.
@@ -68,8 +68,8 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds)
             or not all(type(v) in (int, float) and math.isfinite(v) for v in (resolution, clearance))
             or not .02 <= resolution <= .20 or not .10 <= clearance <= 1.
-            or type(max_cells) is not int or not 1 <= max_cells <= 10000
-            or type(max_expansions) is not int or not 1 <= max_expansions <= 10000
+            or type(max_cells) is not int or not 1 <= max_cells <= 40000
+            or type(max_expansions) is not int or not 1 <= max_expansions <= 40000
             or type(max_waypoints) is not int or not 1 <= max_waypoints <= 16
             or type(allow_direct_over_grid_budget) is not bool):
         raise ValueError('GRID_PLAN_INPUT_INVALID')
