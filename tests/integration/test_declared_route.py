@@ -877,3 +877,26 @@ class SimWorldObstacleTest(unittest.TestCase):
         runtime=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
         self.assertIn("boxes=self._bounds(stage)+list(getattr(self,'sim_obstacle_boxes',[]))",runtime)  # proximity stop sees it
         self.assertNotIn("SimObstacles",runtime[runtime.index('def _navigation_scene'):runtime.index('def _navigation_scene')+2500])  # the planner grid does not
+
+
+class GeneratedTwinExportTest(unittest.TestCase):
+    """A photo/text-generated Twin exports as import-ready boxes (floor top at z=0, category-carrying prim names)."""
+    def test_boxes_become_categorised_triangle_meshes(self):
+        from twinpulse_core.models import SceneObject, Transform, ShapeSpec
+        from twinpulse_app.twin_export import generated_twin_usda
+        objects=[SceneObject('floor','floor',Transform((0.,0.,-.05)),ShapeSpec('box',(12.,8.,.1))),
+                 SceneObject('left_wall','wall',Transform((-6.,0.,1.75)),ShapeSpec('box',(.08,8.,3.5))),
+                 SceneObject('Rack_1_post_0_a','rack',Transform((-.2,-.4,.75)),ShapeSpec('box',(.1,.1,1.5))),
+                 SceneObject('Pallet_1','equipment',Transform((2.,-2.,.07),(0.,0.,30.)),ShapeSpec('box',(1.2,.8,.14))),
+                 SceneObject('Cart_1_keepout','equipment',Transform((3.,3.,.2)),ShapeSpec('box',(.5,.5,.4))),
+                 SceneObject('agv','robot',Transform((0.,0.,.2)),ShapeSpec('box',(.6,.4,.4)))]
+        text=generated_twin_usda(objects,scene_id='factory_1')
+        self.assertIn('def Mesh "floor"',text);self.assertIn('def Mesh "wall1"',text);self.assertIn('def Mesh "storage1"',text);self.assertIn('def Mesh "unknown1"',text)
+        self.assertNotIn('Cart_1_keepout',text);self.assertNotIn('"agv"',text)
+        self.assertIn('metersPerUnit = 1',text);self.assertIn('upAxis = "Z"',text)
+        self.assertEqual(text.count('faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]'),4)
+        floor=text[text.index('def Mesh "floor"'):text.index('def Mesh "wall1"')]
+        zs=[float(t.split(',')[2].strip(') ')) for t in floor.split('points = [')[1].split(']')[0].split('), (')]
+        self.assertAlmostEqual(max(zs),0.,places=4)  # floor top on the plane the import expects
+        self.assertAlmostEqual(min(zs),-.1,places=4)
+        with self.assertRaises(ValueError):generated_twin_usda(objects[1:])

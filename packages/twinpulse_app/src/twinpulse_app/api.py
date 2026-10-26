@@ -624,6 +624,22 @@ class LocalApiServer:
                     return self._json(request,200,self._library_workspace().snapshot())
                 if request.command=='GET' and parsed.path=='/v1/product/environment':
                     return self._json(request,200,self._environment_workspace().snapshot(session.session_id))
+                if request.command=='GET' and parsed.path=='/v1/product/environment/export-usda':
+                    # A generated (photo/text) Twin exported as approximate boxes, to be imported in a new chat as the robot workspace.
+                    from .twin_export import generated_twin_usda
+                    application=self._workflow()._application;draft=application.site_draft
+                    if draft is None:raise BrokerError('twin_export_unavailable','No generated Twin to export; create one first.',status=409)
+                    if draft.site.scene.environment is not None:raise BrokerError('twin_export_unavailable','This Twin is already an imported space.',status=409)
+                    try:text=generated_twin_usda(draft.site.scene.objects,scene_id=draft.site.scene.id)
+                    except ValueError as error:raise BrokerError('twin_export_invalid',str(error),status=409) from None
+                    content=text.encode('utf-8');name='twin-%s.usda'%self.project_id
+                    request.send_response(200);request.send_header('Content-Type','text/plain; charset=utf-8')
+                    request.send_header('Content-Disposition','attachment; filename="%s"'%name);request.send_header('X-TwinPulse-Export-Name',name)
+                    request.send_header('X-TwinPulse-Context',self.context_id);request.send_header('Content-Length',str(len(content)))
+                    request.send_header('Cache-Control','no-store');request.send_header('X-Content-Type-Options','nosniff');request.end_headers()
+                    try:request.wfile.write(content)
+                    except (BrokenPipeError,ConnectionAbortedError,ConnectionResetError):request.close_connection=True
+                    return
                 if parsed.path=='/v1/product/environment/alignment' and request.command in {'GET','POST'}:
                     service=self._environment_alignment()
                     value=service.action(self._read_json(request),session.session_id) if request.command=='POST' else service.snapshot()

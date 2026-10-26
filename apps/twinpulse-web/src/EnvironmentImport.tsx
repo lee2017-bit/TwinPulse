@@ -3,6 +3,7 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import {useEffect,useRef,useState} from 'react';
 import {ApiError,fileToBase64,type TwinPulseApi} from './api';
+import {downloadBlob} from './download-blob';
 import {isEnvironmentSource,type EnvironmentAction,type EnvironmentProposal,type EnvironmentState} from './environment-types';
 import type {SceneEditPreview,SceneEditTransaction,WorkflowState} from './types';
 import {EnvironmentObstacles} from './EnvironmentObstacles';
@@ -17,6 +18,7 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   const [state,setState]=useState<EnvironmentState|null>(null),[error,setError]=useState<string|null>(null);
   const [file,setFile]=useState<File|null>(initialFile??null),[units,setUnits]=useState<''|'m'|'cm'|'mm'>('');
   const [dirty,setDirty]=useState(!!initialFile),[busy,setBusy]=useState(false),[unknown,setUnknown]=useState(false);
+  const [exported,setExported]=useState<string|null>(null);
   const [selected,setSelected]=useState(''),[translation,setTranslation]=useState(['0','0']);
   const [moveRequest,setMoveRequest]=useState(''),[proposal,setProposal]=useState<EnvironmentProposal|null>(null);
   const [reviewedJob,setReviewedJob]=useState<string|null>(null);
@@ -132,6 +134,9 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
     {unknown&&<p role="alert">Delivery unknown. Check saved results before another action. No action is repeated automatically.</p>}
     {!enabled&&<p role="status">Finish the current scene action before importing or editing.</p>}
     <button type="button" disabled={busy} onClick={()=>void perform(async()=>{await refresh();if(pendingEdit)await confirmEdit(pendingEdit);})}>Check saved import</button>
+    {state?.status==='empty'&&typeof api.environmentExportUsda==='function'&&<p className="library-field"><button type="button" disabled={busy} aria-label="Export generated Twin as USD" onClick={()=>void perform(async()=>{
+      const {blob,name}=await api.environmentExportUsda();downloadBlob(blob,name);setExported(name);})}>Export generated Twin as USD</button>
+      <small>{exported?`Saved ${exported}. Start a New chat, attach it and import it as the robot workspace (approximate boxes, estimated dimensions).`:'A Twin generated from a photo or text can be exported as approximate boxes and imported in a new chat as the robot workspace (routes, LiDAR candidates, Twin edits).'}</small></p>}
     <fieldset disabled={blocked||modelRunning||state?.status==='inspecting'}><legend>Space source</legend>
       <label className="library-field">USD file<input aria-label="Space USD file" type="file" accept=".usd,.usda,.usdc" onChange={e=>{choose(e.target.files?.[0]??null);e.target.value='';}}/></label>
       {file&&<p>{file.name} · {dirty?'selected locally':'inspection submitted'} <button type="button" onClick={()=>choose(null)}>Remove space file</button></p>}
