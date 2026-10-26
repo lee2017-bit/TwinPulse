@@ -29,6 +29,24 @@ from .library_process import run_finite
 from .runtime_paths import resource_root
 
 
+def photo_crop_color(raw,bbox):
+    """Median RGB (0-1) of the candidate's normalized [left,top,right,bottom] crop; None when unusable."""
+    try:
+        import io
+        from PIL import Image
+        if not (isinstance(bbox,(list,tuple)) and len(bbox)==4 and all(type(v) in (int,float) for v in bbox)):return None
+        with Image.open(io.BytesIO(raw)) as image:
+            image=image.convert('RGB');w,h=image.size
+            l,t,r,b=[max(0.,min(1.,float(v))) for v in bbox]
+            box=(int(l*w),int(t*h),max(int(l*w)+1,int(r*w)),max(int(t*h)+1,int(b*h)))
+            crop=image.crop(box).resize((8,8))
+            pixels=sorted(crop.getdata(),key=lambda p:sum(p))
+            mid=pixels[len(pixels)//2]
+            return [round(v/255.,3) for v in mid]
+    except Exception:
+        return None
+
+
 class EnvironmentWorkspace:
     def __init__(self,workflow,registry=None):
         workflow._application._project_store._check_location()
@@ -284,7 +302,41 @@ class EnvironmentWorkspace:
                     artifact_id=artifact.artifact_id,expected_applied_revision=artifact.revision))
                 self.build_command=operation['command_id'];self.build_owner=session_id
                 return self.snapshot(workflow=self.workflow.snapshot(),operation=operation)
+            if action=='lidar_route_preview':
+                # Server-side only (route-candidate card): unknown obstacles from the
+                # declared-route LiDAR record, bound to that record's SHA-256.
+                if set(body)!={'action','request_id','obstacles','evidence'}:raise ValueError('ENVIRONMENT_EDIT_SHAPE')
+                history=self.workflow._application.scene_change_store().load();plan,site=history.replay(source)
+                environment=site.scene.environment;evidence=dict(basis='lidar_estimate',alignment_verified=False,
+                    source_name=body['evidence']['source_name'],sha256=body['evidence']['sha256'])
+                added=0
+                for index,obstacle in enumerate(body['obstacles'][:8]):
+                    xy=obstacle['position_xy_m'];size=obstacle['dimensions_m']
+                    # One object per Twin edit (the edit contract); stable ID per route candidate so a
+                    # repeated request adds the next candidate instead of a duplicate.
+                    identity='Added_'+hashlib.sha256((body['evidence']['source_name']+':%d'%index).encode('utf-8')).hexdigest()[:20]
+                    if added or any(o['item']['id']==identity for o in environment.get('overlays') or []):continue
+                    # A return seen through a doorway or near a wall can sit off the scanned floor:
+                    # shrink to the floor if possible, otherwise leave that candidate out.
+                    yaw=float(obstacle.get('yaw_deg') or 0.)
+                    for sides,margin in (((size[0],size[1]),obstacle['uncertainty_m']),((min(size[0],.3),min(size[1],.3)),.1),((.2,.2),.05)):
+                        item=dict(id=identity,kind='unknown',label=obstacle['label'],catalog_version=room_item_catalog_version('unknown'),
+                            position_m=[*xy,size[2]/2],dimensions_m=[sides[0],sides[1],size[2]],yaw_deg=yaw,observation_time_utc=None)
+                        try:environment=add_overlay(environment,dict(item=item,uncertainty_m=margin,evidence=dict(evidence)));added+=1;break
+                        except ValueError as exc:
+                            if 'OUTSIDE_FLOOR' not in str(exc) and 'FLOOR' not in str(exc):raise
+                if not added:raise ValueError("ENVIRONMENT_LIDAR_CANDIDATES_ALREADY_ADDED_OR_OUTSIDE_FLOOR")
+                call=SceneToolCall('imported_space','import_environment',dict(id='imported_space',environment=environment)).to_dict()
+                operation_id='environment_edit_'+hashlib.sha256(request.encode('utf-8')).hexdigest()[:32]
+                preview=self.workflow.preview_scene_edit(operation_id=operation_id,mode='change',target_call_id='imported_space',tool_call=call)
+                with self.lock:
+                    self.previews[operation_id]=dict(owner=session_id,preview=deepcopy(preview))
+                    while len(self.previews)>8:self.previews.popitem(last=False)
+                return self.snapshot(preview=preview,lidar_added=added)
             if action in {'move_preview','undo_preview','add_overlay_preview','remove_overlay_preview','photo_candidate_preview'}:
+                # Optional: the photo-recognized object replaces one LiDAR 'unknown' outline box (one object per edit).
+                replace_object_id=body.pop('replace_object_id',None) if action=='photo_candidate_preview' else None
+                if replace_object_id is not None and not isinstance(replace_object_id,str):raise ValueError('ENVIRONMENT_EDIT_SHAPE')
                 expected={'action','request_id','expected_scene_revision'}|(
                     {'object_id','translation_m'} if action=='move_preview' else
                     {'obstacle','photo'} if action=='add_overlay_preview' else
@@ -319,7 +371,15 @@ class EnvironmentWorkspace:
                         if body['duplicate_reviewed'] is not True:raise ValueError('PHOTO_DUPLICATE_REVIEW_REQUIRED')
                         job,candidate=self.photos.reference(body['candidate_ref'],original_environment)
                         if candidate['kind']!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
-                        overlay['evidence']=job['photo'];environment=add_overlay(original_environment,overlay)
+                        color=photo_crop_color(self.photos._check_photo(job['photo'])[0],candidate.get('bbox'))
+                        if color:item['display_color']=color  # display only: the box takes the photo's dominant colour
+                        base=original_environment
+                        if replace_object_id:
+                            # Only an added estimate (LiDAR outline, manual or earlier photo box) can be replaced; scanned meshes never.
+                            if not any(o['item']['id']==replace_object_id for o in original_environment.get('overlays') or []):
+                                raise ValueError('ENVIRONMENT_REPLACE_TARGET_NOT_AN_ADDED_OVERLAY')
+                            base=remove_overlay(original_environment,replace_object_id)
+                        overlay['evidence']=job['photo'];environment=add_overlay(base,overlay)
                         photo_reference=body['candidate_ref']
                     elif body['photo'] is not None:
                         overlay['evidence']=self._store_overlay_photo(body['photo'])

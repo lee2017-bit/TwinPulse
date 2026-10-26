@@ -83,6 +83,7 @@ class FleetRuntime:
         self.navigation_scene=None;self.navigation_scene_epoch=None
         self.scene_produced_at=None
         self.scan_worker=None;self.scan_cursor=None;self.scan_job=None;self.scan_join=None
+        self.route_key=None;self.route_error=None
 
     def close(self):
         errors=[]
@@ -364,6 +365,7 @@ class FleetRuntime:
             self.identity=identity;self.robots={};self.report=[];self.anchors=[];self.desired=None
             self.navigation_scene=None;self.navigation_scene_epoch=None;self.scene_produced_at=None
             if stage.GetPrimAtPath(self.ROOT):stage.RemovePrim(self.ROOT)
+            self.route_key=None
             self._watch_environment(stage)
         fleet=self.desired
         if not snapshot.applied_revision or not fleet or fleet.get('applied_revision')!=snapshot.applied_revision:return
@@ -518,11 +520,103 @@ class FleetRuntime:
                 intent_sequence=robot.get('stale_intent_sequence') if reason=='INPUT_STALE' else robot.get('intent_sequence')))
             robot['selected']=request.get('selected',False)
         self.report=report
+        try:self._draw_route(stage,fleet.get('route'))
+        except Exception as exc:self.route_error=type(exc).__name__  # display only; never stops the fleet
         self._schedule_scan(stage,rows,now)
         for row in report:
             robot=self.robots[row['robot_id']]
             row['runtime_work'].update(scan_prepare_s=robot.get('scan_prepare_s',0.),
                 scan_prepare=robot.get('scan_prepare'),update_s=round(time.monotonic()-now,6))
+
+    # Seven-segment strokes for stop numbers drawn on the floor (unit box 0..1 x 0..2).
+    SEGMENTS=dict(a=((0,2),(1,2)),b=((1,2),(1,1)),c=((1,1),(1,0)),d=((0,0),(1,0)),e=((0,0),(0,1)),f=((0,1),(0,2)),g=((0,1),(1,1)))
+    DIGITS={'0':'abcdef','1':'bc','2':'abged','3':'abgcd','4':'fgbc','5':'afgcd','6':'afgedc','7':'abc','8':'abcdefg','9':'abcdfg'}
+
+    def _draw_route(self,stage,route):
+        """Declared-route overlay: planned path, numbered stops, odometry trace, per-stop LiDAR, candidates.
+
+        Display only (declared start + wheel odometry, not localized). It never
+        feeds navigation bounds, scans or any robot report.
+        """
+        from pxr import Gf, UsdGeom
+        path=self.ROOT+'/Route'
+        if not route:
+            if getattr(self,'route_key',None) is not None and stage.GetPrimAtPath(path):stage.RemovePrim(path)
+            self.route_key=None;return
+        if route.get('unchanged'):return  # backend sends the full overlay on change and every 2 s
+        # The revision changes on every runner update (the trace length alone stops
+        # changing at its cap); the key is adopted only after a complete draw so a
+        # mid-draw exception cannot freeze a partial overlay.
+        key=(route['plan_id'],route.get('revision'),route.get('state'),route.get('reached'),str(route.get('reached_stops')),len(route.get('live_scan') or []),
+             len(route.get('trace') or []),len(route.get('scans') or []),
+             str(route.get('candidates')),len(route.get('polyline') or []),str(route.get('keepouts')))
+        if key==getattr(self,'route_key',None) and stage.GetPrimAtPath(path):return
+        if getattr(self,'route_key',None) is None or self.route_key[0]!=route['plan_id'] or not stage.GetPrimAtPath(path):
+            if stage.GetPrimAtPath(path):stage.RemovePrim(path)
+        self._draw_route_prims(stage,route,path)
+        self.route_key=key;self.route_error=None
+
+    def _draw_route_prims(self,stage,route,path):
+        from pxr import Gf, UsdGeom
+        root=UsdGeom.Xform.Define(stage,path).GetPrim()
+        for k,v in (('planId',route['plan_id']),('poseStatus',route.get('label') or 'NOT_LOCALIZED'),('state',str(route.get('state')))):
+            root.SetCustomDataByKey(k,v)
+        root.SetCustomDataByKey('motionAuthorized',False)
+        def curves(name,strokes,color,width,z):
+            strokes=[s for s in strokes if len(s)>=2]
+            prim=path+'/'+name
+            if not strokes:
+                if stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
+                return
+            curve=UsdGeom.BasisCurves.Define(stage,prim)
+            curve.CreateTypeAttr('linear')
+            curve.CreateCurveVertexCountsAttr([len(s) for s in strokes])
+            curve.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),z) for s in strokes for p in s])
+            curve.CreateWidthsAttr([width]);curve.SetWidthsInterpolation('constant')
+            curve.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        def ring(x,y,r,n=24):return [(x+r*math.cos(i*math.tau/n),y+r*math.sin(i*math.tau/n)) for i in range(n+1)]
+        def digit(text,x,y,h=.4):
+            out=[];w=h/2;ox=x-(len(text)*(w+.06)-.06)/2
+            for i,ch in enumerate(text):
+                for seg in self.DIGITS.get(ch,''):
+                    (a,b),(c,d)=self.SEGMENTS[seg];bx=ox+i*(w+.06)
+                    out.append([(bx+a*w,y+b*h/2-h/2),(bx+c*w,y+d*h/2-h/2)])
+            return out
+        reached=route.get('reached') or 0
+        done_set=set(route['reached_stops']) if isinstance(route.get('reached_stops'),list) else set(range(reached))
+        skipped_set=set(route.get('skipped_stops') or [])
+        curves('Path',[route.get('polyline') or []],(1.,.72,.15),.06,.02)
+        curves('Trace',[route.get('trace') or []],(.1,.85,.45),.05,.03)
+        stops_todo=[];stops_done=[];stops_skipped=[];labels=[]
+        for i,(x,y) in enumerate(route.get('waypoints') or []):
+            (stops_done if i in done_set else stops_skipped if i in skipped_set else stops_todo).append(ring(x,y,.2))
+            labels+=digit(str(i+1),x,y+.5)
+        sx,sy=route['start'][:2]
+        curves('Stops',stops_todo,(1.,.55,.1),.06,.025)
+        curves('StopsReached',stops_done,(.1,.85,.45),.06,.026)
+        curves('StopsSkipped',stops_skipped,(.6,.6,.6),.04,.026)
+        curves('StopNumbers',labels,(.1,.1,.1),.06,.04)
+        curves('Start',[ring(sx,sy,.2),[(sx,sy),(sx+.3*math.cos(route['start'][2]),sy+.3*math.sin(route['start'][2]))]],(.9,.9,.9),.035,.025)
+        curves('Keepouts',[ring(d[0],d[1],d[2]) for d in route.get('keepouts') or []],(.9,.25,.25),.02,.02)
+        curves('Candidates',[ring(c['position_xy_m'][0],c['position_xy_m'][1],c['radius_m']+.05) for c in route.get('candidates') or []],(1.,.15,.6),.05,.05)
+        live=route.get('live_scan') or []
+        prim=path+'/LiveScan'
+        if live and route.get('state')=='RUNNING':
+            cloud=UsdGeom.Points.Define(stage,prim)
+            cloud.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),.16) for p in live])
+            cloud.CreateWidthsAttr([.045]*len(live))
+            cloud.CreateDisplayColorAttr([Gf.Vec3f(1.,.95,.3)])
+            cloud.GetPrim().SetCustomDataByKey('source','LIVE_LIDAR_AT_ODOMETRY_POSE_NOT_REGISTERED')
+        elif stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
+        points=[p for s in route.get('scans') or [] for p in s.get('points') or []]
+        prim=path+'/StopScans'
+        if points:
+            cloud=UsdGeom.Points.Define(stage,prim)
+            cloud.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),.18) for p in points])
+            cloud.CreateWidthsAttr([.06]*len(points))
+            cloud.CreateDisplayColorAttr([Gf.Vec3f(.2,.9,1.)])
+            cloud.GetPrim().SetCustomDataByKey('source','PHYSICAL_LIDAR_AT_ODOMETRY_POSE_NOT_REGISTERED' if route.get('kind')=='physical' else 'SIM_LIDAR')
+        elif stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
 
     def frame_anchors(self,viewport):
         self.frame_scan=None

@@ -70,8 +70,18 @@ export type RobotFleetRobot = {
   command?:{request_id:string;text:string;kind:'finite'|'navigate';state:'ACCEPTED'|'PLANNING'|'RUNNING'|'ARRIVED'|'ESTIMATE_REACHED'|'COMPLETED'|'CANCELLED'|'FAILED';
     target_kind?:string;target_label?:string;target_id?:string;goal_xy?:[number,number];waypoints?:[number,number][];remaining_m?:number;reason?:string|null}|null;
 };
+/** Top-down floor for click placement (display scale only, never localization). */
+export type FloorMapState={status:'AVAILABLE'|'UNAVAILABLE';scene_revision:string|null;bounds:number[]|null;free_cells:number[][];cell_m:number;
+  obstacles:number[][];robots:{robot_id:string;label:string;kind:string;position_m:number[]|null}[];label?:string};
+/** Declared-start route progress (display only; the chat card owns the decision). */
+export type DeclaredRouteState = {
+  plan_id:string;robot_id:string;kind:'sim'|'physical';state:'RUNNING'|'COMPLETED'|'STOPPED'|'FAILED'|'CANCELLED'|string;reason:string|null;
+  reached:number;reached_stops:number[];skipped_stops:number[];total_stops:number;completed_steps:number;planned_steps:number;current_step:string|null;
+  recoveries:number;started_at:number|null;finished_at:number|null;revision:number;label:string;scene_current:boolean;
+  start:number[];waypoints:number[][];polyline:number[][];pose:number[]|null;trace:number[][];keepouts?:number[][]|null;candidates:number;
+};
 export type RobotFleetState = {
-  schema_version:'robot-fleet-1.0';revision:number;focused_robot_id:string|null;robots:RobotFleetRobot[];
+  schema_version:'robot-fleet-1.0';revision:number;focused_robot_id:string|null;robots:RobotFleetRobot[];route?:DeclaredRouteState|null;
   last_command:{request_id:string;operation_id:string|null;robot_id:string|null;status:string;message:string}|null;
   capabilities:{sim:boolean;physical:boolean};policy:{linear_m_s:number;angular_rad_s:number;input_expiry_ms:number};
   navigation_scene?:{status:'AVAILABLE'|'UNAVAILABLE';kind:'imported'|'legacy'|null;source_sha256:string|null;

@@ -18,6 +18,7 @@ import {EnvironmentImport} from './EnvironmentImport';
 import { TwinViewport, generationActivityLabel, generationIsIncomplete, generationRetentionRevalidationLabel, inventoryCheckpointSaved, savedGenerationScene, type ViewerFault } from './TwinViewport';
 import {RobotFleet} from './RobotFleet';
 import type {RobotFleetState} from './robot-fleet-types';
+import {DeclaredRouteCard} from './DeclaredRouteCard';
 import { SimulationRunCard } from './SimulationRunCard';
 import { ChatRoomBuild } from './ChatRoomBuild';
 import { ChatInspectionBuild } from './ChatInspectionBuild';
@@ -106,21 +107,55 @@ export function conversationTurns(state:Pick<ConversationState,'messages'|'cards
   return turns.length?turns:[{id:'empty',messages:[],cards:[]}];
 }
 
-export function ActionCard({ card, busy, act, current=true }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean}) {
+export function RoutePreview({preview,picks=[],onPick}:{preview:NonNullable<QuestionCard['route_preview']>;picks?:number[][];onPick?:(x:number,y:number)=>void}){
+  const [x0,y0,x1,y1]=preview.bounds,w=x1-x0,h=y1-y0,c=preview.cell_m;
+  // World +Y is drawn up; SVG y grows down.
+  const X=(x:number)=>x-x0,Y=(y:number)=>y1-y,path=preview.polyline.map(p=>`${X(p[0])},${Y(p[1])}`).join(' ');
+  const [sx,sy,syaw]=preview.start;
+  return <svg role="img" aria-label="Planned route on the Twin floor · model plan, not localization" className="route-preview"
+    viewBox={`0 0 ${w} ${h}`} style={{width:'100%',maxHeight:260,background:'#20262e',borderRadius:6,cursor:onPick?'crosshair':'default'}}
+    onClick={onPick?event=>{const box=(event.currentTarget as SVGSVGElement).getBoundingClientRect();
+      const px=(event.clientX-box.left)/box.width*w,py=(event.clientY-box.top)/box.height*h;const wx=x0+px,wy=y1-py;
+      // Snap to the nearest scanned free cell that has free floor all around it (the robot
+      // needs its berth), so a click beside a wall still yields a plannable stop.
+      const key=(x:number,y:number)=>`${Math.round(x*10)},${Math.round(y*10)}`;
+      const free=new Set(preview.free_cells.map(([cx,cy])=>key(cx,cy)));
+      const interior=(cx:number,cy:number)=>{for(let i=-3;i<=3;i++)for(let j=-3;j<=3;j++){if(i*i+j*j>10)continue;if(!free.has(key(cx+i*c,cy+j*c)))return false;}return true;};
+      let best:number[]|null=null,bestD=0.7;
+      for(const [cx,cy] of preview.free_cells){const d=Math.hypot(cx-wx,cy-wy);if(d<bestD&&interior(cx,cy)){bestD=d;best=[cx,cy];}}
+      if(best)onPick(Math.round(best[0]*100)/100,Math.round(best[1]*100)/100);}:undefined}>
+    {picks.map(([x,y],i)=><g key={'pick'+i}><circle cx={X(x)} cy={Y(y)} r={0.11} fill="#3fa9f5"/><text x={X(x)+0.14} y={Y(y)-0.1} fontSize={0.22} fill="#3fa9f5">{String.fromCharCode(65+i)}</text></g>)}
+    {preview.free_cells.map(([x,y],i)=><rect key={i} x={X(x)-c/2} y={Y(y)-c/2} width={c} height={c} fill="#3b4652"/>)}
+    <polyline points={`${X(sx)},${Y(sy)} ${path}`} fill="none" stroke="#5fd3a6" strokeWidth={0.04} strokeLinejoin="round"/>
+    {(preview.keepouts??[]).map(([x,y],i)=><circle key={'k'+i} cx={X(x)} cy={Y(y)} r={0.06} fill="#e5534b"/>)}
+    {preview.waypoints.map(([x,y],i)=><g key={i}><circle cx={X(x)} cy={Y(y)} r={0.09} fill="#f2b84b"/>
+      <text x={X(x)+0.12} y={Y(y)-0.1} fontSize={0.22} fill="#f2b84b">{i+1}</text></g>)}
+    <circle cx={X(sx)} cy={Y(sy)} r={0.1} fill="#ffffff"/>
+    <line x1={X(sx)} y1={Y(sy)} x2={X(sx+0.3*Math.cos(syaw))} y2={Y(sy+0.3*Math.sin(syaw))} stroke="#ffffff" strokeWidth={0.05}/>
+    <text x={X(sx)+0.12} y={Y(sy)+0.3} fontSize={0.2} fill="#ffffff">Start</text>
+  </svg>;
+}
+
+export function ActionCard({ card, busy, act, current=true, locked=false, onRouteVia }: {card: QuestionCard; busy: boolean; act: (card: QuestionCard, choice: string, limit?:string) => void;current?:boolean;locked?:boolean;onRouteVia?:(card:QuestionCard,text:string)=>void}) {
   const [choice,setChoice]=useState<string|null>(null);
+  const [picks,setPicks]=useState<number[][]>([]);
+  const routeCard=card.kind==='declared_route_run'&&!!onRouteVia;
   const preview=card.generation_approval;
   const directOffer=!!preview&&['robot_presence','robot_selection'].includes(card.kind);
   const waiting = card.state === 'waiting' && current;
   if(!waiting||card.kind==='generation_approval')return <section className="chat-question-history" aria-label="Previous question">
-    <p>{card.question}</p><small>{card.choices.find(c=>c.id===card.selected_choice_id)?.label ??
+    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview}/>}<small>{card.choices.find(c=>c.id===card.selected_choice_id)?.label ??
       (card.state==='waiting'?'Waiting for the current step to finish':card.state.replaceAll('_',' '))}</small>
   </section>;
   const enabled=card.choices.filter(c=>c.enabled);
   const selected=enabled.length===1?enabled[0].id:enabled.some(option=>option.id===choice)?choice:null;
   const startsGeneration=['robot_presence','robot_selection'].includes(card.kind)&&(card.kind==='robot_selection'||selected==='sim');
   return <section className="chat-question" aria-label={card.question}>
-    <p>{card.question}</p>
-    <small role="status">{busy ? 'Submitting your choice…' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
+    <p>{card.question}</p>{card.route_preview&&<RoutePreview preview={card.route_preview} picks={routeCard?picks:[]} onPick={routeCard?(x,y)=>setPicks(current=>[...current,[x,y]].slice(0,8)):undefined}/>}
+    {routeCard&&<div className="route-pick-tools"><small>Click the map to choose your own stops (A, B, …); the route is re-planned through them and back to the start.</small>
+      {picks.length>0&&<><button type="button" disabled={busy||locked} onClick={()=>onRouteVia!(card,'Survey via '+picks.map(([x,y])=>`(${x}, ${y})`).join(', ')+' and come back')}>Re-plan via {picks.length} stop{picks.length===1?'':'s'}</button>
+        <button type="button" onClick={()=>setPicks([])}>Clear stops</button></>}</div>}
+    <small role="status">{busy ? 'Submitting your choice…' : locked ? 'Waiting for the current App state · choices resume when the connection and scene observation are fresh' : card.kind==='scene_edit_clarify'?'Reply to this one question in chat, or cancel feedback':'Current step · choose an option, then continue'}</small>
     {directOffer&&<div className="generation-start-offer">
       <p>Selecting Create Twin starts generation once. {preview.image_count?
         preview.render_review_approved?'Your photo, description and derived Isaac renders go':'Your photo and description go':
@@ -140,15 +175,15 @@ export function ActionCard({ card, busy, act, current=true }: {card: QuestionCar
         {preview.models.map(model=><p key={model.stage}>{model.stage}: {model.model_id} · {model.origin} · output {model.max_output_tokens} · reasoning {model.thinking_mode}</p>)}
       </details>
     </div>}
-    {enabled.length!==1&&<fieldset disabled={busy}><legend>Your choice</legend>
+    {enabled.length!==1&&<fieldset disabled={busy||locked}><legend>Your choice</legend>
       {card.choices.map(option=><label key={option.id}>
         <input type="radio" name={`choice-${card.id}`} value={option.id} disabled={!option.enabled}
           checked={choice===option.id} onChange={()=>setChoice(option.id)}/>{option.label}</label>)}
     </fieldset>}
-    <button type="button" disabled={busy||!selected} onClick={()=>{
+    <button type="button" disabled={busy||locked||!selected} onClick={()=>{
       if(selected)act(card,selected);
     }}>
-      {busy?'Submitting…':startsGeneration?'Create Twin':selected==='approve'?'Continue':enabled.length===1?enabled[0].label:'Continue'}</button>
+      {busy?'Submitting…':locked?'Waiting for App state…':startsGeneration?'Create Twin':selected==='approve'?'Continue':enabled.length===1?enabled[0].label:'Continue'}</button>
     {card.choices.filter(c => !c.enabled).map(c => <small key={c.id}>{c.disabled_reason}</small>)}
   </section>;
 }
@@ -188,6 +223,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const composerSubmissions=useRef(new Map<string,{api:TwinPulseApi;context:string;epoch:number;text:string;textRevision:number;file:File|null;attachmentRevision:number}>());
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [twinRebuilding,setTwinRebuilding]=useState(false);
   const [connectionError,setConnectionError] = useState<string|null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -393,14 +429,23 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         }else setWorkflowObservation(previous=>previous?.api===api&&previous.context===requestedContext?{...previous,fresh:false}:null);
       } finally { polling = false; }
     };
-    void (contextVersion||authenticatedApi.current===api?Promise.resolve():api.bootstrap().then(()=>{authenticatedApi.current=api;}))
-      .then(() => { if (active) { authenticated = true; void refresh(); } }).catch(e => { if (active) setConnectionError(errorText(e)); });
+    // A slow backend at first launch used to leave the chat disconnected for good:
+    // retry the one-time bootstrap (read-only) until it succeeds; no action is replayed.
+    let bootstrapping=false;
+    const bootstrap=()=>{
+      if(bootstrapping||!active)return;bootstrapping=true;
+      void (contextVersion||authenticatedApi.current===api?Promise.resolve():api.bootstrap().then(()=>{authenticatedApi.current=api;}))
+        .then(() => { if (active) { authenticated = true; void refresh(); } }).catch(e => { if (active) setConnectionError(errorText(e)); })
+        .finally(()=>{bootstrapping=false;});
+    };
+    bootstrap();
     // Draft restoration depends on the first successful conversation read. It
     // must not gate observation retries: a first-read timeout after startup or
     // project switch otherwise leaves this context permanently disconnected.
     // Only authenticated, single-flight GET observations repeat; no action,
     // draft restoration, movement authority or old-context response is replayed.
-    const timer = window.setInterval(() => { if (active && authenticated) void refresh(); }, 750);
+    let ticks=0;
+    const timer = window.setInterval(() => { if (!active) return; if (authenticated) void refresh(); else if (++ticks % 4 === 0) bootstrap(); }, 750);
     return () => { active = false; window.clearInterval(timer); };
   }, [api,contextVersion,projectActivity.busy]);
 
@@ -408,7 +453,17 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     if(!state||!list.current)return;
     const previous=scrollPositions.current.get(state.project_id);
     if(previous&&!previous.nearBottom)list.current.scrollTop=previous.top;
+    else{nearBottom.current=true;list.current.scrollTop=list.current.scrollHeight;setNewUpdates(false);}  // a reopened chat starts at its latest message
   },[state?.project_id]);
+  // Follow mode (2026-10-26): while the reader has not scrolled up, keep the latest message in
+  // view whatever re-flows the transcript (Twin pane, split, cards, images). A wheel/touch/key
+  // scroll upward leaves follow mode; scrolling back near the bottom re-enters it.
+  useEffect(()=>{
+    if(home)return;
+    const timer=window.setInterval(()=>{const node=list.current;if(!node||!nearBottom.current)return;
+      if(node.scrollHeight-node.scrollTop-node.clientHeight>4){node.scrollTop=node.scrollHeight;setNewUpdates(false);}},400);
+    return()=>window.clearInterval(timer);
+  },[home]);
 
   useEffect(() => { if (state) sessionStorage.setItem(`twinpulse.chat.draft.${state.project_id}`, text); }, [text, state?.project_id]);
   useEffect(()=>{const input=composerInput.current;if(!input)return;
@@ -519,6 +574,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const send = async () => {
     if(librarySource||file&&imageRole==='asset_reference'){setShowLibrary(true);return;}
     if (inFlight.current || projectActivityRef.current || busy || delivery || !connected || (!text.trim() && !file)) return;
+    if (sendDisabled) return;
     const observingOnly=!file&&(isConversationStatusRequest(text)||isConversationStopRequest(text));
     if(!observingOnly&&!mayStartSceneAction())return;
     if(!observingOnly&&(simOperationBusyRef.current || product?.operations?.some(op=>['accepted','running'].includes(op.status))))return;
@@ -634,7 +690,18 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     'Scene validated but not saved · the draft is only in memory. Build and Run are blocked; reopening may lose this draft. No automatic model retry.' : null;
   const applyError=product?.build_view?.phase==='apply'?displayError:null;
   const browserError=viewerFault?`Browser 3D display unavailable (${viewerFault.code}). Scene and engine receipts are unchanged. Run is blocked while this display error remains; Stop is still available.`:null;
-  const currentStep=pendingChoice?waitingCard.question:feedbackBusy?'Preparing one scene-feedback proposal · nothing is applied yet':
+  // One gate for the Send button and the Enter key: Enter used to bypass the
+  // pending-card, generation and edit-lock checks and submit anyway.
+  const sendDisabled=projectActivity.busy || busy || !!delivery || !connected || (!text.trim() && !file &&!librarySource) ||
+    (!sceneObservationFresh&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
+    (sceneOperationBusy&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
+    (!!pendingChoice && waitingCard?.kind!=='scene_edit_clarify' && !isConversationStatusRequest(text) && !isConversationStopRequest(text) && !isConversationChoiceRequest(text, waitingCard?.kind)) ||
+    ((feedbackBusy||editLocked)&&!isConversationStatusRequest(text)&&!isConversationStopRequest(text)) ||
+    (!!activeJob && !isConversationStatusRequest(text) && (mode==='new' || !!file || !!state?.queued_edit));
+  const routeRunning=fleet?.route?.state==='RUNNING'&&fleet.route.scene_current;
+  const currentStep=pendingChoice?waitingCard.question:
+    routeRunning?`Route running · stop ${fleet!.route!.reached_stops?.length??fleet!.route!.reached} of ${fleet!.route!.total_stops} · ${fleet!.route!.completed_steps} moves · Stop remains available`:
+    feedbackBusy?'Preparing one scene-feedback proposal · nothing is applied yet':
     editLocked?`Twin update · ${editTransaction!.state.replaceAll('_',' ')} · geometry and Run locked`:activeJob?generationActivityLabel(job):
     browserError?'Browser display failed · review display diagnostics; Stop remains available':
     storageError?'Scene not saved · review the storage diagnosis before continuing':
@@ -695,10 +762,24 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   // A saved/edited room without a current chat goal is workspace state, not
   // part of the old generation transcript. Keep its display/route entry at the
   // front of the history; an explicit goal still owns its own route card.
+  // 2026-10-26: after an App restart the imported Twin is not rebuilt in Isaac and the only
+  // path was Import space → Check saved import → Show Twin. Same backend Build, one click here.
+  const rebuildTwin=async()=>{
+    if(twinRebuilding)return;setTwinRebuilding(true);setError(null);
+    try{await api.environmentAction({action:'build',request_id:crypto.randomUUID()});}
+    catch(caught){setError(errorText(caught));}
+    finally{setTwinRebuilding(false);}
+  };
   const simulationHasOrigin=!!(simulationReview?.origin_message_id||state?.simulation_review?.origin_message_id);
   const simulationCard=state?.mode!=='REAL'&&!storageError&&workflow?.site_draft?.artifact_id&&workflow.phase==='draft_ready'?
     <section ref={simulationPanel} id="current-twin-sim-controls" aria-label="Current Twin and SIM preparation" tabIndex={-1}>
-    {workflow.site_draft.provider_name==='local-environment-import'?<p>Imported space · use the Twin robot controls to add a SIM robot, choose a destination and inspect its scans. Source units and real-world alignment remain uncalibrated.</p>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
+    {workflow.site_draft.provider_name==='local-environment-import'?<div className="chat-import-next-steps"><p><strong>Imported space · next steps</strong></p>
+      <ol><li>In the Digital Twin pane open <strong>Robots → Manage → Add SIM robot</strong> (or select your registered physical robot and set its position on the Twin).</li>
+        <li>Select the robot, then <strong>Connect</strong> and <strong>Prepare</strong>.</li>
+        <li>Type <strong>Survey the room and come back</strong> here and confirm the route card. Progress appears in chat and next to the Twin.</li></ol>
+      {!roomApplied&&<p><button type="button" disabled={twinRebuilding||!connected||!product?.engine_connected} onClick={()=>void rebuildTwin()}>{twinRebuilding?'Rebuilding Twin in Isaac…':'Rebuild Twin in Isaac'}</button>
+        <small> The imported Twin is not shown in Isaac yet (needed after every App restart). This queues the same Build as Import space → Show Twin; no robot moves.</small></p>}
+      <small>Source units and real-world alignment remain uncalibrated; nothing moves until you confirm a route.</small></div>:<SimulationRunCard key={`${workflow.site_draft.input_revision}:${workflow.site_draft.revision}`} api={api} revision={workflow.site_draft.revision}
       artifactId={workflow.site_draft.artifact_id} product={product} report={setError} review={simulationReview} stopHandle={simStop} showActions={!pendingChoice&&!editLocked&&!feedbackBusy} browserBlocked={!!viewerFault} chatPending={busy||!!delivery||editLocked||feedbackBusy||!sceneObservationFresh} fresh={sceneObservationFresh} sceneWriterActive={showLibrary||editLocked||feedbackBusy}
       operationBusyChanged={simOperationChanged}
       taskBlocked={!!workflow.site_draft.progressive_twin?.unresolved.length}/>}</section>:null;
@@ -810,7 +891,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
           }}>Twin controls</button>}
         </section>
-        <div ref={list} className="chat-message-list" onScroll={() => { const node = list.current; if (node) nearBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }}>
+        <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
+          onKeyDown={event=>{if(['ArrowUp','PageUp','Home'].includes(event.key))nearBottom.current=false;}}
+          onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80) nearBottom.current = true; }}>
           {!simulationHasOrigin&&simulationCard}
           {state?.restored_session&&<p className="chat-history-note">Saved conversation · previous execution history. Reopening never automatically starts generation or motion.</p>}
           {workflow?.site_draft?.progressive_twin&&<section aria-label="Twin draft acceptance" role="status">
@@ -852,7 +935,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           </article>)}
             {turn.cards.filter(card=>card.kind!=='generation_approval').map(card => <ActionCard key={card.id} card={card}
               current={card.id===waitingCard?.id}
-              busy={!sceneObservationFresh || busy || !!delivery || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}/>)}
+              busy={busy || !!delivery}
+              locked={!sceneObservationFresh || !connected || (['robot_qualification','robot_observation','robot_recheck','robot_initialize'].includes(card.kind)&&!state?.robot_preparation?.owned)} act={choose}
+              onRouteVia={(routeCard,viaText)=>{void (async()=>{await choose(routeCard,'cancel');await new Promise(resolve=>setTimeout(resolve,900));
+                await submit({action:'message',request_id:crypto.randomUUID(),text:viaText,attachment:null,mode:'new'});})();}}/>)}
           {job && turn.id===generationTurn && <section className="chat-tool-progress" role="status"><strong>Scene generation · {job.state}</strong>
             {job.state==='completed'?<details><summary>Generation summary</summary><p>{job.summary}</p></details>:<p>{job.summary}</p>}
             {job.progress&&<p>Stage: {generationActivityLabel(job)} · {job.progress.elapsed_s??0} s · Repairs: {job.progress.repair_count??0}/{job.progress.max_repairs??0}</p>}
@@ -1023,14 +1109,12 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           <footer><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.step,.stp,.iges,.igs,.usd,.usda,.usdc,.usdz,.obj,.stl,.ply,.gltf,.glb" hidden onChange={e => { attachment(e.target.files?.[0]); e.target.value = ''; }}/>
             <button type="button" onClick={() => fileInput.current?.click()} aria-label="Attach image">＋ Attach</button>
             <label className="scene-operation-controls"><span className="sr-only">Scene operation</span><select aria-label="Scene operation" value={mode} onChange={e=>setMode(e.target.value as typeof mode)}><option value="new">New environment</option><option value="add">Add to current</option><option value="change">Change current</option></select></label>
-            <span role="status">{busy ? 'Sending…' : delivery ? 'Check saved result' : pendingChoice ? 'Answer the question above' : activeJob ? 'Generating…' : 'Enter to send · Shift+Enter for a new line'}</span>
+            <span role="status">{busy ? 'Sending…' : delivery ? 'Check saved result' : pendingChoice ? 'Answer the question above' : activeJob ? 'Generating…' :
+              sendDisabled&&(text.trim()||file||librarySource)?(!connected?'App connection pending · sending paused':!sceneObservationFresh?'Waiting for a fresh scene observation · Status and Stop still send':
+                sceneOperationBusy?'Isaac preparation in progress · Status and Stop still send':feedbackBusy||editLocked?'Twin update in progress · Status and Stop still send':'Sending paused'):
+              'Enter to send · Shift+Enter for a new line'}</span>
             {activeJob && <button type="button" disabled={busy || !!delivery} onClick={() => void submit({action:'cancel',request_id:crypto.randomUUID(),operation_id:job.operation_id})}>Stop response</button>}
-            <button type="submit" disabled={projectActivity.busy || busy || !!delivery || !connected || (!text.trim() && !file &&!librarySource) ||
-                (!sceneObservationFresh&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
-                (sceneOperationBusy&&(!!file||!isConversationStatusRequest(text)&&!isConversationStopRequest(text))) ||
-                (!!pendingChoice && waitingCard?.kind!=='scene_edit_clarify' && !isConversationStatusRequest(text) && !isConversationStopRequest(text) && !isConversationChoiceRequest(text, waitingCard?.kind)) ||
-                ((feedbackBusy||editLocked)&&!isConversationStatusRequest(text)&&!isConversationStopRequest(text)) ||
-                (!!activeJob && !isConversationStatusRequest(text) && (mode==='new' || !!file || !!state?.queued_edit))}>Send</button>
+            <button type="submit" disabled={sendDisabled}>Send</button>
           </footer>
           {delivery && <button type="button" onClick={() => {
             const original=deliveryOwner.current;
@@ -1065,6 +1149,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           savedScene={acceptedSavedScene}
           sourcePhoto={sourceAttachment?.preview_url?{url:sourceAttachment.preview_url,name:sourceAttachment.name}:null}
           report={setViewerFault} diagnose={id=>{setDiagnosticExecution(id);setShowDiagnostics(true);}}/> : <p role="status">Connecting to the App before starting viewer reception…</p>}
+        <DeclaredRouteCard route={fleet?.route} api={api} onChange={applyFleet} available={fleetAvailable} report={setError}/>
         <RobotFleet api={api} state={fleet} selectedId={fleetSelectedId??fleet?.focused_robot_id??null} onSelect={selectFleetRobot}
           onChange={applyFleet} available={fleetAvailable} error={fleetError} drawerOpen={fleetDrawerOpen} onClose={()=>setFleetDrawerOpen(false)} selectionPending={fleetSelecting}
           layoutVersion={`${layoutVersion}:${chatShare}:${controlView}:${showProjects}:${showTwin}`}/>

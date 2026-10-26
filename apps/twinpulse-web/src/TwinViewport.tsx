@@ -577,7 +577,7 @@ export function TwinViewport({api,projectId,report,diagnose,generation,sourcePho
       <small style={{position:'absolute',bottom:2,left:4,background:'#ffffffe8',color:'#5b21b6',padding:'1px 4px'}}>{shownAlignment.source==='SAVED'?'Saved scan':'Current scan'} · geometric review · no drive authority</small>
     </div>}
     {!image && <div className="chat-twin-placeholder"><strong>No current 3D frame</strong>
-      <p>Build the scene in Isaac to see a 3D preview.</p></div>}</div>
+      <p>Select <strong>View current Twin</strong> in chat (or <strong>Show Twin</strong> after an import) to see the 3D preview.</p></div>}</div>
     {scanRobot?.kind==='physical'&&<PhysicalLidarPanel robot={scanRobot} available={appConnected&&fleetAvailable} currentRevision={image?.frame.applied_revision}
       rendered={!!anchorFrame?.robot_anchors?.some(anchor=>anchor.robot_id===scanRobot.robot_id&&anchor.visible)}/>}
     </div>

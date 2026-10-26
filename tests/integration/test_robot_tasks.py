@@ -61,6 +61,15 @@ class TaskSchemaTests(unittest.TestCase):
             self.assertTrue(task_request(text),text)
         for text in ('stop','Forward 10 cm','6m 방을 만들고 소파를 배치해줘','의자를 옮겨줘'):
             self.assertFalse(task_request(text),text)
+    def test_in_place_is_robot_motion_not_the_scene_verb_place(self):
+        # 2026-10-25: 'in-place' matched 'place' and sent survey requests to scene edit.
+        from twinpulse_app.robot_fleet import parse_robot_command
+        for text in ('Rotate in-place, survey the room and return','Turn in place then explore the room'):
+            self.assertTrue(task_request(text,'physical'),text)
+        self.assertEqual(parse_robot_command('Rotate in place 90 degrees left in this room')['direction'],'left')
+        for text in ('Place a chair in the room','Create a room and place the sofa'):
+            self.assertFalse(task_request(text),text)
+            self.assertIsNone(parse_robot_command(text),text)
         self.assertEqual(checked_plan(plan())['steps'][1],{'op':'survey'})
         other=plan([dict(op='move_relative',direction='forward',amount=.2),dict(op='move_relative',direction='left',amount=math.pi/2),dict(op='stop')])
         self.assertIn('0.200000000 m',primitive_text(checked_plan(other)['steps'][0]))

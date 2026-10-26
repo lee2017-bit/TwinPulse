@@ -29,6 +29,21 @@ function harness() {
   return api;
 }
 
+describe('Imported space next steps',()=>{
+  it('offers to rebuild the Twin in Isaac when the imported scene is not applied, through the environment Build action',async()=>{
+    const api=Object.assign(harness(),{environmentAction:vi.fn().mockResolvedValue({})});
+    api.runtimeState.mockResolvedValue({status:'ready',message:'ready'} as never);
+    api.productState.mockResolvedValue({engine_connected:true,snapshot:{applied_revision:'other'}} as never);
+    api.workflow.mockResolvedValue({phase:'draft_ready',provider:{configured:true,label:'Import'},site_draft:{revision:'a'.repeat(64),scene_state_sha256:'b'.repeat(64),input_revision:'input',artifact_id:'artifact',provider_name:'local-environment-import'}} as never);
+    render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
+    const button=await screen.findByRole('button',{name:'Rebuild Twin in Isaac'});
+    await waitFor(()=>expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(()=>expect(api.environmentAction).toHaveBeenCalledTimes(1));
+    expect(api.environmentAction.mock.calls[0][0].action).toBe('build');
+  });
+});
+
 describe('Chat-first product workspace',()=> {
   beforeEach(()=>vi.stubGlobal('Image',class {src='';naturalWidth=960;naturalHeight=640;async decode(){}}));
   afterEach(()=>vi.unstubAllGlobals());

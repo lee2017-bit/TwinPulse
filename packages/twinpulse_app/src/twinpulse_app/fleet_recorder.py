@@ -105,11 +105,13 @@ class FleetSnapshotWriter:
     """
     def __init__(self):
         self.condition=Condition();self.pending={};self.closed=False;self.error=None
+        self.failed={};self.failures=0  # per-path last failure; the worker keeps running (2026-10-26)
         self.thread=Thread(target=self._write,daemon=True,name='TwinPulseFleetSnapshots');self.thread.start()
 
     def submit(self,path,content,*,estimated_bytes=None):
         with self.condition:
-            if self.closed or self.error:raise OSError(self.error or 'SNAPSHOT_WRITER_CLOSED')
+            if self.closed:raise OSError('SNAPSHOT_WRITER_CLOSED')
+            if self.error and self.error!='SNAPSHOT_WRITE_FAILED':raise OSError(self.error)
             if len(self.pending)>=64 and path not in self.pending:
                 self.error='SNAPSHOT_QUEUE_CAPACITY';raise OSError(self.error)
             size=len(content) if isinstance(content,bytes) else estimated_bytes
@@ -120,12 +122,24 @@ class FleetSnapshotWriter:
 
     def _write(self):
         observations=0
-        try:
-            while True:
+        while True:
+            with self.condition:
+                self.condition.wait_for(lambda:self.pending or self.closed)
+                if not self.pending:break
+                path=next(iter(self.pending));content,_=self.pending.pop(path)
+            try:
+                self._write_one(path,content,observations)
                 with self.condition:
-                    self.condition.wait_for(lambda:self.pending or self.closed)
-                    if not self.pending:break
-                    path=next(iter(self.pending));content,_=self.pending.pop(path)
+                    self.failed.pop(path,None)
+                    # One ENOSPC used to kill this thread for the whole session; a later
+                    # successful write proves the disk is usable again.
+                    if self.error=='SNAPSHOT_WRITE_FAILED':self.error=None
+            except Exception as exc:
+                with self.condition:self.error='SNAPSHOT_WRITE_FAILED';self.failed[path]=type(exc).__name__;self.failures+=1
+
+    def _write_one(self,path,content,observations):
+        if True:
+            if True:
                 began=time.perf_counter();at_ms=time.time()*1000
                 operation_id=content.get('operation_id') if isinstance(content,dict) else None
                 events=len(content.get('events',[])) if isinstance(content,dict) else None
@@ -148,12 +162,10 @@ class FleetSnapshotWriter:
                             materialize_ms=(after_materialize-began)*1000,encode_ms=(after_encode-after_materialize)*1000,
                             file_ms=(end-after_encode)*1000),separators=(',',':')),file=sys.stderr,flush=True)
                     except Exception:pass
-        except Exception:
-            with self.condition:self.error='SNAPSHOT_WRITE_FAILED'
 
     def close(self):
         with self.condition:self.closed=True;self.condition.notify()
         self.thread.join(timeout=2)
         with self.condition:
-            return dict(complete=not self.error and not self.thread.is_alive() and not self.pending,
-                        error=self.error or ('SNAPSHOT_CLOSE_TIMEOUT' if self.thread.is_alive() else None))
+            return dict(complete=not self.error and not self.failed and not self.thread.is_alive() and not self.pending,
+                        error=self.error or ('SNAPSHOT_CLOSE_TIMEOUT' if self.thread.is_alive() else None),failures=self.failures)

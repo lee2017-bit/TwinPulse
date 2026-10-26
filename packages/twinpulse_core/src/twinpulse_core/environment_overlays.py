@@ -32,7 +32,7 @@ def checked_overlay(value):
         raise ValueError('ENVIRONMENT_OVERLAY_UNCERTAINTY_INVALID')
     evidence=value['evidence']
     if (not isinstance(evidence,dict) or set(evidence)!={'basis','source_name','sha256','alignment_verified'} or
-            evidence['alignment_verified'] is not False or evidence['basis'] not in {'manual_estimate','photo_estimate'}):
+            evidence['alignment_verified'] is not False or evidence['basis'] not in {'manual_estimate','photo_estimate','lidar_estimate'}):
         raise ValueError('ENVIRONMENT_OVERLAY_EVIDENCE_INVALID')
     if evidence['basis']=='manual_estimate':
         if evidence['source_name'] is not None or evidence['sha256'] is not None:

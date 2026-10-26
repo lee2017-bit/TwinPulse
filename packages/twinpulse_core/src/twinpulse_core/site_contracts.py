@@ -102,9 +102,10 @@ class SceneRevision:
             raise ValueError('LIBRARY_SCENE_ASSETS_INVALID')
         assets={a.asset_ref:MeshAsset.from_dict(a.to_dict()) for a in self.library_assets}
         if len(assets)!=len(self.library_assets):raise ValueError('LIBRARY_SCENE_ASSET_DUPLICATE')
-        if set(assets)!={o.asset_id for o in self.objects if o.asset_id is not None}:
+        # 'color:r,g,b' is a presentation tag on an added estimate's visual part, not a library asset.
+        if set(assets)!={o.asset_id for o in self.objects if o.asset_id is not None and not o.asset_id.startswith('color:')}:
             raise ValueError('LIBRARY_SCENE_ASSET_COVERAGE_INVALID')
-        if any(o.asset_id is not None and (o.shape.type!='box' or o.dynamic or not o.collision or
+        if any(o.asset_id is not None and not o.asset_id.startswith('color:') and (o.shape.type!='box' or o.dynamic or not o.collision or
                 tuple(o.shape.dimensions_m)!=assets[o.asset_id].dimensions_m) for o in self.objects):
             raise ValueError('LIBRARY_SCENE_COLLIDER_MISMATCH')
         validate_scene_geometry(self.id, self.objects, ValidationLimits(max_objects=None,allowed_asset_ids=frozenset(assets)))

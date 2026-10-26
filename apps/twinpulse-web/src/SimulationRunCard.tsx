@@ -302,7 +302,7 @@ export function SimulationRunCard({api,revision,artifactId,product,report,review
     const owns=()=>isCurrentOwner(requested)&&leaseEpoch.current===epoch;
     setPhase('Stop requested · waiting for the engine acknowledgement…');
     try{await waitOperation(await api.command('pause',revision));if(owns()){setPlan(null);setPhase('SIM stopped. Preview a new goal to continue.');}}
-    catch(error){if(owns())report(error instanceof Error?error.message:String(error));}
+    catch(error){if(owns()){report(error instanceof Error?error.message:String(error));setPhase('Stop not confirmed · check the engine state before continuing.');}}
     finally{if(owns()){stopping.current=false;setStopPending(false);}}
   };
   const reset=()=>void act(async()=>{

@@ -68,6 +68,7 @@ export class TwinPulseApi {
     }finally{this.environmentImageAdmission=null;this.projectReadBarrier=null;release();}
   }
   robotFleet():Promise<import('./robot-fleet-types').RobotFleetState>{return this.readState('/v1/product/robot-fleet');}
+  robotFleetFloor():Promise<import('./robot-fleet-types').FloorMapState>{return this.readState('/v1/product/robot-fleet/floor');}
   robotFleetAction(body:import('./robot-fleet-types').RobotFleetAction):Promise<import('./robot-fleet-types').RobotFleetState>{
     // Each hold has a short deadline and must never wait behind a prior hold.
     if(body.action==='drive')return this.fleetDrive(body);

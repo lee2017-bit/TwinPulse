@@ -28,6 +28,11 @@ def _stamp():
     return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
 
 
+def immediate_stop_text(text):
+    try:return isinstance(text,str) and (parse_robot_command(text) or {}).get('action') in {'stop','stop_all'}
+    except BrokerError:return False
+
+
 def parse_robot_command(text):
     """Bounded unit-bearing commands; None means ordinary scene chat.
 
@@ -37,12 +42,12 @@ def parse_robot_command(text):
     if not isinstance(text, str) or len(text) > 2000:
         raise BrokerError('robot_text_invalid', 'Use a short robot instruction.', status=400)
     value=text.strip().lower()
-    from twinpulse_core.robot_task_plan import immediate_stop
+    from twinpulse_core.robot_task_plan import immediate_stop, without_in_place
     if immediate_stop(value):return {'action':'stop'}
     # A scene brief can mention robots, room dimensions and left/right furniture.
     # Those words are not a request to drive the focused robot.
     if (re.search(r'방|환경|가구|공간|장면|\b(?:room|environment|scene|furniture)\b',value)
-            and re.search(r'만들|생성|배치|놓아|놓고|create|build|generate|place|arrange',value)):
+            and re.search(r'만들|생성|배치|놓아|놓고|create|build|generate|place|arrange',without_in_place(value))):
         return None
     from twinpulse_core.sim_fleet_navigation import destination_intent
     try:destination=destination_intent(value)
@@ -328,8 +333,35 @@ class RobotFleet:
             values.append(public)
         return dict(schema_version='robot-fleet-1.0',revision=self.revision,focused_robot_id=self.focused,
             robots=values,last_command=deepcopy(self.last_command),capabilities=dict(sim=True,physical=self.physical is not None),
-            navigation_scene=self._navigation_summary(engine),
+            navigation_scene=self._navigation_summary(engine),route=self._route_summary(),
             policy=dict(linear_m_s=.05,angular_rad_s=.30,input_expiry_ms=INPUT_TTL_MS))
+
+    def floor_map(self):
+        """Top-down floor for placing a robot or route stops by click (display scale, never localization)."""
+        with self.lock:
+            scene=self.navigation_scene
+            if not scene:return dict(status='UNAVAILABLE',scene_revision=None,bounds=None,free_cells=[],cell_m=.1,obstacles=[],robots=[])
+            free=[[round(c[0],2),round(c[1],2)] for c in (scene.get('observed_cells') or []) if c[2]=='free']
+            step=max(1,-(-len(free)//4000));free=free[::step]
+            robots=[dict(robot_id=r['robot_id'],label=r['label'],kind=r['kind'],
+                position_m=((r.get('display_pose') or {}).get('position_m') if r['kind']=='physical' else (r.get('pose') or {}).get('position_m')))
+                for r in self.robots.values()]
+            return dict(status='AVAILABLE',scene_revision=scene['binding'][2],bounds=scene['geometry'].get('bounds'),free_cells=free,cell_m=.1,
+                obstacles=scene['geometry'].get('obstacles') or [],robots=robots,label='FLOOR_MAP_DISPLAY_SCALE_NOT_LOCALIZATION')
+
+    def _route_summary(self):
+        """Declared-route progress for the web UI (display only; the chat card owns the decision)."""
+        route=getattr(self,'route_overlay',None)
+        if not route:return None
+        scene=self.navigation_scene
+        keys=('plan_id','robot_id','kind','state','reason','reached','reached_stops','skipped_stops','completed_steps','planned_steps',
+              'current_step','recoveries','started_at','finished_at','revision','label','start','waypoints','polyline','pose','keepouts')
+        summary={k:deepcopy(route.get(k)) for k in keys}
+        summary.update(total_stops=len(route.get('waypoints') or []),trace=list(route.get('trace') or [])[-200:],
+            live_scan=list(route.get('live_scan') or [])[:180],first_leg_straight_m=((route.get('plan') or {}).get('first_leg_straight_m')),
+            candidates=len(route.get('candidates') or []),
+            scene_current=bool(scene and scene['binding'][2]==route.get('scene_revision')))
+        return summary
 
     def _navigation_summary(self,engine):
         scene=self.navigation_scene;geometry=scene['geometry'] if scene else {}
@@ -347,6 +379,11 @@ class RobotFleet:
             raise BrokerError('fleet_shape','Invalid robot request.',status=400)
         encoded=json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False)
         request=body['request_id']
+        cancel_route=getattr(self,'declared_route_cancel',None)
+        if cancel_route is not None and (body['action'] in {'stop','stop_all','disconnect','drive'}
+                or body['action']=='focus' and body.get('robot_id')!=self.focused or body['action']=='command'
+                and immediate_stop_text(body['payload'].get('text'))):
+            cancel_route()  # before any delivery: the route must not send another step
         with self.lock:
             self._task_admission(body,_task_token)
             if self.closed and body['action'] not in {'stop','stop_all','disconnect'}:
@@ -592,6 +629,9 @@ class RobotFleet:
                     if action in {'task','navigate'} and body['action']!='command':
                         raise BrokerError('fleet_task_text_required','Use a bounded robot command.',status=400)
                     self._ready(row,body,epoch=body['action']!='command')
+                    if body['action']=='command' and body.get('motion_epoch') is not None and body['motion_epoch']!=row['motion_epoch']:
+                        # A runner-sent step bound to an epoch a Stop has since replaced.
+                        raise BrokerError('fleet_motion_epoch_changed','Robot was stopped; this step was not sent.',status=409)
                     if self.focused!=identity:
                         raise BrokerError('fleet_focus_changed','Select this robot and wait for selection confirmation before moving.',status=409)
                     if row['control_state'] not in {'READY','DRIVING','PAUSED'}:raise BrokerError('fleet_prepare_required','Prepare the selected robot first.',status=409)
@@ -829,7 +869,17 @@ class RobotFleet:
                         lidar=row['lidar_state'] in {'STARTING','STREAMING'},control_state=row['control_state']))
                 elif row['kind']=='physical' and len(desired)<16 and row.get('display_pose') is not None:
                     pose=row['display_pose']
-                    if pose['scene_revision']==binding[2]:
+                    route=getattr(self,'route_overlay',None)
+                    if (pose['scene_revision']==binding[2] and route and route['robot_id']==row['robot_id'] and route.get('pose')
+                            and route.get('state')=='RUNNING'  # a finished route must not freeze the ghost at its last pose
+                            and route['scene_revision']==binding[2] and route['connection_epoch']==row.get('connection_epoch')):
+                        # Declared start + wheel odometry from the route runner: display only, never localization.
+                        if row.get('field') is not None:row['field']['twin_tracking']=dict(status='ESTIMATED',position_m=list(route['pose']),
+                            source='declared_start_wheel_odometry',aligned=False,accuracy='UNQUALIFIED',scene_revision=binding[2])
+                        desired.append(dict(robot_id=row['robot_id'],label=row['label'],visual_only=True,
+                            connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
+                            position_m=list(route['pose']),intent=None,task=None,lidar=False,control_state='UNPREPARED'))
+                    elif pose['scene_revision']==binding[2]:
                         position=list(pose['position_m'])
                         tracking=(row.get('field') or {}).get('tracking') or {}
                         key=(row.get('operation_id'),row.get('connection_epoch'),tracking.get('epoch'),pose['visual_epoch'],binding)
@@ -854,7 +904,17 @@ class RobotFleet:
                         desired.append(dict(robot_id=row['robot_id'],label=row['label'],visual_only=True,
                             connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
                             position_m=position,intent=None,task=None,lidar=False,control_state='UNPREPARED'))
-            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired))
+            route=getattr(self,'route_overlay',None)
+            route=self._route_payload(dict(route)) if route and route['scene_revision']==binding[2] else None
+            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route))
+
+    def _route_payload(self,route):
+        """Full overlay on change and at least every 2 s; otherwise a stub Kit ignores (trace up to 800 points at ~20 Hz)."""
+        key=(route['plan_id'],route.get('revision'));now=self.clock();sent=getattr(self,'_route_sent',None)
+        if sent and sent[0]==key and 0<=now-sent[1]<2.:
+            return dict(plan_id=route['plan_id'],revision=route.get('revision'),scene_revision=route['scene_revision'],unchanged=True)
+        self._route_sent=(key,now)
+        return route
 
     def operation(self,identity,owner=None):
         if not _id(identity):raise BrokerError('fleet_operation_invalid','Invalid operation ID.',status=400)
@@ -897,6 +957,10 @@ class RobotFleet:
         if already:
             self.close_done.wait()
             return self.persistence_receipt
+        cancel_route=getattr(self,'declared_route_cancel',None)
+        if cancel_route is not None:
+            try:cancel_route()  # a running declared route must not send another step to a closing fleet
+            except Exception:pass
         try:
             with self.lock:
                 rows=[]
@@ -911,6 +975,9 @@ class RobotFleet:
             self.persistence_receipt=self.snapshot_writer.close()
         except Exception:
             self.persistence_receipt=dict(complete=False,error='SIM_RETIRE_FAILED')
+            # The writer thread must still end, or the next project open waits on it forever.
+            try:self.snapshot_writer.close()
+            except Exception:pass
         finally:self.close_done.set()
         return self.persistence_receipt
 

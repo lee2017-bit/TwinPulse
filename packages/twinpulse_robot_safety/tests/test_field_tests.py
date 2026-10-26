@@ -273,4 +273,62 @@ class FieldTests(unittest.TestCase):
         # Saved byte provenance is real; replay receipt time is NOT live timing.
         self.assertEqual(stream.latest_frame()['timing']['basis'],'serial_receipt_unqualified')
 
+    def _drive_progress(self,guard,link,tracking_at,until):
+        # Forward at CAP_V with wheels advancing; tracker result chosen per time.
+        now=1.;ticks=0;scale=config()['wheel_metres_per_tick']
+        while now<=until+1e-9:
+            link.sensor_t=now;link.sensor.left_encoder=link.sensor.right_encoder=ticks
+            guard.tracker=SimpleNamespace(snapshot=lambda now=now:tracking_at(now))
+            guard._progress_check(.03,0.,now)
+            now=round(now+.1,6);ticks+=round(.03*.1/scale)
+
+    def test_body_progress_ignores_tracking_sampled_before_output_started(self):
+        # 2026-10-25 return leg: the first tracked pose predated the first
+        # publication, so 1.766 mm over a window that was mostly at rest
+        # stopped the robot. A pre-start estimate is not in-window evidence.
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.require_body=True
+        def tracking(now):
+            sample=.5 if now<1.6 else now  # first in-window result 0.6 s after publish
+            return dict(status='ESTIMATED',epoch='e',sample_s=sample,pose=[max(0.,sample-1.55)*.03,0.,0.])
+        self._drive_progress(guard,link,tracking,3.)
+        self.assertEqual(guard.progress['body_progress'],'ESTIMATED_NOT_QUALIFIED')
+        self.assertGreater(guard.progress['body_delta'],.02)
+
+    def test_body_progress_still_stops_when_in_window_estimate_shows_no_motion(self):
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.require_body=True
+        def tracking(now):return dict(status='ESTIMATED',epoch='e',sample_s=now,pose=[.0005,0.,0.])
+        with self.assertRaisesRegex(ValueError,'FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP'):
+            self._drive_progress(guard,link,tracking,3.)
+
+    def test_supervised_finite_command_records_low_tracker_progress_without_stopping(self):
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.require_body=False
+        def tracking(now):return dict(status='ESTIMATED',epoch='e',sample_s=now,pose=[.0005,0.,0.])
+        self._drive_progress(guard,link,tracking,3.)
+        self.assertEqual(guard.progress['body_progress'],'UNVERIFIED_LOW_TRACKER_PROGRESS_SUPERVISED')
+        self.assertEqual(guard.progress['wheel_progress'],'MOVING')
+
+    def test_required_body_check_does_not_wait_forever_for_an_in_window_sample(self):
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.require_body=True
+        def tracking(now):return dict(status='ESTIMATED',epoch='e',sample_s=.9,pose=[0.,0.,0.])
+        with self.assertRaisesRegex(ValueError,'FIELD_BODY_PROGRESS_INCONCLUSIVE_STOP'):
+            self._drive_progress(guard,link,tracking,1.+guard.timing_values['tracking_result_ms']/1000+1.5)
+
+    def test_new_drive_window_does_not_inherit_previous_progress_keys(self):
+        link=SimpleNamespace(sensor_t=1.,sensor=SimpleNamespace(left_encoder=0,right_encoder=0))
+        guard=FieldGuard(config(),SimpleNamespace(latest_frame=lambda:None),link,lambda:True,clock=lambda:1.)
+        guard.progress=dict(body_progress='INCONCLUSIVE',tracking_reason='OLD',wheel_delta_m=[9.,9.])
+        guard.reset()
+        self.assertEqual(guard.progress['tracking_reason'],'OLD')  # final reports read after reset
+        guard._progress_check(.03,0.,1.)
+        self.assertNotEqual(guard.progress.get('tracking_reason'),'OLD')
+        self.assertNotIn('wheel_delta_m',guard.progress)
+
 if __name__=='__main__':unittest.main()
