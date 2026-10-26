@@ -14,6 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import runtime as r
 
 
+def _symlinks_available():
+    """Windows without developer mode refuses symlinks (WinError 1314); the robot runtime runs on Linux."""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            (Path(tmp) / 'link').symlink_to(Path(tmp))
+            return True
+        except OSError:
+            return False
+
+
 class RuntimeTests(unittest.TestCase):
     def test_stationary_operation_log_exists_even_without_logged_subprocess(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -138,6 +148,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stderr.decode(errors='replace'))
             self.assertIn(b'OFF requires', result.stderr)
 
+    @unittest.skipUnless(_symlinks_available(), 'symlink creation is not permitted on this host; the robot runtime runs on Linux')
     def test_prepare_cache_changed_artifact_and_interrupted_install(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

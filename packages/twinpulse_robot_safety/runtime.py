@@ -291,6 +291,7 @@ def interrupt_handler(*_):
 
 
 if __name__ == '__main__':
-    signal.signal(signal.SIGTERM, interrupt_handler)
-    signal.signal(signal.SIGHUP, interrupt_handler)
+    for name in ('SIGTERM', 'SIGHUP'):  # SIGHUP does not exist on Windows, where only the argument checks run (tests)
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), interrupt_handler)
     raise SystemExit(main())
