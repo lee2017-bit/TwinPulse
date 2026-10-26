@@ -855,3 +855,25 @@ class TwinEditAutoApplyTest(unittest.TestCase):
         from twinpulse_app.conversation_service import ConversationService
         source=inspect.getsource(ConversationService.__init__)
         self.assertIn('stored.setdefault("twin_edit_approval","review")',source)
+
+
+class SimWorldObstacleTest(unittest.TestCase):
+    """A test box that exists only in the Isaac SIM world: SIM LiDAR and the proximity stop see it, the Twin model does not."""
+    def test_payload_is_validated_and_labelled_sim_only(self):
+        from twinpulse_app.robot_fleet import checked_sim_obstacle, SIM_OBSTACLE_LIMIT
+        from twinpulse_app.command_broker import BrokerError
+        item=checked_sim_obstacle(dict(label=' Box on leg 1 ',position_m=[1.19,-0.22],size_m=[.4,.4,.4]),0)
+        self.assertEqual(item['label'],'Box on leg 1');self.assertEqual(item['position_m'],[1.19,-.22]);self.assertEqual(item['source'],'SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN')
+        self.assertTrue(item['id'].startswith('simobs_0_'))
+        for bad in (dict(label='x',position_m=[1,2],size_m=[.05,.4,.4]),dict(label='',position_m=[1,2],size_m=[.4,.4,.4]),dict(label='x',position_m=[1],size_m=[.4,.4,.4]),dict(label='x',position_m=[1,2])):
+            with self.assertRaises(BrokerError):checked_sim_obstacle(bad,0)
+        with self.assertRaises(BrokerError):checked_sim_obstacle(dict(label='x',position_m=[1,2],size_m=[.4,.4,.4]),SIM_OBSTACLE_LIMIT)
+
+    def test_runtime_rays_and_motion_guard_include_the_sim_obstacle_root_but_the_twin_model_does_not(self):
+        import inspect
+        from twinpulse_app import lidar_scene_geometry
+        source=inspect.getsource(lidar_scene_geometry.scene_section)
+        self.assertIn("/World/TwinPulse/Fleet/SimObstacles",source)
+        runtime=open(Path(__file__).resolve().parents[2]/'scripts'/'twinpulse_fleet_runtime.py',encoding='utf-8').read()
+        self.assertIn("boxes=self._bounds(stage)+list(getattr(self,'sim_obstacle_boxes',[]))",runtime)  # proximity stop sees it
+        self.assertNotIn("SimObstacles",runtime[runtime.index('def _navigation_scene'):runtime.index('def _navigation_scene')+2500])  # the planner grid does not

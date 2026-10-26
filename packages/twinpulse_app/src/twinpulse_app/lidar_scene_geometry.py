@@ -46,11 +46,13 @@ def scene_section(stage,height):
     from pxr import Usd
     environment=stage.GetPrimAtPath('/World/TwinPulse/Environment')
     presentation=stage.GetPrimAtPath('/World/TwinPulse/Presentation/RoomModels')
+    # SIM-world test obstacles: visible to the SIM LiDAR like any surface, but never part of the Twin model.
+    sim_obstacles=stage.GetPrimAtPath('/World/TwinPulse/Fleet/SimObstacles')
     replaced=set()
     if presentation:
         for group in presentation.GetChildren():replaced.update(group.GetCustomDataByKey('currentGeometryIds') or [])
     segments=[];surfaces=[];triangles=0
-    for root in (environment,presentation):
+    for root in (environment,presentation,sim_obstacles):
         if not root:continue
         for prim in Usd.PrimRange(root,Usd.TraverseInstanceProxies()):
             # Uncertainty/entanglement keepouts are deliberate safety geometry,

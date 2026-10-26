@@ -175,6 +175,7 @@ type Props={api:TwinPulseApi;state:RobotFleetState|null;selectedId:string|null;o
 export function RobotFleet({api,state,selectedId,onSelect,onChange,available=true,error:pollError,drawerOpen=true,onClose,selectionPending=false,layoutVersion=0}:Props){
   const [error,setError]=useState<string|null>(null),[busy,setBusy]=useState(false);
   const [label,setLabel]=useState('SIM robot'),[x,setX]=useState('0'),[y,setY]=useState('0'),[yaw,setYaw]=useState('0');
+  const [obsLabel,setObsLabel]=useState('Test box'),[obsX,setObsX]=useState('0'),[obsY,setObsY]=useState('0'),[obsSize,setObsSize]=useState(['0.4','0.4','0.4']);
   const [text,setText]=useState(''),[held,setHeld]=useState<FleetDirection|null>(null);
   const commandDraftVersion=useRef(0);
   const [submitted,setSubmitted]=useState<{request_id:string;text:string;state:string;prior_command_id?:string}|null>(null);
@@ -405,6 +406,20 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
           <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
         <button disabled={busy||selectionPending||!available||!state?.capabilities.sim}>Add SIM robot</button>
       </form>}<small>Kinematic Isaac SIM · simulated telemetry. Physical drive qualification requires separate tests.</small>
+    </details>}
+    {expanded&&state?.capabilities.sim&&<details className="robot-fleet-sim-obstacle"><summary>SIM-world test obstacle · {state.sim_obstacles?.length??0}</summary>
+      <p className="robot-fleet-policy">A box placed only in the Isaac SIM world. SIM LiDAR and the proximity stop see it; the Twin model and the route planner do not, so a route meets it like an unmodelled object.</p>
+      <form onSubmit={event=>{event.preventDefault();const position=[Number(obsX),Number(obsY)],size=obsSize.map(Number);
+        if(!obsLabel.trim()||position.some(v=>!Number.isFinite(v))||size.some(v=>!(v>=0.1&&v<=3))){setError('Enter a label, finite X/Y and a size between 0.1 and 3 m.');return;}
+        void action(envelope('sim_obstacle',null,{label:obsLabel.trim(),position_m:position,size_m:size}));}}>
+        <label>Label<input aria-label="SIM obstacle label" value={obsLabel} maxLength={80} onChange={event=>setObsLabel(event.target.value)} required/></label>
+        <div className="robot-fleet-position">{([['Obstacle X (m)',obsX,setObsX],['Obstacle Y (m)',obsY,setObsY]] as const).map(([name,value,set])=>
+          <label key={name}>{name}<input aria-label={name} type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}
+          {(['Width (m)','Depth (m)','Height (m)'] as const).map((name,i)=><label key={name}>{name}<input aria-label={'SIM obstacle '+name} type="number" step="any" min={0.1} max={3} value={obsSize[i]} onChange={event=>setObsSize(obsSize.map((v,j)=>j===i?event.target.value:v))} required/></label>)}</div>
+        <button disabled={busy||!available}>Place SIM obstacle</button>
+        {!!state.sim_obstacles?.length&&<button type="button" disabled={busy} onClick={()=>{void action(envelope('clear_sim_obstacles',null,{}));}}>Clear SIM obstacles</button>}
+      </form>
+      {!!state.sim_obstacles?.length&&<ul>{state.sim_obstacles.map(o=><li key={o.id}>{o.label} · ({o.position_m[0]}, {o.position_m[1]}) m · {o.size_m.join(' × ')} m · SIM world only</li>)}</ul>}
     </details>}
     {robot&&drawerOpen&&<section className="robot-fleet-drawer" aria-label={`Control ${robot.label}`}>
       <header><h4>{robot.label} · {robot.kind==='sim'?'SIM':'Physical'}</h4><button type="button" className="robot-fleet-stop" onClick={()=>stop(robot,true)}>Stop</button>

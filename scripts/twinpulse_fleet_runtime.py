@@ -282,7 +282,7 @@ class FleetRuntime:
 
     def _refresh_bounds(self,stage,now):
         if self.bounds_dirty or not self.bounds_watch and now-self.scan_at>.2:
-            boxes=self._bounds(stage)
+            boxes=self._bounds(stage)+list(getattr(self,'sim_obstacle_boxes',[]))  # SIM-world test obstacles stop the robot too
             if not self.bounds_watch and boxes!=self.obstacles:self.navigation_geometry_epoch+=1
             self.obstacles=boxes;self.scan_at=now;self.bounds_dirty=False;self.bounds_rebuilds+=1
         key=(self.identity,self.navigation_geometry_epoch)
@@ -524,6 +524,8 @@ class FleetRuntime:
         except Exception as exc:self.route_error=type(exc).__name__  # display only; never stops the fleet
         try:self._draw_lidar_layer(stage,fleet.get('lidar_layer'))
         except Exception as exc:self.route_error=type(exc).__name__  # display only; never stops the fleet
+        try:self._sync_sim_obstacles(stage,fleet.get('sim_obstacles') or [])
+        except Exception as exc:self.route_error=type(exc).__name__
         self._schedule_scan(stage,rows,now)
         for row in report:
             robot=self.robots[row['robot_id']]
@@ -557,6 +559,32 @@ class FleetRuntime:
             if stage.GetPrimAtPath(path):stage.RemovePrim(path)
         self._draw_route_prims(stage,route,path)
         self.route_key=key;self.route_error=None
+
+    def _sync_sim_obstacles(self,stage,items):
+        """SIM-world test obstacles: cubes under Fleet/SimObstacles that the SIM LiDAR rays and the proximity stop see.
+
+        They are deliberately NOT part of /World/TwinPulse/Environment, so the Twin model, its navigation grid and
+        the route planner do not know them; a route meets them the way a physical robot meets an unmodelled box.
+        """
+        from pxr import Gf, UsdGeom
+        path=self.ROOT+'/SimObstacles'
+        key=tuple((i['id'],tuple(i['position_m']),tuple(i['size_m'])) for i in items)
+        if key==getattr(self,'sim_obstacle_key',None) and (items or not stage.GetPrimAtPath(path)):return
+        root=UsdGeom.Xform.Define(stage,path).GetPrim()
+        root.SetCustomDataByKey('source','SIM_WORLD_TEST_OBSTACLES_NOT_IN_TWIN');root.SetCustomDataByKey('motionAuthorized',False)
+        wanted={'Obs_'+i['id'] for i in items}
+        for child in list(root.GetChildren()):
+            if child.GetName() not in wanted:stage.RemovePrim(child.GetPath())
+        for item in items:
+            prim_path=path+'/Obs_'+item['id'];x,y=item['position_m'];w,d,h=item['size_m']
+            if stage.GetPrimAtPath(prim_path):stage.RemovePrim(prim_path)
+            cube=UsdGeom.Cube.Define(stage,prim_path);cube.CreateSizeAttr(1.)
+            cube.AddTranslateOp().Set(Gf.Vec3d(float(x),float(y),float(h)/2));cube.AddScaleOp().Set(Gf.Vec3f(float(w),float(d),float(h)))
+            cube.CreateDisplayColorAttr([Gf.Vec3f(.55,.12,.1)])
+            cube.GetPrim().SetCustomDataByKey('source','SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN');cube.GetPrim().SetCustomDataByKey('label',item.get('label') or '')
+        self.sim_obstacle_boxes=[(float(x)-float(w)/2,float(y)-float(d)/2,float(x)+float(w)/2,float(y)+float(d)/2)
+                                 for x,y in [tuple(i['position_m']) for i in items] for w,d,h in [tuple(i['size_m'])] if h>=.18]
+        self.sim_obstacle_key=key;self.bounds_dirty=True  # the motion guard boxes must include them at once
 
     def _draw_lidar_layer(self,stage,layer):
         """Session LiDAR layer: stop-scan and during-drive returns of finished routes plus LiDAR-moved object markers.

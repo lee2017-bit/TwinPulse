@@ -46,3 +46,13 @@ describe('FloorMap LiDAR layer',()=>{
     expect(container.querySelectorAll('rect[fill="#33e6ff"]')).toHaveLength(0);
   });
 });
+
+describe('FloorMap SIM-world obstacles',()=>{
+  it('draws a SIM-only test box with its label and never as Twin geometry',()=>{
+    const obstacle={id:'simobs_0_abc',label:'Test box',position_m:[2,1],size_m:[.4,.4,.4],source:'SIM_WORLD_TEST_OBSTACLE_NOT_IN_TWIN'};
+    const {container}=render(<FloorMap floor={{...floor,sim_obstacles:[obstacle]}}/>);
+    expect(container.querySelectorAll('rect[fill="#8c1d18"]')).toHaveLength(1);
+    expect(screen.getByText('Test box · SIM only')).toBeTruthy();
+    expect(container.querySelectorAll('rect[fill="#6b4a3a"]')).toHaveLength(1);  // the Twin obstacle count is unchanged
+  });
+});
