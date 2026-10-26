@@ -33,3 +33,15 @@ Takes 1–4 were rejected by this review and are kept as evidence, not published
 | 15 | Nemotron / Token Factory label | 1:34, 6:41 | PASS | Model id and latency on the card and in chat; call logs under the project's `robot-tasks/<task_id>` (no keys). |
 
 Live model calls during the whole demo work: planner 9, photo observer 4 (limit 100).
+
+## Follow-up after the user's viewing (2026-10-26 afternoon)
+
+The user watched the published file and reported three problems. Causes found from frames of that file (`frames-cause/`) and fixes verified on a new SIM take (`rec-verify35.mp4`, 254.6 s, build 35 `20261026T065802Z-5ec1fe766c8d`, frames in `frames-verify35/`). A first verification take on build 34 (`rec-verify34.mp4`, `frames-verify34/`) exposed the remaining cause of point 1 and is kept as evidence.
+
+| # | Reported | Cause | Fix | Verification frame | Result |
+|---|---|---|---|---|---|
+| 1 | Digital Twin on the right looks cut off / small | The window did fit the physical 1920×1080 screen (125 % scaling), nothing was cropped. The chat column had 55 % plus a 240 px sidebar, so the Isaac render was ~700 px wide; and while the Import space panel was open (the whole photo segment) it spanned both columns at 45 vh, leaving the Twin pane too short and the render cut at the bottom. | Wide windows default to chat 40 / Twin 60; the Import space panel now lives inside the chat column, so the Twin keeps its full height; the recording script folds the sidebar. | `frames-verify35/009-0046.9s-shot_W1_twin_with_import_ope.jpg` (import panel open, whole room visible), `020-0203.6s-shot_W3_object_added.jpg`, `024-0213.0s-shot_W4_final.jpg` | PASS |
+| 2 | Chat should open already at the latest message, not scroll down | The jump to the bottom ran in an effect after paint and the 400 ms follow tick caught later re-flows one by one, which looked like scrolling. | `useLayoutEffect` jump before paint on open; a ResizeObserver/MutationObserver pins the bottom synchronously on every transcript re-flow while in follow mode; smooth scrolling is not used. | `frames-verify35/dense/open-sheet.jpg` (16 frames at 4 fps around reopening the 290-message chat: the first rendered frame is already at the last route card; no top-to-bottom motion), probe `ui-actions-verify35.jsonl` scroll gap 0 | PASS |
+| 3 | Demo must start from a new chat with USD and photos, not an existing chat | The published take reopened the saved project. | Runbook §2a and the driver start with New chat → attach USD → Meters → Inspect → Import → Show Twin → photo analysis → candidates placed → Twin edits set to Auto-apply on screen. | `frames-verify35/002-0011.5s-new_chat.jpg` … `008-0045.3s-show_twin.jpg`, `013-0067.9s-shot_W2_photo_candidates.jpg`, `023-0211.6s-set_twin_edits_auto.jpg` | PASS |
+
+The published `twinpulse-sim-demo-2026-10-26.mp4` still shows the old layout and the saved-chat start; the next full take (physical session, runbook §2a/§2b) replaces it. Live model calls after this follow-up: planner 9, photo observer 6 (limit 100).

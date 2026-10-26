@@ -6,10 +6,10 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 설치된 빌드 ID | `20261026T034429Z-7321cb659b9d` (channel **development**, physical_robot=true; 10/26 낮: LiDAR 레이어·어두운 LiDAR 박스·일치/이동 판정·Twin edits Review/Auto-apply 토글 포함, §2b) |
-| 소스 | 브랜치 `claude/project-thread-l7md32`, commit `d25ca79` + 외관 수정 1건 (main에는 PR #1까지 머지됨; 이 두 커밋은 아직 브랜치에만) |
+| 설치된 빌드 ID | `20261026T065802Z-5ec1fe766c8d` (channel **development**, physical_robot=true; 10/26 오후: Twin 60 % 기본 분할·Import 패널을 채팅 열로 이동·채팅 최신 메시지 즉시 표시 + 낮의 LiDAR 레이어/Auto-apply 포함) |
+| 소스 | 브랜치 `claude/project-thread-l7md32` (main PR #2 9aeb7ef 이후 커밋 2개: 채팅 스크롤·분할, Import 패널 이동) |
 | 이전 빌드(롤백용, 보존) | `20261025T162952Z-62f7a3f1e698`, `20261025T120155Z-cb02064b5674` (밤 빌드 `20261025T182006Z`는 06:50 세션 후 새 빌드로 대체·정리) |
-| 설치 로그 | `outputs/path-b-20261026/install33.log`, 빌드 로그 `outputs/path-b-20261026/build33.log`; 빌드 32 설치본 SIM 확인 증거 `outputs/path-b-20261026/demo-sim/S1..S6-*.png`, `ui-actions.jsonl` (Auto-apply 토글, SIM 조사 3정지 완주, 레이어 414/465점, Clear 후 null) |
+| 설치 로그 | `outputs/path-b-20261026/install35.log`, 빌드 로그 `build35.log`; 검증 녹화 `outputs/path-b-20261026/demo-sim/rec-verify35.mp4` + `frames-verify35/` (New chat→USD→사진→Twin, 3개 지적 사항 PASS 표: `docs/analysis/TWINPULSE_SIM_DEMO_RECORDING_REVIEW_2026-10-26.md` 끝) |
 
 최종 설치본 검증: Test 모드 기동 → Isaac 연결 30 s → 설치 UI 스모크 6/6 PASS(`outputs/path-b-20261026/smoke20b/`) → Exit 정상 종료. 이 검사가 프로젝트 목록에 빈 "New chat" 항목 하나를 남겼을 수 있습니다(무시 가능). 중간 빌드 `20261025T172753Z-6ad052bdf3f6`은 정리했고 이전 두 빌드는 보존.
 
@@ -41,11 +41,23 @@
 7. 완료 카드 `LiDAR at the stops saw N objects the Twin does not have…` → **Add to Twin**(한 번에 1개, 가장 강한 후보부터). Twin 갱신(Undo 가능) 확인. 상자가 아닌 후보(로봇 자신, 벽 근처 잡음)는 **Skip**.
 8. 로봇을 시작 마크로 되돌려 놓고(또는 종료 위치를 다시 **Set position**), 다시 **`Survey the room and come back`** → 새 경로 카드가 상자를 피해 가는지(미니맵·Isaac) 확인. SIM으로도 같은 문장을 보내 비교 가능.
 
+## 2a. 데모 테이크는 New chat에서 시작 (2026-10-26 사용자 지적)
+
+기존 채팅을 열어 시작하지 않는다. 녹화 첫 동작부터 다음 순서(모두 화면에 보이게):
+
+1. 사이드바 **☰** 접기(Twin이 화면 오른쪽 큰 쪽을 차지하도록; 기본 분할은 1400 px 이상 창에서 채팅 40 / Twin 60) → 왼쪽 **＋ New chat** → "New chat ready."
+2. 채팅 **＋ Attach**로 `Project-2610222326.usd` 첨부 → "How will you use this USD file?" → **Import space** → Source units **Meters (m)** → **Inspect space** → "Inspection ready" → **Import space** → **Show Twin** → Twin 패널에 Isaac 렌더(Isaac connected).
+3. Import space 패널 **Added obstacles** → 참조 사진 첨부 → "Allow photo analysis" 체크 → **Analyze photo**(DeepSeek 관찰자 1회) → **Review Candidate_n** → 중심 X/Y 입력, duplicate 검토 체크 → **Preview obstacle** → **Apply space edit**(또는 Auto-apply) ×2–3 → 빠진 물체가 Twin에 들어감.
+4. 채팅 Current step 옆 **Twin edits → Auto-apply**(새 채팅은 Review로 시작하므로 화면에서 전환). 이후 §2의 2번(Connect → Prepare → Arm → Bootstrap stop)부터 계속.
+5. 채팅은 열릴 때 이미 최신 메시지에 있어야 한다(스크롤 내려가는 모습이 보이면 결함; 빌드 34에서 수정, 35에서 검증). Import space 패널은 채팅 열 안에 열리므로 Twin은 항상 오른쪽 전체 높이(빌드 35).
+
+드라이버 `outputs/path-b-20261026/demo-sim/demo.mjs`의 해당 동작: `sidebar off`, `new-chat`, `attach-usd <usd>`, `inspect-usd m`, `import-usd`, `show-twin`, `photo <jpg>`, `review-candidate new <x> <y> <n>`, `apply-edit`, `set-twin-edits auto`, `split 40`, `scroll-probe`.
+
 ## 2b. 다음 실물 세션 추가 항목 (2026-10-26 낮에 구현, 빌드 32 이후)
 
 사용자 결정(10/26): 정지점 스캔만으로 판단, 주행 중 점은 표시 전용, Twin 편집 자동 적용 모드 추가. 로봇은 돌리지 않았고 SIM·단위 테스트로만 확인했으므로 아래가 실물에서 보이는지가 이번 세션의 확인 포인트입니다.
 
-1. **Twin edits 토글(채팅 Current step 옆)**: 데모 테이크는 **Auto-apply**로 두고 시작. 기본값은 Review이며 프로젝트별로 저장됩니다. 이 토글은 Twin 편집 승인만 바꾸고, Run route·Stop·근접/전압/Arm 검사는 그대로입니다(로봇 안전 모드가 아님).
+1. **Twin edits 토글(채팅 Current step 옆)**: 새 채팅은 Review로 시작하므로 Twin을 세운 뒤 화면에서 **Auto-apply**로 전환(§2a 4번). 프로젝트별로 저장됩니다. 이 토글은 Twin 편집 승인만 바꾸고, Run route·Stop·근접/전압/Arm 검사는 그대로입니다(로봇 안전 모드가 아님).
 2. **상자는 더 큰 것(40–50 cm)** 을 1구간 **위**(시나리오 B, 시작점 약 1.1 m 앞)에. 30 cm 상자는 정지점 하나에서 점이 3개 안팎이라 후보가 약했습니다.
 3. **의자 하나를 약 30 cm 옮겨 두기**(Twin에 있는 위치에서 옆으로). 기대: 완료 후 채팅에 `Candidate #n is 0.3 m from the existing object "…"` → Auto-apply면 `Auto-applied (Twin-edit auto-apply): moving "…"` 메시지와 함께 Twin 갱신, 보라색 링(LiDAR estimate) 표시. 10 cm 이내면 `matches the Twin object … no move needed`로만 나옵니다. Review 모드면 Move 버튼.
 4. 완료 후 Auto-apply 순서: 이동 → 미확인 박스 추가(어두운 회색, 1편집 1객체) → `re-planning "Survey the room and come back"` 새 경로 카드. **Run route는 여전히 사용자가 누릅니다.** 실패하면 `Twin-edit auto-apply skipped one edit: …` 메시지를 그대로 기록(지우지 말 것).
