@@ -76,6 +76,7 @@ class ConversationService:
             "simulation_review": None,
             "inspection_display": None,
             "physical_authority": False,
+            "twin_edit_approval": "review",  # Twin-edit approval only (review | auto); never robot motion authority
         }
         if path.exists():
             try:
@@ -94,6 +95,8 @@ class ConversationService:
                     stored.setdefault("queued_edit", None)
                     stored.setdefault("simulation_review", None)
                     stored.setdefault("inspection_display", None)
+                    stored.setdefault("twin_edit_approval","review")
+                    if stored["twin_edit_approval"] not in ("review","auto"):raise ValueError("Twin-edit approval mode invalid")
                 if (stored.get("schema_version") != "conversation-1.0"
                         or stored.get("project_id") != self._state["project_id"]
                         or set(stored) != set(self._state)):
@@ -844,6 +847,7 @@ class ConversationService:
             shapes['robot_collect']={'action','request_id','expires_at_ms','confirmed_source_transfer'}
             shapes['robot_transfer']={'action','request_id','expires_at_ms','kind','job_id'}
             shapes['generation_retry']={'action','request_id','operation_id'}
+            shapes['twin_edit_approval']={'action','request_id','mode'}
             shapes['sensor_review']={'action','request_id','map_id','expected_map_revision','expected_scene_revision','expected_state_sha256'}
             shapes['sensor_import']={'action','request_id','mission_id','expected_report_revision','expected_scene_revision','expected_state_sha256'}
             valid_shape=isinstance(action,str) and action in shapes and (set(body)==shapes[action] or
@@ -884,6 +888,7 @@ class ConversationService:
             try:
                 if action == "message": self._accept_message(body)
                 elif action == "answer": self._answer(body)
+                elif action=='twin_edit_approval':self._set_twin_edit_approval(body)
                 elif action=='sensor_import':
                     if (any(c['state']=='waiting' for c in self._state['cards']) or self.workflow.has_active_generation() or
                             self._feedback_worker and self._feedback_worker.is_alive()):
@@ -1036,11 +1041,26 @@ class ConversationService:
             [self._choice('add','Add to Twin'),self._choice('skip','Skip')])
         card['operation_id']=plan['plan_id'];self._route_candidates=dict(plan_id=plan['plan_id'],candidates=candidates)
 
+    def _set_twin_edit_approval(self,body):
+        """Review (default): LiDAR boxes, LiDAR moves and photo replacements wait for Apply. Auto: they are applied
+        through the same Twin edit transaction (Engine ACK, Undo) with a chat notice each. Robot motion guards and
+        the Run route decision are untouched in both modes; this is not a robot safety mode."""
+        mode=body['mode']
+        if mode not in ('review','auto'):raise BrokerError('chat_shape_invalid','Twin-edit approval mode must be review or auto.',status=400)
+        previous=self._state['twin_edit_approval'];self._state['twin_edit_approval']=mode
+        if mode!='auto':self._auto_route_edits=[]
+        self._message('user','Twin edits: '+('Auto-apply' if mode=='auto' else 'Review'))
+        self._message('assistant',('Twin-edit auto-apply is on: LiDAR outline boxes, LiDAR position corrections and photo replacements are applied as soon as they are previewed, each through the normal Twin edit transaction (Engine ACK, Undo available) with a notice here. '
+            'Robot motion is unchanged: Run route, Stop, proximity, voltage and arming checks still need you.') if mode=='auto' else
+            'Twin edits are back to Review: each LiDAR box, LiDAR move or photo replacement waits for your Apply.')
+        self._event('twin_edit_approval',mode=mode,previous=previous)
+
     def _start_declared_route(self,body):
         if any(c['state']=='waiting' for c in self._state['cards']):
             raise BrokerError('choice_required','Finish the current question before requesting another task.',status=409)
         if self.declared_routes.active():raise BrokerError('declared_route_active','A route is already running; Stop it first.',status=409)
         self._message('user',body['text'])
+        self._last_route_text=body['text']  # session-only: Twin-edit auto-apply re-plans this request after its edits
         stops=self._route_stops(body['text'])
         tasks=getattr(self,'robot_tasks',None)
         if not stops and tasks is not None and getattr(tasks,'registry',None) is not None and not tasks.active():
@@ -1158,14 +1178,64 @@ class ConversationService:
                 if matcher:
                     try:matches=matcher(candidates) or []
                     except Exception:matches=[]
+                aligned=[m for m in matches if m.get('aligned')];movable=[m for m in matches if not m.get('aligned')]
+                explained={m['candidate'] for m in matches};new=[i for i in range(len(candidates)) if i not in explained]
+                notes=''.join(' Candidate #%d matches the Twin object "%s" (%.2f m away): no move needed.'%(m['candidate']+1,m['label'],m['distance_m']) for m in aligned)
                 correction=(' Candidate #%d is %.2f m from the existing object "%s": choose Move to shift that object to the LiDAR estimate (position correction, user-applied).'
-                    %(matches[0]['candidate']+1,matches[0]['distance_m'],matches[0]['label'])) if matches else ''
-                card=self._card('declared_route_obstacles','LiDAR at the stops saw %d object%s the Twin does not have: %s. '
-                    'Positions come from the declared start + wheel odometry (not localized). Add them to the Twin as rough outlines (unknown obstacles)? '
-                    'This edits the Twin (Undo available); no robot moves.%s'%(len(candidates),'' if len(candidates)==1 else 's',listing,correction),
-                    [self._choice('add','Add to Twin')]+([self._choice('move','Move "%s" to the LiDAR estimate'%matches[0]['label'])] if matches else [])+[self._choice('skip','Skip')])
-                card['operation_id']=plan['plan_id'];self._route_candidates=dict(plan_id=plan['plan_id'],candidates=candidates,matches=matches)
+                    %(movable[0]['candidate']+1,movable[0]['distance_m'],movable[0]['label'])) if movable else ''
+                pending=dict(plan_id=plan['plan_id'],candidates=candidates,matches=matches,new=new)
+                if self._state.get('twin_edit_approval')=='auto':
+                    edits=[('move',m) for m in movable]+[('add',None)]*len(new)
+                    self._message('assistant','LiDAR at the stops saw %d object%s the Twin does not have: %s.%s Twin-edit auto-apply: %s.'
+                        %(len(candidates),'' if len(candidates)==1 else 's',listing,notes,
+                          ', '.join(['moving "%s" to the LiDAR estimate'%m['label'] for m in movable]+(['adding %d outline box%s'%(len(new),'' if len(new)==1 else 'es')] if new else [])) or 'nothing to apply')
+                        +' Positions come from the declared start + wheel odometry (not localized). Each edit goes through the Twin update (Engine ACK, Undo available); no robot moves.')
+                    self._auto_route_edits=[dict(kind=kind,match=match,pending=pending) for kind,match in edits]
+                    self._event('declared_route_auto_apply',plan_id=plan['plan_id'],edits=[e['kind'] for e in self._auto_route_edits])
+                    self._apply_next_auto_edit()
+                elif new or movable:
+                    card=self._card('declared_route_obstacles','LiDAR at the stops saw %d object%s the Twin does not have: %s.%s '
+                        'Positions come from the declared start + wheel odometry (not localized).%s %s'
+                        %(len(candidates),'' if len(candidates)==1 else 's',listing,notes,
+                          ' Add the %d unexplained one%s to the Twin as rough outlines (unknown obstacles)?'%(len(new),'' if len(new)==1 else 's') if new else '',
+                          'This edits the Twin (Undo available); no robot moves.'+correction),
+                        ([self._choice('add','Add to Twin')] if new else [])+([self._choice('move','Move "%s" to the LiDAR estimate'%movable[0]['label'])] if movable else [])+[self._choice('skip','Skip')])
+                    card['operation_id']=plan['plan_id'];self._route_candidates=pending
+                else:
+                    self._message('assistant','LiDAR at the stops saw %d object%s, all matching existing Twin objects:%s No Twin edit needed.'%(len(candidates),'' if len(candidates)==1 else 's',notes))
             self._persist()
+
+    def _apply_next_auto_edit(self):
+        """Twin-edit auto-apply: start the next queued LiDAR edit through the normal transaction; the following one
+        starts when this one is COMMITTED with its frame confirmed (see the transaction sync). Never robot motion."""
+        queue=getattr(self,'_auto_route_edits',None) or []
+        while queue:
+            edit=queue.pop(0);pending=edit['pending']
+            try:
+                if edit['kind']=='move':
+                    match=edit['match']
+                    operation=self.move_route_object(self._request_owner,pending['plan_id'],match)
+                    self._message('assistant','Auto-applied (Twin-edit auto-apply): moving "%s" by (%.2f, %.2f) m to the LiDAR estimate. The object stays a LiDAR estimate, not localized; Undo last edit reverts it.'
+                        %(match['label'],match['translation_m'][0],match['translation_m'][1]),operation_id=operation)
+                    self._event('declared_route_object_moved',plan_id=pending['plan_id'],object_id=match['object_id'],operation_id=operation,auto=True)
+                else:
+                    exclude=[m['candidate'] for m in (pending.get('matches') or [])]
+                    operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'],exclude=exclude)
+                    self._message('assistant','Auto-applied (Twin-edit auto-apply): adding one LiDAR outline box (unknown, lidar estimate, not aligned; strongest unexplained candidate first). Undo last edit reverts it.',operation_id=operation)
+                    self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation,auto=True)
+                self._auto_route_edits=queue;return
+            except (BrokerError,ValueError) as error:
+                self._message('assistant','Twin-edit auto-apply skipped one edit: '+str(error)[:200])
+        self._auto_route_edits=[]
+        self._auto_replan()
+
+    def _auto_replan(self):
+        """After auto-applied Twin edits, plan the last route request again (deterministic, no model call) and offer Run."""
+        text=getattr(self,'_last_route_text',None)
+        if not text or any(c['state']=='waiting' for c in self._state['cards']) or self.declared_routes.active():return
+        if getattr(self.robot_fleet,'focused',None) is None:return
+        self._message('assistant','Twin edits applied; re-planning "%s" on the updated Twin (no model call). Run it only if you want the robot to move.'%text[:120])
+        self._plan_declared_route(text,'auto-replan-'+uuid4().hex,planned_by=dict(kind='auto_replan',label='Auto re-plan after Twin-edit auto-apply · no model call'))
 
     def _offer_robot_task(self,body):
         if any(c['state']=='waiting' for c in self._state['cards']):
@@ -1411,7 +1481,8 @@ class ConversationService:
                 # After an App restart the saved route record is the source of the candidates.
                 pending=dict(plan_id=card.get('operation_id'),candidates=None)
             try:
-                operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'])
+                exclude=[m['candidate'] for m in (pending.get('matches') or [])]
+                operation,count=self.add_route_obstacles(self._request_owner,pending['plan_id'],pending['candidates'],exclude=exclude)
                 self._message('assistant','Adding %d LiDAR obstacle%s to the Twin (unknown, lidar estimate, not aligned; one object per Twin edit, strongest first). Follow the Twin update; Undo is available. Ask again to add the next one, or ask for the route again to plan around it.'
                     %(count,'' if count==1 else 's'),operation_id=operation)
                 self._event('declared_route_obstacles_added',plan_id=pending['plan_id'],count=count,operation_id=operation)
@@ -1967,7 +2038,9 @@ class ConversationService:
                             waiting_prefix+' display is not yet confirmed.')
                         self._message('assistant',text+' Previous goal plans remain invalid; request a fresh goal.',
                             status='completed' if frame_confirmed else 'pending',operation_id=operation_id)
+                    if frame_confirmed and getattr(self,'_auto_route_edits',None):self._apply_next_auto_edit()
                 elif state in {'ROLLED_BACK','ENGINE_STATE_UNKNOWN'}:
+                    self._auto_route_edits=[]
                     self._message('assistant',('Previous saved revision was restored with a compensation engine ACK.' if state=='ROLLED_BACK' else
                         'Engine/save state is unknown. Geometry and Run are locked; inspect and explicitly recover the retained transaction.')+
                         (' '+transaction['error'] if transaction.get('error') else ''),status='failed')

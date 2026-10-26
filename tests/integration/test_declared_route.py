@@ -710,3 +710,148 @@ class ReplanDemoTest(unittest.TestCase):
         self.assertNotEqual(second['polyline'],first['polyline'])
         clearance=min(math.dist(p[:2],box) for p in second['polyline'])
         self.assertGreater(clearance,r+.3,clearance)  # the new route keeps the physical berth from the box
+
+
+class LidarLayerTest(unittest.TestCase):
+    """2026-10-26 user ask: route LiDAR points stay on the Twin (display only) until cleared; LiDAR-moved objects are marked."""
+    def _fleet(self):
+        import threading
+        from types import SimpleNamespace
+        from twinpulse_app.robot_fleet import RobotFleet
+        fleet=SimpleNamespace(lock=threading.Lock(),lidar_layer=None,clock=lambda:7.,navigation_scene=dict(binding=('e','s','rev'),geometry=dict(bounds=[0,0,4,3],obstacles=[]),observed_cells=[[.05,.05,'free',0,0,0,0]]),robots={})
+        for name in ('absorb_route_layer','note_lidar_move','clear_lidar_layer','floor_map'):setattr(fleet,name,getattr(RobotFleet,name).__get__(fleet))
+        fleet.LIDAR_LAYER_LABEL=RobotFleet.LIDAR_LAYER_LABEL;fleet.LIDAR_LAYER_CAP=RobotFleet.LIDAR_LAYER_CAP
+        return fleet
+
+    def test_finished_routes_accumulate_stop_and_drive_points_and_clear_drops_them(self):
+        from twinpulse_app.robot_fleet import lidar_layer_payload
+        fleet=self._fleet()
+        fleet.absorb_route_layer(dict(scene_revision='rev',scans=[dict(stop=0,points=[[1,1],[1.01,1.01],[2,2]])],drive_scan=[[3,1]]))
+        fleet.absorb_route_layer(dict(scene_revision='rev',scans=[dict(stop=1,points=[[2,2],[2.5,2.5]])],drive_scan=[]))
+        layer=fleet.lidar_layer
+        self.assertEqual(layer['routes'],2);self.assertEqual(layer['stop_points'],[[1,1],[2,2],[2.5,2.5]]);self.assertEqual(layer['drive_points'],[[3,1]])
+        self.assertEqual(layer['label'],'DECLARED_START_PLUS_ODOMETRY_DISPLAY_ONLY_NOT_REGISTERED')
+        self.assertEqual(fleet.floor_map()['lidar_layer']['stop_points'],[[1,1],[2,2],[2.5,2.5]])
+        self.assertIsNone(lidar_layer_payload(layer,'other-scene'))  # a new Twin revision never shows old points
+        fleet.absorb_route_layer(dict(scene_revision='rev2',scans=[dict(stop=0,points=[[0,0]])]))
+        self.assertEqual(fleet.lidar_layer['routes'],1)  # the layer follows the Twin revision
+        fleet.clear_lidar_layer();self.assertIsNone(fleet.lidar_layer);self.assertIsNone(fleet.floor_map()['lidar_layer'])
+
+    def test_lidar_move_marker_is_labelled_unverified(self):
+        fleet=self._fleet()
+        fleet.note_lidar_move('Added_1','Fan base',[1.3,1.1],.3)
+        moved=fleet.floor_map()['lidar_layer']['moved']
+        self.assertEqual(moved,[dict(object_id='Added_1',label='Fan base',position_xy_m=[1.3,1.1],distance_m=.3,basis='lidar_estimate_unverified')])
+
+    def test_runner_keeps_drive_points_and_hands_the_layer_to_the_fleet_at_finish(self):
+        import tempfile
+        fleet=FakeFleet([]);absorbed=[]
+        fleet.absorb_route_layer=absorbed.append
+        fleet.row['lidar_state']='STREAMING';fleet.row['scan']=dict(points=[[.5,.0],[.0,.5]])
+        with tempfile.TemporaryDirectory() as tmp:
+            runner,result=run(fleet,tmp)
+        self.assertEqual(result['state'],'COMPLETED',result['reason'])
+        self.assertEqual(len(absorbed),1);self.assertTrue(absorbed[0].get('drive_scan'))
+        self.assertTrue(all(len(p)==2 for p in absorbed[0]['drive_scan']))
+
+
+class LidarMatchThresholdTest(unittest.TestCase):
+    def _matches(self,candidates):
+        from types import SimpleNamespace
+        from twinpulse_app.api import LocalApiServer as cls
+        objects=[dict(id='Added_1',label='Fan base',category='floor_fan',position_m=[1.0,1.0,.5]),dict(id='floor',label='Floor',category='floor',position_m=[0,0,0])]
+        self_=SimpleNamespace(_environment_workspace=lambda:SimpleNamespace(snapshot=lambda:dict(objects=objects)))
+        return cls._route_candidate_matches(self_,candidates)
+
+    def test_within_ten_centimetres_is_aligned_and_up_to_sixty_offers_a_move(self):
+        matches=self._matches([dict(position_xy_m=[1.05,1.02],returns=5),dict(position_xy_m=[1.3,1.1],returns=5),dict(position_xy_m=[3.,3.],returns=4)])
+        self.assertEqual([(m['candidate'],m['aligned']) for m in matches],[(0,True),(1,False)])
+
+    def test_matched_candidates_are_left_out_of_the_outline_boxes(self):
+        import json,tempfile
+        from types import SimpleNamespace
+        from twinpulse_app.api import LocalApiServer as cls
+        from twinpulse_app.command_broker import BrokerError
+        calls=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'declared-routes').mkdir();plan_id='a'*32
+            (root/'declared-routes'/(plan_id+'.json')).write_text(json.dumps(dict(candidates=[])),encoding='utf-8')
+            workspace=SimpleNamespace(action=lambda body,owner:calls.append(body) or dict(preview=dict(operation=dict(operation_id='op'),preview_digest='d'),lidar_added=1),
+                pinned_environment_operation=lambda *a,**k:('op','d'))
+            self_=SimpleNamespace(robot_fleet=SimpleNamespace(root=root),_environment_workspace=lambda:workspace,
+                _workflow=lambda:SimpleNamespace(scene_edit_transaction=SimpleNamespace(start=lambda *a:None)))
+            candidates=[dict(position_xy_m=[1.05,1.02],radius_m=.1,returns=5),dict(position_xy_m=[3.,3.],radius_m=.15,returns=4)]
+            cls._add_route_obstacles(self_,'o',plan_id,candidates,exclude=[0])
+            self.assertEqual([o['candidate'] for o in calls[0]['obstacles']],[1])
+            with self.assertRaises(BrokerError):cls._add_route_obstacles(self_,'o',plan_id,candidates,exclude=[0,1])
+
+    def test_lidar_outline_boxes_carry_the_dark_display_colour(self):
+        import inspect
+        from twinpulse_app import environment_workspace as ws
+        self.assertEqual(ws.LIDAR_BOX_COLOR,(.16,.16,.17))
+        self.assertIn("display_color=list(LIDAR_BOX_COLOR)",inspect.getsource(ws.EnvironmentWorkspace.action))
+
+
+class TwinEditAutoApplyTest(unittest.TestCase):
+    """Twin-edit approval mode: Review (default) keeps the card; Auto applies LiDAR moves/boxes one transaction at a time, then re-plans."""
+    def _service(self,mode):
+        import threading
+        from types import SimpleNamespace
+        from twinpulse_app.conversation_service import ConversationService
+        messages=[];cards=[];events=[];applied=[]
+        s=SimpleNamespace(_lock=threading.Lock(),_state=dict(session_id='s',messages=[],cards=[],twin_edit_approval=mode),_request_owner='o',
+            robot_fleet=SimpleNamespace(focused='r'),declared_routes=SimpleNamespace(active=lambda:False),_last_route_text='Survey the room and come back',
+            _message=lambda role,content,**kw:messages.append((role,content,kw)),_event=lambda name,**kw:events.append((name,kw)),_persist=lambda:None,
+            match_route_objects=lambda candidates:[dict(candidate=0,object_id='Added_1',label='Fan base',distance_m=.3,aligned=False,translation_m=[.3,.1,0.]),
+                                                   dict(candidate=1,object_id='Added_2',label='Basket',distance_m=.05,aligned=True,translation_m=[.05,0.,0.])],
+            add_route_obstacles=lambda owner,plan_id,candidates,exclude=():applied.append(('add',tuple(exclude))) or ('op-add-%d'%len(applied),1),
+            move_route_object=lambda owner,plan_id,match:applied.append(('move',match['object_id'])) or 'op-move',
+            _plan_declared_route=lambda text,request_id,**kw:applied.append(('plan',kw['planned_by']['kind'])))
+        s._choice=ConversationService._choice
+        def card(kind,question,choices,**kw):c=dict(id='c%d'%len(cards),kind=kind,question=question,choices=choices,state='waiting');cards.append(c);s._state['cards'].append(c);return c
+        s._card=card
+        for name in ('_apply_next_auto_edit','_auto_replan','declared_route_finished','_set_twin_edit_approval'):setattr(s,name,getattr(ConversationService,name).__get__(s))
+        return s,messages,cards,events,applied
+
+    def _result(self):
+        plan=dict(plan_id='p'*32,waypoints=[[1,1],[2,1]])
+        candidates=[dict(position_xy_m=[1.3,1.1],returns=6,radius_m=.1),dict(position_xy_m=[2.05,2.],returns=5,radius_m=.1),dict(position_xy_m=[3.,3.],returns=4,radius_m=.15)]
+        return dict(plan=plan,state='COMPLETED',reason='ALL_STOPS_AND_RETURN_COMPLETED',completed_steps=9,context=dict(session_id='s'),
+            waypoint_scans=[],reached_stops=[0,1],skipped_stops=[],candidates=candidates)
+
+    def test_review_mode_card_names_the_aligned_match_and_offers_add_and_move(self):
+        s,messages,cards,events,applied=self._service('review')
+        s.declared_route_finished(self._result())
+        self.assertEqual(applied,[]);self.assertEqual(cards[-1]['kind'],'declared_route_obstacles')
+        self.assertIn('Candidate #2 matches the Twin object "Basket" (0.05 m away): no move needed.',cards[-1]['question'])
+        self.assertIn('Add the 1 unexplained one to the Twin',cards[-1]['question'])
+        self.assertEqual([c['id'] for c in cards[-1]['choices']],['add','move','skip'])
+        self.assertEqual(s._route_candidates['new'],[2])
+
+    def test_auto_mode_applies_move_then_box_one_transaction_at_a_time_then_replans(self):
+        s,messages,cards,events,applied=self._service('auto')
+        s.declared_route_finished(self._result())
+        self.assertEqual(cards,[])  # no question in auto mode
+        self.assertEqual(applied,[('move','Added_1')])  # the first edit starts at once
+        self.assertIn('Twin-edit auto-apply: moving "Fan base" to the LiDAR estimate, adding 1 outline box.',messages[1][1])
+        self.assertTrue(any('Auto-applied (Twin-edit auto-apply): moving "Fan base"' in m[1] for m in messages))
+        s._apply_next_auto_edit()  # the transaction sync calls this once the move is COMMITTED with its frame
+        self.assertEqual(applied[1],('add',(0,1)))  # matched candidates (moved or aligned) are never boxed
+        s._apply_next_auto_edit()
+        self.assertEqual(applied[-1],('plan','auto_replan'));self.assertEqual(s._auto_route_edits,[])
+        self.assertTrue(any('re-planning "Survey the room and come back"' in m[1] for m in messages))
+        self.assertIn('declared_route_auto_apply',[e[0] for e in events])
+
+    def test_mode_switch_is_validated_and_never_touches_motion_state(self):
+        from twinpulse_app.command_broker import BrokerError
+        s,messages,cards,events,applied=self._service('review')
+        s._set_twin_edit_approval(dict(action='twin_edit_approval',request_id='r1',mode='auto'))
+        self.assertEqual(s._state['twin_edit_approval'],'auto');self.assertIn('Robot motion is unchanged',messages[-1][1])
+        with self.assertRaises(BrokerError):s._set_twin_edit_approval(dict(action='twin_edit_approval',request_id='r2',mode='yolo'))
+        self.assertEqual(set(s._state),{'session_id','messages','cards','twin_edit_approval'})  # no motion or authority field appears
+
+    def test_saved_conversations_without_the_mode_restore_as_review(self):
+        import inspect
+        from twinpulse_app.conversation_service import ConversationService
+        source=inspect.getsource(ConversationService.__init__)
+        self.assertIn('stored.setdefault("twin_edit_approval","review")',source)

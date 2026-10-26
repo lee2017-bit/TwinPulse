@@ -41,6 +41,17 @@
 7. 완료 카드 `LiDAR at the stops saw N objects the Twin does not have…` → **Add to Twin**(한 번에 1개, 가장 강한 후보부터). Twin 갱신(Undo 가능) 확인. 상자가 아닌 후보(로봇 자신, 벽 근처 잡음)는 **Skip**.
 8. 로봇을 시작 마크로 되돌려 놓고(또는 종료 위치를 다시 **Set position**), 다시 **`Survey the room and come back`** → 새 경로 카드가 상자를 피해 가는지(미니맵·Isaac) 확인. SIM으로도 같은 문장을 보내 비교 가능.
 
+## 2b. 다음 실물 세션 추가 항목 (2026-10-26 낮에 구현, 빌드 32 이후)
+
+사용자 결정(10/26): 정지점 스캔만으로 판단, 주행 중 점은 표시 전용, Twin 편집 자동 적용 모드 추가. 로봇은 돌리지 않았고 SIM·단위 테스트로만 확인했으므로 아래가 실물에서 보이는지가 이번 세션의 확인 포인트입니다.
+
+1. **Twin edits 토글(채팅 Current step 옆)**: 데모 테이크는 **Auto-apply**로 두고 시작. 기본값은 Review이며 프로젝트별로 저장됩니다. 이 토글은 Twin 편집 승인만 바꾸고, Run route·Stop·근접/전압/Arm 검사는 그대로입니다(로봇 안전 모드가 아님).
+2. **상자는 더 큰 것(40–50 cm)** 을 1구간 **위**(시나리오 B, 시작점 약 1.1 m 앞)에. 30 cm 상자는 정지점 하나에서 점이 3개 안팎이라 후보가 약했습니다.
+3. **의자 하나를 약 30 cm 옮겨 두기**(Twin에 있는 위치에서 옆으로). 기대: 완료 후 채팅에 `Candidate #n is 0.3 m from the existing object "…"` → Auto-apply면 `Auto-applied (Twin-edit auto-apply): moving "…"` 메시지와 함께 Twin 갱신, 보라색 링(LiDAR estimate) 표시. 10 cm 이내면 `matches the Twin object … no move needed`로만 나옵니다. Review 모드면 Move 버튼.
+4. 완료 후 Auto-apply 순서: 이동 → 미확인 박스 추가(어두운 회색, 1편집 1객체) → `re-planning "Survey the room and come back"` 새 경로 카드. **Run route는 여전히 사용자가 누릅니다.** 실패하면 `Twin-edit auto-apply skipped one edit: …` 메시지를 그대로 기록(지우지 말 것).
+5. **LiDAR 레이어**: 경로가 끝나도 정지점 점(하늘색)·주행 중 점(노란색)이 Isaac과 바닥 지도에 남습니다("declared start + odometry, display only"). Robots 헤더 **Clear LiDAR layer**로 지움. 앱을 다시 켜면 사라집니다(세션 전용).
+6. 녹화에 담을 것: 토글 상태, 의자 이동 자동 적용 메시지, 어두운 회색 박스, 레이어가 남은 Twin, 새 경로 카드.
+
 ## 3. 녹화 (Physical AI 트랙: 실물 로봇 1분 이상)
 
 - 카메라: 로봇과 상자가 같이 보이게 고정, 전체 1회 주행 연속 촬영(6–7분).

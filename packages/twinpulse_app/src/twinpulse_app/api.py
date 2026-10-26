@@ -92,6 +92,10 @@ class _Session:
     stage_epoch: str | None = None
 
 
+LIDAR_MATCH_ALIGNED_M=.1   # a LiDAR candidate within this of a Twin object: the Twin already explains it, no move
+LIDAR_MATCH_MOVE_M=.6      # up to this a position correction is offered; beyond it the candidate is a new object
+
+
 class LocalApiServer:
     """One-process local API. It deliberately has no CORS or remote-bind mode."""
 
@@ -1643,7 +1647,11 @@ class LocalApiServer:
         return context
 
     def _route_candidate_matches(self,candidates):
-        """LiDAR candidates that sit near an existing movable Twin object (position correction offer, user applies)."""
+        """LiDAR candidates that sit near an existing movable Twin object.
+
+        `aligned` (<= 0.1 m): "matches the Twin, no move needed"; otherwise (<= 0.6 m) a position
+        correction the user (or Twin-edit auto-apply) applies through the normal move transaction.
+        """
         import math as _math
         try:objects=self._environment_workspace().snapshot().get('objects') or []
         except Exception:return []
@@ -1655,10 +1663,10 @@ class LocalApiServer:
                 position=item.get('position_m') or []
                 if len(position)<2:continue
                 distance=_math.dist(candidate['position_xy_m'],position[:2])
-                if distance<=.6 and (best is None or distance<best[0]):best=(distance,item)
+                if distance<=LIDAR_MATCH_MOVE_M and (best is None or distance<best[0]):best=(distance,item)
             if best:
                 distance,item=best
-                out.append(dict(candidate=index,object_id=item['id'],label=item['label'],distance_m=round(distance,2),
+                out.append(dict(candidate=index,object_id=item['id'],label=item['label'],distance_m=round(distance,2),aligned=distance<=LIDAR_MATCH_ALIGNED_M,
                     translation_m=[round(candidate['position_xy_m'][0]-item['position_m'][0],3),round(candidate['position_xy_m'][1]-item['position_m'][1],3),0.]))
         return out
 
@@ -1671,9 +1679,13 @@ class LocalApiServer:
         preview=result['preview'];identity=preview['operation']['operation_id']
         operation,digest=workspace.pinned_environment_operation(identity,preview['preview_digest'],owner,claim=True)
         self._workflow().scene_edit_transaction.start(owner,operation,digest)
+        note=getattr(self.robot_fleet,'note_lidar_move',None)
+        if note:
+            target=preview.get('affected_after',{}).get(match['object_id'],{}).get('position_m') or []
+            note(match['object_id'],match['label'],target[:2] if len(target)>=2 else [0.,0.],match.get('distance_m',0.))
         return identity
 
-    def _add_route_obstacles(self,owner,plan_id,candidates):
+    def _add_route_obstacles(self,owner,plan_id,candidates,*,exclude=()):
         """User clicked "Add to Twin" on a route card: preview + Apply through the normal Twin edit transaction.
 
         Unknown obstacles, lidar_estimate bound to the saved route record, never aligned.
@@ -1689,10 +1701,12 @@ class LocalApiServer:
         if not candidates:raise BrokerError('route_candidates_empty','The saved route has no LiDAR candidates.',status=409)
         obstacles=[]
         for index,candidate in enumerate(candidates[:8]):
+            if index in set(exclude):continue  # explained by an existing object (aligned or moved), not a new box
             size=round(min(1.2,max(.2,2*candidate['radius_m'])),3)
             extent=candidate.get('extent_m') or [size,size]  # oriented rough outline when the cluster has one
             obstacles.append(dict(label='LiDAR unknown #%d (route scan outline)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
-                dimensions_m=[extent[0],extent[1],.4],yaw_deg=float(candidate.get('yaw_deg') or 0.),uncertainty_m=.3))
+                dimensions_m=[extent[0],extent[1],.4],yaw_deg=float(candidate.get('yaw_deg') or 0.),uncertainty_m=.3,candidate=index))
+        if not obstacles:raise BrokerError('route_candidates_empty','Every LiDAR candidate is explained by an existing Twin object.',status=409)
         workspace=self._environment_workspace()
         result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+uuid4().hex,obstacles=obstacles,
             evidence=dict(source_name=plan_id+'.json',sha256=sha)),owner)

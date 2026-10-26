@@ -86,6 +86,16 @@ def parse_robot_command(text):
     return None
 
 
+def lidar_layer_payload(layer,scene_revision,*,limit=None):
+    """Session LiDAR display layer for the floor map / Isaac (declared start + odometry; never navigation input)."""
+    if not layer or layer['scene_revision']!=scene_revision:return None
+    out={k:layer[k] for k in ('scene_revision','moved','routes','revision','label')}
+    for key in ('stop_points','drive_points'):
+        points=layer[key];step=max(1,-(-len(points)//limit)) if limit else 1
+        out[key]=points[::step]
+    return out
+
+
 class RobotFleet:
     def __init__(self, broker, root, *, devices=None, clock=time.monotonic, wall=time.time, conversation_session_id=None):
         self.broker,self.root,self.devices=broker,Path(root),devices
@@ -106,6 +116,7 @@ class RobotFleet:
         # heartbeat from adopting a different mask under the same epoch.
         self._navigation_pin=None
         self.physical_navigation_reviews={} # Session-only; saved estimates never restore route authority.
+        self.lidar_layer=None # Session-only display layer of route LiDAR points (declared start + odometry); never navigation input.
         from .fleet_recorder import FleetSnapshotWriter
         self.snapshot_writer=FleetSnapshotWriter()
         self.definitions=self.root/'robot-fleet.json'
@@ -347,7 +358,44 @@ class RobotFleet:
                 position_m=((r.get('display_pose') or {}).get('position_m') if r['kind']=='physical' else (r.get('pose') or {}).get('position_m')))
                 for r in self.robots.values()]
             return dict(status='AVAILABLE',scene_revision=scene['binding'][2],bounds=scene['geometry'].get('bounds'),free_cells=free,cell_m=.1,
-                obstacles=scene['geometry'].get('obstacles') or [],robots=robots,label='FLOOR_MAP_DISPLAY_SCALE_NOT_LOCALIZATION')
+                obstacles=scene['geometry'].get('obstacles') or [],robots=robots,label='FLOOR_MAP_DISPLAY_SCALE_NOT_LOCALIZATION',
+                lidar_layer=lidar_layer_payload(getattr(self,'lidar_layer',None),scene['binding'][2],limit=2500))
+
+    LIDAR_LAYER_LABEL='DECLARED_START_PLUS_ODOMETRY_DISPLAY_ONLY_NOT_REGISTERED'
+    LIDAR_LAYER_CAP=6000
+
+    def absorb_route_layer(self,overlay):
+        """Keep a finished route's stop scans and drive points on the Twin until the user clears them (display only)."""
+        if not overlay:return
+        with self.lock:
+            layer=self.lidar_layer
+            if not layer or layer['scene_revision']!=overlay.get('scene_revision'):
+                layer=dict(scene_revision=overlay.get('scene_revision'),stop_points=[],drive_points=[],moved=[],routes=0,revision=0,label=self.LIDAR_LAYER_LABEL)
+            def merge(existing,points):
+                seen={(round(p[0]/.05),round(p[1]/.05)) for p in existing}
+                for p in points:
+                    key=(round(p[0]/.05),round(p[1]/.05))
+                    if key in seen:continue
+                    seen.add(key);existing.append([round(p[0],3),round(p[1],3)])
+                del existing[:-self.LIDAR_LAYER_CAP]
+            merge(layer['stop_points'],[p for scan in overlay.get('scans') or [] for p in scan.get('points') or []])
+            merge(layer['drive_points'],overlay.get('drive_scan') or [])
+            layer['routes']+=1;layer['revision']+=1;layer['updated_at']=self.clock()
+            self.lidar_layer=layer
+
+    def note_lidar_move(self,object_id,label,position_xy_m,distance_m):
+        """Mark an object the operator (or auto-apply) moved to a LiDAR estimate; the marker is display only."""
+        with self.lock:
+            layer=self.lidar_layer
+            if not layer:
+                scene=self.navigation_scene
+                layer=self.lidar_layer=dict(scene_revision=scene['binding'][2] if scene else None,stop_points=[],drive_points=[],moved=[],routes=0,revision=0,label=self.LIDAR_LAYER_LABEL)
+            layer['moved']=[m for m in layer['moved'] if m['object_id']!=object_id][-32:]+[dict(object_id=object_id,label=label,
+                position_xy_m=[round(position_xy_m[0],3),round(position_xy_m[1],3)],distance_m=round(distance_m,3),basis='lidar_estimate_unverified')]
+            layer['revision']+=1;layer['updated_at']=self.clock()
+
+    def clear_lidar_layer(self):
+        with self.lock:self.lidar_layer=None
 
     def _route_summary(self):
         """Declared-route progress for the web UI (display only; the chat card owns the decision)."""
@@ -493,6 +541,9 @@ class RobotFleet:
                 except OSError:
                     self.robots.pop(identity,None);self.focused=previous_focus
                     raise
+            elif action=='clear_lidar_layer':
+                if payload not in (None,{}):raise BrokerError('fleet_shape','No payload.',status=400)
+                self.lidar_layer=None  # display layer only; nothing moves
             elif action=='stop_all':
                 requested=self._twin_context()
                 for row in self.robots.values():
@@ -906,7 +957,11 @@ class RobotFleet:
                             position_m=position,intent=None,task=None,lidar=False,control_state='UNPREPARED'))
             route=getattr(self,'route_overlay',None)
             route=self._route_payload(dict(route)) if route and route['scene_revision']==binding[2] else None
-            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route))
+            layer=lidar_layer_payload(self.lidar_layer,binding[2]);sent=getattr(self,'_layer_sent',None)
+            if layer and sent==(layer['scene_revision'],layer['revision']):layer=dict(revision=layer['revision'],unchanged=True)  # Kit keeps its copy
+            elif layer:self._layer_sent=(layer['scene_revision'],layer['revision'])
+            else:self._layer_sent=None
+            return dict(fleet=dict(project_id=self.broker.project_id,applied_revision=binding[2],robots=desired,route=route,lidar_layer=layer))
 
     def _route_payload(self,route):
         """Full overlay on change and at least every 2 s; otherwise a stub Kit ignores (trace up to 800 points at ~20 Hz)."""

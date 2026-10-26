@@ -380,7 +380,8 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
   return <section className={`robot-fleet ${expanded?'is-expanded':'is-condensed'} ${robot&&drawerOpen?'has-controls':''}`} aria-label="Robot fleet">
     <header><h3>Robots <span>{state?.robots.length??0} · {available?state?.robots.filter(fleetRobotFresh).length??0:0} connected</span></h3>
       <div className="robot-fleet-header-actions"><button type="button" aria-label="Manage robot fleet" aria-expanded={expanded} onClick={()=>{setExpanded(value=>!value);setShowRegister(false);}}>{expanded?'Less':'Manage'}</button>
-        <button type="button" onClick={()=>{release.current();void send(envelope('stop_all',null)).catch(reportError);}} disabled={!state}>Stop all</button></div></header>
+        <button type="button" onClick={()=>{release.current();void send(envelope('stop_all',null)).catch(reportError);}} disabled={!state}>Stop all</button>
+        <button type="button" title="Remove the LiDAR points and LiDAR-move markers kept on the Twin from finished routes (display only)" onClick={()=>{void send(envelope('clear_lidar_layer',null,{})).then(()=>setFloor(null)).catch(reportError);}} disabled={!state}>Clear LiDAR layer</button></div></header>
     {(pollError||!available)&&<p role="status">{pollError??'Fleet status unavailable · movement paused'}</p>}
     <div className="robot-fleet-list" aria-label="Registered robots">
       {state?.robots.map(row=><button type="button" key={row.robot_id} className="robot-fleet-row" disabled={selectionPending} aria-pressed={selectedId===row.robot_id}

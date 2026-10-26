@@ -819,7 +819,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <button type="button" onClick={()=>{setLibrarySource(usdPurposeSource);setUsdPurposeSource(null);setShowLibrary(true);}}>Library asset</button>
       <button type="button" onClick={()=>setUsdPurposeSource(null)}>Cancel USD attachment</button>
     </section>}
-    {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)}
+    {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
       enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
       onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
     {showLibrary&&<ModelLibrary key={contextVersion} api={api} close={()=>setShowLibrary(false)}
@@ -887,6 +887,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       </section>:<>
       <section id="chat-conversation-pane" className="chat-conversation" aria-label="Conversation">
         <section className="chat-current-step" aria-label="Current step"><strong>Current step</strong><p role="status">{currentStep}</p>
+          <label className="chat-twin-edit-mode" title="Twin edits only (LiDAR boxes, LiDAR moves, photo replacements). Robot motion still needs Run route; Stop and the safety checks are unchanged.">Twin edits
+            <select aria-label="Twin-edit approval" value={state?.twin_edit_approval??'review'} disabled={!state||busy}
+              onChange={event=>{void submit({action:'twin_edit_approval',request_id:crypto.randomUUID(),mode:event.target.value as 'review'|'auto'});}}>
+              <option value="review">Review (default)</option><option value="auto">Auto-apply</option></select></label>
           {simulationCard&&<button type="button" aria-label="Current Twin and SIM controls" title="Open current Twin and SIM controls" aria-controls="current-twin-sim-controls" onClick={()=>{
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
           }}>Twin controls</button>}

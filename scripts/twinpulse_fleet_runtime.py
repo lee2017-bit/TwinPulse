@@ -522,6 +522,8 @@ class FleetRuntime:
         self.report=report
         try:self._draw_route(stage,fleet.get('route'))
         except Exception as exc:self.route_error=type(exc).__name__  # display only; never stops the fleet
+        try:self._draw_lidar_layer(stage,fleet.get('lidar_layer'))
+        except Exception as exc:self.route_error=type(exc).__name__  # display only; never stops the fleet
         self._schedule_scan(stage,rows,now)
         for row in report:
             robot=self.robots[row['robot_id']]
@@ -555,6 +557,46 @@ class FleetRuntime:
             if stage.GetPrimAtPath(path):stage.RemovePrim(path)
         self._draw_route_prims(stage,route,path)
         self.route_key=key;self.route_error=None
+
+    def _draw_lidar_layer(self,stage,layer):
+        """Session LiDAR layer: stop-scan and during-drive returns of finished routes plus LiDAR-moved object markers.
+
+        Display only (declared start + wheel odometry, not registered); it outlives the route overlay until the
+        user clears it and never feeds navigation bounds, scans or any robot report.
+        """
+        from pxr import Gf, UsdGeom
+        path=self.ROOT+'/LidarLayer'
+        if not layer:
+            if stage.GetPrimAtPath(path):stage.RemovePrim(path)
+            self.layer_key=None;return
+        if layer.get('unchanged'):return
+        key=(layer.get('scene_revision'),layer.get('revision'))
+        if key==getattr(self,'layer_key',None) and stage.GetPrimAtPath(path):return
+        root=UsdGeom.Xform.Define(stage,path).GetPrim()
+        root.SetCustomDataByKey('source',layer.get('label') or 'DECLARED_START_PLUS_ODOMETRY_DISPLAY_ONLY_NOT_REGISTERED')
+        root.SetCustomDataByKey('motionAuthorized',False);root.SetCustomDataByKey('routes',int(layer.get('routes') or 0))
+        for name,points,color,width,z in (('StopPoints',layer.get('stop_points') or [],(.2,.9,1.),.05,.17),
+                                          ('DrivePoints',layer.get('drive_points') or [],(.75,.7,.3),.035,.15)):
+            prim=path+'/'+name
+            if not points:
+                if stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
+                continue
+            cloud=UsdGeom.Points.Define(stage,prim)
+            cloud.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),z) for p in points])
+            cloud.CreateWidthsAttr([width]*len(points))
+            cloud.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        moved=layer.get('moved') or [];prim=path+'/MovedObjects'
+        if moved:
+            def ring(x,y,r,n=24):return [(x+r*math.cos(i*math.tau/n),y+r*math.sin(i*math.tau/n)) for i in range(n+1)]
+            strokes=[ring(m['position_xy_m'][0],m['position_xy_m'][1],.22) for m in moved]
+            curve=UsdGeom.BasisCurves.Define(stage,prim)
+            curve.CreateTypeAttr('linear');curve.CreateCurveVertexCountsAttr([len(s) for s in strokes])
+            curve.CreatePointsAttr([Gf.Vec3f(float(p[0]),float(p[1]),.2) for s in strokes for p in s])
+            curve.CreateWidthsAttr([.05]);curve.SetWidthsInterpolation('constant')
+            curve.CreateDisplayColorAttr([Gf.Vec3f(.75,.35,1.)])
+            curve.GetPrim().SetCustomDataByKey('source','OBJECT_MOVED_TO_LIDAR_ESTIMATE_UNVERIFIED')
+        elif stage.GetPrimAtPath(prim):stage.RemovePrim(prim)
+        self.layer_key=key
 
     def _draw_route_prims(self,stage,route,path):
         from pxr import Gf, UsdGeom
