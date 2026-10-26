@@ -1036,7 +1036,7 @@ class SimLoopStageContractTest(unittest.TestCase):
         messages=[];applied=[];transactions=[]
         s=SimpleNamespace(_lock=threading.Lock(),_state=dict(session_id='s',messages=[],cards=[],twin_edit_approval='auto',scene_feedback=None),_request_owner='o',
             _feedback_service=None,_feedback_outcome=None,_edit_transaction_marker=None,
-            robot_fleet=SimpleNamespace(focused='r'),declared_routes=SimpleNamespace(active=lambda:False),_last_route_text='Survey the warehouse and come back',
+            robot_fleet=SimpleNamespace(focused='r',navigation_scene=None),declared_routes=SimpleNamespace(active=lambda:False),_last_route_text='Survey the warehouse and come back',
             _message=lambda role,content,**kw:messages.append(dict(role=role,content=content,status=kw.get('status','completed'),operation_id=kw.get('operation_id'))) or s._state['messages'].append(messages[-1]),
             _event=lambda name,**kw:None,_persist=lambda:None,
             match_route_objects=lambda candidates:[],
@@ -1052,8 +1052,14 @@ class SimLoopStageContractTest(unittest.TestCase):
         transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame=None));s._sync_feedback('o')
         self.assertEqual(applied,[('add',1)])  # ACK without a frame: nothing more yet
         transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
-        self.assertEqual(applied[-1],('plan','Survey the warehouse and come back','auto_replan'));self.assertFalse(s._auto_replan_pending)
+        self.assertEqual(applied,[('add',1)]);self.assertFalse(s._auto_replan_pending);self.assertIsNotNone(s._auto_replan_ready)  # frame confirmed, grid not yet rebuilt: no plan
+        s._sync_feedback('o');self.assertEqual(applied,[('add',1)])  # still waiting for the navigation scene
+        s.robot_fleet.navigation_scene=dict(binding=('e','s','rev2'),geometry={});s._sync_feedback('o')
+        self.assertEqual(applied[-1],('plan','Survey the warehouse and come back','auto_replan'));self.assertIsNone(s._auto_replan_ready)
         self.assertTrue(any('Twin updated, saved and its current 3D frame confirmed.' in m['content'] for m in messages))
         self.assertTrue(any('re-planning "Survey the warehouse and come back"' in m['content'] for m in messages))
         transactions.append(dict(operation_id='op-add',state='COMMITTED',current_frame='f1'));s._sync_feedback('o')
         self.assertEqual(len([a for a in applied if a[0]=='plan']),1)  # the same frame never re-plans twice
+        # 6 a grid that never comes back gives up honestly after the wait instead of pending forever
+        s._auto_replan_ready=__import__('time').monotonic()-1000;s.robot_fleet.navigation_scene=None;s._sync_feedback('o')
+        self.assertIsNone(s._auto_replan_ready);self.assertIn('Auto re-plan skipped',messages[-1]['content']);self.assertEqual(len([a for a in applied if a[0]=='plan']),1)
