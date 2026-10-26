@@ -157,7 +157,7 @@ export function FieldSessionGate({robot,available,busy,onAction}:Omit<Props,'onO
       <span>{field?.armed?'Explicit supervision armed':'Supervision not armed'}</span>{armBlocker&&<p className="robot-fleet-gate-blocker" role="status">{armBlocker}</p>}</div>
     <label className="robot-fleet-confirm"><input type="checkbox" checked={bootstrapConfirmed} onChange={event=>setBootstrapConfirmed(event.target.checked)}/>I reviewed the Bootstrap stop trial scope and explicitly confirm one supervised test.</label>
     <div className="robot-fleet-gate-row"><button type="button" disabled={!live||!hasConfig||!bootstrapConfirmed||!!running} onClick={()=>{setBootstrapConfirmed(false);onAction('field_test',{case:'bootstrap_stop',confirmed:true});}}>Run Bootstrap stop</button>
-      <span>{fieldTestCases[0].scope}</span>{bootstrapBlocker&&<p className="robot-fleet-gate-blocker" role="status">{bootstrapBlocker}</p>}</div>
+      <span>{fieldTestCases.find(test=>test.id==='bootstrap_stop')?.scope}</span>{bootstrapBlocker&&<p className="robot-fleet-gate-blocker" role="status">{bootstrapBlocker}</p>}</div>
     {active&&<p role="status">Active trial {active.trial_id} · {active.case} · {active.status} · {active.reason??'No reason reported'}</p>}
   </>;
 }
