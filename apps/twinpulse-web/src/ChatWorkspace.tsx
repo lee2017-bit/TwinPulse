@@ -830,9 +830,6 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
       <button type="button" onClick={()=>{setLibrarySource(usdPurposeSource);setUsdPurposeSource(null);setShowLibrary(true);}}>Library asset</button>
       <button type="button" onClick={()=>setUsdPurposeSource(null)}>Cancel USD attachment</button>
     </section>}
-    {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
-      enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
-      onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
     {showLibrary&&<ModelLibrary key={contextVersion} api={api} close={()=>setShowLibrary(false)}
       initialImport={librarySource} initialReference={imageRole==='asset_reference'?file:null} initialPrompt={text}
       sceneRevision={workflowFresh?workflow?.site_draft?.revision??null:null} placementEnabled={idleFlow&&connected&&engineReady&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
@@ -906,6 +903,10 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
             nearBottom.current=false;setNewUpdates(false);simulationPanel.current?.scrollIntoView({block:'start'});simulationPanel.current?.focus({preventScroll:true});
           }}>Twin controls</button>}
         </section>
+        {/* The import panel lives in the chat column so the Digital Twin keeps its full height on the right (2026-10-26 user review). */}
+        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
+          enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
+          onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
         <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
           onKeyDown={event=>{if(['ArrowUp','PageUp','Home'].includes(event.key))nearBottom.current=false;}}
           onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80) nearBottom.current = true; }}>
