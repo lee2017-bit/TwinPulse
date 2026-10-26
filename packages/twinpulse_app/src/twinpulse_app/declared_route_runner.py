@@ -27,6 +27,7 @@ RECOVERY_BACKOFF_M=.25
 RECOVERY_KEEPOUT_M=.25  # leaves/baskets are wider than the proximity cone (review 2026-10-25)
 SIM_RECOVERY_OFFSET_M=.45  # SIM contact stop: body .105 + skin .10 = the obstacle face is ~.2 m ahead
 SIM_RECOVERY_KEEPOUT_M=.40
+SIM_RECOVERY_BACKOFF_M=.40  # the robot came from there; .25 left its start inside the keepout's clearance band (GRID_EDGE_BLOCKED)
 MAX_STEPS_FACTOR=3
 OTHER_ROBOT_KEEPOUT_M=.35  # SIM body radius + engine stop skin, see twinpulse_fleet_runtime.integrate_motion
 TRACE_SPACING_M=.04
@@ -378,7 +379,8 @@ class DeclaredRouteRunner:
                     self._progress('recovery',at=[round(v,4) for v in blocked],recoveries=recoveries)
                     if row and row.get('kind')=='physical':self.sleep(PHYSICAL_SETTLE_S)
                     # Wait for the proximity pause's Stop to be applied before backing off.
-                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=RECOVERY_BACKOFF_M),'AFTER_STOP')
+                    backoff=RECOVERY_BACKOFF_M if (row or {}).get('kind')=='physical' else SIM_RECOVERY_BACKOFF_M  # SIM: clear the wider keepout's clearance band
+                    outcome,row,epochs=self._step(owner,robot_id,dict(direction='backward',amount=backoff),'AFTER_STOP')
                     if outcome[0]!='COMPLETED':return self._finish('STOPPED','RECOVERY_'+outcome[0]+':'+str(outcome[1]))
                     previous=epochs;pose=plan_pose(start,origin,self._measured(row))
                     # A stop that sits inside the new keepout is skipped (and reported); the start is always kept.

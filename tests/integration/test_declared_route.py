@@ -149,7 +149,7 @@ class DeclaredRouteRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
         texts=[b['payload'].get('text') for b in fleet.sent]
-        self.assertIn('backward 25.0cm',texts)
+        self.assertIn('backward 40.0cm',texts)
         self.assertEqual(len(result['recoveries']),1)
         self.assertEqual(result['state'],'COMPLETED',result['reason'])
 
@@ -977,7 +977,7 @@ class SimObstacleStopRecoveryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner,result=run(fleet,tmp)
         texts=[b['payload'].get('text') for b in fleet.sent]
-        self.assertIn('backward 25.0cm',texts)
+        self.assertIn('backward 40.0cm',texts)  # SIM backs off further than the physical 25 cm
         self.assertEqual(len(result['recoveries']),1)
         self.assertEqual(result['state'],'COMPLETED',result['reason'])
         self.assertEqual(result['recoveries'][0]['keepout_m'],.4)  # SIM keepout covers a whole 0.5 m box
