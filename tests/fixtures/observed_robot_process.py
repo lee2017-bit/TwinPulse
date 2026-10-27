@@ -109,10 +109,14 @@ class ObservedLink(MissionLink):
 
 def main(state):
     state.mkdir(exist_ok=True);report={'physical_validation':'SYNTHETIC_TEST_ONLY','status':'FAILED','cleanup_confirmed':False}
-    link=None;index=0
+    link=None;index=0;stop_published_index=None;fit_hold={}
     def record(kind,**data):
-        nonlocal index
+        nonlocal index,stop_published_index
         index+=1
+        if (kind=='accepted' and data.get('action') in {'stop','close','finish_stop','force_stop'}
+                and stop_published_index is None and link is not None):
+            # TEST ONLY: the exact publish count when the robot RECEIVED the Stop.
+            stop_published_index=len(link.events)
         emit({'state':'SESSION_EVENT','event':{'schema':'robot-session-1.0','robot_session_id':'synthetic-observed',
             'event_index':index,'clock_domain':'robot_monotonic','t':time.monotonic(),'kind':kind,'data':data}})
         if factory and kind=='mission_decision':factory.record_visual()
@@ -121,6 +125,18 @@ def main(state):
         stream=InputStream(max_line=16384);request=mission_fixture(state,stream)
         fixture_path=state/'synthetic-world.json'
         world=json.loads(fixture_path.read_text()) if fixture_path.is_file() else None
+        hold=(world or {}).get('hold_fit_until_stop_s')
+        if hold:
+            # TEST ONLY: a photo fit slower than the PC's Stop latency, so a Stop
+            # sent while the PC sees PHOTO_FIT_WHEELS_IDLE is received while the
+            # fit still runs. The real fit then completes after cancellation: a
+            # late result that must not resume the mission.
+            from twinpulse_core import cold_start_mission
+            real_fit=cold_start_mission.ColdStartMission._fit
+            def held_fit(mission,saved):
+                fit_hold['held_until_cancelled']=mission.cancelled.wait(float(hold))
+                real_fit(mission,saved)
+            cold_start_mission.ColdStartMission._fit=held_fit
         link=ObservedLink({'project_id':request['adaptive_scope']['project_id'],'session_id':'synthetic-observed',
             'boot_id':'fake-boot','release_id':'c'*64,'source_revision':'c'*64,'origin':'live_ros'},world=world)
         factory=RobotObservedFactory(link,request,output=emit,clock=time.monotonic)
@@ -136,6 +152,9 @@ def main(state):
             report['sensor_cleanup_confirmed']=True
             report['synthetic_final_pose']=link.pose
             report['synthetic_final_velocity']=[link.v,link.w]
+            report['synthetic_nonzero_after_stop']=(None if stop_published_index is None else
+                sum(1 for v,w,_ in link.events[stop_published_index:] if v or w))
+            if fit_hold:report['synthetic_fit_held_until_cancelled']=fit_hold.get('held_until_cancelled')
             (state/'published.json').write_text(json.dumps(link.events))
         if factory:
             report.update(mode='mission',robot_session_id=factory.context['session_id'],
