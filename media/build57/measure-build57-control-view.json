@@ -1,0 +1,110 @@
+[
+ {
+  "view": "control",
+  "name": "real window",
+  "target": "Marker X (m)",
+  "window": [
+   1522,
+   827
+  ],
+  "control": true,
+  "paneScrollTop": 0,
+  "paneOverflow": "clip",
+  "render": {
+   "x": 519,
+   "y": 106,
+   "w": 748,
+   "h": 234,
+   "visibleH": 234
+  },
+  "robotCard": {
+   "x": 519,
+   "y": 391,
+   "w": 995,
+   "h": 406,
+   "visibleH": 406
+  },
+  "routeCard": null,
+  "stop": {
+   "x": 1392,
+   "y": 396,
+   "w": 72,
+   "h": 32,
+   "visibleH": 32
+  },
+  "stopOnScreen": true,
+  "focused": "Marker X (m)"
+ },
+ {
+  "view": "control",
+  "name": "real window",
+  "target": "Marker yaw (rad)",
+  "window": [
+   1522,
+   827
+  ],
+  "control": true,
+  "paneScrollTop": 0,
+  "paneOverflow": "clip",
+  "render": {
+   "x": 519,
+   "y": 106,
+   "w": 748,
+   "h": 234,
+   "visibleH": 234
+  },
+  "robotCard": {
+   "x": 519,
+   "y": 391,
+   "w": 995,
+   "h": 406,
+   "visibleH": 406
+  },
+  "routeCard": null,
+  "stop": {
+   "x": 1392,
+   "y": 396,
+   "w": 72,
+   "h": 32,
+   "visibleH": 32
+  },
+  "stopOnScreen": true,
+  "focused": "Marker yaw (rad)"
+ },
+ {
+  "view": "control",
+  "name": "real window",
+  "target": "command",
+  "window": [
+   1522,
+   827
+  ],
+  "control": true,
+  "paneScrollTop": 0,
+  "paneOverflow": "clip",
+  "render": {
+   "x": 519,
+   "y": 106,
+   "w": 748,
+   "h": 234,
+   "visibleH": 234
+  },
+  "robotCard": {
+   "x": 519,
+   "y": 391,
+   "w": 995,
+   "h": 406,
+   "visibleH": 406
+  },
+  "routeCard": null,
+  "stop": {
+   "x": 1392,
+   "y": 396,
+   "w": 72,
+   "h": 32,
+   "visibleH": 32
+  },
+  "stopOnScreen": true,
+  "focused": "Robot command"
+ }
+]
