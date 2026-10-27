@@ -67,8 +67,9 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
     Boxes are (cx, cy, half_x, half_y, yaw_rad); discs are (cx, cy, radius).
     The returned tuple excludes start and includes the exact goal. A diagonal
     never cuts across a blocked corner. No path is a terminal, explicit result.
-    home is the declared start a route returns to: its escape zone relaxes
-    synthetic envelopes like the start's (never discs, walls or real cells).
+    home is the declared start (where the robot stood when the plan was made):
+    within one clearance of it a synthetic envelope blocks only its own footprint
+    plus 5 cm (never discs, walls or real cells). Without home nothing is relaxed.
     """
     if (not _finite_pair(start) or not _finite_pair(goal)
             or type(bounds) not in (tuple, list) or len(bounds) != 4
@@ -115,7 +116,6 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             state='synthetic' if row[2]=='occupied' and row[6]==SYNTHETIC_KEEPOUT_CELL else row[2]
             if key in known and known[key]!=state:known[key]='unknown'
             else:known[key]=state
-    zones=(start,) if home is None else (start,home)
 
     def clear(point):
         x, y = point
@@ -127,9 +127,10 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             # A cell touching the circle is included; absent/conflicting=blocked.
             # 2026-10-27 build 59: a LiDAR box's synthetic uncertainty envelope reached
             # into the declared start's band (START_OR_GOAL_BLOCKED on an empty floor).
-            # Inside the start (or home) escape zone a synthetic cell blocks only its own
-            # footprint plus 5 cm, like a keepout disc below; real cells keep the full berth.
-            escape=any(math.hypot(x-p[0],y-p[1])<=clearance for p in zones)
+            # Inside the declared start's (home) escape zone a synthetic cell blocks only its
+            # own footprint plus 5 cm, like a keepout disc below; real cells keep the full berth.
+            # Only home, never each leg's start: a chain of stops must not ratchet into a band.
+            escape=home is not None and math.hypot(x-home[0],y-home[1])<=clearance
             for ix in range(math.floor((x-clearance)/cell_size_m),math.floor((x+clearance)/cell_size_m)+1):
                 for iy in range(math.floor((y-clearance)/cell_size_m),math.floor((y+clearance)/cell_size_m)+1):
                     dx=max(ix*cell_size_m-x,0.,x-(ix+1)*cell_size_m)

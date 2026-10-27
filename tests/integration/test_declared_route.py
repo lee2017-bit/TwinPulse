@@ -1139,6 +1139,8 @@ class LidarBoxAtStartTest(unittest.TestCase):
         self.assertEqual(legs[-1][-1],start[:2])
         # Goals are unchanged: an operator stop inside the envelope band far from the start is refused.
         with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[[2.3,.0]],geometry,cells,kind='physical')
+        # ...also when an earlier stop sits within 0.35 m of it (0.22 m from the Added_ea79 envelope, 1.75 m from the start).
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[[-1.03,1.15],[-.72,1.26]],geometry,cells,kind='physical')
         # A straight segment out of the start zone that passes 0.25 m from the envelope is still blocked beyond the zone.
         a,b,c,d=geometry['bounds']
         with self.assertRaisesRegex(NoBoundedPath,'REVIEWED_ROUTE_BLOCKED'):
@@ -1152,6 +1154,18 @@ class LidarBoxAtStartTest(unittest.TestCase):
         self.assertEqual(plan_through([-1.6,3.,0.],[[-1.,2.]],geometry,cells,kind='physical')['polyline'][-1],[-1.6,3.])  # 0.4 m from that body
         self.assertEqual(plan_through([-1.8,1.4,0.],[[-1.,2.]],geometry,cells,kind='physical')['polyline'][-1],[-1.8,1.4])  # 0.2 m from the other envelope
         with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through([-1.8,1.4,0.],[[-2.04,1.4]],geometry,cells,kind='physical')
+
+    def test_only_the_declared_start_relaxes_an_envelope_not_each_leg_start_or_step(self):
+        # Review of the first fix: relaxing around every leg start let a chain of stops, a recovery pose or 0.1 m task
+        # steps walk into an envelope band far from the declared start.
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through,replan_legs
+        from twinpulse_core.robot_survey import checked_motion_segment
+        geometry,cells=lidar_twin([0.,0.,6.,4.],[('c'*20,[3.03,2.03],[.4,.4],0.,.1)]);band=[2.85,1.36]  # 0.24 m from the envelope, 0.47 m from the body
+        self.assertEqual(plan_through([*band,0.],[[1.5,1.]],geometry,cells,kind='physical')['polyline'][-1],band)  # the declared start may be there
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through([.6,1.,0.],[[2.64,1.08],band],geometry,cells,kind='physical')
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):replan_legs([*band,0.],[[.6,1.]],geometry,cells,kind='physical',home=[.6,1.])
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):checked_motion_segment([*band,math.pi/2],'forward',.1,geometry,observed_cells=cells)
 
 
 class LidarBoxAheadSurveyTest(unittest.TestCase):

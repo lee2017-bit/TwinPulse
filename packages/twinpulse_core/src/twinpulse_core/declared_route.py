@@ -68,7 +68,7 @@ def _reachable(start,geometry,observed_cells,clearance,stop_clearance=0.,max_dis
         if (p[0]-start[0])*heading[0]+(p[1]-start[1])*heading[1]<0:continue
         if math.dist(start[:2],p)*2+.25>max_distance_m:continue  # cannot go and come back
         if stop_clearance and not _clear_of(p,blocked,geometry,stop_clearance,discs):continue
-        try:length=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance))
+        try:length=route_length(start,route_to(start,p,geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance,home=start[:2]))
         except NoBoundedPath:continue
         # Judged by the planned path, not a near-straight ratio (2026-10-27 build 59: a
         # LiDAR box straight ahead left no stops). Out and back along this checked path
@@ -109,7 +109,7 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
                   and 2*reachable[p]+.25<=remaining),key=lambda p:-reachable[p])
     for goal in ahead[:4]:
         route=[list(goal)]  # a straight leg; the segment itself is re-checked by the planner clearance below
-        try:checked=route_to(start,list(goal),geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance)
+        try:checked=route_to(start,list(goal),geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance,home=start[:2])
         except NoBoundedPath:continue
         if len(checked)!=1:continue  # a detour means the straight line is not clear
         remaining-=route_length(pose,route);polyline+=route;legs.append([list(q) for q in route]);waypoints.append(list(goal))
@@ -124,7 +124,7 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
         visited.append(pose)
     else:reason='WAYPOINT_LIMIT'
     if not waypoints:raise ValueError('DECLARED_ROUTE_NO_REACHABLE_WAYPOINT:'+str(reason))
-    # home: the declared start's escape zone also holds on the way back (bounded_grid_plan).
+    # home: only the declared start's escape zone relaxes synthetic envelopes (bounded_grid_plan).
     returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance,home=start[:2])
     polyline+=returning;legs.append([list(q) for q in returning])
     return dict(start=list(start),waypoints=waypoints,polyline=[list(p) for p in polyline],legs=legs,
@@ -146,7 +146,7 @@ def plan_through(start,stops,geometry,observed_cells=None,*,kind='physical',disc
         polyline+=route;legs.append([list(q) for q in route]);waypoints.append(goal)
         last=route[-2] if len(route)>1 else pose;pose=[*route[-1],math.atan2(route[-1][1]-last[1],route[-1][0]-last[0])]
     if not waypoints:raise ValueError('DECLARED_ROUTE_NO_STOPS')
-    # home: the declared start's escape zone also holds on the way back (bounded_grid_plan).
+    # home: only the declared start's escape zone relaxes synthetic envelopes (bounded_grid_plan).
     returning=route_to(pose,start[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance,home=start[:2])
     polyline+=returning;legs.append([list(q) for q in returning])
     return dict(start=list(start),waypoints=waypoints,polyline=[list(p) for p in polyline],legs=legs,length_m=route_length(start,polyline),
@@ -295,7 +295,8 @@ def heading_move(pose,yaw,*,tolerance_rad=HEADING_TOLERANCE_RAD):
 def replan_legs(pose,goals,geometry,observed_cells=None,*,kind='physical',discs=(),home=None):
     """Fresh model paths from the measured pose through the remaining goals (with new keepout discs).
 
-    home is the declared start; its escape zone holds as in the original plan.
+    home is the declared start; only its escape zone relaxes synthetic envelopes,
+    so a recovery pose inside an envelope band elsewhere fails closed.
     """
     clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
     legs=[];at=list(pose)
