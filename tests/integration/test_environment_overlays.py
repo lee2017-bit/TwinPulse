@@ -105,6 +105,17 @@ class EnvironmentOverlayTests(unittest.TestCase):
             self.assertTrue(any(m['synthetic_keepout'] for m in derived))
             self.assertTrue(any(not m['synthetic_keepout'] for m in derived))
 
+    def test_visible_boxes_draw_in_the_item_display_colour(self):
+        # Build 56 (2026-10-27): photo and LiDAR boxes all drew in the fixed orange in imported spaces.
+        for color,expected in (([.498,.451,.396],[.498,.451,.396]),([.16,.16,.17],[.16,.16,.17]),(None,[.84,.48,.16])):
+            value=overlay()
+            if color:value['item']['display_color']=color
+            derived=overlay_meshes(add_overlay(source(),value))
+            visible=[m for m in derived if not m['synthetic_keepout']]
+            self.assertTrue(visible)
+            for mesh in visible:
+                self.assertEqual([round(v,3) for v in mesh['color_rgb']],expected)
+
     def test_existing_grid_planner_routes_around_added_uncertainty(self):
         from twinpulse_core.bounded_grid_plan import plan_bounded_grid
         value=source();value['meshes']=value['meshes'][:1]

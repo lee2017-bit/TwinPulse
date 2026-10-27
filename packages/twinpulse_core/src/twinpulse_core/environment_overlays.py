@@ -10,7 +10,7 @@ import math
 import re
 
 from .models import SceneObject, ShapeSpec, Transform
-from .room_items import checked_room_item, expand_room_item, room_item_risk
+from .room_items import checked_room_item, expand_room_item, parse_display_color_tag, room_item_risk
 
 SCHEMA = 'environment-static-1.1'
 KINDS = ('floor_fan','basket','bag','box','clothing_pile','cable_bundle',
@@ -100,8 +100,11 @@ def overlay_meshes(environment):
             c=math.cos(math.radians(obj.transform.rotation_rpy_deg[2]));s=math.sin(math.radians(obj.transform.rotation_rpy_deg[2]))
             points=[[x+a*c-b*s,y+a*s+b*c,z+d] for d in (-sz/2,sz/2) for b in (-sy/2,sy/2) for a in (-sx/2,sx/2)]
             synthetic=obj.id.endswith(('_keepout','_uncertainty'))
+            # 2026-10-27 build 56: photo boxes (dominant photo colour) and LiDAR boxes (dark grey) all drew
+            # in this fixed orange in imported spaces; the item's display-only colour travels in asset_id.
+            color=parse_display_color_tag(obj.asset_id)
             result.append(dict(id=obj.id,source_path='/Estimated/'+overlay['item']['id'],category='added_obstacle',
-                label=overlay['item']['label'],points_m=points,triangles=faces,color_rgb=[.84,.48,.16],translation_m=[0.,0.,0.],
+                label=overlay['item']['label'],points_m=points,triangles=faces,color_rgb=list(color) if color else [.84,.48,.16],translation_m=[0.,0.,0.],
                 collision=obj.collision,synthetic_keepout=synthetic,evidence=overlay['evidence']))
     return result
 
