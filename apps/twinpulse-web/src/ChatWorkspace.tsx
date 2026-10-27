@@ -689,6 +689,8 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const baseIdleFlow=!pendingChoice&&!activeJob&&!feedbackBusy&&!editLocked&&!busy&&!delivery&&!sceneOperationBusy;
   const sceneObservationFresh=workflowFresh&&connected&&!!product;
   const idleFlow=baseIdleFlow&&sceneObservationFresh;
+  // One Undo for the Twin update card and the open Import space panel, which can hide that card (2026-10-27 real-app run).
+  const undoLastEdit=editTransaction?.state==='COMMITTED'&&idleFlow?()=>void submit({action:'message',request_id:crypto.randomUUID(),text:'Undo',mode:'change',attachment:null}):undefined;
   // Keep a retained job action stable while its previous delivery settles,
   // but never offer another submission while that delivery is pending.
   const generationRetryVisible=!pendingChoice&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy;
@@ -921,7 +923,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           }}>Twin controls</button>}
         </section>
         {/* The import panel lives in the chat column so the Digital Twin keeps its full height on the right (2026-10-26 user review). */}
-        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
+        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'} undoLastEdit={undoLastEdit}
           enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
           onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
         <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
@@ -1122,7 +1124,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
               <button type="button" disabled={!sceneObservationFresh||recoveringEdit||busy||!connected||!engineReady} onClick={()=>{
                 setRecoveringEdit(true);void api.recoverSceneEdit().then(()=>api.conversation()).then(apply).catch(e=>setError(errorText(e))).finally(()=>setRecoveringEdit(false));
               }}>{recoveringEdit?'Recovery requested…':'Recover saved Twin in Isaac'}</button></>}
-            {editTransaction.state==='COMMITTED'&&idleFlow&&<button type="button" disabled={!connected} onClick={()=>void submit({action:'message',request_id:crypto.randomUUID(),text:'Undo',mode:'change',attachment:null})}>Undo last edit · preview</button>}
+            {undoLastEdit&&<button type="button" disabled={!connected} onClick={undoLastEdit}>Undo last edit · preview</button>}
           </section>}
           {simulationHasOrigin&&turn.id===simulationTurn&&simulationCard}
           </section>)}

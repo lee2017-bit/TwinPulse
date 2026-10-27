@@ -32,6 +32,15 @@ function editTransaction(state='COMMITTED',frame=true):SceneEditTransaction{retu
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
 describe('local space import',()=>{
+  it('offers the chat Undo only with the panel edit controls free and never sends a panel action for it',async()=>{
+    const h=harness(withPhoto(sofa)),undo=vi.fn();
+    const view=render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo} enabled={false}/>);
+    const button=await screen.findByRole('button',{name:'Undo last edit · preview in chat'});expect(button).toHaveProperty('disabled',true);  // e.g. a goal or repeat task owns the scene
+    view.rerender(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo}/>);
+    expect(button).toHaveProperty('disabled',false);fireEvent.click(button);expect(undo).toHaveBeenCalledOnce();expect(h.api.environmentAction).not.toHaveBeenCalled();
+    view.rerender(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
+    expect(screen.queryByRole('button',{name:'Undo last edit · preview in chat'})).toBeNull();  // no committed edit, no Undo
+  });
   it('requires explicit photo consent and submits exactly one analysis without Apply',async()=>{
     const h=harness(snapshot('imported'));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
     await screen.findByText('Added obstacles · 0');fireEvent.click(screen.getByText('Added obstacles · 0'));
