@@ -65,6 +65,9 @@ describe('Imported space next steps',()=>{
   }
   const openPanel=async()=>{fireEvent.click(screen.getByRole('button',{name:'Import space'}));
     const panel=await screen.findByRole('region',{name:'Import space'});await within(panel).findByText('Space imported · saved environment.');return panel;};
+  // jsdom has no scrollIntoView; the panel Undo shows its chat card's choice with it.
+  beforeEach(()=>{Object.defineProperty(Element.prototype,'scrollIntoView',{value:vi.fn(),configurable:true,writable:true});});
+  afterEach(()=>{delete (Element.prototype as Partial<Element>).scrollIntoView;});
   it('undoes a committed photo add from the open Import space panel with the Apply of that Undo in view',async()=>{
     // 2026-10-27 real app (Control view, 787 px tall): the open panel covered the chat's Twin update card, and then the Apply card of the chat Undo it asks for.
     const api=importedChat(),view=render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
@@ -80,6 +83,30 @@ describe('Imported space next steps',()=>{
     expect(screen.queryByRole('region',{name:'Import space'})).toBeNull();  // nothing covers the card any more
     within(card).getByRole('radio',{name:'Apply and update Twin'});within(card).getByRole('button',{name:'Continue'});
     await act(async()=>{});expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();  // the chat follows its newest card again
+    view.unmount();
+  });
+  it('shows the choice of the panel Undo card above its before/after rows, holds it while the card waits, then follows the chat again',async()=>{
+    // 2026-10-27 review (Control view 1426x787 and 1536x864): following the bottom left Apply and Continue above the fold, under 2-7 before/after rows (one per mesh part).
+    const api=importedChat(),view=render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
+    const list=document.querySelector<HTMLElement>('.chat-message-list')!,shownOn:Element[]=[];
+    Object.defineProperties(list,{scrollHeight:{configurable:true,get:()=>1000},clientHeight:{configurable:true,get:()=>480}});
+    vi.mocked(Element.prototype.scrollIntoView).mockImplementation(function(this:Element){shownOn.push(this);list.scrollTop=470;});  // 50 px above the bottom
+    const panel=await openPanel();fireEvent.wheel(list,{deltaY:-120});
+    const undo=within(panel).getByRole('button',{name:'Undo last edit in chat · closes this panel'});
+    await waitFor(()=>expect(undo).toHaveProperty('disabled',false));fireEvent.click(undo);
+    const card=await screen.findByRole('region',{name:/^Undo the last edit as a fresh revision\?/}),choice=within(card).getByRole('group',{name:'Your choice'});
+    await waitFor(()=>expect(shownOn).toEqual([choice]));expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({block:'nearest'});
+    expect(choice.contains(within(card).getByRole('radio',{name:'Apply and update Twin'}))).toBe(true);
+    fireEvent.scroll(list);  // the scroll this fires ends within 80 px of the bottom: it must not re-enter follow mode
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,900));});  // past the 400 ms follow tick and a 750 ms poll
+    expect(list.scrollTop).toBe(470);expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();
+    const waiting=await api.conversation();
+    api.conversationAction.mockImplementationOnce(async body=>({...waiting,revision:2,cursor:2,accepted_request_ids:[body.request_id],scene_edit_preview:null,
+      cards:waiting.cards.map(row=>({...row,state:'answered',selected_choice_id:'apply'}))}) as ConversationState);
+    fireEvent.click(within(card).getByRole('radio',{name:'Apply and update Twin'}));fireEvent.click(within(card).getByRole('button',{name:'Continue'}));
+    await waitFor(()=>expect(list.scrollTop).toBe(1000));  // answered: the chat follows its newest content again
+    expect(api.conversationAction.mock.calls[1][0]).toMatchObject({action:'answer',card_id:'q3',choice_id:'apply'});
+    expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();expect(shownOn).toHaveLength(1);
     view.unmount();
   });
   it('offers the panel Undo only for a committed edit while the chat flow is idle and its scene observation fresh',async()=>{

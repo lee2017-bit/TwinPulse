@@ -334,6 +334,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const list = useRef<HTMLDivElement>(null);
   const simulationPanel=useRef<HTMLElement>(null);
   const nearBottom = useRef(true);
+  const panelUndo=useRef<{card?:string}|null>(null);  // the Import space panel's Undo: {} once sent, then the id of its waiting card while that card's choice is shown
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const composerForm = useRef<HTMLFormElement>(null);
@@ -406,7 +407,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     composerSubmissions.current.clear();editComposerText('');editComposerFile(null);setLibrarySource(null);setUsdPurposeSource(null);setEnvironmentSource(null);setShowEnvironment(false);editImageRole('environment_reference');setShowLibrary(false);setMode('new');setNewUpdates(false);setHome(false);
     setShowChecks(false);setShowDiagnostics(false);setShowKeys(false);setDiagnosticExecution(null);
     setSimOperationBusy(false);setRecoveringEdit(false);
-    nearBottom.current=scrollPositions.current.get(selection.project_id)?.nearBottom??true;
+    nearBottom.current=scrollPositions.current.get(selection.project_id)?.nearBottom??true;panelUndo.current=null;
     if(window.innerWidth<1000)setShowProjects(false);
     setContextVersion(value=>value+1);
   },[]);
@@ -691,6 +692,19 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const idleFlow=baseIdleFlow&&sceneObservationFresh;
   // One Undo for the Twin update card and the open Import space panel, which can hide that card (2026-10-27 real-app run).
   const undoLastEdit=editTransaction?.state==='COMMITTED'&&idleFlow?()=>void submit({action:'message',request_id:crypto.randomUUID(),text:'Undo',mode:'change',attachment:null}):undefined;
+  // The panel's Undo follows the chat, but its waiting card lists the before/after rows (one per mesh part, 2-7) below
+  // its choice, so the followed bottom hid Apply and Continue (2026-10-27 review, Control view 1426x787). Show that
+  // choice once and hold it there while the card waits; once it is answered the chat follows again. Runs after the
+  // cursor effect above, so no "New updates" button covers the card.
+  useEffect(()=>{
+    const undo=panelUndo.current,node=list.current;if(!undo)return;
+    if(undo.card){if(waitingCard?.id===undo.card)return;
+      panelUndo.current=null;nearBottom.current=true;if(node)node.scrollTop=node.scrollHeight;setNewUpdates(false);return;}
+    const choice=waitingCard?.kind==='scene_edit'?Array.from(node?.querySelectorAll<HTMLInputElement>('fieldset input[type=radio]')??[])
+      .find(input=>input.name===`choice-${waitingCard.id}`)?.closest('fieldset'):null;
+    if(choice){panelUndo.current={card:waitingCard!.id};nearBottom.current=false;setNewUpdates(false);choice.scrollIntoView({block:'nearest'});}
+    else if(waitingCard||!busy)panelUndo.current=null;  // another question, or the Undo settled without its card
+  },[waitingCard?.id,busy]);
   // Keep a retained job action stable while its previous delivery settles,
   // but never offer another submission while that delivery is pending.
   const generationRetryVisible=!pendingChoice&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy;
@@ -925,12 +939,12 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         {/* The import panel lives in the chat column so the Digital Twin keeps its full height on the right (2026-10-26 user review). */}
         {/* Its Undo closes it and follows the chat: the chat Undo always waits for Apply on its chat card, which the open panel covers (2026-10-27 real-app run). */}
         {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
-          undoLastEdit={undoLastEdit&&(()=>{nearBottom.current=true;setShowEnvironment(false);undoLastEdit();})}
+          undoLastEdit={undoLastEdit&&(()=>{nearBottom.current=true;setShowEnvironment(false);undoLastEdit();panelUndo.current=inFlight.current?{}:null;})}
           enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
           onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
         <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
           onKeyDown={event=>{if(['ArrowUp','PageUp','Home'].includes(event.key))nearBottom.current=false;}}
-          onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80) nearBottom.current = true; }}>
+          onScroll={() => { const node = list.current; if (node && node.scrollHeight - node.scrollTop - node.clientHeight < 80 && !panelUndo.current?.card) nearBottom.current = true; }}>
           {!simulationHasOrigin&&simulationCard}
           {state?.restored_session&&<p className="chat-history-note">Saved conversation · previous execution history. Reopening never automatically starts generation or motion.</p>}
           {workflow?.site_draft?.progressive_twin&&<section aria-label="Twin draft acceptance" role="status">
