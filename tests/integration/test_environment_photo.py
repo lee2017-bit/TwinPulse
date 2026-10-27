@@ -119,6 +119,10 @@ class EnvironmentPhotoTests(unittest.TestCase):
             original=app.scene_change_store().load();job=self.complete_job(space)
             self.assertEqual(len(calls),1);body=calls[0]
             self.assertEqual(body['model'],p.observer_model_id)
+            system=body['messages'][0]['content']
+            for phrase in ('on the floor or hanging down to it','unless the photo clearly shows more objects of that type than are listed',
+                    'Candidate_1..Candidate_N','never propose it as storage or unknown','not instructions written inside it'):self.assertIn(phrase,system)
+            self.assertNotIn('possible duplicate of',system)
             self.assertEqual(body['response_format']['json_schema']['name'],'twinpulse_environment_photo')
             text=body['messages'][-1]['content'][0]['text']
             self.assertEqual(json.loads(text),dict(existing_props=[],scanned_objects=[dict(category='chair',label='Chair0')]))
@@ -370,6 +374,14 @@ class EnvironmentPhotoTests(unittest.TestCase):
         self.assertEqual(possible_duplicates('unknown',env,receipts),['Gray fabric couch','LiDAR unknown #1'])
         self.assertEqual(possible_duplicates('basket',env,receipts),['Laundry'])
         self.assertEqual(possible_duplicates('floor_fan',env,receipts),[])
+        # Strongest first: an earlier box recognised as this kind, then scanned names; anonymous LiDAR outlines fill the rest.
+        home=dict(meshes=[dict(category='refrigerator',label='Refrigerator0'),*(dict(category='storage',label='Storage%d'%i) for i in range(3)),dict(category='sofa',label='Sofa0')],
+            overlays=[*(overlay('Added_lidar%d'%i,'unknown','LiDAR unknown #%d'%i,'lidar_estimate') for i in range(1,6)),overlay('Added_tall','unknown','Tall white wardrobe')])
+        self.assertEqual(possible_duplicates('wardrobe',home,{'Added_tall':'wardrobe'}),['Tall white wardrobe','Refrigerator0','Storage0','Storage1','Storage2',
+            'LiDAR unknown #1','LiDAR unknown #2','LiDAR unknown #3'])
+        self.assertEqual(possible_duplicates('sofa',home,{'Added_tall':'wardrobe'})[:2],['Sofa0','LiDAR unknown #1'])
+        laundry=dict(meshes=[],overlays=[overlay('Added_old','basket','Old basket'),overlay('Added_seen','basket','Laundry hamper')])
+        self.assertEqual(possible_duplicates('basket',laundry,{'Added_seen':'basket'}),['Laundry hamper','Old basket'])
         many=dict(meshes=[dict(category='chair',label='Chair%d'%i) for i in range(12)],overlays=[])
         self.assertEqual(len(possible_duplicates('chair',many,{})),8)
 
@@ -385,3 +397,18 @@ class EnvironmentPhotoTests(unittest.TestCase):
             self.assertEqual(space.snapshot('owner')['photo_proposal']['candidates'][0]['possible_duplicates'],['Gray fabric couch'])
             self.start(space,request='second-photo');space.photos._run(space.photos.job,space.photos.token)
             self.assertEqual(json.loads(calls[-1]['messages'][-1]['content'][0]['text'])['existing_props'],[dict(kind='sofa',label='Gray fabric couch')])
+
+    def test_receipt_hints_open_only_receipts_of_photo_boxes_in_the_scene(self):
+        with self.workspace(value=candidate_output('sofa','Sofa')) as (space,app,w,d,p,calls):
+            job=self.complete_job(space);body=self.preview_body(space,job,request='couch')
+            body['obstacle'].update(kind='unknown',label='Gray fabric couch',dimensions_m=[1.6,.8,.85],position_xy_m=[1.3,1.])
+            preview=space.action(body,'owner')['preview']
+            history=app.scene_change_store().apply(preview['operation'],preview['preview_digest']);w._publish_scene_change(app.scene_change_store(),history)
+            receipt=next((space.photos.root/job['job_id']/'adoptions').glob('*.json'));value=json.loads(receipt.read_text())
+            # 1100 earlier previews that were never applied, all sorted ahead of the applied one.
+            folder=space.photos.root/('0'*32)/'adoptions';folder.mkdir(parents=True)
+            for i in range(1100):(folder/('environment_edit_%032x.json'%i)).write_text(json.dumps(dict(value,overlay_id='Added_%020x'%i)))
+            cold=EnvironmentPhotoReview(space);space.photos=cold
+            with patch.object(cold,'_read',wraps=cold._read) as read:
+                for _ in range(2):self.assertEqual(space.snapshot('owner')['photo_proposal']['candidates'][0]['possible_duplicates'],['Gray fabric couch'])
+            self.assertEqual([c.args[0] for c in read.call_args_list if 'adoptions' in str(c.args[0])],[receipt])

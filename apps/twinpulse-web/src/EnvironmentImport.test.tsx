@@ -92,6 +92,23 @@ describe('local space import',()=>{
     expect(screen.getByLabelText('Obstacle type')).toHaveProperty('value','basket');expect(screen.getByLabelText('Obstacle uncertainty')).toHaveProperty('value','.2');
     expect(screen.getByLabelText('Replace LiDAR unknown box')).toBeTruthy();expect(h.api.environmentAction).not.toHaveBeenCalled();
   });
+  it('restores the default uncertainty after a furniture review unless the user typed one',async()=>{
+    const h=harness(withPhoto(sofa,photoCandidate({id:'Candidate_2'})));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
+    await screen.findByText('Added obstacles · 1');fireEvent.click(screen.getByText('Added obstacles · 1'));
+    const margin=()=>screen.getByLabelText('Obstacle uncertainty'),review=(id:string)=>fireEvent.click(screen.getByRole('button',{name:'Review '+id})),
+      manual=()=>fireEvent.click(screen.getByRole('button',{name:'Use manual entry'}));
+    review('Candidate_1');expect(margin()).toHaveProperty('value','.05');manual();expect(margin()).toHaveProperty('value','.2');
+    review('Candidate_1');fireEvent.change(screen.getByLabelText('Obstacle type'),{target:{value:'bag'}});expect(margin()).toHaveProperty('value','.2');
+    review('Candidate_1');review('Candidate_2');expect(margin()).toHaveProperty('value','.2');
+    review('Candidate_1');fireEvent.change(margin(),{target:{value:'.1'}});manual();expect(margin()).toHaveProperty('value','.1');
+    review('Candidate_2');expect(margin()).toHaveProperty('value','.1');
+    // Sofa from the photo, then a manual basket: the basket keeps the default margin.
+    review('Candidate_1');manual();fireEvent.change(screen.getByLabelText('Obstacle type'),{target:{value:'basket'}});
+    fireEvent.change(screen.getByLabelText('Obstacle X'),{target:{value:'1.3'}});fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'1'}});
+    fireEvent.click(screen.getByRole('button',{name:'Preview obstacle'}));
+    await waitFor(()=>expect(h.api.environmentAction).toHaveBeenCalledTimes(1));
+    expect(h.api.environmentAction).toHaveBeenCalledWith(expect.objectContaining({action:'add_overlay_preview',obstacle:expect.objectContaining({kind:'basket',uncertainty_m:.2})}));
+  });
   it('previews an estimated catalog obstacle separately without applying or calling a model',async()=>{
     const h=harness(snapshot('imported'));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
     await screen.findByText('Added obstacles · 0');

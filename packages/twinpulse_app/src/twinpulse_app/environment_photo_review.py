@@ -28,7 +28,7 @@ class EnvironmentPhotoReview:
     def __init__(self,parent):
         self.parent=parent;self.root=parent.root/'photo-proposals';self.job=None;self.thread=None;self.token=None;self.owner=None
         self.apply_admitted=set();self.revoked=set()
-        self.load_error=None;self._receipts=None
+        self.load_error=None;self._receipts=None;self._receipt_rows={}
         try:
             pointer=self.root/'latest.json'
             if pointer.exists():
@@ -86,19 +86,28 @@ class EnvironmentPhotoReview:
 
     def adopted_kinds(self,environment):
         """{overlay_id: recognised kind} of photo boxes from their adoption receipts. A name hint only, never identity."""
-        if self._receipts is None:
-            rows=[]
-            for path in sorted(self.root.glob('*/adoptions/*.json'))[:1024] if self.root.exists() else ():
-                if path.parent.parent.is_symlink() or not re.fullmatch('[a-f0-9]{32}',path.parent.parent.name):continue
-                try:
-                    receipt=self._read(path);kind=receipt['candidate']['kind']
-                    if (receipt['project_id']==self.parent.workflow._broker.project_id and kind in PHOTO_KINDS and
-                            all(isinstance(receipt[k],str) for k in ('overlay_id','photo_sha256'))):
-                        rows.append((receipt['overlay_id'],receipt['photo_sha256'],kind))
-                except (OSError,ValueError,KeyError,TypeError):continue
-            self._receipts=rows
         photos={o['item']['id']:o['evidence']['sha256'] for o in environment.get('overlays',[]) if o['evidence']['basis']=='photo_estimate'}
-        return {identity:kind for identity,sha,kind in self._receipts if photos.get(identity)==sha}
+        if not photos:return {}
+        if self._receipts is None:self._receipts=sorted(self.root.glob('*/adoptions/environment_edit_*.json')) if self.root.exists() else []
+        # One preview request names both its receipt (environment_edit_<sha[:32]>) and its box (Added_<sha[:20]>), so only the
+        # receipts of photo boxes in this scene are opened, each once (a receipt never changes); the content still has to match.
+        found={}
+        for path in self._receipts:
+            identity='Added_'+path.stem[17:37]
+            if identity not in photos:continue
+            if path not in self._receipt_rows:self._receipt_rows[path]=self._receipt_row(path)
+            row=self._receipt_rows[path]
+            if row and row[:3]==(self.parent.workflow._broker.project_id,identity,photos[identity]):found[identity]=row[3]
+        return found
+
+    def _receipt_row(self,path):
+        if path.parent.parent.is_symlink() or not re.fullmatch('[a-f0-9]{32}',path.parent.parent.name):return None
+        try:
+            receipt=self._read(path);kind=receipt['candidate']['kind']
+            if kind in PHOTO_KINDS and all(isinstance(receipt[k],str) for k in ('project_id','overlay_id','photo_sha256')):
+                return receipt['project_id'],receipt['overlay_id'],receipt['photo_sha256'],kind
+        except (OSError,ValueError,KeyError,TypeError):pass
+        return None
 
     def action(self,body,owner):
         action=body['action'];parent=self.parent;workflow=parent.workflow

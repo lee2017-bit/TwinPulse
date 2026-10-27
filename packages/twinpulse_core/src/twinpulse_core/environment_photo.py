@@ -58,15 +58,15 @@ def photo_context(environment,receipts):
 
 
 def possible_duplicates(kind,environment,receipts):
-    """Labels that may already be this object: a hint for the required human check, never identity."""
+    """Labels that may already be this object, strongest first: a hint for the required human check, never identity."""
     overlays=environment.get('overlays',[]);target=overlay_kind_for(kind)
     if kind=='unknown':labels=[o['item']['label'] for o in overlays if o['item']['kind']=='unknown']
     else:
-        names=SCAN_NAMES.get(kind,set())
-        labels=[m['label'] for m in environment['meshes'] if m['category'] in names or _name(m['label']) in names]+[
-            o['item']['label'] for o in overlays if receipts.get(o['item']['id'])==kind or
-            target not in (None,'unknown') and o['item']['kind']==target or
-            target=='unknown' and o['evidence']['basis']=='lidar_estimate']
+        names=SCAN_NAMES.get(kind,set());added=lambda match:[o['item']['label'] for o in overlays if match(o)]
+        # Same recognised kind, then same overlay kind, then scanned names; anonymous LiDAR outlines only fill what is left of the 8.
+        labels=[*added(lambda o:receipts.get(o['item']['id'])==kind),*added(lambda o:target not in (None,'unknown') and o['item']['kind']==target),
+            *(m['label'] for m in environment['meshes'] if m['category'] in names or _name(m['label']) in names),
+            *added(lambda o:target=='unknown' and o['evidence']['basis']=='lidar_estimate')]
     return list(dict.fromkeys(labels))[:8]
 
 
