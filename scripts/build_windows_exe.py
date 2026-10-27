@@ -173,7 +173,7 @@ def main():
         copy(name)
     for name in ('LICENSE', 'NOTICE'):
         copy('extensions/twinpulse.extension/' + name)
-    for name in ('package.json', 'package-lock.json', 'main.mjs', 'preload.cjs', 'protocol.mjs', 'package.mjs', 'automation.cjs', 'self-test-runner.cjs'):
+    for name in ('package.json', 'package-lock.json', 'main.mjs', 'preload.cjs', 'protocol.mjs', 'package.mjs', 'automation.cjs', 'self-test-runner.cjs', 'icon.ico'):
         copy('apps/twinpulse-desktop/' + name)
     runtime_path = json.loads(subprocess.check_output(['node','-e',
         "const p=require.resolve('playwright/package.json',{paths:[require.resolve('@playwright/test')]});console.log(JSON.stringify(require.resolve('playwright-core/package.json',{paths:[p]})))"],

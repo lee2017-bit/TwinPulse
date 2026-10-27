@@ -18,7 +18,8 @@ await mkdir(output,{recursive:true});
 // Stage an explicit tiny app. Never package project state, credentials, tests,
 // source photographs or the build tool's node_modules into the renderer app.
 const staging=await mkdtemp(path.join(output,'app-'));
-for(const name of ['main.mjs','preload.cjs','protocol.mjs','automation.cjs','self-test-runner.cjs'])
+// icon.ico (wire cube + pulse, chosen 2026-10-27; source icon.svg) is stamped on TwinPulseDesktop.exe by the packager and used by the window.
+for(const name of ['main.mjs','preload.cjs','protocol.mjs','automation.cjs','self-test-runner.cjs','icon.ico'])
   await copyFile(path.join(source,name),path.join(staging,name));
 for(const name of ['LICENSE','NOTICE'])
   await copyFile(path.join(source,'../..',name),path.join(staging,name));
@@ -33,7 +34,7 @@ const runtimePackage=Object.fromEntries(Object.entries(metadata).filter(([key])=
   !['devDependencies','scripts'].includes(key)));
 await writeFile(path.join(staging,'package.json'),JSON.stringify(runtimePackage,null,2));
 const paths=await packager({dir:staging,out:output,name:'TwinPulseDesktop',
-  platform:'win32',arch:'x64',electronVersion:metadata.devDependencies.electron,
+  platform:'win32',arch:'x64',electronVersion:metadata.devDependencies.electron,icon:path.join(staging,'icon.ico'),
   asar:true,overwrite:false,prune:false,quiet:true});
 if(paths.length!==1) throw new Error('DESKTOP_PACKAGE_AMBIGUOUS');
 process.stdout.write(JSON.stringify({package:paths[0],electron:metadata.devDependencies.electron})+'\n');

@@ -37,5 +37,6 @@ a = Analysis([str(root / 'scripts/twinpulse_desktop_entry.py')], pathex=paths,
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='TwinPulse',
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
-          console=False, disable_windowed_traceback=False)
+          console=False, disable_windowed_traceback=False,
+          icon=str(resources / 'apps/twinpulse-desktop/icon.ico'))
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='TwinPulse')
