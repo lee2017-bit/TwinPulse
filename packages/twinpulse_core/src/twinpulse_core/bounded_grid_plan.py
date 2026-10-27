@@ -15,6 +15,11 @@ class NoBoundedPath(ValueError):
     pass
 
 
+# Last field of an 'occupied' row blocked only by a synthetic uncertainty envelope
+# (environment_navigation); every other consumer still reads it as occupied.
+SYNTHETIC_KEEPOUT_CELL='synthetic_keepout'
+
+
 def route_footprint_cells(start,route,*,clearance=.266,cell_size_m=.10):
     """Fixed dependency set for an already checked, bounded route.
 
@@ -56,12 +61,15 @@ def _finite_pair(value):
 def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05,
                       clearance=.30, max_cells=40000, max_expansions=32000,
                       max_waypoints=16, observed_cells=None, cell_size_m=.10, checked_route=None,
-                      allow_direct_over_grid_budget=False):
+                      allow_direct_over_grid_budget=False, home=None):
     """A* with inflated obstacles, fixed budgets and collision-checked segments.
 
     Boxes are (cx, cy, half_x, half_y, yaw_rad); discs are (cx, cy, radius).
     The returned tuple excludes start and includes the exact goal. A diagonal
     never cuts across a blocked corner. No path is a terminal, explicit result.
+    home is the declared start (where the robot stood when the plan was made):
+    within one clearance of it a synthetic envelope blocks only its own footprint
+    plus 5 cm (never discs, walls or real cells). Without home nothing is relaxed.
     """
     if (not _finite_pair(start) or not _finite_pair(goal)
             or type(bounds) not in (tuple, list) or len(bounds) != 4
@@ -71,7 +79,8 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             or type(max_cells) is not int or not 1 <= max_cells <= 40000
             or type(max_expansions) is not int or not 1 <= max_expansions <= 40000
             or type(max_waypoints) is not int or not 1 <= max_waypoints <= 16
-            or type(allow_direct_over_grid_budget) is not bool):
+            or type(allow_direct_over_grid_budget) is not bool
+            or home is not None and not _finite_pair(home)):
         raise ValueError('GRID_PLAN_INPUT_INVALID')
     xmin, xmax, ymin, ymax = bounds
     if not xmin < xmax or not ymin < ymax:
@@ -104,8 +113,9 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             if (not isinstance(row,list) or len(row)!=7 or not _finite_pair(row[:2])
                     or row[2] not in {'free','occupied','unknown'}):raise ValueError('OBSERVED_GRID_INVALID')
             key=tuple(math.floor(v/cell_size_m) for v in row[:2])
-            if key in known and known[key]!=row[2]:known[key]='unknown'
-            else:known[key]=row[2]
+            state='synthetic' if row[2]=='occupied' and row[6]==SYNTHETIC_KEEPOUT_CELL else row[2]
+            if key in known and known[key]!=state:known[key]='unknown'
+            else:known[key]=state
 
     def clear(point):
         x, y = point
@@ -115,11 +125,18 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
         if known is not None:
             # Require the entire conservative envelope to be observed free.
             # A cell touching the circle is included; absent/conflicting=blocked.
+            # 2026-10-27 build 59: a LiDAR box's synthetic uncertainty envelope reached
+            # into the declared start's band (START_OR_GOAL_BLOCKED on an empty floor).
+            # Inside the declared start's (home) escape zone a synthetic cell blocks only its
+            # own footprint plus 5 cm, like a keepout disc below; real cells keep the full berth.
+            # Only home, never each leg's start: a chain of stops must not ratchet into a band.
+            escape=home is not None and math.hypot(x-home[0],y-home[1])<=clearance
             for ix in range(math.floor((x-clearance)/cell_size_m),math.floor((x+clearance)/cell_size_m)+1):
                 for iy in range(math.floor((y-clearance)/cell_size_m),math.floor((y+clearance)/cell_size_m)+1):
                     dx=max(ix*cell_size_m-x,0.,x-(ix+1)*cell_size_m)
                     dy=max(iy*cell_size_m-y,0.,y-(iy+1)*cell_size_m)
-                    if math.hypot(dx,dy)<=clearance and known.get((ix,iy))!='free':return False
+                    gap=math.hypot(dx,dy);state=known.get((ix,iy))
+                    if gap<=clearance and state!='free' and not (escape and state=='synthetic' and gap>.05):return False
         for cx, cy, hx, hy, yaw in boxes:
             co, si = math.cos(yaw), math.sin(yaw)
             dx, dy = x - cx, y - cy

@@ -4,9 +4,12 @@
 
 Only explicitly free cells are one bits. Missing/unknown/occupied cells stay
 blocked. Decode at a geometry revision boundary, never on every control tick.
+Optional synthetic_bits mark occupied cells blocked only by a synthetic
+uncertainty envelope; they never make a cell free.
 """
 import base64
 import math
+from .bounded_grid_plan import SYNTHETIC_KEEPOUT_CELL
 from .revisions import canonical_sha256
 
 
@@ -22,38 +25,46 @@ def encode_navigation_grid(cells, resolution=.1):
         key=tuple(math.floor(v/resolution) for v in row[:2])
         if any(abs(row[i]-(key[i]+.5)*resolution)>1e-8 for i in (0,1)) or key in positions:
             raise ValueError('NAVIGATION_GRID_CENTER_OR_DUPLICATE')
-        positions[key]=row[2]
+        positions[key]='synthetic' if row[2]=='occupied' and row[6]==SYNTHETIC_KEEPOUT_CELL else row[2]
     x0=min(k[0] for k in positions);y0=min(k[1] for k in positions)
     nx=max(k[0] for k in positions)-x0+1;ny=max(k[1] for k in positions)-y0+1
     if nx*ny!=len(positions):raise ValueError('NAVIGATION_GRID_COVERAGE')
-    bits=bytearray((nx*ny+7)//8)
+    bits=bytearray((nx*ny+7)//8);synthetic=bytearray(len(bits))
     for (x,y),state in positions.items():
         index=(y-y0)*nx+x-x0
         if state=='free':bits[index//8]|=1<<(index%8)
+        if state=='synthetic':synthetic[index//8]|=1<<(index%8)
     result=dict(schema='navigation-grid-1.0',resolution_m=resolution,origin_cell=[x0,y0],size=[nx,ny],
                 free_bits=base64.b64encode(bits).decode('ascii'))
+    if any(synthetic):result['synthetic_bits']=base64.b64encode(synthetic).decode('ascii')
     return dict(result,sha256=canonical_sha256(result))
+
+
+def _mask(value,key,total):
+    try:bits=base64.b64decode(value[key],validate=True)
+    except (ValueError,TypeError) as exc:raise ValueError('NAVIGATION_GRID_ENCODING') from exc
+    if len(bits)!=(total+7)//8 or (total%8 and bits[-1]>>(total%8)):
+        raise ValueError('NAVIGATION_GRID_PADDING')
+    return bits
 
 
 def checked_navigation_grid(value,bounds=None):
     fields={'schema','resolution_m','origin_cell','size','free_bits','sha256'}
-    if (not isinstance(value,dict) or set(value)!=fields or value['schema']!='navigation-grid-1.0'
+    if (not isinstance(value,dict) or set(value)-{'synthetic_bits'}!=fields or value['schema']!='navigation-grid-1.0'
             or type(value['resolution_m']) not in (int,float) or value['resolution_m']!=.1
             or not isinstance(value['origin_cell'],list) or len(value['origin_cell'])!=2
             or any(type(v) is not int or abs(v)>1010 for v in value['origin_cell'])
             or not isinstance(value['size'],list) or len(value['size'])!=2
             or any(type(v) is not int or not 1<=v<=40000 for v in value['size'])
             or value['size'][0]*value['size'][1]>40000
-            or not isinstance(value['free_bits'],str) or len(value['free_bits'])>6700
+            or any(not isinstance(value.get(k,''),str) or len(value.get(k,''))>6700 for k in ('free_bits','synthetic_bits'))
             or not isinstance(value['sha256'],str)):
         raise ValueError('NAVIGATION_GRID_CONTRACT')
     data={k:v for k,v in value.items() if k!='sha256'}
     if canonical_sha256(data)!=value['sha256']:raise ValueError('NAVIGATION_GRID_DIGEST')
-    try:bits=base64.b64decode(value['free_bits'],validate=True)
-    except (ValueError,TypeError) as exc:raise ValueError('NAVIGATION_GRID_ENCODING') from exc
-    total=math.prod(value['size'])
-    if len(bits)!=(total+7)//8 or (total%8 and bits[-1]>>(total%8)):
-        raise ValueError('NAVIGATION_GRID_PADDING')
+    total=math.prod(value['size']);bits=_mask(value,'free_bits',total)
+    if 'synthetic_bits' in value and any(a&b for a,b in zip(bits,_mask(value,'synthetic_bits',total))):
+        raise ValueError('NAVIGATION_GRID_SYNTHETIC_FREE')
     x,y=value['origin_cell'];nx,ny=value['size'];r=value['resolution_m']
     if bounds is not None and (len(bounds)!=4 or any(abs(a-b)>1e-8 for a,b in
             zip(bounds,[x*r,y*r,(x+nx)*r,(y+ny)*r]))):
@@ -63,5 +74,7 @@ def checked_navigation_grid(value,bounds=None):
 
 def decode_navigation_grid(value,bounds=None):
     bits=checked_navigation_grid(value,bounds);x,y=value['origin_cell'];nx,ny=value['size'];r=value['resolution_m']
-    return [[(x+ix+.5)*r,(y+iy+.5)*r,'free' if bits[(iy*nx+ix)//8]&(1<<((iy*nx+ix)%8)) else 'occupied',0,0,0,0]
+    synthetic=_mask(value,'synthetic_bits',nx*ny) if 'synthetic_bits' in value else bytes(len(bits))
+    def bit(mask,i):return mask[i//8]&(1<<(i%8))
+    return [[(x+ix+.5)*r,(y+iy+.5)*r,'free' if bit(bits,iy*nx+ix) else 'occupied',0,0,0,SYNTHETIC_KEEPOUT_CELL if bit(synthetic,iy*nx+ix) else 0]
         for iy in range(ny) for ix in range(nx)]
