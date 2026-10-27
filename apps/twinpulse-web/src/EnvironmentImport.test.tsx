@@ -511,10 +511,10 @@ describe('photo candidates placed beside their named neighbour',()=>{
     const h=harness(withRows(rows()));let revision='scene-a',n=0,committed=0,applied:SceneEditPreview|null=null;
     const now=():EnvironmentState=>({...withRows(later(committed)),scene_revision:revision});
     h.api.environment.mockImplementation(async()=>now());h.api.workflow.mockImplementation(async()=>({...workflow,site_draft:{revision}}) as WorkflowState);
-    h.api.environmentAction.mockImplementation(async body=>{if(body.action!=='photo_candidate_preview')return now();n++;
+    h.api.environmentAction.mockImplementation(async body=>{if(body.action!=='photo_candidate_preview'&&body.action!=='remove_overlay_preview')return now();n++;
       if(n===refuse)throw new ApiError('invalid_request','PHOTO_CANDIDATE_ALREADY_REPRESENTED');
       const preview={operation:{operation_id:'op-'+n},preview_digest:'d'+n,source_revision:revision,parent_revision:revision,result_revision:'scene-'+n,
-        affected_before:{},affected_after:{['Added_'+n]:{position_m:[...body.obstacle.position_xy_m,.2],dimensions_m:body.obstacle.dimensions_m,kind:'basket'}},
+        affected_before:{},affected_after:body.action==='remove_overlay_preview'?{}:{['Added_'+n]:{position_m:[...body.obstacle.position_xy_m,.2],dimensions_m:body.obstacle.dimensions_m,kind:'basket'}},
         preserved_object_count:2,review_required:true,physical_validation:'NOT_RUN'} as SceneEditPreview;applied=preview;return {...now(),preview};});
     h.api.applyEnvironmentEdit.mockImplementation(async operation=>({...editTransaction('DISPATCHED',false),operation_id:String(operation.operation_id)}));
     h.api.sceneEditTransaction.mockImplementation(async()=>{if(!applied)return null as unknown as SceneEditTransaction;const id=String(applied.operation.operation_id);
@@ -596,5 +596,34 @@ describe('photo candidates placed beside their named neighbour',()=>{
     fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Add 2 suggested objects'}));
     await screen.findByText('Stopped at Candidate_2 after 1 added: POSSIBLE_DUPLICATE');
     expect(previews(unsafe).map(row=>row[0])).toEqual(['Candidate_1']);expect(unsafe.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1);
+  });
+  // 2026-10-27 app run: after "Add N suggested objects" put clothes beside Sofa0, the form below still read the earlier Review's basket.
+  const cleared=()=>{expect(screen.getByLabelText('Obstacle type')).toHaveProperty('value','');expect(screen.getByLabelText('Obstacle name')).toHaveProperty('value','');
+    expect(screen.getByLabelText('Obstacle X')).toHaveProperty('value','');expect(screen.queryByText(/^Reviewing /)).toBeNull();expect(disabled('Preview obstacle')).toBe(true);};
+  it('clears a reviewed basket from the form when the batch adds a different object',async()=>{
+    const loose=photoCandidate({id:'Candidate_1',label:'Loose basket',near:null,suggested:null,suggestion_reason:'NO_ANCHOR',batch_addable:false});
+    const clothes=(added:boolean)=>photoCandidate({id:'Candidate_2',kind:'clothing_pile',label:'Clothes',overlay_kind:'clothing_pile',dimensions_m:[.35,.25,.15],near:'Sofa0',
+      suggested:added?null:placement(2.7,1.8),suggestion_reason:added?'ALREADY_ADDED':null,batch_addable:!added});
+    const h=scene({later:committed=>[loose,clothes(committed>0)]});render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} autoApply/>);await open();
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
+    fireEvent.change(screen.getByLabelText('Obstacle X'),{target:{value:'1'}});fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'1'}});
+    expect(screen.getByLabelText('Obstacle type')).toHaveProperty('value','basket');
+    fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Add 1 suggested object'}));
+    await screen.findByText(/^Added 1 suggested object\./);
+    expect(previews(h).map(row=>row[0])).toEqual(['Candidate_2']);cleared();
+    expect(screen.getByRole('option',{name:'Choose a type…'})).toHaveProperty('selected',true);
+  });
+  it('keeps a Review through the removal of a Replace and ends it once its own add committed',async()=>{
+    // Commit 1 removes the estimate box (Replace); only commit 2, the photo object itself, makes the server report Candidate_1 as added.
+    const h=scene({later:committed=>committed>1?[basket('Candidate_1',1.8,1.8,{suggested:null,suggestion_reason:'ALREADY_ADDED',batch_addable:false}),rows()[1]]:rows()});
+    render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);await open();
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));fireEvent.change(screen.getByLabelText('Replace LiDAR unknown box'),{target:{value:'Added_lidar'}});
+    fireEvent.click(await screen.findByRole('button',{name:'Apply space edit'}));
+    await waitFor(()=>expect(screen.queryByRole('button',{name:'Apply space edit'})).toBeNull());await waitFor(()=>expect(disabled('Preview obstacle')).toBe(false));
+    expect(screen.getByText(/^Reviewing Candidate_1 · /)).toBeTruthy();expect(screen.getByLabelText('Obstacle X')).toHaveProperty('value','2.000');
+    fireEvent.click(screen.getByRole('button',{name:'Preview obstacle'}));fireEvent.click(await screen.findByRole('button',{name:'Apply space edit'}));
+    await waitFor(()=>expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(2));await waitFor(cleared);
+    expect(previews(h)).toEqual([['Candidate_1',[2,1],30,'scene-1',true]]);
+    fireEvent.change(screen.getByLabelText('Obstacle type'),{target:{value:'bag'}});expect(screen.getByLabelText('Obstacle name')).toHaveProperty('value','bag');
   });
 });
