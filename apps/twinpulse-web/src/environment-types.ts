@@ -25,7 +25,7 @@ export interface EnvironmentState {
 }
 // A local placement beside the scanned/added object the photo model named ('near'); never a model coordinate or an alignment.
 export interface EnvironmentPhotoPlacement {position_m:[number,number,number];yaw_deg:number;dimensions_m:[number,number,number];uncertainty_m:number;
-  anchor:string;gap_m:number;side:string;basis:'photo_near_anchor';alignment_verified:false;envelope_xy:[number,number][]}
+  anchor:string;gap_m:number;side:string;at_end:boolean;basis:'photo_near_anchor';alignment_verified:false;envelope_xy:[number,number][]}
 export interface EnvironmentPhotoCandidate {id:string;kind:string;label:string;confidence:number;bbox:[number,number,number,number];description:string;dimensions_m:[number,number,number];dimensions_basis:'catalog_estimate';
   overlay_kind:string|null;addable:boolean;possible_duplicates:string[];duplicate_check_required:true;
   near?:string|null;suggested?:EnvironmentPhotoPlacement|null;suggestion_reason?:string|null;batch_addable?:boolean}

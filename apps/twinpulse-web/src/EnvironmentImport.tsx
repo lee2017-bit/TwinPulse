@@ -128,9 +128,8 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   const autoApplied=useRef<string|null>(null);
   useEffect(()=>{  // Twin-edit auto-apply (chat setting): the same transaction path as the Apply button, once per preview
     const operationId=preview?.operation?.operation_id;
-    // A batch the user started applies its own previews the same way, one at a time, even with the setting off.
-    const owned=batch.current?.step==='previewed'&&batch.current.operationId===operationId;
-    if(!(autoApply||owned)||!preview||typeof operationId!=='string'||blocked||modelRunning||autoApplied.current===operationId)return;
+    // A batch never applies by itself: with the setting off each of its previews waits for the user's Apply.
+    if(!autoApply||!preview||typeof operationId!=='string'||blocked||modelRunning||autoApplied.current===operationId)return;
     autoApplied.current=operationId;applyPreview();
   });
   useEffect(()=>{const run=batch.current;if(!run)return;
@@ -139,10 +138,13 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
     if(run.step==='previewing')return;
     if(run.step==='previewed'){
       if(pendingEdit||busy||lock.current)return;  // Apply, ACK and commit still in flight
-      if(preview&&!error&&!unknown)return;  // waiting for its Apply
-      if(preview||unknown||state?.scene_revision===run.revision){stopped(error??'the edit was not applied');return;}
+      if(preview&&!error&&!unknown)return;  // waiting for its Apply (the user's click, or Twin-edit auto-apply)
+      // Counted only when this step's own operation committed with its result revision (not any other scene change).
+      const mine=transaction?.operation_id===run.operationId,committed=mine&&transaction?.state==='COMMITTED'&&transaction.durable_committed&&
+        transaction.engine_acknowledged&&transaction.result_revision===state?.scene_revision&&state?.scene_revision!==run.revision;
+      if(preview||unknown||!committed){stopped(error??(mine?'the edit was not committed':'not applied (preview cancelled)'));return;}
       run.ids.shift();run.added++;run.step='next';
-      if(!run.ids.length){stopBatch(`Added ${run.added} suggested object${run.added===1?'':'s'}. Positions are estimates; the robot LiDAR refines them.`);return;}
+      if(!run.ids.length){stopBatch(`Added ${run.added} suggested object${run.added===1?'':'s'}. Positions are estimates; the robot LiDAR corrects small offsets.`);return;}
     }
     if(blocked||lock.current||modelRunning||photoRunning||preview)return;
     const proposal=state?.photo_proposal,c=proposal?.job_id===run.jobId?proposal.candidates.find(row=>row.id===run.ids[0]):undefined,s=c?.suggested;
@@ -155,7 +157,8 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
           yaw_deg:s.yaw_deg,uncertainty_m:s.uncertainty_m}});
       const operationId=next.preview?.operation.operation_id;
       if(!next.preview||typeof operationId!=='string')throw new Error('No preview for this suggestion.');
-      if(batch.current===run&&current()){run.operationId=operationId;run.step='previewed';setPreview(next.preview);}
+      if(batch.current===run&&current()){run.operationId=operationId;run.step='previewed';setPreview(next.preview);
+        setBatchStatus(`${c.id}: ${run.added+1} of ${run.added+run.ids.length} · ${autoApply?'applying automatically (Twin-edit auto-apply)':'check the preview, then Apply space edit to continue or Cancel to stop'}.`);}
     }catch(e){if(batch.current===run){run.step='failed';run.failure=describe(e);}throw e;}});
   });
   const startBatch=(ids:string[])=>{const job=state?.photo_proposal?.job_id;if(!job||!ids.length||batch.current)return;
@@ -195,11 +198,11 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
       <details onToggle={event=>setAlignmentOpen(event.currentTarget.open)}><summary>Scan alignment</summary>
         {alignmentOpen&&<EnvironmentAlignment key={context} api={api} revision={state.scene_revision!} disabled={blocked||modelRunning||photoRunning}/>}</details>
       <details onToggle={e=>setSurveyOpen(e.currentTarget.open)}><summary>Collected survey · missing obstacles</summary>
-        {surveyOpen&&<EnvironmentSurvey api={api} revision={state.scene_revision!} photo={state.photo_proposal} disabled={blocked||modelRunning||photoRunning}
+        {surveyOpen&&<EnvironmentSurvey api={api} revision={state.scene_revision!} photo={state.photo_proposal} disabled={blocked||modelRunning||photoRunning||batching}
           onInvalidate={()=>setPreview(null)} onPreview={v=>{discardProposal();setPreview(v);}}/>}</details>
       {state.operation&&<p role="status">Build command: {state.operation.status} · {state.operation.receipt?'receipt received':'ACK pending'}</p>}
       <EnvironmentObstacles key={context} state={state} disabled={blocked||modelRunning||photoRunning||batching}
-        addAll={startBatch} batch={{running:batching,status:batchStatus}}
+        addAll={startBatch} batch={{running:batching,status:batchStatus,autoApply}}
         invalidate={()=>{setPreview(null);discardProposal();}}
         analyze={photo=>void perform(async()=>{
           if(!/\.(jpe?g|png)$/i.test(photo.name)||photo.size>5*1024*1024)throw new Error('Choose a JPEG or PNG photo up to 5 MiB for analysis.');
@@ -220,7 +223,7 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
           if(current())setPreview(next.preview??null);
         })}
         remove={id=>void perform(async()=>{discardProposal();const next=await act({action:'remove_overlay_preview',request_id:crypto.randomUUID(),object_id:id,expected_scene_revision:state.scene_revision!});if(current())setPreview(next.preview??null);})}/>
-      <fieldset disabled={blocked||modelRunning||photoRunning}><legend>Move one imported object</legend>
+      <fieldset disabled={blocked||modelRunning||photoRunning||batching}><legend>Move one imported object</legend>
         <label className="library-field">Object<select aria-label="Imported object" value={selected} onChange={e=>{setSelected(e.target.value);setPreview(null);discardProposal();}}><option value="">Choose an object…</option>{state.objects.map(object=><option key={object.id} value={object.id}>{object.label} · {object.category} · {object.id}</option>)}</select></label>
         <label className="library-field">Move request<input aria-label="Object move request" maxLength={1000} placeholder="Move this object 10 cm along X" value={moveRequest} onChange={e=>{setMoveRequest(e.target.value);setPreview(null);discardProposal();}}/></label>
         <small>Only the selected object ID and relative move request go to the model. Review the preview before Apply.</small>
