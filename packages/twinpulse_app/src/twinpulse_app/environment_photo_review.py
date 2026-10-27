@@ -22,7 +22,7 @@ from .library_asset_store import atomic_json
 from .single_photo_scope import SinglePhotoScope
 
 
-PHOTO_CANDIDATE_OUTPUT_TOKENS=16000  # per photo-candidate call, reasoning tokens included; the route cap still bounds it
+PHOTO_CANDIDATE_OUTPUT_TOKENS=40000  # user decision 2026-10-27 (Nemotron VL used 8159 on the living room); per photo-candidate call, reasoning tokens included; the route cap still bounds it
 
 class EnvironmentPhotoReview:
     def __init__(self,parent):
