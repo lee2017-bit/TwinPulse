@@ -573,7 +573,7 @@ class ModelFirstRouteTests(unittest.TestCase):
         messages=[];cards=[];events=[]
         plan=dict(plan_id='p'*32,robot_id='r',kind='sim',start=[.6,.6,0.],waypoints=[[1.5,.6]],polyline=[[1.5,.6],[.6,.6]],length_m=1.8,
             steps=[dict(direction='forward',amount=.9,text='forward 90.0cm')],start_basis='sim_engine_pose',scope='S',keepouts=[],scan_keepouts={})
-        runner=SimpleNamespace(plan=lambda robot_id,stops=None:dict(plan),active=lambda:False)
+        runner=SimpleNamespace(plan=lambda robot_id,stops=None:dict(plan),active=lambda:False,readiness=lambda robot_id:None)
         jobs=list(job_states);job=dict(task_id='t'*32,request_id='req',state='PLANNING',model_id='nvidia/nemotron-3-super-120b-a12b',plan=None,reason=None,step_index=0,segments=0)
         tasks=SimpleNamespace(registry=object(),active=lambda:False,propose=lambda text,owner,rid:dict(job),cancel=lambda owner:None,
             snapshot=lambda owner:dict(job,**jobs.pop(0)) if jobs else dict(job))
@@ -612,6 +612,19 @@ class ModelFirstRouteTests(unittest.TestCase):
         s,messages,cards,events=self._service([dict(state='READY',plan=dict(steps=[dict(op='move_relative',direction='forward',amount=3.)],explanation='x'))])
         s._start_declared_route(dict(text='Survey the room and come back',request_id='req'));s._sync_robot_tasks('o')
         self.assertEqual(cards[-1]['kind'],'declared_route_fallback');self.assertIn('outside the survey capabilities',messages[-1][1])
+
+    def test_route_refused_by_readiness_spends_no_planner_call(self):
+        # 2026-10-27 build-54 check: "Survey the room" on an unprepared robot called Nemotron, then plan() refused.
+        from twinpulse_app.command_broker import BrokerError
+        s,messages,cards,events=self._service([])
+        calls=[];s.robot_tasks.propose=lambda text,owner,rid:calls.append(text) or dict(task_id='t'*32)
+        def refuse(robot_id):raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
+        s.declared_routes.readiness=refuse
+        s._start_declared_route(dict(text='Survey the room and come back',request_id='req'))
+        self.assertEqual(calls,[]);self.assertEqual(cards,[])
+        self.assertEqual(messages[-1][:2],('assistant','Stop and prepare the robot before a route.'));self.assertEqual(messages[-1][2].get('status'),'failed')
+        self.assertEqual([e[0] for e in events],['declared_route_blocked']);self.assertEqual(events[-1][1]['code'],'declared_route_robot_busy')
+        self.assertFalse(getattr(s,'_route_model_pending',None))
 
     def test_operator_stops_skip_the_model(self):
         s,messages,cards,events=self._service([])

@@ -260,6 +260,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const [viewerFault,setViewerFault]=useState<ViewerFault|null>(null);
   const [showProjects,setShowProjects] = useState(window.innerWidth>=1000);
   const [home,setHome]=useState(false);
+  // The caption names the scene kind, not the engine: an imported USD or generated scene is the Twin; a physical
+  // robot works on the same Twin (2026-10-27 pre-robot check: "· SIM" next to the home USD read as the wrong mode).
+  const modeCaption=state?.mode==='SIM'?'Twin':state?.mode==='REAL'?'Real':state?.mode??'Choose a mode';
   const [newChatRequest,setNewChatRequest]=useState(0);
   const [workspaceRequest,setWorkspaceRequest]=useState(0);const workspaceAutoBuild=useRef(false);
   const [projectActivity,setProjectActivity]=useState<{busy:boolean;message:string|null}>({busy:false,message:null});
@@ -741,7 +744,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
     simulationReview?(simSnapshot?.runtime_state==='completed'?'SIM destination reached · stopped normally. Ask for another destination to continue':
       simSnapshot?.runtime_state==='running'?'SIM running · Stop simulation remains available':
       roomApplied?'Scene applied · review the SIM route, then Run simulation':'Scene validated · wait for the Isaac build, then review the SIM route'):
-    state?.mode==='SIM'&&workflow?.site_draft?'Saved scene · request or preview a SIM route; nothing resumes automatically':
+    state?.mode==='SIM'&&workflow?.site_draft?'Saved scene · request or preview a route; nothing resumes automatically':
     workflow?.phase==='draft_ready'&&workflow.site_draft?'Current Twin saved · review it, then request an edit or a goal; nothing moves automatically':
     'Describe a space or attach a photo. A photo is optional.';
   const jobError = job?.error&&job.operation_id!==restoredGeneration.current ? `${job.error.message} (${job.error.code})` : null;
@@ -815,7 +818,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
 
   return <div className={`chat-workspace ${controlView?'is-control-view':''}`}>
     <header className="chat-appbar"><button className="chat-sidebar-toggle" onClick={()=>setShowProjects(!showProjects)} aria-expanded={showProjects} aria-label="Toggle conversations and projects">☰</button>
-      <strong>TwinPulse</strong><span className="chat-project-caption" title={home?'Choose a conversation or start a new chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}>{home?'New or saved chat':`${state?.project_id??'Connecting…'} · ${state?.mode??'Choose a mode'}`}</span>
+      <strong>TwinPulse</strong><span className="chat-project-caption" title={home?'Choose a conversation or start a new chat':`${state?.project_id??'Connecting…'} · ${modeCaption}`}>{home?'New or saved chat':`${state?.project_id??'Connecting…'} · ${modeCaption}`}</span>
       <IsaacConnectionStatus runtime={runtime} connected={engineReady} apiConnected={connected} inspect={()=>setShowChecks(!showChecks)}/>
       {runtimeExit}
       <button onClick={()=>setShowKeys(true)} aria-expanded={showKeys}>API keys</button>

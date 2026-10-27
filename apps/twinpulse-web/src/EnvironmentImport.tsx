@@ -129,7 +129,7 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   });
   return <section className="library-workspace" aria-label="Import space" style={{margin:'8px 16px',padding:'12px',border:'1px solid #cbd7df',borderRadius:12,maxHeight:'45vh',overflow:'auto',background:'#fff',color:'#172836'}}>
     <header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong>Import space · USD</strong><button type="button" onClick={close}>Close import space</button></header>
-    <p>Keep the source geometry as your SIM environment. Inspect locally, import, then show the Twin.</p>
+    <p>Keep the source geometry as your environment. Inspect locally, import, then show the Twin.</p>
     {error&&<p role="alert">{error}</p>}{state?.error&&state.error!==error&&<p role="alert">{state.error}</p>}
     {unknown&&<p role="alert">Delivery unknown. Check saved results before another action. No action is repeated automatically.</p>}
     {!enabled&&<p role="status">Finish the current scene action before importing or editing.</p>}
@@ -142,11 +142,11 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
       {file&&<p>{file.name} · {dirty?'selected locally':'inspection submitted'} <button type="button" onClick={()=>choose(null)}>Remove space file</button></p>}
       <label className="library-field">Source units<select aria-label="Space source units" value={units} onChange={e=>{setUnits(e.target.value as typeof units);setDirty(true);setPreview(null);discardProposal();}}>
         <option value="">Unknown / use authored units</option><option value="m">Meters (m)</option><option value="cm">Centimeters (cm)</option><option value="mm">Millimeters (mm)</option></select></label>
-      <small>{units?'User-selected units are uncalibrated SIM scale. Measured scale is not verified.':'Missing authored unit metadata requires an explicit choice. No measured scale is assumed.'}</small>
+      <small>{units?'User-selected units are uncalibrated. Measured scale is not verified.':'Missing authored unit metadata requires an explicit choice. No measured scale is assumed.'}</small>
       <button type="button" disabled={!file} onClick={inspect}>Inspect space</button>
     </fieldset>
     {state&&<p role="status">{state.status==='inspecting'?'Inspecting space locally…':state.status==='ready'?'Inspection ready · review units and objects before import.':state.status==='imported'?'Space imported · saved environment.':'Import status: '+state.status}</p>}
-    {state?.source_name&&<p>{state.source_name} · {state.objects.length} objects · Units: {state.units_basis??'not confirmed'}</p>}
+    {state?.source_name&&<p>{state.source_name} · {state.objects.length} objects · Units: {state.units_basis==='selected_for_sim'?'user-selected':state.units_basis??'not confirmed'}</p>}
     {!!state?.objects.length&&<details><summary>Objects and size</summary>
       <small>Scene-axis bounds (X × Y × Z), not measured object dimensions. Photos are not automatically merged into this space.</small>
       <ul style={{paddingInlineStart:20,overflowWrap:'anywhere'}}>{state.objects.map(object=><li key={object.id}>
@@ -155,7 +155,7 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
     </details>}
     {state?.metadata_basis==='current_review_not_disk_validation'&&<small>Current reviewed scene. Actions recheck saved data.</small>}
     {state?.job_id&&<small>Inspection job: {state.job_id}</small>}
-    {state?.units_basis==='selected_for_sim'&&<small>Saved units are user-selected, uncalibrated SIM scale. Measured scale is not verified.</small>}
+    {state?.units_basis==='selected_for_sim'&&<small>Saved units are user-selected and uncalibrated. Measured scale is not verified.</small>}
     {state?.status==='ready'&&<><p>Import requires an empty new project. Start New chat to keep an existing Twin.</p><button type="button" disabled={blocked||dirty||!state.job_id} onClick={adopt}>Import space</button></>}
     {editable&&<><button type="button" disabled={blocked||modelRunning} onClick={build}>Show Twin</button><small>Show Twin queues a Build. Confirm the engine ACK and current frame in the Twin pane.</small>
       <details onToggle={event=>setAlignmentOpen(event.currentTarget.open)}><summary>Scan alignment</summary>

@@ -387,7 +387,7 @@ class ConversationService:
                    for e in self._state['events']):return
             if self._state['mode']=='REAL':raise BrokerError('environment_sim_required','Import space in a new SIM chat.')
             self._state['mode']='SIM';self._state['physical_authority']=False
-            self._message('user','Menu action: Import space for SIM · '+source_name,operation_id=request_id)
+            self._message('user','Menu action: Import space · '+source_name,operation_id=request_id)
             self._message('assistant','Local scanned space imported. Source geometry is preserved. '
                 'Selected units and real-world alignment require review. Use Show Twin to apply the scene; '
                 'add a SIM robot explicitly to test it.',operation_id=request_id)
@@ -1066,6 +1066,12 @@ class ConversationService:
         stops=self._route_stops(body['text'])
         tasks=getattr(self,'robot_tasks',None)
         if not stops and tasks is not None and getattr(tasks,'registry',None) is not None and not tasks.active():
+            # The same readiness guards plan() applies run first, so a route the robot cannot take yet is
+            # refused before the planner is called (2026-10-27 build-54 check: one model call was spent on
+            # "Stop and prepare the robot before a route."). The guards themselves are unchanged.
+            try:self.declared_routes.readiness(self.robot_fleet.focused)
+            except BrokerError as error:
+                self._message('assistant',str(error),status='failed');self._event('declared_route_blocked',code=error.code,request_id=body['request_id']);return
             # Hackathon flow: the configured planner (NVIDIA Nemotron via Nebius Token Factory) reads the
             # instruction first; its validated plan then hands over to the deterministic Path B route.
             try:job=tasks.propose(body['text'],self._request_owner,body['request_id'])

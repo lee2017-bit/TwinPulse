@@ -78,7 +78,9 @@ class DeclaredRouteRunner:
         if not _pose3(start):raise BrokerError('declared_route_pose_required','A current SIM pose is required.',status=409)
         return list(start),'sim_engine_pose'
 
-    def plan(self,robot_id,*,budget_m=None,stops=None):
+    def readiness(self,robot_id):
+        """The guards every route plan passes first (scene shown, robot known, stopped/prepared, physical field
+        ready, start pose declared). Callers that would spend a planner model call check this before the call."""
         scene=self.fleet.navigation_scene
         if not scene:raise BrokerError('declared_route_scene_required','Display the imported Twin before planning a route.',status=409)
         row=self._row(robot_id)
@@ -91,6 +93,10 @@ class DeclaredRouteRunner:
             raise BrokerError('declared_route_field_not_ready','The physical robot cannot drive yet: '
                 +(', '.join(blockers) if blockers else 'field session not ready')+'. In the robot card open Physical setup, confirm supervision and Arm, then run the Bootstrap stop trial, then ask again.',status=409)
         start,basis=self._start_pose(row,scene)
+        return scene,row,start,basis
+
+    def plan(self,robot_id,*,budget_m=None,stops=None):
+        scene,row,start,basis=self.readiness(robot_id)
         # SIM: other connected SIM robots stand on the same floor and the engine
         # stops for them, so the plan keeps a berth around each (2026-10-26 sim14/15).
         robot_discs=[(r['pose']['position_m'][0],r['pose']['position_m'][1],OTHER_ROBOT_KEEPOUT_M)

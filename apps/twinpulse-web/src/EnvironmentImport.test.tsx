@@ -112,7 +112,7 @@ describe('local space import',()=>{
     expect(h.api.environmentAction).toHaveBeenCalledWith(expect.objectContaining({action:'inspect',units:null}));
     expect(screen.queryByRole('button',{name:'Import space'})).toBeNull();
     fireEvent.change(screen.getByLabelText('Space source units'),{target:{value:'m'}});
-    expect(screen.getByText(/User-selected units are uncalibrated SIM scale/)).toBeTruthy();
+    expect(screen.getByText(/User-selected units are uncalibrated\. Measured scale is not verified/)).toBeTruthy();
     expect(h.api.environmentAction).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button',{name:'Inspect space'}));
     await screen.findByRole('button',{name:'Import space'});
