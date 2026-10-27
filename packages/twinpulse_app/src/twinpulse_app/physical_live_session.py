@@ -7,6 +7,7 @@ Only reviewed shipped sources enter the versioned robot-user cache. The existing
 robot/current release and system installations are never replaced. The remote
 worker, not PC telemetry or a UI flag, admits motor commands.
 """
+from collections import deque
 from copy import deepcopy
 import base64
 import hashlib
@@ -24,10 +25,11 @@ import time
 from uuid import uuid4
 
 from .command_broker import BrokerError
+from .physical_live_history import restored_heartbeat
 from .robot_adapters import checked_binding, require_adapter
 from twinpulse_core.robot_lineage import checked_twin_context
 from twinpulse_core.robot_control_timing import INPUT_TTL_S, INPUT_TTL_MS
-from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES
+from twinpulse_core.robot_control_timing import EVENT_ARCHIVE_BYTES, RECORDING_WARNING_FRACTION
 from twinpulse_core.robot_timing_profile import values_of,checked_profile as checked_timing_profile,digest as timing_digest,TimingAccumulator
 
 SCHEMA = 'physical-live-event-1.0'
@@ -177,8 +179,10 @@ class StreamEvidence:
         with self.lock:
             if self.closed or self.error: return False
             try:
-                if not isinstance(raw,bytes) or len(raw)>MAX_LINE or self.reserved+len(raw)>self.maximum_bytes or self.pending_bytes+len(raw)>16*1024*1024:
-                    raise ValueError('STREAM_RECORDING_CAPACITY')
+                # Distinct codes: only the byte budget means "recording limit reached".
+                if not isinstance(raw,bytes) or len(raw)>MAX_LINE:raise ValueError('STREAM_RECORDING_LINE_LIMIT')
+                if self.reserved+len(raw)>self.maximum_bytes:raise ValueError('STREAM_RECORDING_CAPACITY')
+                if self.pending_bytes+len(raw)>16*1024*1024:raise ValueError('STREAM_RECORDING_PENDING_BUDGET')
                 self.queue.put_nowait(raw)
                 self.accepted+=1;self.reserved+=len(raw);self.pending_bytes+=len(raw)
                 return True
@@ -218,12 +222,30 @@ class StreamEvidence:
     def snapshot(self):
         return dict(deepcopy(self.cached),error=self.error,complete=self.cached['complete'] and self.error is None)
 
+    def usage(self):
+        with self.lock:return self.reserved,self.maximum_bytes
+
     def close(self, *, cleanup_confirmed):
         with self.lock:
             self.cleanup_confirmed=cleanup_confirmed;self.closed=True
         self.thread.join(timeout=2)
         if self.thread.is_alive():self.error=self.error or 'FINAL_FLUSH_PENDING'
         return self.snapshot()
+
+
+RECORDING_LIMIT_DETAIL='Recording limit reached - reconnect to continue'
+
+
+def recording_budget(samples,now,*,pc,robot,limit_reached):
+    """Display-only projection of the nearer recording budget from (monotonic_s, pc_bytes,
+    robot_bytes|None) samples; the hard budgets still fail closed where they always did."""
+    name,index,used,limit=max([('pc',1,*pc)]+([('robot',2,*robot)] if robot else []),key=lambda s:s[2]/s[3])
+    window=[s for s in samples if s[index] is not None and 0<=now-s[0]<=60]
+    span=window[-1][0]-window[0][0] if window else 0.
+    rate=(window[-1][index]-window[0][index])/span if span>=5 else None
+    return dict(state='LIMIT_REACHED' if limit_reached else 'NEAR_LIMIT' if used>=RECORDING_WARNING_FRACTION*limit else 'OK',
+        source=name,used_bytes=used,limit_bytes=limit,fraction=used/limit,warning_fraction=RECORDING_WARNING_FRACTION,
+        rate_bytes_per_s=rate,minutes_left=(limit-used)/rate/60 if rate and rate>0 else None,basis='LAST_60_S_RATE_DISPLAY_ONLY')
 
 
 def stderr_tail(path,limit=600):
@@ -263,7 +285,7 @@ class PhysicalLiveSession:
         self.pending_profile=None
         self.pending_field_setup=None
         self.presence_gap_until=0.;self.presence_gap_trial_id=None
-        self.device_identity=None
+        self.device_identity=None;self.recording_samples=deque(maxlen=128)
         self.sequence = self.command_sequence = 0
         self.events = []; self.error = None; self.closed = False; self.closing = False; self.cleanup_confirmed = False
         self.terminal_cleanup = None;self.remote_exit_code = None;self.remote_stderr_tail=None
@@ -519,6 +541,9 @@ class PhysicalLiveSession:
             self.sequence = event['sequence']
             self._retain_terminal_observation(event,data)
             if event['kind'] == 'heartbeat':
+                data=restored_heartbeat(self.last,data)
+                # The bounded live tail shows whole heartbeats, as before the robot sent deltas.
+                archived=dict(event,data={k:v for k,v in data.items() if k not in {'challenge','watch_challenge'}})
                 if data.get('worker_sha256')!=self.context.get('worker_sha256') or not isinstance(data.get('worker_sha256'),str):
                     raise ValueError('SESSION_WORKER_SOURCE_MISMATCH')
                 if self.context.get('timing_profile_sha256') is not None and data.get('timing_profile_sha256')!=self.context['timing_profile_sha256']:
@@ -534,6 +559,9 @@ class PhysicalLiveSession:
                     or not math.isfinite(battery['voltage_v']) or not 0<=battery['voltage_v']<=50)):
                     raise ValueError('SESSION_BATTERY_SHAPE')
                 self.last = data; self.at = self.clock();self.last_robot_monotonic_s=event['robot_monotonic_s']
+                if self.evidence is not None and (not self.recording_samples or self.at-self.recording_samples[-1][0]>=1):
+                    robot=(data.get('recording') or {}).get('reserved_bytes')
+                    self.recording_samples.append((self.at,self.evidence.usage()[0],robot if type(robot) is int else None))
                 if data.get('control_state')=='PREPARING' or data.get('maintenance_phase')=='CLEANUP':
                     self.input_window=None;self.input_window_at=None
                 trial=(data.get('field') or {}).get('active_trial') or {}
@@ -786,6 +814,7 @@ class PhysicalLiveSession:
             heartbeat_limit_ms=max(2500,self.timing_values['operator_presence_ms'])
             verified=self.watch_ack_at is not None and 0<=self.clock()-self.watch_ack_at<heartbeat_limit_ms/1000
             stderr_tail_value=self.remote_stderr_tail
+            samples=list(self.recording_samples);now=self.clock()
             # Why the link is not CONNECTED, for the operator (display only; admission is unchanged).
             if closed:link_detail=' · '.join(x for x in (self.error,stderr_tail_value) if x) or None
             elif self.context is None:link_detail='no session context'
@@ -795,6 +824,10 @@ class PhysicalLiveSession:
             elif not verified:link_detail='watch round-trip slower than 500 ms or no watch reply within %d ms'%heartbeat_limit_ms
             else:link_detail=None
             recording_failure_reason=last.get('recording_failure_reason') or (terminal_cleanup or {}).get('recording_failure_reason')
+            robot_recording=last.get('recording') if isinstance(last.get('recording'),dict) else {}
+            limit_reached=(evidence is not None and evidence.error=='ValueError:STREAM_RECORDING_CAPACITY'
+                or 'SESSION_LOG_BYTE_BUDGET' in (recording_failure_reason,robot_recording.get('error')))
+            if limit_reached:link_detail=' · '.join(x for x in (RECORDING_LIMIT_DETAIL,link_detail) if x)
             blockers=last.get('blockers') if isinstance(last.get('blockers'),list) else []
             control_owner_state=(None if closed or age is None else
                 'EXITED_RECONNECT_REQUIRED' if recording_failure_reason or 'RECORDING_INCOMPLETE' in blockers else 'ACTIVE')
@@ -856,8 +889,11 @@ class PhysicalLiveSession:
                 age_ms=scan_age,age_basis='pc_scan_receipt',
                 frame_id=scan.get('frame_id','native_sensor'),
                 aligned=False)
+        robot_budget=tuple(robot_recording.get(k) for k in ('reserved_bytes','byte_limit'))
         value.update(status,terminal_cleanup=deepcopy(terminal_cleanup),last_robot_pause=deepcopy(last_robot_pause),
-            recording=evidence.snapshot() if evidence else None)
+            recording=evidence.snapshot() if evidence else None,
+            recording_budget=recording_budget(samples,now,pc=evidence.usage(),limit_reached=limit_reached,
+                robot=robot_budget if all(type(v) is int for v in robot_budget) and robot_budget[1]>0 else None) if evidence else None)
         return value
 
     def close(self):

@@ -164,7 +164,7 @@ class RobotFleet:
             source_twin_context=None,
             # Link/owner diagnostics from the physical session (phys09 review); the merge below copies
             # only keys that exist here, so a new session field must be declared in this template.
-            link_detail=None,remote_stderr_tail=None,recording_failure_reason=None,control_owner_state=None,
+            link_detail=None,remote_stderr_tail=None,recording_failure_reason=None,control_owner_state=None,recording_budget=None,
             last_reported_lidar_state=None,lidar_state_source=None,robot_storage=None,
             _connected=False,_connecting=False,_at=None,_intent=None,_task=None,_sequence=0,_spawn=list(pose),_recorded_at=-math.inf,_registration=None)
 

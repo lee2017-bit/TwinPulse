@@ -334,11 +334,13 @@ class NativeStream:
                         last_read_wait_s=received-before,last_decode_s=decode_s)
                     frame = self.frame
                 if frame is not None and received-last_emit >= .2:
-                    points = [[b['distance_m']*math.cos(math.radians(b['angle_deg'])),
-                               b['distance_m']*math.sin(math.radians(b['angle_deg']))]
+                    # Display/review points at the sensor's 1 mm range quantum; the exact
+                    # original bytes stay in the raw chunks and native archive.
+                    points = [[round(b['distance_m']*math.cos(math.radians(b['angle_deg'])),3),
+                               round(b['distance_m']*math.sin(math.radians(b['angle_deg'])),3)]
                               for b in frame['beams'] if b['distance_m'] > 0 and b['valid_packet']]
                     self.emit('scan', dict(stream_id=self.stream_id, frame_sequence=frame['frame_sequence'],
-                        points=points, source='physical_native_sensor_unaligned', frame_id='native_sensor',
+                        points=points, point_precision_m=.001, source='physical_native_sensor_unaligned', frame_id='native_sensor',
                         aligned=False, complete=frame['complete'], timing=frame['timing'],
                         raw_sha256=frame['raw_sha256'],raw_digest_basis=frame['raw_digest_basis'],
                         source_byte_span=frame['source_byte_span'],nodes_sha256=frame['nodes_sha256'],quality=frame['quality']))

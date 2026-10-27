@@ -44,11 +44,32 @@ def checked_worker_sources(files,worker_sha256):
     return deepcopy(files)
 
 
+def restored_heartbeat(previous,data):
+    """Re-insert the blocks a robot heartbeat names as kept from the previous heartbeat.
+
+    'unchanged' blocks are byte-identical to it; 'held' display diagnostics
+    are its last sample. Archives keep the robot's line as sent. A name
+    without a previous value is a broken stream, never a default.
+    """
+    names=[]
+    for key in ('unchanged','held'):
+        value=data.pop(key,None)
+        if value is None:continue
+        if not isinstance(value,list) or not value or not all(isinstance(n,str) for n in value):raise ValueError('HEARTBEAT_DELTA')
+        names+=value
+    if len(names)>256 or len(set(names))!=len(names):raise ValueError('HEARTBEAT_DELTA')
+    for name in names:
+        source,target,key=(previous.get('field'),data.get('field'),name[6:]) if name.startswith('field.') else (previous,data,name)
+        if not isinstance(source,dict) or not isinstance(target,dict) or key not in source or key in target:raise ValueError('HEARTBEAT_DELTA')
+        target[key]=source[key]
+    return data
+
+
 def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,connection_epoch,binding_sha256,source_twin_context):
     if (not isinstance(receipt,dict) or type(receipt.get('event_count')) is not int
             or type(receipt.get('bytes')) is not int or not isinstance(receipt.get('segments'),list)
             or not 1<=len(receipt['segments'])<=EVENT_ARCHIVE_SEGMENTS):raise ValueError('HISTORY_RECEIPT_SHAPE')
-    directory=Path(directory);tail=deque(maxlen=100);first=None;sequence=0;count=0;size=0;cleanup=None;sources=None;export=None
+    directory=Path(directory);tail=deque(maxlen=100);first=None;sequence=0;count=0;size=0;cleanup=None;sources=None;export=None;heartbeat={}
     field_sources={name:bytearray() for name in ('field-trials.json','field-commits.jsonl','field-stop.json')};field_source_error=False
     expected=dict(operation_id=operation_id,project_id=project_id,robot_id=robot_id,connection_epoch=connection_epoch)
     for segment in receipt['segments']:
@@ -85,7 +106,9 @@ def recover_live_history(directory,receipt,*,operation_id,project_id,robot_id,co
                 if source_twin_context is not None and event.get('source_twin_context_id')!=source_twin_context['context_id']:
                     raise ValueError('HISTORY_TWIN_CONTEXT')
                 sequence=event['sequence'];data=event['data'];kind=event.get('kind')
-                if kind=='heartbeat' and data.get('worker_sha256')!=first['worker_sha256']:raise ValueError('HISTORY_WORKER_CHANGED')
+                if kind=='heartbeat':
+                    data=heartbeat=restored_heartbeat(heartbeat,data)
+                    if data.get('worker_sha256')!=first['worker_sha256']:raise ValueError('HISTORY_WORKER_CHANGED')
                 if kind=='cleanup' and data.get('subsystem')=='session':cleanup=data
                 if kind=='raw_source' and data.get('kind')=='manifest':export=data
                 if kind=='raw_source' and data.get('kind')=='chunk' and data.get('member') in field_sources:
