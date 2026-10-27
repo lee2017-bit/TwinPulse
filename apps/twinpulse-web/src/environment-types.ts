@@ -23,8 +23,12 @@ export interface EnvironmentState {
   proposal?:EnvironmentProposal;
   photo_proposal?:EnvironmentPhotoProposal|null;
 }
+// A local placement beside the scanned/added object the photo model named ('near'); never a model coordinate or an alignment.
+export interface EnvironmentPhotoPlacement {position_m:[number,number,number];yaw_deg:number;dimensions_m:[number,number,number];uncertainty_m:number;
+  anchor:string;gap_m:number;side:string;at_end:boolean;basis:'photo_near_anchor';alignment_verified:false;envelope_xy:[number,number][]}
 export interface EnvironmentPhotoCandidate {id:string;kind:string;label:string;confidence:number;bbox:[number,number,number,number];description:string;dimensions_m:[number,number,number];dimensions_basis:'catalog_estimate';
-  overlay_kind:string|null;addable:boolean;possible_duplicates:string[];duplicate_check_required:true}
+  overlay_kind:string|null;addable:boolean;possible_duplicates:string[];duplicate_check_required:true;
+  near?:string|null;suggested?:EnvironmentPhotoPlacement|null;suggestion_reason?:string|null;batch_addable?:boolean}
 export interface EnvironmentPhotoProposal {job_id?:string;request_id?:string;status:'running'|'ready'|'failed'|'cancelled';error:string|null;
   model_id?:string|null;photo?:{source_name:string;sha256:string};source_revision?:string;response_sha256?:string|null;
   explanation?:string|null;candidates:EnvironmentPhotoCandidate[]}

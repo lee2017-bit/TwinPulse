@@ -5,13 +5,19 @@ import type {EnvironmentObstacle,EnvironmentState,EnvironmentCandidateRef} from 
 
 const presets:Record<string,[number,number,number]>={floor_fan:[.4,.4,1.1],basket:[.35,.3,.4],bag:[.3,.25,.35],box:[.3,.3,.3],
   clothing_pile:[.35,.25,.15],cable_bundle:[.3,.2,.04],power_adapter:[.12,.08,.05],power_strip:[.3,.08,.05],small_equipment:[.3,.3,.3],unknown:[.3,.3,.3]};
-export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,analyze,cancelPhoto}:{state:EnvironmentState;disabled:boolean;
+// Why a candidate has no suggested spot beside the object the photo model named (local placement, never a model coordinate).
+const unplaced:Record<string,string>={NO_ANCHOR:'the photo model named no neighbouring scanned or added object',ANCHOR_NOT_FOUND:'the named neighbour is not in the current scene',
+  ANCHOR_AMBIGUOUS:'several objects share the named neighbour',NO_FREE_FLOOR_NEAR_ANCHOR:'no free floor beside the named neighbour',
+  COVERING_NOT_SUGGESTED:'coverings are placed by hand',ALREADY_ADDED:'already added',
+  POSSIBLE_DUPLICATE:'it may already be one of the possible duplicates above (check, then place a different object by hand)'};
+export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,analyze,cancelPhoto,addAll,batch}:{state:EnvironmentState;disabled:boolean;
   preview:(obstacle:EnvironmentObstacle,photo:File|null,candidate?:EnvironmentCandidateRef,replaceId?:string)=>void;remove:(id:string)=>void;invalidate:()=>void;
-  analyze:(photo:File)=>void;cancelPhoto:(id:string)=>void}){
+  analyze:(photo:File)=>void;cancelPhoto:(id:string)=>void;addAll?:(ids:string[])=>void;batch?:{running:boolean;status:string|null;autoApply?:boolean}}){
   const [kind,setKind]=useState('basket'),[label,setLabel]=useState('Basket'),[xy,setXY]=useState(['0','0']);
   const [size,setSize]=useState(['.35','.3','.4']),[yaw,setYaw]=useState('0'),[margin,setMargin]=useState('.2'),[autoMargin,setAutoMargin]=useState(false);
   const [photo,setPhoto]=useState<File|null>(null),[url,setURL]=useState('');
   const [consent,setConsent]=useState(false),[candidate,setCandidate]=useState<EnvironmentCandidateRef|undefined>(),[duplicate,setDuplicate]=useState(false),[photoSHA,setPhotoSHA]=useState('');
+  const [batchReviewed,setBatchReviewed]=useState(false);
   const [replaceId,setReplaceId]=useState('');const unknownBoxes=state.objects.filter(o=>o.id.startsWith('Added_'));  // added estimates only (LiDAR outline, manual, photo), never scanned meshes
   const proposal=state.photo_proposal;
   const reviewed=proposal?.job_id===candidate?.job_id?proposal?.candidates.find(c=>c.id===candidate?.candidate_id):undefined;
@@ -42,6 +48,8 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
           {triangles.map((t,i)=><polygon key={i} points={t.map(([x,y])=>`${x},${-y}`).join(' ')} fill="#fff"/>)}
           {state.objects.filter(o=>o.category!=='floor'&&o.dimensions_m).map(o=>{const [x,y]=o.position_m,[w,d]=o.dimensions_m!;
             return <rect key={o.id} x={x-w/2} y={-y-d/2} width={w} height={d} fill={o.added?'#d58d35':'#6e7a83'} opacity=".65"><title>{o.label} · bounds</title></rect>;})}
+          {proposal?.status==='ready'&&proposal.candidates.map(c=>c.suggested&&<polygon key={'suggested-'+c.id} points={c.suggested.envelope_xy.map(([x,y])=>`${x},${-y}`).join(' ')}
+            fill="none" stroke="#c94f15" strokeWidth={extent*.006} strokeDasharray={`${extent*.02} ${extent*.012}`}><title>{c.id} · suggested next to {c.suggested.anchor} · estimate</title></polygon>)}
           {Number.isFinite(Number(xy[0]))&&Number.isFinite(Number(xy[1]))&&<circle cx={Number(xy[0])} cy={-Number(xy[1])} r={extent*.015} fill="#c94f15"/>}
         </svg></>}
       <label className="library-field">Reference photo (optional)<input aria-label="Obstacle reference photo" type="file" accept=".jpg,.jpeg,.png,.webp" onChange={e=>{setPhoto(e.target.files?.[0]??null);setConsent(false);endReview();setDuplicate(false);invalidate();e.target.value='';}}/></label>
@@ -53,18 +61,30 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
       <small>Only this photo and the names/types of scanned objects and added estimates are sent. No USD geometry, robot logs or room coordinates. WebP stays local; use JPEG/PNG for analysis.</small>
       {proposal?.status==='ready'&&<section aria-label="Photo obstacle candidates">
         <strong>Photo candidates · {proposal.candidates.length}</strong><p>{proposal.explanation}</p>
-        <small>{proposal.photo?.source_name} · {proposal.model_id}. Recognition confidence is not metric accuracy. Check duplicates and place each center explicitly.</small>
+        <small>{proposal.photo?.source_name} · {proposal.model_id}. Recognition confidence is not metric accuracy. Check duplicates; a suggested center beside the named neighbour is an estimate, otherwise place it explicitly.</small>
         {proposal.candidates.map(c=><div key={c.id} style={{marginBlock:8,borderBottom:'1px solid #ddd',overflowWrap:'anywhere'}}>
           <strong>{c.label}</strong> · {c.kind.replaceAll('_',' ')} · recognition {Math.round(c.confidence*100)}%<small>{c.description}</small>
           {c.possible_duplicates.length>0&&<small> Possible duplicate of: {c.possible_duplicates.join(', ')}</small>}
           {!c.addable&&<small> Recognised only: not added to an imported space.</small>}
+          {c.suggested?<small> Suggested: next to {c.suggested.anchor} · {c.suggested.at_end?'at its end':'along its side'} · {c.suggested.gap_m.toFixed(2)} m gap · estimate (the side is a guess)</small>:
+            c.addable&&c.suggestion_reason&&unplaced[c.suggestion_reason]&&<small> No suggested spot: {unplaced[c.suggestion_reason]}. Place the center on the map.</small>}
           {c.addable&&c.overlay_kind!==c.kind&&<small> Added as a labelled box (unknown kind, catalog size). Against a wall: keep the center at least half the depth + 0.15 m away.</small>}
           {/* Furniture becomes an unknown box, which already adds a 0.10 m keepout, so its uncertainty starts at the minimum; other kinds keep the current value. */}
-          <button type="button" disabled={!c.addable} onClick={()=>{setCandidate({job_id:proposal.job_id!,candidate_id:c.id});setKind(c.overlay_kind!);setLabel(c.label);setSize(c.dimensions_m.map(String));setXY(['','']);setYaw('0');
-            const furniture=c.overlay_kind==='unknown'&&c.kind!=='unknown';if(furniture||autoMargin)setMargin(furniture?'.05':'.2');setAutoMargin(furniture);setDuplicate(false);invalidate();}}>Review {c.id}</button>
+          <button type="button" disabled={!c.addable} onClick={()=>{setCandidate({job_id:proposal.job_id!,candidate_id:c.id});setKind(c.overlay_kind!);setLabel(c.label);setSize(c.dimensions_m.map(String));
+            const s=c.suggested,furniture=c.overlay_kind==='unknown'&&c.kind!=='unknown';
+            // A suggestion pre-fills the exact numbers the server checked beside the anchor; without one the center stays manual.
+            if(s){setXY([String(s.position_m[0]),String(s.position_m[1])]);setYaw(String(s.yaw_deg));setMargin(String(s.uncertainty_m));setAutoMargin(true);}
+            else{setXY(['','']);setYaw('0');if(furniture||autoMargin)setMargin(furniture?'.05':'.2');setAutoMargin(furniture);}
+            setDuplicate(false);invalidate();}}>Review {c.id}</button>
         </div>)}
+        {(()=>{const ready=proposal.candidates.filter(c=>c.batch_addable&&c.suggested),n=ready.length;return n>0&&addAll&&<div>
+          <label><input aria-label="Suggested objects duplicate reviewed" type="checkbox" checked={batchReviewed} onChange={e=>setBatchReviewed(e.target.checked)}/> I checked that {n===1?'this suggested object is':`these ${n} suggested objects are`} not already represented.</label>
+          <button type="button" disabled={!batchReviewed||!!batch?.running} onClick={()=>{setBatchReviewed(false);endReview();setDuplicate(false);invalidate();addAll(ready.map(c=>c.id));}}>Add {n} suggested object{n===1?'':'s'}</button>
+          <small>{batch?.autoApply?'Twin-edit auto-apply is on: each one is previewed and applied automatically in order (Engine ACK, Undo available).':
+            'Each one opens its own preview in order; check it and Apply space edit to continue (Engine ACK, Undo available).'} Cancel or the first refusal stops the rest. Positions and sides are estimates; the robot LiDAR corrects offsets up to 0.6 m, not a wrong side.</small></div>;})()}
+        {batch?.status&&<p role="status">{batch.status}</p>}
       </section>}
-      {candidate&&<><p role="status">Reviewing {candidate.candidate_id} · set the center on the map. Catalog size is an estimate.</p>
+      {candidate&&<><p role="status">Reviewing {candidate.candidate_id} · {reviewed?.suggested?`Placed next to ${reviewed.suggested.anchor} from the photo (estimate; the side is a guess) · click the map or edit X/Y to adjust; the robot LiDAR corrects offsets up to 0.6 m, not a wrong side.`:'set the center on the map.'} Catalog size is an estimate.</p>
         {unknownBoxes.length>0&&reviewed&&reviewed.overlay_kind===reviewed.kind&&<label>Replace an added estimate box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
           // The Twin edit contract allows one object per edit, so a replacement is two edits: the box is
           // removed first (preview + Apply), then this photo object is placed at the box's position.

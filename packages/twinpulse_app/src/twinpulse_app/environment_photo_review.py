@@ -15,7 +15,8 @@ from uuid import uuid4
 import re
 
 from twinpulse_core import canonical_sha256
-from twinpulse_core.environment_photo import VERSION,CATALOG_SIZES,PHOTO_KINDS,checked_photo_candidates,overlay_kind_for,photo_context,possible_duplicates
+from twinpulse_core.environment_photo import (VERSION,CATALOG_SIZES,NOT_SUGGESTED,PHOTO_KINDS,checked_photo_candidates,context_labels,overlay_kind_for,
+    photo_context,possible_duplicates,suggest_position)
 from twinpulse_provider import CancellationToken,GenerationRequest,ImageInput
 from twinpulse_provider.environment_photo import generate_environment_photo
 from .library_asset_store import atomic_json
@@ -28,7 +29,7 @@ class EnvironmentPhotoReview:
     def __init__(self,parent):
         self.parent=parent;self.root=parent.root/'photo-proposals';self.job=None;self.thread=None;self.token=None;self.owner=None
         self.apply_admitted=set();self.revoked=set()
-        self.load_error=None;self._receipts=None;self._receipt_rows={}
+        self.load_error=None;self._receipts=None;self._receipt_rows={};self._placements=None
         try:
             pointer=self.root/'latest.json'
             if pointer.exists():
@@ -79,10 +80,49 @@ class EnvironmentPhotoReview:
         if self.job is None:return None
         job=self.job
         if not environment or job['project_id']!=self.parent.workflow._broker.project_id or job['source_sha256']!=environment['source_sha256']:return None
+        return {**deepcopy(job),'candidates':self._rows(job,environment)}
+
+    def _rows(self,job,environment):
         receipts=self.adopted_kinds(environment) if job['candidates'] else {}
-        return {**deepcopy(job),'candidates':[{**deepcopy(c),'dimensions_m':list(CATALOG_SIZES[c['kind']]),
+        rows=[{**deepcopy(c),'near':c.get('near'),'dimensions_m':list(CATALOG_SIZES[c['kind']]),
             'dimensions_basis':'catalog_estimate','overlay_kind':overlay_kind_for(c['kind']),'addable':overlay_kind_for(c['kind']) is not None,
-            'possible_duplicates':possible_duplicates(c['kind'],environment,receipts),'duplicate_check_required':True} for c in job['candidates']]}
+            'possible_duplicates':possible_duplicates(c['kind'],environment,receipts),'duplicate_check_required':True} for c in job['candidates']]
+        for row,placement in zip(rows,self._suggestions(job,environment,rows,receipts) if rows else ()):row.update(placement)
+        return rows
+
+    def _suggestions(self,job,environment,rows,receipts):
+        """Local placement beside each candidate's 'near' anchor, recomputed for the current scene so a moved or removed
+        anchor drops out. Earlier suggestions of this job are taken spots (two candidates near one sofa do not stack).
+        A candidate that may already be an object outside this job (by overlay id, not label) gets no suggestion and
+        reserves no spot: it stays manual, with its duplicate check. Every suggestion is batch_addable."""
+        key=canonical_sha256(dict(job=job['job_id'],source=environment['source_sha256'],moved=[m['translation_m'] for m in environment['meshes']],
+            overlays=environment.get('overlays',[])))
+        if self._placements and self._placements[0]==key:return deepcopy(self._placements[1])
+        siblings,adopted=self._job_adoptions(job,environment);taken=[];result=[]
+        outside=dict(environment,overlays=[o for o in environment.get('overlays',[]) if o['item']['id'] not in siblings])
+        for row in rows:
+            if row['id'] in adopted:placement,reason=None,'ALREADY_ADDED'
+            elif row['addable'] and row['kind'] not in NOT_SUGGESTED and possible_duplicates(row['kind'],outside,receipts):placement,reason=None,'POSSIBLE_DUPLICATE'
+            else:
+                # Same uncertainty the Review form starts with: furniture as an unknown box already adds 0.10 m, so its minimum.
+                margin=.05 if row['overlay_kind']=='unknown' and row['kind']!='unknown' else .2
+                placement,reason=suggest_position(row['kind'],row['near'],environment,uncertainty_m=margin,taken=taken)
+            if placement:taken.append(placement['envelope_xy'])
+            result.append(dict(suggested=placement,suggestion_reason=reason,batch_addable=placement is not None))
+        self._placements=(key,result);return deepcopy(result)
+
+    def _job_adoptions(self,job,environment):
+        """(overlay ids, candidate ids) of boxes in this scene that this job added: siblings from one photo, not duplicates."""
+        active={o['item']['id'] for o in environment.get('overlays',[]) if o['evidence']['sha256']==job['photo']['sha256']}
+        folder=self.root/job['job_id']/'adoptions';boxes=set();ids=set()
+        if not active or not folder.exists() or folder.is_symlink():return boxes,ids
+        for path in sorted(folder.glob('environment_edit_*.json')):
+            identity='Added_'+path.stem[17:37]
+            if identity not in active:continue
+            if path not in self._receipt_rows:self._receipt_rows[path]=self._receipt_row(path)
+            row=self._receipt_rows[path]
+            if row and row[:3]==(job['project_id'],identity,job['photo']['sha256']):boxes.add(identity);ids.add(row[4])
+        return boxes,ids
 
     def adopted_kinds(self,environment):
         """{overlay_id: recognised kind} of photo boxes from their adoption receipts. A name hint only, never identity."""
@@ -104,8 +144,8 @@ class EnvironmentPhotoReview:
         if path.parent.parent.is_symlink() or not re.fullmatch('[a-f0-9]{32}',path.parent.parent.name):return None
         try:
             receipt=self._read(path);kind=receipt['candidate']['kind']
-            if kind in PHOTO_KINDS and all(isinstance(receipt[k],str) for k in ('project_id','overlay_id','photo_sha256')):
-                return receipt['project_id'],receipt['overlay_id'],receipt['photo_sha256'],kind
+            if kind in PHOTO_KINDS and all(isinstance(receipt[k],str) for k in ('project_id','overlay_id','photo_sha256','candidate_id')):
+                return receipt['project_id'],receipt['overlay_id'],receipt['photo_sha256'],kind,receipt['candidate_id']
         except (OSError,ValueError,KeyError,TypeError):pass
         return None
 
@@ -181,12 +221,17 @@ class EnvironmentPhotoReview:
 
     def record_preview(self,reference,preview,overlay_id,environment):
         job,candidate=self.reference(reference,environment)
+        # The exact numbers of this scene's local suggestion: recorded as placed beside the named object, never as aligned.
+        suggested=next(r['suggested'] for r in self._rows(job,environment) if r['id']==candidate['id'])
+        added=next(o for o in preview['operation']['tool_call']['arguments']['environment']['overlays'] if o['item']['id']==overlay_id)
+        anchored=suggested is not None and [added['item'][k] for k in ('position_m','dimensions_m','yaw_deg')]+[added['uncertainty_m']]==[
+            suggested[k] for k in ('position_m','dimensions_m','yaw_deg','uncertainty_m')]
         value=dict(schema_version='photo-candidate-adoption-1.0',project_id=job['project_id'],job_id=job['job_id'],
             candidate_id=candidate['id'],response_sha256=job['response_sha256'],photo_sha256=job['photo']['sha256'],
             source_sha256=job['source_sha256'],reviewed_scene_revision=preview['parent_revision'],
             operation_id=preview['operation']['operation_id'],preview_digest=preview['preview_digest'],overlay_id=overlay_id,
-            model_id=job['model_id'],candidate=candidate,position_basis='user_reviewed_estimate',dimensions_basis='user_reviewed_estimate',
-            metric_alignment_verified=False)
+            model_id=job['model_id'],candidate=candidate,position_basis='photo_near_anchor' if anchored else 'user_reviewed_estimate',
+            position_anchor=suggested['anchor'] if anchored else None,dimensions_basis='user_reviewed_estimate',metric_alignment_verified=False)
         path=self.root/job['job_id']/'adoptions'/(value['operation_id']+'.json')
         if path.exists():
             if self._read(path)!=value:raise ValueError('PHOTO_ADOPTION_CHANGED')
@@ -225,7 +270,7 @@ class EnvironmentPhotoReview:
                 canonical_sha256(route),provider.policy.sha256,folder/'usage.ledger.json',job['project_id']))
             atomic_json(folder/'request.json',dict(project_id=job['project_id'],source_revision=job['source_revision'],
                 request_id=job['request_id'],photo_sha256=job['photo']['sha256'],images_sent=1,mesh_sent=False,sensor_logs_sent=False,
-                scene_names_sent=True,scene_names_count=len(context['existing_props'])+len(context['scanned_objects']),
+                scene_names_sent=True,scene_names_count=len(context['existing_props'])+len(context['scanned_objects']),near_labels_sent=len(context_labels(context)),
                 prompt=json.loads(request.prompt),model_id=provider.observer_model_id,max_output_tokens=provider.stage_output_token_caps['observer'],
                 max_calls=1,automatic_retry=False,consent=True))
             with parent.workflow._lock,parent.lock:
