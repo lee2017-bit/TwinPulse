@@ -44,26 +44,85 @@ describe('Imported space next steps',()=>{
     await waitFor(()=>expect(api.environmentAction).toHaveBeenCalledTimes(1));
     expect(api.environmentAction.mock.calls[0][0].action).toBe('build');
   });
-  it('keeps the chat Undo of a committed photo add in view inside the open Import space panel',async()=>{
-    // 2026-10-27 real app (Control view, 787 px tall): the open panel left the chat's Twin update card out of sight, so its Undo could not be clicked.
-    const revision='a'.repeat(64),api=harness(),imported={project_id:'room',status:'imported',job_id:'inspection',error:null,source_name:'Room.usdz',source_sha256:'c'.repeat(64),
+  // An imported room after a committed photo add (Twin edits: Auto-apply), as in the 2026-10-27 real-app run.
+  const revision='a'.repeat(64),committed={operation_id:'environment_edit_photo',state:'COMMITTED',engine_acknowledged:true,durable_committed:true,current_frame:true,result_revision:revision,error:null,command_id:'c'};
+  const said=(message_id:string,role:'user'|'assistant',content:string)=>({message_id,role,content,status:'completed',attachments:[],created_at:'now',operation_id:null});
+  function importedChat(chat:Record<string,unknown>={}){
+    const api=harness(),imported={project_id:'room',status:'imported',job_id:'inspection',error:null,source_name:'Room.usdz',source_sha256:'c'.repeat(64),
       units_basis:'authored',objects:[{id:'Sofa0',category:'Sofa',label:'Sofa0',position_m:[1,1,0]}],scene_revision:revision};
-    api.runtimeState.mockResolvedValue({status:'ready',message:'ready'} as never);
-    api.conversation.mockResolvedValue({...initial(),mode:'REAL',messages:[{message_id:'m1',role:'user',content:'Twin edits: Auto-apply',status:'completed',attachments:[],created_at:'now',operation_id:null}],
-      scene_edit_transaction:{operation_id:'environment_edit_photo',state:'COMMITTED',engine_acknowledged:true,durable_committed:true,current_frame:true,result_revision:revision,error:null,command_id:'c'}} as never);
+    let state={...initial(),mode:'REAL',twin_edit_approval:'auto',messages:[said('m1','user','Twin edits: Auto-apply')],scene_edit_transaction:committed,...chat} as ConversationState;
+    api.conversation.mockImplementation(async()=>state);api.runtimeState.mockResolvedValue({status:'ready',message:'ready'} as never);
+    api.conversationAction.mockImplementation(async body=>{if(body.action==='message'&&body.text==='Undo'){const question='Undo the last edit as a fresh revision? Review the before/after changes, then update this Twin?';
+      state={...state,revision:1,cursor:1,accepted_request_ids:[body.request_id],messages:[...state.messages,said('m2','user','Undo'),said('m3','assistant',question)],
+        cards:[{id:'q3',message_id:'m3',kind:'scene_edit',question,state:'waiting',selected_choice_id:null,operation_id:'edit_undo',expected_session_revision:1,
+          choices:[{id:'apply',label:'Apply and update Twin',enabled:true,disabled_reason:null},{id:'cancel',label:'Cancel',enabled:true,disabled_reason:null}]}],
+        scene_edit_preview:{operation:{operation_id:'edit_undo'},preview_digest:'d',source_revision:'s',parent_revision:revision,result_revision:'e'.repeat(64),
+          affected_before:{Added_basket:{position_m:[1.8,1.8,.2],dimensions_m:[.35,.3,.4],kind:'basket'}},affected_after:{},preserved_object_count:1,review_required:true,physical_validation:'NOT_RUN'}} as ConversationState;}
+      return state;});
     api.productState.mockResolvedValue({engine_connected:true,operations:[],snapshot:{applied_revision:revision}} as never);
     api.workflow.mockResolvedValue({phase:'draft_ready',provider:{configured:true,label:'Import'},site_draft:{revision,scene_state_sha256:'b'.repeat(64),input_revision:'input',artifact_id:'artifact',provider_name:'local-environment-import'}} as never);
-    const extended=Object.assign(api,{environment:vi.fn(async()=>imported),environmentAction:vi.fn(async()=>imported),sceneEditTransaction:vi.fn(async()=>null),applyEnvironmentEdit:vi.fn()});
-    const view=render(<ChatWorkspace api={extended as never} advanced={()=>{}}/>);
+    return Object.assign(api,{environment:vi.fn(async()=>imported),environmentAction:vi.fn(async()=>imported),sceneEditTransaction:vi.fn(async()=>null),applyEnvironmentEdit:vi.fn()});
+  }
+  const openPanel=async()=>{fireEvent.click(screen.getByRole('button',{name:'Import space'}));
+    const panel=await screen.findByRole('region',{name:'Import space'});await within(panel).findByText('Space imported · saved environment.');return panel;};
+  // jsdom has no scrollIntoView; the panel Undo shows its chat card's choice with it.
+  beforeEach(()=>{Object.defineProperty(Element.prototype,'scrollIntoView',{value:vi.fn(),configurable:true,writable:true});});
+  afterEach(()=>{delete (Element.prototype as Partial<Element>).scrollIntoView;});
+  it('undoes a committed photo add from the open Import space panel with the Apply of that Undo in view',async()=>{
+    // 2026-10-27 real app (Control view, 787 px tall): the open panel covered the chat's Twin update card, and then the Apply card of the chat Undo it asks for.
+    const api=importedChat(),view=render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
     within(await screen.findByRole('status',{name:'Twin update status'})).getByRole('button',{name:'Undo last edit · preview'});
-    fireEvent.click(screen.getByRole('button',{name:'Import space'}));
-    const panel=await screen.findByRole('region',{name:'Import space'});await within(panel).findByText('Space imported · saved environment.');
-    const undo=within(panel).getByRole('button',{name:'Undo last edit · preview in chat'});
+    const panel=await openPanel();fireEvent.wheel(document.querySelector('.chat-message-list')!,{deltaY:-120});  // the reader scrolled the chat up looking for the card
+    const undo=within(panel).getByRole('button',{name:'Undo last edit in chat · closes this panel'});
     expect(undo.parentElement!.style.position).toBe('sticky');  // stays at the panel's bottom edge however far the panel is scrolled
     await waitFor(()=>expect(undo).toHaveProperty('disabled',false));fireEvent.click(undo);
     await waitFor(()=>expect(api.conversationAction).toHaveBeenCalledTimes(1));
     expect(api.conversationAction.mock.calls[0][0]).toEqual({action:'message',request_id:expect.any(String),text:'Undo',mode:'change',attachment:null});  // the same chat Undo, no new action
-    expect(extended.environmentAction).not.toHaveBeenCalled();view.unmount();
+    expect(api.environmentAction).not.toHaveBeenCalled();
+    const card=await screen.findByRole('region',{name:/^Undo the last edit as a fresh revision\?/});
+    expect(screen.queryByRole('region',{name:'Import space'})).toBeNull();  // nothing covers the card any more
+    within(card).getByRole('radio',{name:'Apply and update Twin'});within(card).getByRole('button',{name:'Continue'});
+    await act(async()=>{});expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();  // the chat follows its newest card again
+    view.unmount();
+  });
+  it('shows the choice of the panel Undo card above its before/after rows, holds it while the card waits, then follows the chat again',async()=>{
+    // 2026-10-27 review (Control view 1426x787 and 1536x864): following the bottom left Apply and Continue above the fold, under 2-7 before/after rows (one per mesh part).
+    const api=importedChat(),view=render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
+    const list=document.querySelector<HTMLElement>('.chat-message-list')!,shownOn:Element[]=[];
+    Object.defineProperties(list,{scrollHeight:{configurable:true,get:()=>1000},clientHeight:{configurable:true,get:()=>480}});
+    vi.mocked(Element.prototype.scrollIntoView).mockImplementation(function(this:Element){shownOn.push(this);list.scrollTop=470;});  // 50 px above the bottom
+    const panel=await openPanel();fireEvent.wheel(list,{deltaY:-120});
+    const undo=within(panel).getByRole('button',{name:'Undo last edit in chat · closes this panel'});
+    await waitFor(()=>expect(undo).toHaveProperty('disabled',false));fireEvent.click(undo);
+    const card=await screen.findByRole('region',{name:/^Undo the last edit as a fresh revision\?/}),choice=within(card).getByRole('group',{name:'Your choice'});
+    await waitFor(()=>expect(shownOn).toEqual([choice]));expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({block:'nearest'});
+    expect(choice.contains(within(card).getByRole('radio',{name:'Apply and update Twin'}))).toBe(true);
+    fireEvent.scroll(list);  // the scroll this fires ends within 80 px of the bottom: it must not re-enter follow mode
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,900));});  // past the 400 ms follow tick and a 750 ms poll
+    expect(list.scrollTop).toBe(470);expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();
+    const waiting=await api.conversation();
+    api.conversationAction.mockImplementationOnce(async body=>({...waiting,revision:2,cursor:2,accepted_request_ids:[body.request_id],scene_edit_preview:null,
+      cards:waiting.cards.map(row=>({...row,state:'answered',selected_choice_id:'apply'}))}) as ConversationState);
+    fireEvent.click(within(card).getByRole('radio',{name:'Apply and update Twin'}));fireEvent.click(within(card).getByRole('button',{name:'Continue'}));
+    await waitFor(()=>expect(list.scrollTop).toBe(1000));  // answered: the chat follows its newest content again
+    expect(api.conversationAction.mock.calls[1][0]).toMatchObject({action:'answer',card_id:'q3',choice_id:'apply'});
+    expect(screen.queryByRole('button',{name:'New updates ↓'})).toBeNull();expect(shownOn).toHaveLength(1);
+    view.unmount();
+  });
+  it('offers the panel Undo only for a committed edit while the chat flow is idle and its scene observation fresh',async()=>{
+    // The same gates as the chat's Twin update card, now on a second surface (2026-10-27 review).
+    const waiting=importedChat({revision:1,cursor:1,messages:[said('m1','user','Twin edits: Auto-apply'),said('m2','assistant','Do you have a physical robot?')],
+      cards:[{id:'q2',message_id:'m2',kind:'robot_presence',question:'Do you have a physical robot?',state:'waiting',selected_choice_id:null,operation_id:null,expected_session_revision:1,
+        choices:[{id:'sim',label:'Simulation only',enabled:true,disabled_reason:null},{id:'real',label:'Use my robot',enabled:true,disabled_reason:null}]}]});
+    const stale=importedChat(),draft=await stale.workflow();stale.workflow.mockRejectedValue(new Error('workflow delayed')).mockResolvedValueOnce(draft);  // first read only
+    const cases=[[importedChat(),()=>screen.findByText('Twin update · COMMITTED'),true],[waiting,()=>screen.findByRole('region',{name:'Do you have a physical robot?'}),false],
+      [stale,()=>screen.findByRole('status',{name:'Workflow observation'},{timeout:3000}),false],
+      [importedChat({scene_edit_transaction:{...committed,state:'ROLLED_BACK',durable_committed:false}}),()=>screen.findByText('Twin update · ROLLED BACK'),false]] as const;
+    for(const [api,settled,offered] of cases){const view=render(<ChatWorkspace api={api as never} advanced={()=>{}}/>);
+      const panel=await openPanel();await settled();
+      await waitFor(()=>expect(!!within(panel).queryByRole('button',{name:'Undo last edit in chat · closes this panel'})).toBe(offered));
+      expect(!!within(screen.getByRole('status',{name:'Twin update status'})).queryByRole('button',{name:'Undo last edit · preview'})).toBe(offered);  // the chat card agrees
+      view.unmount();}
   });
 });
 
