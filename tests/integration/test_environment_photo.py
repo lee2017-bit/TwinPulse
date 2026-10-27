@@ -7,6 +7,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -15,8 +16,10 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_app','twinpulse_provider'):sys.path.insert(0,str(ROOT/'packages'/name/'src'))
 from twinpulse_core.environment_photo import (VERSION,CATALOG_SIZES,PHOTO_KINDS,PROPOSABLE_KINDS,checked_photo_candidates,
-    overlay_kind_for,photo_context,possible_duplicates)
-from twinpulse_core.environment_overlays import KINDS
+    overlay_kind_for,photo_context,possible_duplicates,suggest_position)
+from twinpulse_core.environment_overlays import KINDS,add_overlay,footprint,overlay_objects
+from twinpulse_core.environment_navigation import convex_overlap_area
+from twinpulse_core.room_item_catalog import room_item_catalog_version
 from twinpulse_app.environment_photo_review import EnvironmentPhotoReview
 from twinpulse_app.single_photo_scope import SinglePhotoLedger
 from twinpulse_app.library_asset_store import atomic_json
@@ -24,19 +27,61 @@ from twinpulse_provider.environment_photo import generate_environment_photo
 from twinpulse_provider.errors import ProviderConfigurationError
 from twinpulse_provider.nebius_pipeline import ChatCompletion
 from tests.integration import test_environment_model_move as fixture
+from tests.integration.test_environment_import import source
 
 
 def output():
     return dict(schema_version=VERSION,candidates=[dict(id='Candidate_1',kind='basket',label='Basket',confidence=.8,
-        bbox=[.1,.2,.4,.7],description='A visible basket; exact scene identity is unverified.')],explanation='Review duplicates and place the center explicitly.')
+        bbox=[.1,.2,.4,.7],description='A visible basket; exact scene identity is unverified.',near=None)],explanation='Review duplicates and place the center explicitly.')
 
 
 def candidate_output(kind,label):
     value=output();value['candidates'][0].update(kind=kind,label=label);return value
 
 
+def saved_output(value,version='environment-photo-candidates-1.0'):
+    """A reply as an earlier build saved it: rows without 'near'."""
+    value=deepcopy(value);value['schema_version']=version
+    for row in value['candidates']:row.pop('near')
+    return value
+
+
 def overlay(identity,kind,label,basis='photo_estimate',sha='a'*64):
     return dict(item=dict(id=identity,kind=kind,label=label),evidence=dict(basis=basis,sha256=sha))
+
+
+def box(name,category,x0,y0,x1,y1,height,yaw=0.):
+    """A closed box mesh (scanned furniture or a thin wall), optionally turned about its centre."""
+    cx,cy=(x0+x1)/2,(y0+y1)/2;c,s=math.cos(math.radians(yaw)),math.sin(math.radians(yaw))
+    corner=lambda x,y:[cx+(x-cx)*c-(y-cy)*s,cy+(x-cx)*s+(y-cy)*c]
+    points=[[*corner(x,y),z] for z in (0.,height) for y in (y0,y1) for x in (x0,x1)]
+    faces=[[0,1,3],[0,3,2],[4,6,7],[4,7,5],[0,4,5],[0,5,1],[2,3,7],[2,7,6],[0,2,6],[0,6,4],[1,5,7],[1,7,3]]
+    return dict(id='Env_'+hashlib.sha256(name.encode()).hexdigest()[:20],source_path='/Source/'+name,category=category,label=name,
+        points_m=points,triangles=faces,color_rgb=[.5,.6,.7],translation_m=[0,0,0])
+
+
+def room(*meshes,overlays=()):
+    """A 4 x 3 m rectangular floor with the given scanned meshes (and added boxes)."""
+    value=source();floor=dict(value['meshes'][0],points_m=[[0,0,0],[4,0,0],[4,3,0],[0,3,0]],triangles=[[0,1,2],[0,2,3]])
+    value['meshes']=[floor,*meshes]
+    if overlays:value=dict(value,schema_version='environment-static-1.1',overlays=list(overlays))
+    return value
+
+
+def placed(placement,kind,identity='Added_'+'1'*20):
+    """The overlay the Review form would preview from a suggestion, with the exact same numbers."""
+    target=overlay_kind_for(kind)
+    return dict(item=dict(id=identity,kind=target,label=kind,catalog_version=room_item_catalog_version(target),position_m=placement['position_m'],
+        dimensions_m=placement['dimensions_m'],yaw_deg=placement['yaw_deg'],observation_time_utc=None),uncertainty_m=placement['uncertainty_m'],
+        evidence=dict(basis='photo_estimate',source_name='photo.png',sha256='b'*64,alignment_verified=False))
+
+
+def body(placement):
+    (x,y,_),(w,d,_)=placement['position_m'],placement['dimensions_m'];c,s=math.cos(math.radians(placement['yaw_deg'])),math.sin(math.radians(placement['yaw_deg']))
+    return [[x+a*c-b*s,y+a*s+b*c] for a,b in ((-w/2,-d/2),(w/2,-d/2),(w/2,d/2),(-w/2,d/2))]
+
+
+def outline(mesh):return [[x,y] for x,y in {(round(p[0],9),round(p[1],9)) for p in mesh['points_m']}]
 
 
 class EnvironmentPhotoTests(unittest.TestCase):
@@ -99,7 +144,7 @@ class EnvironmentPhotoTests(unittest.TestCase):
         # A saved 1.1 record may name any library kind; a fresh reply only a proposable one.
         blind=candidate_output('window_blind','Blind');checked_photo_candidates(blind)
         with self.assertRaises(ValueError):checked_photo_candidates(blind,fresh=True)
-        saved=output();saved['schema_version']='environment-photo-candidates-1.0';checked_photo_candidates(saved)
+        saved=saved_output(output());checked_photo_candidates(saved)
         with self.assertRaises(ValueError):checked_photo_candidates(saved,fresh=True)
         # The 1.0 reader keeps its own limits: no content that only 1.1 allows.
         for change in ('sofa','four','id4'):
@@ -301,7 +346,7 @@ class EnvironmentPhotoTests(unittest.TestCase):
             request.inference_scope.bind.assert_not_called()
 
     def test_fresh_reply_must_be_current_version_and_proposable(self):
-        old=output();old['schema_version']='environment-photo-candidates-1.0'
+        old=saved_output(output())
         for value in (candidate_output('window_blind','Blind'),candidate_output('door_leaf','Door'),old):
             with self.subTest(value=value['candidates'][0]['kind']+value['schema_version']),self.workspace(value=value) as (space,app,w,d,p,calls):
                 self.start(space);space.photos._run(space.photos.job,space.photos.token)
@@ -342,14 +387,14 @@ class EnvironmentPhotoTests(unittest.TestCase):
 
     def test_saved_one_point_zero_job_reloads_cold_and_still_previews(self):
         with self.workspace() as (space,app,w,d,p,calls):
-            value=output();value['schema_version']='environment-photo-candidates-1.0'
+            value=saved_output(output())
             job=self.saved_job(space,value);cold=EnvironmentPhotoReview(space);space.photos=cold
             self.assertIsNone(cold.load_error);self.assertEqual(cold.job['status'],'ready')
             c=space.snapshot('owner')['photo_proposal']['candidates'][0]
             self.assertEqual((c['kind'],c['overlay_kind'],c['addable'],c['dimensions_m']),('basket','basket',True,[.35,.3,.4]))
             self.assertIn('preview',space.action(self.preview_body(space,job),'owner'));self.assertEqual(len(calls),1)
         with self.workspace() as (space,app,w,d,p,calls):
-            value=candidate_output('sofa','Sofa');value['schema_version']='environment-photo-candidates-1.0'
+            value=saved_output(candidate_output('sofa','Sofa'))
             self.saved_job(space,value);space.photos=EnvironmentPhotoReview(space)
             state=space.snapshot('owner')['photo_proposal'];self.assertEqual((state['status'],state['candidates']),('failed',[]))
 
@@ -412,3 +457,128 @@ class EnvironmentPhotoTests(unittest.TestCase):
             with patch.object(cold,'_read',wraps=cold._read) as read:
                 for _ in range(2):self.assertEqual(space.snapshot('owner')['photo_proposal']['candidates'][0]['possible_duplicates'],['Gray fabric couch'])
             self.assertEqual([c.args[0] for c in read.call_args_list if 'adoptions' in str(c.args[0])],[receipt])
+
+    def test_suggestion_sits_beside_the_named_scanned_anchor_facing_the_room(self):
+        sofa=box('Sofa0','sofa',1.,2.,2.6,2.8,.85);environment=room(sofa)
+        placement,reason=suggest_position('basket','Sofa0',environment,uncertainty_m=.2)
+        self.assertIsNone(reason)
+        self.assertEqual((placement['anchor'],placement['basis'],placement['alignment_verified'],placement['yaw_deg'],placement['gap_m']),
+            ('Sofa0','photo_near_anchor',False,0.,.05))
+        x,y,z=placement['position_m'];self.assertEqual(z,.2)
+        # Room side of the sofa (toward the open floor), 5 cm from its footprint, never inside it.
+        self.assertTrue(1.<=x<=2.6);self.assertAlmostEqual(y+.15,1.95,places=6)
+        self.assertEqual(convex_overlap_area(body(placement),[[1,2],[2.6,2],[2.6,2.8],[1,2.8]]),0.)
+        # The exact add-time contract accepts the suggested numbers, still as an unaligned photo estimate.
+        added=add_overlay(environment,placed(placement,'basket'))['overlays'][0]
+        self.assertEqual((added['evidence']['basis'],added['evidence']['alignment_verified']),('photo_estimate',False))
+        self.assertEqual(placement['envelope_xy'],[p[:2] for p in footprint(overlay_objects(added)[-1])])
+        # A turned anchor: the box takes its frame.
+        turned=box('Sofa0','sofa',1.,1.,2.6,1.8,.85,yaw=30.);placement,_=suggest_position('chair','Sofa0',room(turned))
+        self.assertEqual(placement['yaw_deg'],30.)
+        self.assertEqual(convex_overlap_area(body(placement),outline(turned)),0.);add_overlay(room(turned),placed(placement,'chair'))
+        self.assertEqual(suggest_position('basket','Sofa0',environment,uncertainty_m=.2),suggest_position('basket','Sofa0',environment,uncertainty_m=.2))
+
+    def test_suggestion_respects_walls_floor_edge_and_other_objects(self):
+        # The side toward the room centre is a 10 cm slot before a partition wall: it must go elsewhere.
+        sofa=box('Sofa0','sofa',.9,1.,1.9,2.,.85);wall=box('Wall1','wall',2.,0.,2.1,3.,2.4)
+        placement,reason=suggest_position('basket','Sofa0',room(sofa,wall),uncertainty_m=.2)
+        self.assertIsNone(reason);self.assertLessEqual(max(p[0] for p in body(placement)),2.)
+        self.assertNotEqual(placement['side'],'+x');self.assertEqual(suggest_position('basket','Sofa0',room(sofa),uncertainty_m=.2)[0]['side'],'+x')
+        # Against the floor edge the whole envelope (+0.10 m for an unknown box) stays on the scanned floor.
+        # In a corner the side nearest the room (+x) sits on the floor edge, so the box goes above the anchor (+y).
+        corner=box('Storage0','storage',0.,0.,.8,.45,.9);placement,_=suggest_position('basket','Storage0',room(corner),uncertainty_m=.2)
+        self.assertEqual((placement['side'],placement['gap_m']),('+y',.05))
+        self.assertTrue(all(0<=x<=4 and 0<=y<=3 for x,y in placement['envelope_xy']));add_overlay(room(corner),placed(placement,'basket'))
+        # Another scanned object or an added envelope beside the anchor is not free floor either.
+        chair=box('Chair0','chair',1.,1.55,1.5,1.95,.9);table=box('Table0','table',1.,2.,2.6,2.8,.75)
+        placement,_=suggest_position('basket','Table0',room(table,chair),uncertainty_m=.2)
+        self.assertEqual(convex_overlap_area(body(placement),outline(chair)),0.)
+        boxed=room(box('Box0','storage',1.8,1.3,2.2,1.7,.5),box('Ring1','storage',1.,.5,3.,1.25,.5),box('Ring2','storage',1.,1.75,3.,2.5,.5),
+            box('Ring3','storage',1.,1.25,1.75,1.75,.5),box('Ring4','storage',2.25,1.25,3.,1.75,.5))
+        self.assertEqual(suggest_position('basket','Box0',boxed,uncertainty_m=.2),(None,'NO_FREE_FLOOR_NEAR_ANCHOR'))
+        lidar=placed(dict(position_m=[1.8,1.6,.2],dimensions_m=[.3,.3,.4],yaw_deg=0.,uncertainty_m=.1),'unknown')
+        lidar['evidence']=dict(basis='lidar_estimate',source_name='route.json',sha256='c'*64,alignment_verified=False)
+        sofa=box('Sofa0','sofa',1.,2.,2.6,2.8,.85);placement,_=suggest_position('basket','Sofa0',room(sofa,overlays=[lidar]),uncertainty_m=.2)
+        self.assertEqual(convex_overlap_area(body(placement),[p[:2] for p in footprint(overlay_objects(lidar)[-1])]),0.)
+
+    def test_suggestions_of_one_photo_do_not_stack_and_an_added_box_can_anchor(self):
+        environment=room(box('Sofa0','sofa',1.,2.,2.6,2.8,.85));first,_=suggest_position('basket','Sofa0',environment,uncertainty_m=.2)
+        second,_=suggest_position('basket','Sofa0',environment,uncertainty_m=.2,taken=[first['envelope_xy']])
+        self.assertNotEqual(first['position_m'],second['position_m']);self.assertEqual(convex_overlap_area(body(second),first['envelope_xy']),0.)
+        bag=placed(dict(position_m=[2.,1.,.175],dimensions_m=[.3,.25,.35],yaw_deg=0.,uncertainty_m=.2),'bag');bag['item']['label']='Laundry bag'
+        placement,reason=suggest_position('basket','Laundry bag',room(overlays=[bag]),uncertainty_m=.2)
+        self.assertIsNone(reason);self.assertEqual(convex_overlap_area(body(placement),[p[:2] for p in footprint(overlay_objects(bag)[-1])]),0.)
+
+    def test_no_suggestion_without_a_found_single_anchor_or_for_coverings(self):
+        environment=room(box('Sofa0','sofa',1.,2.,2.6,2.8,.85),box('Door0','door',3.,2.9,3.9,3.,2.))
+        for kind,near,reason in (('basket','Sofa9','ANCHOR_NOT_FOUND'),('basket',None,'NO_ANCHOR'),('basket','Door0','ANCHOR_NOT_FOUND'),
+                ('floor_covering','Sofa0','COVERING_NOT_SUGGESTED'),('surface_covering','Sofa0','NOT_ADDABLE'),('window_blind','Sofa0','NOT_ADDABLE')):
+            with self.subTest(kind=kind,near=near):self.assertEqual(suggest_position(kind,near,environment),(None,reason))
+        twins=room(box('Chair0','chair',1.,1.,1.4,1.4,.9),box('Chair0','chair',2.,1.,2.4,1.4,.9))
+        twins['meshes'][2]['id']='Env_'+'f'*20;twins['meshes'][2]['source_path']='/Source/Chair0b'
+        self.assertEqual(suggest_position('basket','Chair0',twins),(None,'ANCHOR_AMBIGUOUS'))
+
+    def test_near_is_versioned_and_a_fresh_reply_may_only_name_a_sent_label(self):
+        context=dict(existing_props=[dict(kind='unknown',label='LiDAR unknown #1')],scanned_objects=[dict(category='sofa',label='Sofa0')])
+        for near in (None,'Sofa0','LiDAR unknown #1'):
+            value=output();value['candidates'][0]['near']=near;checked_photo_candidates(value,fresh=True,context=context)
+        for near in ('Sofa1','',7,['Sofa0']):
+            value=output();value['candidates'][0]['near']=near
+            with self.subTest(near=near),self.assertRaises(ValueError):checked_photo_candidates(value,fresh=True,context=context)
+        missing=output();missing['candidates'][0].pop('near')
+        with self.assertRaises(ValueError):checked_photo_candidates(missing)
+        # A saved 1.1 job stays readable with its own row shape, and cannot carry an anchor.
+        saved=saved_output(candidate_output('sofa','Sofa'),'environment-photo-candidates-1.1');checked_photo_candidates(saved)
+        with self.assertRaises(ValueError):checked_photo_candidates(saved,fresh=True)
+        with self.assertRaises(ValueError):checked_photo_candidates(dict(saved,candidates=[dict(saved['candidates'][0],near=None)]))
+
+    def test_saved_one_point_one_job_reloads_cold_without_a_suggestion(self):
+        with self.workspace() as (space,app,w,d,p,calls):
+            job=self.saved_job(space,saved_output(output(),'environment-photo-candidates-1.1'));space.photos=EnvironmentPhotoReview(space)
+            self.assertIsNone(space.photos.load_error);c=space.snapshot('owner')['photo_proposal']['candidates'][0]
+            self.assertEqual((c['near'],c['suggested'],c['suggestion_reason'],c['batch_addable'],c['addable']),(None,None,'NO_ANCHOR',False,True))
+            self.assertIn('preview',space.action(self.preview_body(space,job),'owner'))
+
+    def test_anchor_enum_lists_only_sent_names_and_an_invented_anchor_is_refused(self):
+        invented=output();invented['candidates'][0]['near']='Sofa0'
+        with self.workspace(value=invented) as (space,app,w,d,p,calls):
+            self.start(space);space.photos._run(space.photos.job,space.photos.token)
+            self.assertEqual(space.photos.job['status'],'failed');self.assertIn('PHOTO_CANDIDATE_ANCHOR_INVALID',space.photos.job['error'])
+            schema=calls[0]['response_format']['json_schema']['schema']['properties']['candidates']['items']
+            self.assertEqual(schema['properties']['near']['enum'],['Chair0',None]);self.assertIn('near',schema['required'])
+            system=calls[0]['messages'][0]['content']
+            for phrase in ('stands directly next to in the photo','never guess coordinates or distances','no positions'):self.assertIn(phrase,system)
+            request=json.loads((space.photos.root/space.photos.job['job_id']/'request.json').read_text())
+            self.assertEqual(request['near_labels_sent'],1);self.assertNotIn('points_m',json.dumps(request['prompt']))
+
+    def test_snapshot_suggests_beside_the_anchor_and_the_reviewed_add_accepts_it(self):
+        value=output();value['candidates']=[dict(value['candidates'][0],near='Chair0'),dict(value['candidates'][0],id='Candidate_2',near='Chair0'),
+            dict(value['candidates'][0],id='Candidate_3',kind='office_chair',label='Desk chair',near='Chair0'),
+            dict(value['candidates'][0],id='Candidate_4',kind='floor_covering',label='Rug',near='Chair0'),
+            dict(value['candidates'][0],id='Candidate_5',kind='sofa',label='Sofa',near=None)]
+        with self.workspace(value=value) as (space,app,w,d,p,calls):
+            job=self.complete_job(space);rows={c['id']:c for c in space.snapshot('owner')['photo_proposal']['candidates']}
+            first,second=rows['Candidate_1']['suggested'],rows['Candidate_2']['suggested']
+            self.assertEqual((first['anchor'],first['basis'],first['uncertainty_m'],first['alignment_verified']),('Chair0','photo_near_anchor',.2,False))
+            self.assertEqual(convex_overlap_area(body(second),first['envelope_xy']),0.)
+            self.assertEqual(convex_overlap_area(body(first),[[.5,.5],[.9,.5],[.5,.9]]),0.)
+            # The two baskets take both open sides of the small chair; the third object gets no stacked spot.
+            self.assertEqual([rows[i]['suggestion_reason'] for i in sorted(rows)],[None,None,'NO_FREE_FLOOR_NEAR_ANCHOR','COVERING_NOT_SUGGESTED','NO_ANCHOR'])
+            self.assertEqual([rows[i]['batch_addable'] for i in sorted(rows)],[True,True,False,False,False])
+            body_=self.preview_body(space,job);body_['obstacle'].update(position_xy_m=first['position_m'][:2],yaw_deg=first['yaw_deg'],uncertainty_m=first['uncertainty_m'])
+            preview=space.action(body_,'owner')['preview'];added=preview['operation']['tool_call']['arguments']['environment']['overlays'][0]
+            self.assertEqual((added['item']['position_m'],added['evidence'],added['evidence']['alignment_verified']),(first['position_m'],job['photo'],False))
+            history=app.scene_change_store().apply(preview['operation'],preview['preview_digest']);w._publish_scene_change(app.scene_change_store(),history)
+            rows={c['id']:c for c in space.snapshot('owner')['photo_proposal']['candidates']}
+            # The added box is a sibling from the same photo, not a duplicate: the next candidate still qualifies, beside it.
+            self.assertEqual((rows['Candidate_1']['suggestion_reason'],rows['Candidate_2']['batch_addable']),('ALREADY_ADDED',True))
+            self.assertEqual(rows['Candidate_2']['possible_duplicates'],['Reviewed basket'])
+            self.assertEqual(convex_overlap_area(body(rows['Candidate_2']['suggested']),[p[:2] for p in footprint(overlay_objects(added)[-1])]),0.)
+
+
+    def test_possible_duplicate_gets_a_prefill_for_review_but_never_the_batch(self):
+        value=candidate_output('office_chair','Desk chair');value['candidates'][0]['near']='Chair0'
+        with self.workspace(value=value) as (space,app,w,d,p,calls):
+            self.complete_job(space);c=space.snapshot('owner')['photo_proposal']['candidates'][0]
+            self.assertEqual((c['possible_duplicates'],c['suggested']['anchor'],c['suggested']['uncertainty_m'],c['batch_addable']),(['Chair0'],'Chair0',.05,False))
+            self.assertEqual(convex_overlap_area(body(c['suggested']),[[.5,.5],[.9,.5],[.5,.9]]),0.)
