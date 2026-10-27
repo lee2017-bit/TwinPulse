@@ -121,7 +121,7 @@ async function start() {
   }
   async function makeWindow() {
     await app.whenReady();
-    window = new BrowserWindow({width:1440,height:960,minWidth:800,minHeight:600,title:'TwinPulse',
+    window = new BrowserWindow({width:1440,height:960,minWidth:800,minHeight:600,title:'TwinPulse',icon:path.join(directory,'icon.ico'),
       backgroundColor:'#f6f8fb',show:false,webPreferences:{preload:path.join(directory,'preload.cjs'),
         contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false,
         // Keep observation/session clocks active while occluded. Focus loss
