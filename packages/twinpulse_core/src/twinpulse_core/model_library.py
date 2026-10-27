@@ -36,7 +36,7 @@ def library_models(environment=None):
             dimensions_m=dict(default=list(default), minimum=list(lower), maximum=list(upper),
                               axes=['width_x','depth_y','height_z']),
             variants=list(variants), finishes=list(FINISHES), size_policy='regenerate_parts_fixed_thickness'))
-    home_only = {'clothes_rack','bedding_overhang','clothing_pile','hanging_clothes','window_blind'}
+    home_only = {'clothes_rack','bedding_overhang','clothing_pile','hanging_clothes','window_blind','floor_lamp'}
     for kind in ROOM_ITEM_KINDS:
         envs = ['warehouse'] if kind=='pallet' else ['home'] if kind in home_only else ['home','warehouse']
         family = 'warehouse' if kind=='pallet' else 'home' if kind in home_only else 'common'

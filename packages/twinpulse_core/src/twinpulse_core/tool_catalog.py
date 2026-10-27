@@ -165,7 +165,7 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
             'id': {**identifier, 'maxLength': 42},
             'kind': {'type': 'string', 'enum': list(ROOM_ITEM_KINDS)},
             'label': {'type': 'string', 'minLength': 1, 'maxLength': 120},
-            'catalog_version': {'type': 'string', 'enum': ['room-items-1.0','room-items-1.1','room-items-1.2']},
+            'catalog_version': {'type': 'string', 'enum': ['room-items-1.0','room-items-1.1','room-items-1.2','room-items-1.3']},
             'position_m': position3,
             'dimensions_m': _vector(3, _number(minimum=0., maximum=10., exclusive_minimum=True)),
             'yaw_deg': _number(minimum=-180., maximum=180.),

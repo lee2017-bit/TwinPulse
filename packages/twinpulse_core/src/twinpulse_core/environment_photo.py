@@ -12,7 +12,7 @@ from .warehouse_models import WAREHOUSE_KINDS
 
 VERSION='environment-photo-candidates-1.2'
 MAX_CANDIDATES=6
-# The model-library vocabulary (34 names, equal to photo_layout.KINDS), not only the 10 overlay kinds.
+# The model-library vocabulary (35 names, equal to photo_layout.KINDS), not only the 10 overlay kinds.
 PHOTO_KINDS=(*furniture_kinds(),*ROOM_ITEM_KINDS,*WAREHOUSE_KINDS)
 # Recognised but never added: an overlay is a floor-resting box (z=h/2).
 NOT_ADDABLE=frozenset((*WALL_ITEMS,*CEILING_ITEMS,'surface_covering','door_leaf'))
@@ -33,6 +33,7 @@ CATALOG_SIZES={'floor_fan':(.4,.4,1.1),'basket':(.35,.3,.4),'bag':(.3,.25,.35),'
     'bedding_overhang':(.4,.18,.15),'monitor':(.45,.15,.35),'tabletop_item':(.2,.2,.2),'window_blind':(.8,.08,.8),
     'ceiling_light':(.3,.3,.12),'pallet':(1.2,.8,.12),'floor_covering':(1.2,.8,.02),'surface_covering':(1.,.7,.03),
     'wall_fixture':(.3,.05,.3),'ceiling_fixture':(.4,.4,.05),'wall_storage':(1.2,.35,.6),
+    'floor_lamp':(.4,.4,1.6),  # 2026-10-27: a real floor lamp is ~1.5-1.7 m tall, not the 0.3 m small_equipment cube
     # no library default (warehouse_models.RANGES only): editable placeholders
     'rack':(1.2,.6,2.),'pallet_stack':(1.2,.8,1.2)}
 # Scan categories/prim names (RoomPlan "Bed0" is category unknown) that may already be the recognised kind.

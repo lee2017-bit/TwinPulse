@@ -338,6 +338,10 @@ def display_meshes(kind, size, parameters=None):
         for n in range(3):
             a=2*pi*n/3
             bar('blade_'+str(n),(0,0,.76),(.30*cos(a),0,.76+.15*sin(a)),.024,'white')
+    elif kind == 'floor_lamp':  # 2026-10-27: tall slim lamp (catalog base/pole/shade), not a small cube
+        bar('base_disc',(0,0,.005),(0,0,.04),min(size[:2])*.45,'dark',24)
+        bar('pole',(0,0,.04),(0,0,.84),.012,'metal')
+        bar('shade',(0,0,.84),(0,0,1.),min(size[:2])*.48,'cream',24)
     elif kind == 'pallet':
         for n in range(5):
             m.box('deck_slat_'+str(n),(-.4+n*.2,0,.85),(.16,1,.3),'wood',.004)
