@@ -44,6 +44,27 @@ describe('Imported space next steps',()=>{
     await waitFor(()=>expect(api.environmentAction).toHaveBeenCalledTimes(1));
     expect(api.environmentAction.mock.calls[0][0].action).toBe('build');
   });
+  it('keeps the chat Undo of a committed photo add in view inside the open Import space panel',async()=>{
+    // 2026-10-27 real app (Control view, 787 px tall): the open panel left the chat's Twin update card out of sight, so its Undo could not be clicked.
+    const revision='a'.repeat(64),api=harness(),imported={project_id:'room',status:'imported',job_id:'inspection',error:null,source_name:'Room.usdz',source_sha256:'c'.repeat(64),
+      units_basis:'authored',objects:[{id:'Sofa0',category:'Sofa',label:'Sofa0',position_m:[1,1,0]}],scene_revision:revision};
+    api.runtimeState.mockResolvedValue({status:'ready',message:'ready'} as never);
+    api.conversation.mockResolvedValue({...initial(),mode:'REAL',messages:[{message_id:'m1',role:'user',content:'Twin edits: Auto-apply',status:'completed',attachments:[],created_at:'now',operation_id:null}],
+      scene_edit_transaction:{operation_id:'environment_edit_photo',state:'COMMITTED',engine_acknowledged:true,durable_committed:true,current_frame:true,result_revision:revision,error:null,command_id:'c'}} as never);
+    api.productState.mockResolvedValue({engine_connected:true,operations:[],snapshot:{applied_revision:revision}} as never);
+    api.workflow.mockResolvedValue({phase:'draft_ready',provider:{configured:true,label:'Import'},site_draft:{revision,scene_state_sha256:'b'.repeat(64),input_revision:'input',artifact_id:'artifact',provider_name:'local-environment-import'}} as never);
+    const extended=Object.assign(api,{environment:vi.fn(async()=>imported),environmentAction:vi.fn(async()=>imported),sceneEditTransaction:vi.fn(async()=>null),applyEnvironmentEdit:vi.fn()});
+    const view=render(<ChatWorkspace api={extended as never} advanced={()=>{}}/>);
+    within(await screen.findByRole('status',{name:'Twin update status'})).getByRole('button',{name:'Undo last edit · preview'});
+    fireEvent.click(screen.getByRole('button',{name:'Import space'}));
+    const panel=await screen.findByRole('region',{name:'Import space'});await within(panel).findByText('Space imported · saved environment.');
+    const undo=within(panel).getByRole('button',{name:'Undo last edit · preview in chat'});
+    expect(undo.parentElement!.style.position).toBe('sticky');  // stays at the panel's bottom edge however far the panel is scrolled
+    await waitFor(()=>expect(undo).toHaveProperty('disabled',false));fireEvent.click(undo);
+    await waitFor(()=>expect(api.conversationAction).toHaveBeenCalledTimes(1));
+    expect(api.conversationAction.mock.calls[0][0]).toEqual({action:'message',request_id:expect.any(String),text:'Undo',mode:'change',attachment:null});  // the same chat Undo, no new action
+    expect(extended.environmentAction).not.toHaveBeenCalled();view.unmount();
+  });
 });
 
 describe('Chat-first product workspace',()=> {
