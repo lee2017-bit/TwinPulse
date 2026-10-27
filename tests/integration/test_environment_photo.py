@@ -333,7 +333,7 @@ class EnvironmentPhotoTests(unittest.TestCase):
         for kind,size in SIZES.items():
             if kind not in KINDS:self.assertEqual(CATALOG_SIZES[kind],size)
         # Floor hazards with a precise kind stay addable as a conservative unknown box.
-        for kind in ('floor_covering','hanging_clothes','monitor','tabletop_item','bedding_overhang','clothes_rack','pallet','rack','pallet_stack'):
+        for kind in ('floor_covering','hanging_clothes','monitor','tabletop_item','bedding_overhang','clothes_rack','pallet','rack','pallet_stack','floor_lamp'):
             self.assertEqual(overlay_kind_for(kind),'unknown')
         for kind in ('window_blind','ceiling_light','ceiling_fixture','wall_fixture','wall_storage','surface_covering','door_leaf','robot'):
             self.assertIsNone(overlay_kind_for(kind));self.assertNotIn(kind,PROPOSABLE_KINDS)
@@ -392,6 +392,23 @@ class EnvironmentPhotoTests(unittest.TestCase):
             # The floor envelope still applies: a sofa box 0.4 m from a wall leaves the scanned floor.
             with self.assertRaisesRegex(ValueError,'OUTSIDE_FLOOR'):
                 space.action(body(space,job,kind='unknown',label='Sofa',dimensions_m=[1.6,.8,.85],position_xy_m=[1.3,.4],uncertainty_m=.05),'owner')
+
+    def test_floor_lamp_candidate_adds_as_a_tall_slim_unknown_box(self):
+        # 2026-10-27 live run: a photographed floor lamp only fitted small_equipment and was added as a 0.3 m cube.
+        self.assertIn('floor_lamp',PROPOSABLE_KINDS);self.assertNotIn('floor_lamp',KINDS);self.assertEqual(overlay_kind_for('floor_lamp'),'unknown')
+        w,d,h=CATALOG_SIZES['floor_lamp'];self.assertGreaterEqual(h,1.4);self.assertLessEqual(max(w,d),.5)
+        value=candidate_output('floor_lamp','Floor lamp');value['candidates'][0]['near']='Chair0'
+        with self.workspace(value=value) as (space,app,w_,d_,p,calls):
+            job=self.complete_job(space);c=space.snapshot('owner')['photo_proposal']['candidates'][0]
+            self.assertEqual((c['kind'],c['overlay_kind'],c['addable'],c['dimensions_m'],c['batch_addable']),('floor_lamp','unknown',True,[w,d,h],True))
+            self.assertEqual(c['suggested']['dimensions_m'],[w,d,h])
+            body_=self.preview_body(space,job,request='lamp-preview');body_['obstacle'].update(kind='unknown',label='Floor lamp',dimensions_m=c['dimensions_m'],
+                position_xy_m=c['suggested']['position_m'][:2],yaw_deg=c['suggested']['yaw_deg'],uncertainty_m=c['suggested']['uncertainty_m'])
+            added=space.action(body_,'owner')['preview']['operation']['tool_call']['arguments']['environment']['overlays'][0]
+            self.assertEqual((added['item']['kind'],added['item']['label'],added['item']['dimensions_m'],added['item']['position_m'][2]),('unknown','Floor lamp',[w,d,h],h/2))
+            self.assertAlmostEqual(max(o.transform.position_m[2]+o.shape.dimensions_m[2]/2 for o in overlay_objects(added)),h)
+            receipt=json.loads(next((space.photos.root/job['job_id']/'adoptions').glob('*.json')).read_text())
+            self.assertEqual((receipt['candidate']['kind'],receipt['metric_alignment_verified']),('floor_lamp',False))
 
     def test_wall_or_ceiling_candidate_is_recognised_but_never_added(self):
         with self.workspace() as (space,app,w,d,p,calls):
