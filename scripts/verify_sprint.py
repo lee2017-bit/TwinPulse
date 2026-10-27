@@ -35,6 +35,13 @@ REQUIRED_INTEGRATION_PREFIXES = (
     'test_mission_live_', 'test_bridge_robot_', 'test_manual_controller', 'test_scene_edit_physical_',
     'test_adaptive_robot_', 'test_chat_robot_', 'test_build_sprint_gate', 'test_license_policy',
 )
+# Integration modules that reproduce fixes made on real runs (2026-10-26/27) and must stay green before a build:
+# the route readiness guard, the photo observer (schema 1.1) and the WinError-145 diagnostics flushes.
+REGRESSION_INTEGRATION_MODULES = ('test_declared_route', 'test_environment_photo', 'test_h2b2_site_review', 'test_r3_application')
+# The scripted functional pass (New chat -> USD -> Twin -> Auto-apply -> photo -> robot -> pose -> drag -> survey refusal)
+# needs Isaac, an exclusive App instance and a 180 s one-use browser ticket, so it cannot run unattended inside this gate.
+# It is the mandatory, recorded post-install acceptance step of the build chain, not a gate step.
+FUNCTIONAL_PASS = 'post_install_acceptance'
 FAILURE_LINE = re.compile(r'^(?:ERROR|FAIL): \S+ \(([^)\n]*)\)', re.M)
 
 
@@ -44,8 +51,26 @@ def required_integration_modules(root=ROOT):
                   if p.stem.startswith(REQUIRED_INTEGRATION_PREFIXES))
 
 
-def steps(root=ROOT, python=sys.executable, skip_web=False):
+def regression_integration_modules(root=ROOT):
+    folder = root / 'tests' / 'integration'
+    return ['tests.integration.' + name for name in REGRESSION_INTEGRATION_MODULES if (folder / (name + '.py')).is_file()]
+
+
+def steps(root=ROOT, python=sys.executable, skip_web=False, phase='build'):
+    """phase 'build': the required steps a build needs (about 10 min). phase 'after_build': the baseline-compared
+    suites (core, provider, full integration; about 55 min) that run beside the install and never block a build."""
     unittest = [python, '-B', '-m', 'unittest']
+    if phase == 'after_build':
+        return [
+            dict(name='core', required=False,
+                 argv=unittest + ['discover', '-s', os.path.join('packages', 'twinpulse_core', 'tests'), '-p', 'test_*.py']),
+            dict(name='provider', required=False,
+                 argv=unittest + ['discover', '-s', os.path.join('packages', 'twinpulse_provider', 'tests'), '-p', 'test_*.py']),
+            dict(name='integration', required=False,
+                 argv=unittest + ['discover', '-s', os.path.join('tests', 'integration'), '-p', 'test_*.py']),
+        ]
+    if phase != 'build':
+        raise ValueError('unknown phase %r' % (phase,))
     rows = [
         dict(name='compileall', required=True, argv=[python, '-B', '-m', 'compileall', '-q', 'packages', 'scripts', 'tests']),
         dict(name='robot_safety_test_prefix', required=True,
@@ -53,18 +78,11 @@ def steps(root=ROOT, python=sys.executable, skip_web=False):
         dict(name='robot_safety_test_suffix', required=True,
              argv=unittest + ['discover', '-s', os.path.join('packages', 'twinpulse_robot_safety', 'tests'), '-p', '*_test.py']),
         dict(name='integration_robot_path', required=True, argv=unittest + required_integration_modules(root)),
+        dict(name='integration_regression', required=True, argv=unittest + regression_integration_modules(root)),
     ]
     if not skip_web:
         pnpm = shutil.which('pnpm') or 'pnpm'
         rows.append(dict(name='web', required=True, argv=[pnpm, '--dir', os.path.join('apps', 'twinpulse-web'), 'test']))
-    rows += [
-        dict(name='core', required=False,
-             argv=unittest + ['discover', '-s', os.path.join('packages', 'twinpulse_core', 'tests'), '-p', 'test_*.py']),
-        dict(name='provider', required=False,
-             argv=unittest + ['discover', '-s', os.path.join('packages', 'twinpulse_provider', 'tests'), '-p', 'test_*.py']),
-        dict(name='integration', required=False,
-             argv=unittest + ['discover', '-s', os.path.join('tests', 'integration'), '-p', 'test_*.py']),
-    ]
     return rows
 
 
@@ -152,8 +170,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--skip-web', action='store_true', help='skip the web (vitest) step; the receipt then cannot PASS for a build')
     parser.add_argument('--steps', default='', help='comma-separated step names to run (default all); partial runs never write latest.json')
+    parser.add_argument('--after-build', action='store_true',
+                        help='run the baseline-compared suites (core, provider, full integration) beside the install; writes after-build-latest.json, never latest.json')
     parser.add_argument('--set-baseline', action='store_true',
-                        help='record this full run\'s failing tests of the baseline-compared steps as the new baseline (operator decision; reported on every later receipt)')
+                        help='record this --after-build run\'s failing tests as the new baseline (operator decision; reported on every later receipt)')
     args = parser.parse_args(argv)
     root = ROOT
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -162,10 +182,11 @@ def main(argv=None):
     head = git(root, 'rev-parse', 'HEAD')
     dirty_files = git(root, 'status', '--porcelain', '--untracked-files=no')
     dirty = bool(dirty_files)
-    rows = steps(root, sys.executable, skip_web=args.skip_web)
+    phase = 'after_build' if args.after_build else 'build'
+    rows = steps(root, sys.executable, skip_web=args.skip_web, phase=phase)
     wanted = {s.strip() for s in args.steps.split(',') if s.strip()}
     partial = bool(wanted) or args.skip_web
-    if dirty and not partial:
+    if dirty and not partial and phase == 'build':
         # A full run exists to produce a build receipt, and the build refuses a dirty receipt anyway (gate run 4,
         # 2026-10-27, spent 60 minutes on a tree with one uncommitted file). Refuse within seconds, naming the files.
         raise SystemExit('SPRINT_GATE_DIRTY_TREE: tracked files changed; commit or stash them before a full run '
@@ -184,8 +205,8 @@ def main(argv=None):
         print('== %s exit %s in %ss, %d failing ids' % (row['name'], result['exit_code'], result['seconds'], len(result['failures'])), flush=True)
     baseline = load_baseline(baseline_path)
     if args.set_baseline:
-        if partial:
-            raise SystemExit('--set-baseline needs a full run (no --steps, no --skip-web)')
+        if partial or phase != 'after_build':
+            raise SystemExit('--set-baseline needs a full --after-build run (no --steps, no --skip-web)')
         baseline = dict(schema=BASELINE_SCHEMA, run_id=run_id, head=head,
                         recorded_utc=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                         failures={r['name']: r['failures'] for r in results if not r['required']})
@@ -194,15 +215,17 @@ def main(argv=None):
     receipt = dict(schema=RECEIPT_SCHEMA, run_id=run_id, head=head, dirty=dirty,
                    finished_utc=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                    status=verdict['status'] if not partial else 'PARTIAL',
-                   partial=partial, python=sys.executable,
+                   partial=partial, phase=phase, functional_pass=FUNCTIONAL_PASS, python=sys.executable,
                    baseline_run_id=(baseline or {}).get('run_id'), baseline_head=(baseline or {}).get('head'),
                    verdicts=verdict['verdicts'], new_failures=verdict['new_failures'],
                    baseline_failures=verdict['baseline_failures'], fixed_since_baseline=verdict['fixed_since_baseline'],
                    steps=[{k: v for k, v in r.items() if k != 'text'} for r in results])
     write_json(out_dir / 'receipt.json', receipt)
     if not partial:
-        write_json(root / 'outputs' / 'verify-sprint' / 'latest.json', receipt)
-    print('Sprint gate %s at %s%s -> %s' % (receipt['status'], head[:12], ' (dirty tree)' if dirty else '', out_dir))
+        # The build reads latest.json (required steps only); the after-build run keeps its own receipt beside it.
+        write_json(root / 'outputs' / 'verify-sprint' / ('after-build-latest.json' if phase == 'after_build' else 'latest.json'), receipt)
+    print('Sprint gate %s%s at %s%s -> %s' % (receipt['status'], ' (after-build, non-blocking)' if phase == 'after_build' else '',
+                                             head[:12], ' (dirty tree)' if dirty else '', out_dir))
     for name, ids in verdict['new_failures'].items():
         print('!! NEW failures in %s (%d):' % (name, len(ids)))
         for value in ids:

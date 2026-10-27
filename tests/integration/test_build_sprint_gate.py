@@ -82,6 +82,36 @@ class SprintGateTests(unittest.TestCase):
             self.assertEqual(gate.main([]),0);run.assert_called_once()
             self.assertEqual(json.loads((self.root/'outputs/verify-sprint/latest.json').read_text(encoding='utf-8-sig'))['status'],'PASS')
 
+    def test_after_build_phase_writes_its_own_receipt_and_never_the_build_receipt(self):
+        row=dict(name='integration',argv=['py','-c','pass'],required=False)
+        done=dict(name='integration',required=False,exit_code=1,seconds=0.1,failures=['tests.integration.test_old.T.test_x'],text='')
+        (self.root/'scratch.txt').write_text('untracked only')
+        with patch.object(gate,'ROOT',self.root),patch.object(gate,'steps',return_value=[row]) as steps,patch.object(gate,'run_step',return_value=done), \
+                patch('sys.stdout',new_callable=io.StringIO):
+            # No baseline yet: the old failure counts as new, the after-build receipt says FAIL, and latest.json stays absent.
+            self.assertEqual(gate.main(['--after-build']),1)
+            self.assertEqual(steps.call_args.kwargs['phase'],'after_build')
+            after=json.loads((self.root/'outputs/verify-sprint/after-build-latest.json').read_text(encoding='utf-8-sig'))
+            self.assertEqual((after['phase'],after['status'],after['new_failures']),('after_build','FAIL',{'integration':['tests.integration.test_old.T.test_x']}))
+            self.assertFalse((self.root/'outputs/verify-sprint/latest.json').exists())
+            # Grandfathering is an explicit operator decision and only an after-build run can record it.
+            with self.assertRaises(SystemExit):gate.main(['--set-baseline'])
+            self.assertEqual(gate.main(['--after-build','--set-baseline']),0)
+            self.assertEqual(gate.load_baseline(self.root/'outputs/verify-sprint/baseline.json')['failures'],{'integration':['tests.integration.test_old.T.test_x']})
+            # A dirty tree does not refuse the after-build run (it blocks nothing), while the build phase still refuses it.
+            (self.root/'tracked.txt').write_text('edited')
+            self.assertEqual(gate.main(['--after-build']),0)
+            with self.assertRaises(SystemExit):gate.main([])
+        # The build phase writes latest.json with phase 'build' and names the functional pass as post-install acceptance.
+        git(self.root,'checkout','--','tracked.txt')
+        brow=dict(name='compileall',argv=['py','-c','pass'],required=True);bdone=dict(name='compileall',required=True,exit_code=0,seconds=0.1,failures=[],text='')
+        with patch.object(gate,'ROOT',self.root),patch.object(gate,'steps',return_value=[brow]),patch.object(gate,'run_step',return_value=bdone), \
+                patch('sys.stdout',new_callable=io.StringIO):
+            self.assertEqual(gate.main([]),0)
+        latest=json.loads((self.root/'outputs/verify-sprint/latest.json').read_text(encoding='utf-8-sig'))
+        self.assertEqual((latest['phase'],latest['status'],latest['functional_pass']),('build','PASS','post_install_acceptance'))
+        self.assertEqual(build.sprint_gate_receipt(self.root)['run_id'],latest['run_id'])
+
     def test_build_main_checks_the_gate_before_tool_versions_unless_skipped(self):
         out=self.root/'never-created'
         with patch.object(build,'ROOT',self.root), patch.object(sys,'argv',['build','--output-dir',str(out)]):
@@ -132,12 +162,22 @@ class VerifySprintEvaluationTests(unittest.TestCase):
                      'test_live_bootstrap_roundtrip','test_build_sprint_gate','test_license_policy','test_fleet_diagnostics'):
             self.assertIn('tests.integration.'+name,modules)
         self.assertNotIn('tests.integration.test_a2_project_catalog',modules)
+        # 2026-10-27 (user decision): before a build only the required suites run (about 10 min); core, provider and
+        # the full integration discover are the --after-build phase, compared with the baseline and never blocking.
         rows=gate.steps(ROOT,'py',skip_web=True)
         self.assertEqual([r['name'] for r in rows],['compileall','robot_safety_test_prefix','robot_safety_test_suffix',
-                                                    'integration_robot_path','core','provider','integration'])
-        self.assertEqual([r['required'] for r in rows],[True,True,True,True,False,False,False])
+                                                    'integration_robot_path','integration_regression'])
+        self.assertTrue(all(r['required'] for r in rows))
         self.assertEqual(rows[3]['argv'][:4],['py','-B','-m','unittest']);self.assertEqual(rows[3]['argv'][4:],modules)
-        self.assertEqual(gate.steps(ROOT,'py')[4]['name'],'web')
+        regression=gate.regression_integration_modules(ROOT)
+        self.assertEqual(rows[4]['argv'][4:],regression)
+        for name in ('test_declared_route','test_environment_photo','test_h2b2_site_review','test_r3_application'):
+            self.assertIn('tests.integration.'+name,regression)
+        self.assertEqual(gate.steps(ROOT,'py')[5]['name'],'web')
+        after=gate.steps(ROOT,'py',phase='after_build')
+        self.assertEqual([r['name'] for r in after],['core','provider','integration']);self.assertFalse(any(r['required'] for r in after))
+        with self.assertRaises(ValueError):gate.steps(ROOT,'py',phase='other')
+        self.assertEqual(gate.FUNCTIONAL_PASS,'post_install_acceptance')  # the scripted App pass stays a recorded post-install step
 
     def test_baseline_file_round_trip_and_schema_check(self):
         with tempfile.TemporaryDirectory() as tmp:
