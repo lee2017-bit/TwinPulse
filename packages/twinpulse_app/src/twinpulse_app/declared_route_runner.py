@@ -51,6 +51,9 @@ class DeclaredRouteRunner:
     def __init__(self,fleet,root,*,clock=time.monotonic,sleep=time.sleep,poll_s=.25,on_result=None,on_progress=None):
         self.fleet,self.root,self.clock,self.sleep,self.poll_s=fleet,Path(root),clock,sleep,poll_s
         self.on_result,self.on_progress=on_result,on_progress;self.lock=threading.Lock();self.current=None;self.cancelled=threading.Event()
+        # Counts every cancel; a plan records it and start() refuses a plan that a later Stop
+        # invalidated, so starting a route can never erase a Stop pressed after the plan.
+        self.cancel_lock=threading.Lock();self.cancels=0
         # Any Stop/drive/focus/disconnect through the fleet (UI button, chat, API) cancels the route.
         fleet.declared_route_cancel=self.cancel
         self.used_declarations=set()  # a declared start is valid for one run only
@@ -61,7 +64,8 @@ class DeclaredRouteRunner:
     def active(self):
         with self.lock:return bool(self.current and self.current['state']=='RUNNING')
 
-    def cancel(self):self.cancelled.set()
+    def cancel(self):
+        with self.cancel_lock:self.cancels+=1;self.cancelled.set()
 
     def _row(self,robot_id):
         return next((r for r in self.fleet.snapshot()['robots'] if r['robot_id']==robot_id),None)
@@ -96,6 +100,7 @@ class DeclaredRouteRunner:
         return scene,row,start,basis
 
     def plan(self,robot_id,*,budget_m=None,stops=None):
+        with self.cancel_lock:cancels=self.cancels  # before any readiness read: a Stop during planning also counts
         scene,row,start,basis=self.readiness(robot_id)
         # SIM: other connected SIM robots stand on the same floor and the engine
         # stops for them, so the plan keeps a berth around each (2026-10-26 sim14/15).
@@ -116,7 +121,7 @@ class DeclaredRouteRunner:
             steps=compile_moves(start,plan['polyline'],final_yaw=start[2])
         except (ValueError,KeyError,TypeError) as exc:
             raise BrokerError('declared_route_unplannable',str(exc)[:160],status=409) from None
-        return dict(plan_id=uuid4().hex,robot_id=robot_id,kind=row['kind'],start_basis=basis,
+        return dict(plan_id=uuid4().hex,robot_id=robot_id,kind=row['kind'],start_basis=basis,cancels=cancels,
             scan_keepouts={k:v for k,v in scan_review.items() if k!='discs'},other_sim_robots=len(robot_discs),
             scene_revision=scene['binding'][2],steps=[dict(s,text=move_text(s)) for s in steps],**plan)
 
@@ -133,7 +138,13 @@ class DeclaredRouteRunner:
                 raise BrokerError('declared_route_changed','The robot start pose changed; ask for the route again.',status=409)
             if row.get('control_state') not in {'READY','PAUSED'}:
                 raise BrokerError('declared_route_robot_busy','Stop and prepare the robot before a route.',status=409)
-            self.cancelled.clear()
+            with self.cancel_lock:
+                # 2026-10-27 review: a Stop pressed after the route card (or while Run was queued behind
+                # the chat lock) left the robot PAUSED, which start() accepts, and the clear below erased
+                # it, so step 1 drove a full leg after the Stop. Refuse instead; the user asks again.
+                if plan.get('cancels')!=self.cancels:
+                    raise BrokerError('declared_route_stopped','Stop was pressed after this route was planned, so it will not run. Ask for the route again; nothing moved.',status=409)
+                self.cancelled.clear()
             if row['kind']=='physical':self.used_declarations.add((row.get('display_pose') or {}).get('visual_epoch'))
             self.current=dict(plan=plan,state='RUNNING',completed_steps=0,reason=None,waypoint_scans=[],
                 reached_stops=[],skipped_stops=[],started_at=time.time(),context=context)
