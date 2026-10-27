@@ -27,6 +27,15 @@ const scalar=(value:unknown,limit=120):string=>{
 const record=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const age=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?`${Math.round(value)} ms`:'unknown';
 const profileLimit=64*1024;
+const fixed=(value:number,digits:number)=>Number.isFinite(value)?value.toFixed(digits):'?';
+// Next declared-route start after a COMPLETED physical route: declared start + wheel odometry, never localization.
+function routeStartLabel(estimate:NonNullable<RobotFleetRobot['route_start_estimate']>):string{
+  const pose=`(${fixed(estimate.pose[0],2)}, ${fixed(estimate.pose[1],2)}) m · yaw ${fixed(estimate.pose[2],2)} rad`;
+  const bound=`±${fixed(estimate.uncertainty.position_m*100,0)} cm / ±${fixed(estimate.uncertainty.yaw_rad*180/Math.PI,1)}°`;
+  if(estimate.usable)return `Next route starts at the last route's end estimate ${pose} · ${bound} after ${fixed(estimate.driven_m,1)} m driven (declared start + wheel odometry, not localized). Set position replaces it.`;
+  if(estimate.overridden)return `Last route end estimate ${pose} · ${bound} is replaced by the position set by hand.`;
+  return `Last route end estimate ${pose} · ${bound} is not used for the next route: ${scalar(estimate.reason??estimate.carry_refused??'not carried',200)}. Set position before the next route.`;
+}
 const evidenceName=(value:unknown):string|null=>typeof value==='string'&&/^(?:events-[0-9]{5}\.jsonl|receipt\.json|ssh-stderr\.log)$/.test(value)?value:null;
 type ProfileReview={name:string;document:Record<string,unknown>;json:string};
 const blankFields=(names:string)=>Object.fromEntries(names.split(' ').map(name=>[name,null]));
@@ -444,6 +453,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <p role="status">{physical?'Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.':robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
       {!focusConfirmed&&!selectionPending&&<p role="status">Control focus differs from this drawer. Select this robot again before driving or sending a command.</p>}
       {!adapterAvailable&&<p className="robot-fleet-reason" role="status">Physical control unavailable in this build. This robot is not replaced with a SIM robot.</p>}
+      {physical&&robot.route_start_estimate&&<p className="robot-fleet-route-start" role="status">{routeStartLabel(robot.route_start_estimate)}</p>}
       {state?.last_command?.robot_id===robot.robot_id&&<p className="robot-fleet-command-result" role="status" title={state.last_command.message}>{state.last_command.status} · {physical?'Check robot telemetry':'Check engine telemetry'}</p>}
       </div>
       <div className="robot-fleet-actions">
@@ -532,7 +542,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
             <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
           <button aria-label="Place estimated robot marker" disabled={!available||busy||selectionPending}>Place robot</button>
         </form>
-        <small>The saved marker belongs to the current confirmed Twin revision. Placing it starts no connection, sensor or movement.</small>
+        <small>The saved marker belongs to this Twin's frame: added, moved or removed objects keep it; a new import, another source file or a changed frame needs a new marker. It starts one route; a completed route carries its end estimate to the next. Placing it starts no connection, sensor or movement.</small>
       </details>}
       {state?.last_command?.robot_id===robot.robot_id&&<p>Last request: {state.last_command.status} · {state.last_command.message}</p>}
       {(robot.command||submitted)&&<p>Command request: <code>{robot.command?.request_id??submitted?.request_id}</code> · {robot.command?.text??submitted?.text}</p>}

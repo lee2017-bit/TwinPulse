@@ -125,6 +125,8 @@ class RobotFleet:
         self.pending_requests=set();self.closed=False;self.finalizing=set()
         self.close_done=Event();self.persistence_receipt=None
         self.physical_display_poses={}
+        self.consumed_display_epochs={}  # robot_id -> visual_epoch a route already started from (saved; reload drops that pose)
+        self._frame_lineage=set()  # (declared, current) revision pairs proven to share one Twin frame (immutable)
         self.physical_tracking_anchors={}
         self.navigation_scene=None
         self.task_service=None
@@ -140,8 +142,11 @@ class RobotFleet:
         self.definitions=self.root/'robot-fleet.json'
         if self.definitions.exists():
             value=json.loads(self.definitions.read_text(encoding='utf-8'))
+            consumed=value.get('consumed_display_epochs')
+            self.consumed_display_epochs={k:v for k,v in consumed.items() if _id(k) and _id(v)} if isinstance(consumed,dict) else {}
+            # 2026-10-28: the runner's used set is session-only, so a restart must not restore a start a route already left.
             self.physical_display_poses={key:deepcopy(pose) for key,pose in value.get('physical_display_poses',{}).items()
-                if _id(key) and self._valid_display_pose(pose)}
+                if _id(key) and self._valid_display_pose(pose) and self.consumed_display_epochs.get(key)!=pose['visual_epoch']}
             history=value.get('physical_history',{})
             self.physical_history={key:item for key,item in history.items() if _id(key) and _id(item)} if isinstance(history,dict) else {}
             for item in value.get('robots',[])[:16]:
@@ -171,7 +176,7 @@ class RobotFleet:
     def _persist(self):
         value=dict(schema_version='robot-fleet-definitions-1.0',focused_robot_id=self.focused,
             physical_history=self.physical_history,
-            physical_display_poses=deepcopy(self.physical_display_poses),
+            physical_display_poses=deepcopy(self.physical_display_poses),consumed_display_epochs=dict(self.consumed_display_epochs),
             robots=[dict(robot_id=r['robot_id'],label=r['label'],kind=r['kind'],position_m=r['_spawn'],last_operation_id=r['last_operation_id'],
                          **({'registration':deepcopy(r['_registration'])} if r['_registration'] else {}))
                     for r in self.robots.values() if r['kind']=='sim'])
@@ -358,6 +363,12 @@ class RobotFleet:
                 row['connection_state']='DEGRADED'
             public={k:deepcopy(v) for k,v in row.items() if not k.startswith('_')}
             current=self._twin_context(row,engine)
+            if row['kind']=='physical':
+                pose=row.get('display_pose') or {}
+                public['display_pose_current']=bool(pose) and self.same_twin_frame(pose.get('scene_revision'),(engine.get('snapshot') or {}).get('applied_revision'))
+                view=getattr(self,'declared_route_start_view',None)
+                try:public['route_start_estimate']=view(public) if view else None
+                except Exception:public['route_start_estimate']=None  # display only
             public['current_twin_context']=current
             public['twin_context_relation']=context_relation(public.get('source_twin_context'),current)
             if row['kind']=='sim':
@@ -797,6 +808,38 @@ class RobotFleet:
                 except BrokerError as error:errors.append(error.code)
         if errors:raise BrokerError('fleet_stop_delivery_incomplete','Stop attempted for every owned robot; some deliveries are unconfirmed: '+','.join(errors[:4]),status=409)
 
+    def consume_display_pose(self,identity,visual_epoch):
+        """A declared start is valid for one run. Save that, so an App restart (which empties the route runner's
+        session-only used set) never restores it; the display_pose shape (Stop's Twin anchor) is unchanged."""
+        with self.lock:
+            if (self.physical_display_poses.get(identity) or {}).get('visual_epoch')==visual_epoch:
+                self.consumed_display_epochs[identity]=visual_epoch;self._persist()
+
+    def twin_imported(self):
+        """Import space (adopt) makes a new Twin frame: every declared start and carried route end is void, even
+        for a byte-identical file (its first revision can equal an earlier one). Robots must be placed again."""
+        with self.lock:
+            for identity,pose in self.physical_display_poses.items():self.consumed_display_epochs[identity]=pose['visual_epoch']
+            self.physical_display_poses={};self.physical_tracking_anchors.clear();self.physical_navigation_reviews.clear()
+            for row in self.robots.values():
+                if row['kind']=='physical':row['display_pose']=None
+            self._persist()
+        reset=getattr(self,'declared_route_reset',None)
+        if reset:reset()
+
+    def same_twin_frame(self,declared,revision):
+        """The marker's Twin frame is the current one: the same revision, or one reached only through Twin edits
+        of the same import (object edits keep the frame; a new import, source or units does not). Unknown is False."""
+        if declared==revision:return isinstance(revision,str)
+        query=getattr(self.broker,'navigation_frame_lineage',None)
+        if query is None or not isinstance(declared,str) or not isinstance(revision,str):return False
+        if (declared,revision) in self._frame_lineage:return True
+        same=bool(query(declared,revision))
+        if same:
+            if len(self._frame_lineage)>=256:self._frame_lineage.clear()
+            self._frame_lineage.add((declared,revision))
+        return same
+
     @staticmethod
     def _valid_display_pose(pose):
         return (isinstance(pose,dict) and set(pose)=={'position_m','source','scene_revision','frame_id','aligned','visual_epoch'}
@@ -950,7 +993,7 @@ class RobotFleet:
                 elif row['kind']=='physical' and len(desired)<16 and row.get('display_pose') is not None:
                     pose=row['display_pose']
                     route=getattr(self,'route_overlay',None)
-                    if (pose['scene_revision']==binding[2] and route and route['robot_id']==row['robot_id'] and route.get('pose')
+                    if (self.same_twin_frame(pose['scene_revision'],binding[2]) and route and route['robot_id']==row['robot_id'] and route.get('pose')
                             and route.get('state')=='RUNNING'  # a finished route must not freeze the ghost at its last pose
                             and route['scene_revision']==binding[2] and route['connection_epoch']==row.get('connection_epoch')):
                         # Declared start + wheel odometry from the route runner: display only, never localization.
@@ -959,7 +1002,7 @@ class RobotFleet:
                         desired.append(dict(robot_id=row['robot_id'],label=row['label'],visual_only=True,
                             connection_epoch=pose['visual_epoch'],motion_epoch=pose['visual_epoch'],
                             position_m=list(route['pose']),intent=None,task=None,lidar=False,control_state='UNPREPARED'))
-                    elif pose['scene_revision']==binding[2]:
+                    elif self.same_twin_frame(pose['scene_revision'],binding[2]):
                         position=list(pose['position_m'])
                         tracking=(row.get('field') or {}).get('tracking') or {}
                         key=(row.get('operation_id'),row.get('connection_epoch'),tracking.get('epoch'),pose['visual_epoch'],binding)

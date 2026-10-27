@@ -762,6 +762,20 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(await screen.findByRole('alert')).toHaveProperty('textContent','Display a current confirmed Twin revision before placing the marker.');
     expect(action).toHaveBeenCalledTimes(1);expect(physical.display_pose.position_m).toEqual([.1,.2,.3]);
   });
+  it('tells the operator the next route starts from the carried route end estimate with its bound, or why it does not',()=>{
+    const physical=livePhysical(),estimate={label:'ROUTE_END_ESTIMATE_DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED',from_plan_id:'plan-a',
+      pose:[1.234,.5,1.5708] as [number,number,number],driven_m:4.2,carry_over:true,carry_refused:null,usable:true,overridden:false,reason:null,
+      uncertainty:{position_m:.105,yaw_rad:.042,relative_to:'operator_declared_start',basis:'ENGINEERING_BOUND_NOT_MEASURED_CONFIDENCE'}};
+    const {props,rerender}=setup(physicalState({...physical,route_start_estimate:estimate}));
+    const notices=screen.getByLabelText('Robot control readiness');
+    expect(notices.textContent).toContain("Next route starts at the last route's end estimate (1.23, 0.50) m · yaw 1.57 rad · ±11 cm / ±2.4° after 4.2 m driven");
+    expect(notices.textContent).toContain('declared start + wheel odometry, not localized');
+    rerender(<RobotFleet {...props} state={physicalState({...physical,route_start_estimate:{...estimate,usable:false,reason:'the wheels moved 12 cm / 3.0 deg after the route ended'}})}/>);
+    expect(notices.textContent).toContain('is not used for the next route: the wheels moved 12 cm / 3.0 deg after the route ended. Set position before the next route.');
+    expect(notices.textContent).not.toContain('Next route starts');
+    rerender(<RobotFleet {...props} state={physicalState({...physical,route_start_estimate:{...estimate,usable:false,overridden:true,reason:'the position set by hand is used instead'}})}/>);
+    expect(notices.textContent).toContain('is replaced by the position set by hand.');
+  });
   it('shows live SSH and measured battery independently of preparation, sensor and recording authority',()=>{
     const physical=livePhysical(),{props,rerender}=setup(physicalState(physical));
     expect(fleetRobotFresh(physical)).toBe(true);expect(fleetBatteryLabel(physical)).toBe('11.80 V · measured');

@@ -14,6 +14,7 @@ import hashlib
 import base64
 from io import BytesIO
 import json
+import math
 import os
 import re
 import time
@@ -1105,7 +1106,8 @@ class ConversationService:
             start=plan['start'],start_basis=plan['start_basis'],waypoints=plan['waypoints'],steps=[s['text'] for s in plan['steps']],scope=plan['scope'],
             request_id_text=None,planned_by=plan['planned_by'])
         card=self._card('declared_route_run',('Route planned through your %d chosen stop%s on the Twin from the '%(len(stops),'' if len(stops)==1 else 's') if stops else 'Route planned once on the Twin from the ')
-            +('declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
+            +(self._carried_start_text(plan['start_estimate'],plan['start_margin_m']) if plan.get('start_estimate')
+              else 'declared robot position (not localized)' if plan['kind']=='physical' else 'current SIM pose')
             +': %d stops, %.2f m, about %d finite moves, then back to the start heading.%s Moves are re-aimed from wheel odometry; a proximity stop backs off and re-plans. Each move keeps the normal robot checks; Stop ends the route. Run it?'
             %(len(plan['waypoints']),plan['length_m'],len(plan['steps']),
               (' Start LiDAR: %d unmodeled returns kept out.'%len(plan.get('keepouts') or [])) if (plan.get('scan_keepouts') or {}).get('used') else '')
@@ -1114,6 +1116,12 @@ class ConversationService:
         card['operation_id']=plan['plan_id']
         card['route_preview']=self._route_preview(plan)
         card['question']=card['question']+' · '+plan['planned_by']['label']
+
+    @staticmethod
+    def _carried_start_text(estimate,margin_m):
+        unc=estimate['uncertainty']
+        return ('estimated end pose of the last route (carried start: declared start + wheel odometry, about ±%.0f cm / ±%.1f°, not localized; '
+            'planned with a %.0f cm wider berth; if the robot was moved, Set position first)'%(unc['position_m']*100,math.degrees(unc['yaw_rad']),margin_m*100))
 
     def _route_preview(self,plan):
         """Small top-down map for the card: free floor near the route, stops, path."""
@@ -1175,7 +1183,12 @@ class ConversationService:
                 'Twin shows the path, trace and LiDAR at each stop from the declared start + wheel odometry; not verified localization.%s'
                 %(len(reached),total,(' (skipped stop%s %s after a proximity stop)'%('s' if len(skipped)>1 else '',', '.join(str(s+1) for s in skipped))) if skipped else '',
                   ' and returned to the start' if returned else '',result['completed_steps'],result['reason'],
-                  ' The route record could not be saved to disk (%s); free disk space before the next route.'%result['save_error'] if result.get('save_error') else ''),
+                  ' The route record could not be saved to disk (%s); free disk space before the next route.'%result['save_error'] if result.get('save_error') else '')
+                +((' End pose estimate (%.2f, %.2f) m, yaw %.2f rad, about ±%.0f cm / ±%.1f° after %.1f m driven (declared start + wheel odometry, not localized): %s'
+                   %(*result['end_estimate']['pose'],result['end_estimate']['uncertainty']['position_m']*100,math.degrees(result['end_estimate']['uncertainty']['yaw_rad']),
+                     result['end_estimate']['driven_m'],
+                     'the next route starts there unless you Stop, drive, reconnect or move the robot; Set position overrides it.' if result['end_estimate'].get('carry_over')
+                     else 'not carried to the next route (%s); Set position before the next route.'%result['end_estimate'].get('carry_refused'))) if result.get('end_estimate') else ''),
                 operation_id=plan['plan_id'],status='failed' if result['state']=='FAILED' else 'completed')
             self._event('declared_route_finished',plan_id=plan['plan_id'],state=result['state'],reason=result['reason'],
                 completed_steps=result['completed_steps'],waypoint_scans=result['waypoint_scans'],candidates=result.get('candidates') or [])

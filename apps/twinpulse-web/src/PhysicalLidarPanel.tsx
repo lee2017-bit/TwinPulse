@@ -17,7 +17,8 @@ export function PhysicalLidarPanel({robot,rendered,currentRevision,available=tru
   const age=typeof receipt.current.age==='number'&&Number.isFinite(receipt.current.age)?receipt.current.age+Math.max(0,now-receipt.current.seen):null;
   const connected=available&&fleetRobotFresh(robot);
   const live=connected&&!receipt.current.blocked&&robot.lidar_state==='STREAMING'&&!!scan&&age!==null&&age>=0&&age<1000;
-  const placed=!!robot.display_pose&&robot.display_pose.scene_revision===currentRevision;
+  // Same frame: the shown revision, or (App-checked) a Twin edit of the same import such as an added LiDAR box.
+  const placed=!!robot.display_pose&&(robot.display_pose.scene_revision===currentRevision||!!currentRevision&&robot.display_pose_current===true);
   return <aside className="physical-lidar-panel" aria-label="Physical robot and LiDAR">
     <strong>Physical LiDAR</strong>
     <p role="status">{!connected?'Disconnected · no live scan':robot.lidar_state==='OFF'?'Sensor OFF':
