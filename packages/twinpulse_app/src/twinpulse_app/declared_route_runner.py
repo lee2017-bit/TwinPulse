@@ -406,7 +406,7 @@ class DeclaredRouteRunner:
                     skipped=[g[1] for g in pending if g not in remaining]
                     scene=self.fleet.navigation_scene or {}
                     if not scene or scene['binding'][2]!=plan['scene_revision']:return self._finish('STOPPED','RECOVERY_SCENE_CHANGED')
-                    try:legs=replan_legs(pose,[g[0] for g in remaining],scene.get('geometry') or {},scene.get('observed_cells'),kind=plan['kind'],discs=discs)
+                    try:legs=replan_legs(pose,[g[0] for g in remaining],scene.get('geometry') or {},scene.get('observed_cells'),kind=plan['kind'],discs=discs,home=start[:2])
                     except (ValueError,KeyError,TypeError) as exc:return self._finish('STOPPED','RECOVERY_REPLAN_FAILED:'+str(exc)[:80])
                     goals=goals[:reached]+remaining
                     with self.lock:

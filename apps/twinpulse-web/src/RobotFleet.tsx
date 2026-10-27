@@ -247,14 +247,22 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     setPrepareConfirmed(false);setQualifyConfirmed(false);
     setMarkerX('0');setMarkerY('0');setMarkerYaw('0');setMarkerOpen(false);
   },[api,context,selectedId]);
-  const previousEpoch=useRef<string|null|undefined>(undefined);const [epochNotice,setEpochNotice]=useState<string|null>(null);
+  // Last live (non-null) epoch seen for this selection. null = session ended, undefined = row absent from one
+  // projection: neither is a new session, so neither is announced (the link alert covers an ended session).
+  const lastLiveEpoch=useRef<{robot:string|null;epoch:string}|null>(null);
+  const [epochNotice,setEpochNotice]=useState<{robot:string|null;connection:string;motion:string|null}|null>(null);
   useEffect(()=>{
-    setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);
+    setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false); // unchanged: every epoch change clears the ticks
+    const epoch=robot?.connection_epoch;
+    if(typeof epoch!=='string')return;
     // A new connection epoch clears every supervisor tick; say so instead of silently unticking (PHYS09).
-    if(previousEpoch.current!==undefined&&previousEpoch.current!==robot?.connection_epoch)setEpochNotice('Confirmations reset: new connection epoch');
-    previousEpoch.current=robot?.connection_epoch;
-  },[robot?.connection_epoch]);
-  useEffect(()=>{setEpochNotice(null);previousEpoch.current=undefined;},[selectedId]);
+    const prior=lastLiveEpoch.current;
+    if(prior&&prior.robot===selectedId&&prior.epoch!==epoch)setEpochNotice({robot:selectedId,connection:epoch,motion:robot?.motion_epoch??null});
+    lastLiveEpoch.current={robot:selectedId,epoch};
+  },[robot?.connection_epoch,selectedId]);
+  useEffect(()=>{setEpochNotice(null);},[selectedId]);
+  // Shown only until the next motion generation, so a later Stop/step/Arm-expiry reset is never blamed on a reconnect.
+  const epochNoticeCurrent=!!epochNotice&&!!robot&&epochNotice.robot===selectedId&&epochNotice.connection===robot.connection_epoch&&epochNotice.motion===robot.motion_epoch;
   useEffect(()=>{setOperation(null);},[logOperationId]);
   useEffect(()=>{if(!drawerOpen)release.current();},[drawerOpen]);
   // Layout changes invalidate the current gesture; moving a console never
@@ -458,7 +466,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <h5>Supervised session gate</h5>
         {robot.connection_state!=='CONNECTED'&&<p role="alert" className="robot-fleet-link-status">Link {robot.connection_state} · {robot.link_detail??robot.reason??'no detail reported'} · Disconnect, then Connect to start a new session</p>}
         {robot.control_owner_state==='EXITED_RECONNECT_REQUIRED'&&<p role="alert" className="robot-fleet-link-status">Recording fault on the robot ({robot.recording_failure_reason??'reason not reported'}) · controls closed · Disconnect, then Connect</p>}
-        {epochNotice&&<p role="status">{epochNotice}</p>}
+        {epochNoticeCurrent&&<p role="status">Confirmations reset: new connection epoch</p>}
         <label className="robot-fleet-confirm"><input type="checkbox" checked={prepareConfirmed} onChange={event=>setPrepareConfirmed(event.target.checked)}/>I am present and confirm zero-command controller preparation.</label>
         {(()=>{const why=!available?'Fleet state unavailable; refresh before sending an action.':!adapterAvailable?'Physical adapter missing in this build.':busy||selectionPending?'Another request is in flight.':
           !fresh?`Waiting for a fresh heartbeat · link ${robot.connection_state} · ${robot.link_detail??robot.reason??'no reason reported'}`:

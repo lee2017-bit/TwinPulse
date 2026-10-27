@@ -26,11 +26,11 @@ def task_clearance(kind,*,planning=False):
     return effective+(PLANNING_MARGIN_M if planning else 0.)
 
 
-def route_to(pose, goal, geometry, *, observed_cells=None, discs=(),clearance_m=PLANNING_CLEARANCE_M):
+def route_to(pose, goal, geometry, *, observed_cells=None, discs=(),clearance_m=PLANNING_CLEARANCE_M,home=None):
     a,b,c,d=geometry['bounds']
     boxes=[((x+z)/2,(y+w)/2,(z-x)/2,(w-y)/2,0.) for x,y,z,w in geometry['obstacles']]
     return [list(p) for p in plan_bounded_grid(pose[:2],goal,(a,c,b,d),boxes,discs,
-        resolution=.1,clearance=clearance_m,observed_cells=observed_cells)]
+        resolution=.1,clearance=clearance_m,observed_cells=observed_cells,home=None if home is None else tuple(home[:2]))]
 
 
 def checked_motion_segment(pose,direction,amount,geometry,*,observed_cells=None,discs=(),clearance_m=MIN_CLEARANCE_M):
