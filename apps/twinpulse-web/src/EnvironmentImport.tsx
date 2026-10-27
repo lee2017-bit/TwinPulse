@@ -178,7 +178,10 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
           discardProposal();const next=await act(candidate?{action:'photo_candidate_preview',request_id:crypto.randomUUID(),obstacle,
             candidate_ref:candidate,duplicate_reviewed:true,expected_scene_revision:state.scene_revision!,...(replaceId?{replace_object_id:replaceId}:{})}:
             {action:'add_overlay_preview',request_id:crypto.randomUUID(),obstacle,
-            photo:photo?{name:photo.name,bytes_base64:await fileToBase64(photo)}:null,expected_scene_revision:state.scene_revision!});
+            photo:photo?{name:photo.name,bytes_base64:await fileToBase64(photo)}:null,expected_scene_revision:state.scene_revision!}).catch(e=>{
+            if(!/ENVIRONMENT_OVERLAY_OUTSIDE_FLOOR/.test(describe(e)))throw e;  // the uncertainty footprint (+0.10 m for unknown/entanglement boxes) must stay on the floor
+            const clearance=obstacle.uncertainty_m+(['unknown','clothing_pile','cable_bundle'].includes(obstacle.kind)?.1:0);
+            throw new Error(`Outside the scanned floor. Against a wall: keep the center at least half the depth + ${clearance.toFixed(2)} m away.`);});
           if(current())setPreview(next.preview??null);
         })}
         remove={id=>void perform(async()=>{discardProposal();const next=await act({action:'remove_overlay_preview',request_id:crypto.randomUUID(),object_id:id,expected_scene_revision:state.scene_revision!});if(current())setPreview(next.preview??null);})}/>

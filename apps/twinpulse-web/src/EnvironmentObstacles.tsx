@@ -9,11 +9,14 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
   preview:(obstacle:EnvironmentObstacle,photo:File|null,candidate?:EnvironmentCandidateRef,replaceId?:string)=>void;remove:(id:string)=>void;invalidate:()=>void;
   analyze:(photo:File)=>void;cancelPhoto:(id:string)=>void}){
   const [kind,setKind]=useState('basket'),[label,setLabel]=useState('Basket'),[xy,setXY]=useState(['0','0']);
-  const [size,setSize]=useState(['.35','.3','.4']),[yaw,setYaw]=useState('0'),[margin,setMargin]=useState('.2');
+  const [size,setSize]=useState(['.35','.3','.4']),[yaw,setYaw]=useState('0'),[margin,setMargin]=useState('.2'),[autoMargin,setAutoMargin]=useState(false);
   const [photo,setPhoto]=useState<File|null>(null),[url,setURL]=useState('');
   const [consent,setConsent]=useState(false),[candidate,setCandidate]=useState<EnvironmentCandidateRef|undefined>(),[duplicate,setDuplicate]=useState(false),[photoSHA,setPhotoSHA]=useState('');
   const [replaceId,setReplaceId]=useState('');const unknownBoxes=state.objects.filter(o=>o.id.startsWith('Added_'));  // added estimates only (LiDAR outline, manual, photo), never scanned meshes
   const proposal=state.photo_proposal;
+  const reviewed=proposal?.job_id===candidate?.job_id?proposal?.candidates.find(c=>c.id===candidate?.candidate_id):undefined;
+  // Leaving a review restores the default uncertainty when a furniture Review set .05 and the user did not type a value.
+  const endReview=()=>{setCandidate(undefined);if(autoMargin){setMargin('.2');setAutoMargin(false);}};
   useEffect(()=>{let active=true;setPhotoSHA('');if(photo&&crypto.subtle&&typeof photo.arrayBuffer==='function'){
     void photo.arrayBuffer().then(bytes=>crypto.subtle.digest('SHA-256',bytes)).then(hash=>{if(active)setPhotoSHA(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));}).catch(()=>{});
   }return()=>{active=false;};},[photo]);
@@ -25,7 +28,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
   const bounds=points.length?[Math.min(...points.map(p=>p[0])),Math.min(...points.map(p=>p[1])),Math.max(...points.map(p=>p[0])),Math.max(...points.map(p=>p[1]))]:null;
   const extent=bounds?Math.max(bounds[2]-bounds[0],bounds[3]-bounds[1])+.4:1;
   return <details className="environment-obstacles"><summary>Added obstacles · {added.length}</summary>
-    <p>Keep the scanned room. Add missing floor props using the photo-room catalog.</p>
+    <p>Keep the scanned room. Add missing objects (furniture or floor props) as estimated boxes from the photo-room catalog.</p>
     <small>Photo recognition is optional. Placement and size are estimates, not automatic photo-to-room alignment. These edits do not grant physical driving authority.</small>
     {proposal?.status==='running'&&<p role="status">Analyzing one photo · no automatic retry or Apply. {proposal.model_id??'Configured photo observer'}</p>}
     {proposal?.error&&<p role="alert">Photo analysis: {proposal.error}</p>}
@@ -41,37 +44,42 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
             return <rect key={o.id} x={x-w/2} y={-y-d/2} width={w} height={d} fill={o.added?'#d58d35':'#6e7a83'} opacity=".65"><title>{o.label} · bounds</title></rect>;})}
           {Number.isFinite(Number(xy[0]))&&Number.isFinite(Number(xy[1]))&&<circle cx={Number(xy[0])} cy={-Number(xy[1])} r={extent*.015} fill="#c94f15"/>}
         </svg></>}
-      <label className="library-field">Reference photo (optional)<input aria-label="Obstacle reference photo" type="file" accept=".jpg,.jpeg,.png,.webp" onChange={e=>{setPhoto(e.target.files?.[0]??null);setConsent(false);setCandidate(undefined);setDuplicate(false);invalidate();e.target.value='';}}/></label>
-      {photo&&<p>{photo.name} · stored locally on Preview or Analyze <button type="button" onClick={()=>{setPhoto(null);setConsent(false);setCandidate(undefined);invalidate();}}>Remove reference</button></p>}
+      <label className="library-field">Reference photo (optional)<input aria-label="Obstacle reference photo" type="file" accept=".jpg,.jpeg,.png,.webp" onChange={e=>{setPhoto(e.target.files?.[0]??null);setConsent(false);endReview();setDuplicate(false);invalidate();e.target.value='';}}/></label>
+      {photo&&<p>{photo.name} · stored locally on Preview or Analyze <button type="button" onClick={()=>{setPhoto(null);setConsent(false);endReview();invalidate();}}>Remove reference</button></p>}
       {url&&<div style={{position:'relative',display:'table',maxWidth:'100%'}}><img src={url} alt="Local obstacle reference" style={{display:'block',maxWidth:'100%',maxHeight:240,objectFit:'contain'}}/>
         {proposal?.status==='ready'&&proposal.photo?.sha256===photoSHA&&proposal.candidates.map(c=><span key={c.id} style={{position:'absolute',pointerEvents:'none',boxSizing:'border-box',left:`${c.bbox[0]*100}%`,top:`${c.bbox[1]*100}%`,width:`${(c.bbox[2]-c.bbox[0])*100}%`,height:`${(c.bbox[3]-c.bbox[1])*100}%`,border:'2px solid #eea22c',color:'#fff',fontSize:11,textShadow:'0 1px 2px #000'}}>{c.id}</span>)}</div>}
-      <label className="library-field"><span><input aria-label="Allow photo analysis" type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/> Send this photo to the configured observer · one call, no automatic retry.</span></label>
-      <button type="button" disabled={!photo||!consent||!/\.(jpe?g|png)$/i.test(photo.name)} onClick={()=>{if(photo){setConsent(false);setCandidate(undefined);invalidate();analyze(photo);}}}>Analyze photo</button>
-      <small>Only this photo and existing prop names/types are sent. No USD mesh, robot logs or room coordinates. WebP stays local; use JPEG/PNG for analysis.</small>
+      <label className="library-field"><span><input aria-label="Allow photo analysis" type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/> Send this photo and scanned object names/types to the configured observer · one call, no automatic retry.</span></label>
+      <button type="button" disabled={!photo||!consent||!/\.(jpe?g|png)$/i.test(photo.name)} onClick={()=>{if(photo){setConsent(false);endReview();invalidate();analyze(photo);}}}>Analyze photo</button>
+      <small>Only this photo and the names/types of scanned objects and added estimates are sent. No USD geometry, robot logs or room coordinates. WebP stays local; use JPEG/PNG for analysis.</small>
       {proposal?.status==='ready'&&<section aria-label="Photo obstacle candidates">
         <strong>Photo candidates · {proposal.candidates.length}</strong><p>{proposal.explanation}</p>
         <small>{proposal.photo?.source_name} · {proposal.model_id}. Recognition confidence is not metric accuracy. Check duplicates and place each center explicitly.</small>
         {proposal.candidates.map(c=><div key={c.id} style={{marginBlock:8,borderBottom:'1px solid #ddd',overflowWrap:'anywhere'}}>
           <strong>{c.label}</strong> · {c.kind.replaceAll('_',' ')} · recognition {Math.round(c.confidence*100)}%<small>{c.description}</small>
-          <button type="button" onClick={()=>{setCandidate({job_id:proposal.job_id!,candidate_id:c.id});setKind(c.kind);setLabel(c.label);setSize(c.dimensions_m.map(String));setXY(['','']);setYaw('0');setDuplicate(false);invalidate();}}>Review {c.id}</button>
+          {c.possible_duplicates.length>0&&<small> Possible duplicate of: {c.possible_duplicates.join(', ')}</small>}
+          {!c.addable&&<small> Recognised only: not added to an imported space.</small>}
+          {c.addable&&c.overlay_kind!==c.kind&&<small> Added as a labelled box (unknown kind, catalog size). Against a wall: keep the center at least half the depth + 0.15 m away.</small>}
+          {/* Furniture becomes an unknown box, which already adds a 0.10 m keepout, so its uncertainty starts at the minimum; other kinds keep the current value. */}
+          <button type="button" disabled={!c.addable} onClick={()=>{setCandidate({job_id:proposal.job_id!,candidate_id:c.id});setKind(c.overlay_kind!);setLabel(c.label);setSize(c.dimensions_m.map(String));setXY(['','']);setYaw('0');
+            const furniture=c.overlay_kind==='unknown'&&c.kind!=='unknown';if(furniture||autoMargin)setMargin(furniture?'.05':'.2');setAutoMargin(furniture);setDuplicate(false);invalidate();}}>Review {c.id}</button>
         </div>)}
       </section>}
       {candidate&&<><p role="status">Reviewing {candidate.candidate_id} · set the center on the map. Catalog size is an estimate.</p>
-        {unknownBoxes.length>0&&<label>Replace an added estimate box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
+        {unknownBoxes.length>0&&reviewed&&reviewed.overlay_kind===reviewed.kind&&<label>Replace an added estimate box with this photo object <select aria-label="Replace LiDAR unknown box" value={replaceId} onChange={e=>{const id=e.target.value;setReplaceId(id);
           // The Twin edit contract allows one object per edit, so a replacement is two edits: the box is
           // removed first (preview + Apply), then this photo object is placed at the box's position.
           const box=unknownBoxes.find(o=>o.id===id);if(box?.position_m){setXY([box.position_m[0].toFixed(3),box.position_m[1].toFixed(3)]);setDuplicate(true);remove(id);}invalidate();}}>
           <option value="">Keep as a new object</option>{unknownBoxes.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}</select>
           <small> Two Twin edits: Apply the removal, then Preview obstacle and Apply the photo object at the same spot.</small></label>}
         <label><input aria-label="Candidate duplicate reviewed" type="checkbox" checked={duplicate} onChange={e=>{setDuplicate(e.target.checked);invalidate();}}/> I checked that this object is not already represented.</label>
-        <button type="button" onClick={()=>{setCandidate(undefined);setDuplicate(false);invalidate();}}>Use manual entry</button></>}
-      <label className="library-field">Type<select aria-label="Obstacle type" value={kind} onChange={e=>{const k=e.target.value;setKind(k);setLabel(k.replaceAll('_',' '));setSize(presets[k].map(String));setCandidate(undefined);setDuplicate(false);invalidate();}}>
+        <button type="button" onClick={()=>{endReview();setDuplicate(false);invalidate();}}>Use manual entry</button></>}
+      <label className="library-field">Type<select aria-label="Obstacle type" value={kind} onChange={e=>{const k=e.target.value;setKind(k);setLabel(k.replaceAll('_',' '));setSize(presets[k].map(String));endReview();setDuplicate(false);invalidate();}}>
         {Object.keys(presets).map(k=><option key={k} value={k}>{k.replaceAll('_',' ')}</option>)}</select></label>
       <label className="library-field">Name<input aria-label="Obstacle name" maxLength={120} value={label} onChange={e=>{setLabel(e.target.value);invalidate();}}/></label>
       <div className="library-position">{['X','Y'].map((axis,i)=><label key={axis}>Center {axis} (m)<input aria-label={`Obstacle ${axis}`} type="number" step="any" value={xy[i]} onChange={e=>{setXY(v=>v.map((n,j)=>j===i?e.target.value:n));invalidate();}}/></label>)}</div>
       <div className="library-position">{['width','depth','height'].map((axis,i)=><label key={axis}>{axis} (m)<input aria-label={`Obstacle ${axis}`} type="number" min="0.01" max="3" step="any" value={size[i]} onChange={e=>{setSize(v=>v.map((n,j)=>j===i?e.target.value:n));invalidate();}}/></label>)}</div>
       <div className="library-position"><label>Yaw (deg)<input aria-label="Obstacle yaw" type="number" min="-180" max="180" value={yaw} onChange={e=>{setYaw(e.target.value);invalidate();}}/></label>
-        <label>Uncertainty (m)<input aria-label="Obstacle uncertainty" type="number" min=".05" max="1" step=".05" value={margin} onChange={e=>{setMargin(e.target.value);invalidate();}}/></label></div>
+        <label>Uncertainty (m)<input aria-label="Obstacle uncertainty" type="number" min=".05" max="1" step=".05" value={margin} onChange={e=>{setMargin(e.target.value);setAutoMargin(false);invalidate();}}/></label></div>
       <small>Scene X/Y coordinates; bottom on the floor. Catalog sizes are editable estimates. The whole uncertainty footprint must fit the scanned floor. A hidden keepout blocks SIM paths; LiDAR uses visible shapes only.</small>
       <button type="button" disabled={!valid||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate,undefined)}>Preview obstacle</button>
     </fieldset>

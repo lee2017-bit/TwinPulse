@@ -15,7 +15,7 @@ from uuid import uuid4
 import re
 
 from twinpulse_core import canonical_sha256
-from twinpulse_core.environment_photo import VERSION,CATALOG_SIZES,checked_photo_candidates
+from twinpulse_core.environment_photo import VERSION,CATALOG_SIZES,PHOTO_KINDS,checked_photo_candidates,overlay_kind_for,photo_context,possible_duplicates
 from twinpulse_provider import CancellationToken,GenerationRequest,ImageInput
 from twinpulse_provider.environment_photo import generate_environment_photo
 from .library_asset_store import atomic_json
@@ -28,7 +28,7 @@ class EnvironmentPhotoReview:
     def __init__(self,parent):
         self.parent=parent;self.root=parent.root/'photo-proposals';self.job=None;self.thread=None;self.token=None;self.owner=None
         self.apply_admitted=set();self.revoked=set()
-        self.load_error=None
+        self.load_error=None;self._receipts=None;self._receipt_rows={}
         try:
             pointer=self.root/'latest.json'
             if pointer.exists():
@@ -79,8 +79,35 @@ class EnvironmentPhotoReview:
         if self.job is None:return None
         job=self.job
         if not environment or job['project_id']!=self.parent.workflow._broker.project_id or job['source_sha256']!=environment['source_sha256']:return None
+        receipts=self.adopted_kinds(environment) if job['candidates'] else {}
         return {**deepcopy(job),'candidates':[{**deepcopy(c),'dimensions_m':list(CATALOG_SIZES[c['kind']]),
-            'dimensions_basis':'catalog_estimate','duplicate_check_required':True} for c in job['candidates']]}
+            'dimensions_basis':'catalog_estimate','overlay_kind':overlay_kind_for(c['kind']),'addable':overlay_kind_for(c['kind']) is not None,
+            'possible_duplicates':possible_duplicates(c['kind'],environment,receipts),'duplicate_check_required':True} for c in job['candidates']]}
+
+    def adopted_kinds(self,environment):
+        """{overlay_id: recognised kind} of photo boxes from their adoption receipts. A name hint only, never identity."""
+        photos={o['item']['id']:o['evidence']['sha256'] for o in environment.get('overlays',[]) if o['evidence']['basis']=='photo_estimate'}
+        if not photos:return {}
+        if self._receipts is None:self._receipts=sorted(self.root.glob('*/adoptions/environment_edit_*.json')) if self.root.exists() else []
+        # One preview request names both its receipt (environment_edit_<sha[:32]>) and its box (Added_<sha[:20]>), so only the
+        # receipts of photo boxes in this scene are opened, each once (a receipt never changes); the content still has to match.
+        found={}
+        for path in self._receipts:
+            identity='Added_'+path.stem[17:37]
+            if identity not in photos:continue
+            if path not in self._receipt_rows:self._receipt_rows[path]=self._receipt_row(path)
+            row=self._receipt_rows[path]
+            if row and row[:3]==(self.parent.workflow._broker.project_id,identity,photos[identity]):found[identity]=row[3]
+        return found
+
+    def _receipt_row(self,path):
+        if path.parent.parent.is_symlink() or not re.fullmatch('[a-f0-9]{32}',path.parent.parent.name):return None
+        try:
+            receipt=self._read(path);kind=receipt['candidate']['kind']
+            if kind in PHOTO_KINDS and all(isinstance(receipt[k],str) for k in ('project_id','overlay_id','photo_sha256')):
+                return receipt['project_id'],receipt['overlay_id'],receipt['photo_sha256'],kind
+        except (OSError,ValueError,KeyError,TypeError):pass
+        return None
 
     def action(self,body,owner):
         action=body['action'];parent=self.parent;workflow=parent.workflow
@@ -163,7 +190,7 @@ class EnvironmentPhotoReview:
         path=self.root/job['job_id']/'adoptions'/(value['operation_id']+'.json')
         if path.exists():
             if self._read(path)!=value:raise ValueError('PHOTO_ADOPTION_CHANGED')
-        else:atomic_json(path,value)
+        else:atomic_json(path,value);self._receipts=None
         return dict(job_id=job['job_id'],candidate_id=candidate['id'],receipt_sha256=canonical_sha256(value))
 
     def verify_preview(self,reference,preview,*,claim=False):
@@ -183,7 +210,7 @@ class EnvironmentPhotoReview:
             from twinpulse_provider.generation_store import input_digest
             with parent.workflow._lock,parent.lock:
                 env,_=self._current(job,same_revision=True)
-                existing=[dict(kind=o['item']['kind'],label=o['item']['label']) for o in env.get('overlays',[])]
+                context=photo_context(env,self.adopted_kinds(env))
             raw,mime=self._check_photo(job['photo'])
             trace=parent.workflow._application.diagnostics.begin('environment_photo_candidates',request_id=job['request_id'],operation_id=job['job_id'])
             service=build_configured_stage_service(parent.registry,evidence_root=folder/'provider-evidence')
@@ -192,12 +219,13 @@ class EnvironmentPhotoReview:
             # Candidate lists are short, but a photo model with hidden reasoning spends its budget before the answer
             # (Nemotron 3.5 Super VL hit `length` at 4000 with an empty final, 2026-10-26), so allow room for it.
             provider.stage_output_token_caps['observer']=min(PHOTO_CANDIDATE_OUTPUT_TOKENS,provider.stage_output_token_caps['observer'])
-            request=GenerationRequest(job['request_id'],json.dumps(dict(existing_props=existing),ensure_ascii=False),
+            request=GenerationRequest(job['request_id'],json.dumps(context,ensure_ascii=False),
                 images=(ImageInput(job['photo']['source_name'],mime,raw),),schema_version=VERSION,diagnostics=trace)
             request=replace(request,inference_scope=SinglePhotoScope('photo-proposal:'+uuid4().hex,input_digest(request),
                 canonical_sha256(route),provider.policy.sha256,folder/'usage.ledger.json',job['project_id']))
             atomic_json(folder/'request.json',dict(project_id=job['project_id'],source_revision=job['source_revision'],
                 request_id=job['request_id'],photo_sha256=job['photo']['sha256'],images_sent=1,mesh_sent=False,sensor_logs_sent=False,
+                scene_names_sent=True,scene_names_count=len(context['existing_props'])+len(context['scanned_objects']),
                 prompt=json.loads(request.prompt),model_id=provider.observer_model_id,max_output_tokens=provider.stage_output_token_caps['observer'],
                 max_calls=1,automatic_retry=False,consent=True))
             with parent.workflow._lock,parent.lock:
