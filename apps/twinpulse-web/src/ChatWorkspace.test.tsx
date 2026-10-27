@@ -3,6 +3,8 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// @ts-expect-error The UI tsconfig omits Node types; this read-only CSS fixture runs only in Vitest.
+import { readFileSync } from 'node:fs';
 import { ActionCard, ChatWorkspace, conversationTurns, generationSourceAttachment, generationResumePresentation } from './ChatWorkspace';
 import { App } from './App';
 import { ApiError } from './api';
@@ -47,6 +49,18 @@ describe('Imported space next steps',()=>{
 describe('Chat-first product workspace',()=> {
   beforeEach(()=>vi.stubGlobal('Image',class {src='';naturalWidth=960;naturalHeight=640;async decode(){}}));
   afterEach(()=>vi.unstubAllGlobals());
+  it('opens Control view with the live render at the top and a Twin pane that input focus cannot scroll',async()=>{
+    vi.stubGlobal('innerWidth',1522);
+    const api=harness();const view=render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);
+    const pane=await screen.findByRole('complementary',{name:'Digital Twin'});
+    pane.scrollTop=1150;  // 2026-10-27: a robot-card input focus in the normal view left the render and Stop scrolled away
+    fireEvent.click(screen.getByRole('button',{name:'Control view'}));
+    expect(pane.scrollTop).toBe(0);
+    const css=readFileSync('src/chat.css','utf8');
+    expect(css.match(/\.is-control-view \.chat-twin-panel \{([^}]+)\}/)![1]).toMatch(/overflow:clip;/);  // hidden still scrolls on focus
+    expect(readFileSync('src/styles.css','utf8').match(/\.robot-fleet-drawer>header \{([^}]+)\}/)![1]).toMatch(/position:sticky; top:0;/);  // Stop stays in view
+    view.unmount();
+  });
   it('recovers the first conversation read failure without requiring a restored draft or replaying an action',async()=>{
     const api=harness();api.conversation.mockRejectedValueOnce(new ApiError('state_read_timeout','First local state read exceeded 3 seconds.'));
     const view=render(<ChatWorkspace api={api as unknown as TwinPulseApi} advanced={()=>{}}/>);

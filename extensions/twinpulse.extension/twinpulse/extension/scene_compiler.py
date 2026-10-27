@@ -870,22 +870,33 @@ class SceneCompiler:
             presentation_data.pop("twinpulseCameraSide", None)
             presentation_xform.GetPrim().SetCustomData(presentation_data)
 
+        # A Twin edit rebuild keeps the operator's zoom/pan/top view (viewer camera actions) while the
+        # preset for this room and view is unchanged; another room or view preset starts from the fit again.
+        preset_key = "{:.3f},{:.3f},{:.3f}|{:.3f},{:.3f},{:.3f}|{}".format(*eye, *target, top_view)
+        previous_camera = self._stage.GetPrimAtPath(CAMERA_PATH)
+        keep_viewer_camera = (previous_camera.IsValid()
+                              and previous_camera.GetCustomDataByKey("twinpulseViewerTarget") is not None
+                              and previous_camera.GetCustomDataByKey("twinpulsePresetLookAt") == preset_key)
         camera = UsdGeom.Camera.Define(self._stage, CAMERA_PATH)
         camera.CreateFocalLengthAttr(20.0)
         camera.CreateHorizontalApertureAttr(24.0)
         camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 1000.0))
+        camera.GetPrim().SetCustomDataByKey("twinpulsePresetLookAt", preset_key)
         camera_xform = UsdGeom.Xformable(camera)
-        camera_xform.ClearXformOpOrder()
-        camera_xform.AddTransformOp().Set(
-            Gf.Matrix4d(1.0)
-            .SetLookAt(
-                eye,
-                target,
-                Gf.Vec3d(0.0, 1.0, 0.0) if top_view
-                else Gf.Vec3d(0.0, 0.0, 1.0),
+        if not keep_viewer_camera:
+            for key in ("twinpulseViewerTarget", "twinpulseViewerObliqueOffset"):
+                camera.GetPrim().ClearCustomDataByKey(key)
+            camera_xform.ClearXformOpOrder()
+            camera_xform.AddTransformOp().Set(
+                Gf.Matrix4d(1.0)
+                .SetLookAt(
+                    eye,
+                    target,
+                    Gf.Vec3d(0.0, 1.0, 0.0) if top_view
+                    else Gf.Vec3d(0.0, 0.0, 1.0),
+                )
+                .GetInverse()
             )
-            .GetInverse()
-        )
 
         dome = UsdLux.DomeLight.Define(self._stage, DOME_LIGHT_PATH)
         lighting = presentation["lighting"] if presentation is not None else "balanced"

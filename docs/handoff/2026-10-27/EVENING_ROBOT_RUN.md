@@ -13,6 +13,7 @@
 
 ## 중단 기준(제가 즉시 멈추고 보고)
 코드 가드가 거부(저전압 11.1 V / 재무장 여유 11.2 V·20 %) · 링크 DEGRADED/REJECTED 문구 · 근접 정지 후 RECOVERY 실패 2회 · 사용자가 "멈춰".
+Stop을 누른 뒤에는 경로를 다시 요청합니다("Survey the room and come back"). 예전 경로 카드의 Run route가 거부되는 것은 의도된 동작입니다(PR #9).
 
 ## 증거/산출물
 `%LOCALAPPDATA%\TwinPulse\runtime\devices\local\physical-live\<operation_id>\`(receipt.json complete 확인), 화면 녹화 `outputs/path-b-20261027/rec-physical-*.mp4`, 소크 `outputs/soak/soak-20261026T222210Z.json`.

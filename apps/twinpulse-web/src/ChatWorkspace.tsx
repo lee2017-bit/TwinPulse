@@ -250,7 +250,11 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
   const columns=useRef<HTMLElement|null>(null);
   const splitPointer=useRef<number|null>(null);
   const updateSplit=(share:number)=>setChatShare(Math.min(70,Math.max(25,Math.round(share))));
-  const openControlView=()=>{setControlView(true);setShowTwin(true);setShowProjects(false);setChatShare(33);setLayoutVersion(value=>value+1);};
+  const twinPane=useRef<HTMLElement|null>(null);
+  // Control view starts with the live render at the top: a scroll left over from the normal view (robot-card input focus)
+  // hid the render and Stop for a whole 2026-10-27 recording.
+  const openControlView=()=>{if(twinPane.current)twinPane.current.scrollTop=0;
+    setControlView(true);setShowTwin(true);setShowProjects(false);setChatShare(33);setLayoutVersion(value=>value+1);};
   const [showChecks, setShowChecks] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showKeys,setShowKeys] = useState(false);
@@ -1170,7 +1174,7 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
         onPointerUp={()=>{splitPointer.current=null;}} onPointerCancel={()=>{splitPointer.current=null;}} onLostPointerCapture={()=>{splitPointer.current=null;}}
         onKeyDown={event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();setLayoutVersion(value=>value+1);
           updateSplit(event.key==='Home'?25:event.key==='End'?70:chatShare+(event.key==='ArrowRight'?1:-1)*(event.shiftKey?10:2));}}}/>}
-      {showTwin && <aside id="digital-twin-pane" className="chat-twin-panel" aria-label="Digital Twin">
+      {showTwin && <aside id="digital-twin-pane" ref={twinPane} className="chat-twin-panel" aria-label="Digital Twin">
         <header className="chat-twin-heading"><h2>Digital Twin</h2><small>{engineReady ? 'Isaac connected' : 'Waiting for Isaac'}</small></header>
         {state?.project_id ? <TwinViewport api={api} projectId={state.project_id} generation={job} appConnected={connected}
           controlView={controlView}
