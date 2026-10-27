@@ -14,7 +14,7 @@ const describe=(error:unknown)=>error instanceof Error?error.message:String(erro
 export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,enabled=true,autoApply=false,undoLastEdit}:{
   api:TwinPulseApi;initialFile?:File|null;close:()=>void;onReady:(workflow:WorkflowState)=>void|Promise<void>;
   onSubmitted?:()=>void;enabled?:boolean;autoApply?:boolean;  // Twin-edit auto-apply: a successful preview is applied without the Apply click
-  undoLastEdit?:()=>void;  // the chat's Undo (same message and conditions as its Twin update card), given after a committed edit
+  undoLastEdit?:()=>void;  // the chat's Undo (same message and conditions as its Twin update card), given after a committed edit; the chat closes this panel to show its Apply
 }){
   const [state,setState]=useState<EnvironmentState|null>(null),[error,setError]=useState<string|null>(null);
   const [file,setFile]=useState<File|null>(initialFile??null),[units,setUnits]=useState<''|'m'|'cm'|'mm'>('');
@@ -259,7 +259,8 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
     {pendingEdit&&<p role="status">{checking?'Checking engine ACK, saved revision and current frame…':'Edit result is unconfirmed. Use Check saved import.'} Operation: {pendingEdit.operationId}</p>}
     {transaction&&<p role="status">Edit {transaction.state} · Engine ACK {transaction.engine_acknowledged?'confirmed':'pending'} · Saved {transaction.durable_committed?'yes':'pending'} · Current frame {transaction.current_frame?'confirmed':'pending'}</p>}
     {state?.source_sha256&&<details><summary>Source and scene identity</summary><small>Source SHA: {state.source_sha256}</small><small>Scene revision: {state.scene_revision??'not imported'}</small></details>}
-    {/* Sticky at the panel's bottom edge (-12 covers its padding): with this panel open the chat's Twin update card can be out of sight (2026-10-27 real-app run). */}
-    {undoLastEdit&&<p style={{position:'sticky',bottom:-12,margin:0,padding:'4px 0',background:'#fff'}}><button type="button" disabled={blocked||modelRunning||photoRunning||batching} onClick={undoLastEdit}>Undo last edit · preview in chat</button></p>}
+    {/* Sticky at the panel's bottom edge (-12 covers its padding): with this panel open the chat's Twin update card can be out of sight (2026-10-27 real-app run).
+        Named apart from the panel's own "Undo last edit · preview" above, which previews here instead (2026-10-27 review). */}
+    {undoLastEdit&&<p style={{position:'sticky',bottom:-12,margin:0,padding:'4px 0',background:'#fff'}}><button type="button" disabled={blocked||modelRunning||photoRunning||batching} onClick={undoLastEdit}>Undo last edit in chat · closes this panel</button></p>}
   </section>;
 }

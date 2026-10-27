@@ -35,11 +35,11 @@ describe('local space import',()=>{
   it('offers the chat Undo only with the panel edit controls free and never sends a panel action for it',async()=>{
     const h=harness(withPhoto(sofa)),undo=vi.fn();
     const view=render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo} enabled={false}/>);
-    const button=await screen.findByRole('button',{name:'Undo last edit · preview in chat'});expect(button).toHaveProperty('disabled',true);  // e.g. a goal or repeat task owns the scene
+    const button=await screen.findByRole('button',{name:'Undo last edit in chat · closes this panel'});expect(button).toHaveProperty('disabled',true);  // e.g. a goal or repeat task owns the scene
     view.rerender(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo}/>);
     expect(button).toHaveProperty('disabled',false);fireEvent.click(button);expect(undo).toHaveBeenCalledOnce();expect(h.api.environmentAction).not.toHaveBeenCalled();
     view.rerender(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
-    expect(screen.queryByRole('button',{name:'Undo last edit · preview in chat'})).toBeNull();  // no committed edit, no Undo
+    expect(screen.queryByRole('button',{name:'Undo last edit in chat · closes this panel'})).toBeNull();  // no committed edit, no Undo
   });
   it('requires explicit photo consent and submits exactly one analysis without Apply',async()=>{
     const h=harness(snapshot('imported'));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
@@ -592,6 +592,18 @@ describe('photo candidates placed beside their named neighbour',()=>{
     fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Add 2 suggested objects'}));
     await screen.findByText('Stopped at Candidate_1 after 0 added: Engine NACK',{},{timeout:3000});
     expect(previews(h)).toHaveLength(1);expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1);expect(ready).not.toHaveBeenCalled();
+  });
+  it('keeps the chat Undo locked during an "Add N suggested objects" batch and while a photo analysis runs',async()=>{
+    // The panel's own edit locks also hold the chat Undo it offers after a committed edit (2026-10-27 review).
+    const h=scene(),undo=vi.fn(),view=render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo}/>);await open();
+    expect(disabled('Undo last edit in chat · closes this panel')).toBe(false);
+    fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Add 2 suggested objects'}));
+    await screen.findByText('Candidate_1: 1 of 2 · check the preview, then Apply space edit to continue or Cancel to stop.');
+    expect(disabled('Undo last edit in chat · closes this panel')).toBe(true);view.unmount();
+    const analyzing=withRows([]);analyzing.photo_proposal={status:'running',error:null,job_id:'photo-job',model_id:'fake-observer',explanation:null,candidates:[]};
+    render(<EnvironmentImport api={harness(analyzing).typed} close={vi.fn()} onReady={vi.fn()} undoLastEdit={undo}/>);
+    await screen.findByText('Space imported · saved environment.');expect(disabled('Undo last edit in chat · closes this panel')).toBe(true);
+    expect(undo).not.toHaveBeenCalled();
   });
   it('uses the suggestion the server recomputes after each commit, and stops when it is no longer batch-safe',async()=>{
     const moved=scene({later:committed=>committed?[rows()[0],basket('Candidate_2',3.1,1.7)]:rows()});

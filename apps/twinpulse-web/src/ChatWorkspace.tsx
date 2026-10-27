@@ -923,7 +923,9 @@ export function ChatWorkspace({api, advanced, runtimeExit}: {api: TwinPulseApi; 
           }}>Twin controls</button>}
         </section>
         {/* The import panel lives in the chat column so the Digital Twin keeps its full height on the right (2026-10-26 user review). */}
-        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'} undoLastEdit={undoLastEdit}
+        {/* Its Undo closes it and follows the chat: the chat Undo always waits for Apply on its chat card, which the open panel covers (2026-10-27 real-app run). */}
+        {showEnvironment&&<EnvironmentImport key={contextVersion} api={api} initialFile={environmentSource} close={()=>setShowEnvironment(false)} autoApply={state?.twin_edit_approval==='auto'}
+          undoLastEdit={undoLastEdit&&(()=>{nearBottom.current=true;setShowEnvironment(false);undoLastEdit();})}
           enabled={connected&&!busy&&!delivery&&!activeJob&&!feedbackBusy&&!editLocked&&!sceneOperationBusy&&!goalBusy&&!taskLoop?.worker_active}
           onSubmitted={()=>setEnvironmentSource(null)} onReady={async next=>{setWorkflow(next);setWorkflowObservation({api,context:api.context,fresh:false});setSimulationReview(null);setShowTwin(true);setHome(false);apply(await api.conversation());}}/>}
         <div ref={list} className="chat-message-list" onWheel={event=>{if(event.deltaY<0)nearBottom.current=false;}} onTouchMove={()=>{nearBottom.current=false;}}
