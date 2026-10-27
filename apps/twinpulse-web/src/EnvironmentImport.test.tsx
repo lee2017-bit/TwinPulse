@@ -3,9 +3,9 @@
 // Source: https://github.com/lee2017-bit/TwinPulse
 import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {TwinPulseApi} from './api';
+import {ApiError,TwinPulseApi} from './api';
 import {EnvironmentImport} from './EnvironmentImport';
-import type {EnvironmentAction,EnvironmentState} from './environment-types';
+import type {EnvironmentAction,EnvironmentPhotoCandidate,EnvironmentState} from './environment-types';
 import type {SceneEditPreview,SceneEditTransaction,WorkflowState} from './types';
 
 const snapshot=(status:EnvironmentState['status']='empty'):EnvironmentState=>({project_id:'room',status,job_id:status==='empty'?null:'inspection',error:null,
@@ -21,6 +21,13 @@ function harness(initial=snapshot()){
     applyEnvironmentEdit:vi.fn(async(_operation:Record<string,unknown>,_digest:string)=>editTransaction('DISPATCHED',false)),sceneEditTransaction:vi.fn(async()=>editTransaction())};
   return {api,typed:api as unknown as TwinPulseApi};
 }
+const photoCandidate=(c:Partial<EnvironmentPhotoCandidate>):EnvironmentPhotoCandidate=>({id:'Candidate_1',kind:'basket',label:'Basket candidate',confidence:.8,bbox:[.1,.2,.4,.7],
+  description:'Check the photo.',dimensions_m:[.35,.3,.4],dimensions_basis:'catalog_estimate',overlay_kind:'basket',addable:true,possible_duplicates:[],duplicate_check_required:true,...c});
+const withPhoto=(...candidates:EnvironmentPhotoCandidate[])=>{const state=snapshot('imported');
+  state.objects.push({id:'Added_lidar',category:'unknown',label:'LiDAR unknown #1',position_m:[2,1,.2],dimensions_m:[.3,.3,.4],added:true,
+    uncertainty_m:.1,risk:'unknown',evidence:{basis:'lidar_estimate',source_name:'route.json',sha256:'c'.repeat(64),alignment_verified:false}});
+  state.photo_proposal={status:'ready',error:null,job_id:'photo-job',model_id:'fake-observer',explanation:'Review estimates.',candidates};return state;};
+const sofa=photoCandidate({kind:'sofa',label:'Sofa',dimensions_m:[1.6,.8,.85],overlay_kind:'unknown',possible_duplicates:['Sofa0']});
 function editTransaction(state='COMMITTED',frame=true):SceneEditTransaction{return {operation_id:'move',state,engine_acknowledged:true,durable_committed:state==='COMMITTED',current_frame:frame,result_revision:'scene-b',command_id:'command',error:null};}
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 
@@ -41,7 +48,7 @@ describe('local space import',()=>{
   it('restores photo candidates read-only and requires coordinates plus duplicate review',async()=>{
     const state=snapshot('imported');state.photo_proposal={status:'ready',error:null,job_id:'photo-job',model_id:'fake-observer',explanation:'Review estimates.',
       candidates:[{id:'Candidate_1',kind:'basket',label:'Basket candidate',confidence:.8,bbox:[.1,.2,.4,.7],description:'Check the photo.',
-        dimensions_m:[.35,.3,.4],dimensions_basis:'catalog_estimate',duplicate_check_required:true}]};
+        dimensions_m:[.35,.3,.4],dimensions_basis:'catalog_estimate',overlay_kind:'basket',addable:true,possible_duplicates:[],duplicate_check_required:true}]};
     const h=harness(state);render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
     await screen.findByText('Added obstacles · 0');fireEvent.click(screen.getByText('Added obstacles · 0'));
     expect(h.api.environmentAction).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
@@ -52,6 +59,38 @@ describe('local space import',()=>{
     await waitFor(()=>expect(h.api.environmentAction).toHaveBeenCalledWith(expect.objectContaining({action:'photo_candidate_preview',duplicate_reviewed:true,
       candidate_ref:{job_id:'photo-job',candidate_id:'Candidate_1'},obstacle:expect.objectContaining({position_xy_m:[1.3,1.4]})})));
     expect(h.api.environmentAction).toHaveBeenCalledTimes(1);expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();
+  });
+  it('reviews a furniture candidate as a labelled unknown box with a duplicate hint and no Replace',async()=>{
+    const h=harness(withPhoto(sofa));
+    h.api.environmentAction.mockRejectedValueOnce(new ApiError('invalid_request','ENVIRONMENT_OVERLAY_OUTSIDE_FLOOR'));
+    render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
+    await screen.findByText('Added obstacles · 1');fireEvent.click(screen.getByText('Added obstacles · 1'));
+    expect(screen.getByText(/Possible duplicate of: Sofa0/)).toBeTruthy();expect(screen.getByText(/Added as a labelled box \(unknown kind, catalog size\)/)).toBeTruthy();
+    expect(screen.getByText(/Against a wall: keep the center at least half the depth \+ 0\.15 m away/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
+    expect(screen.getByLabelText('Obstacle type')).toHaveProperty('value','unknown');expect(screen.getByLabelText('Obstacle name')).toHaveProperty('value','Sofa');
+    expect(screen.getByLabelText('Obstacle width')).toHaveProperty('value','1.6');expect(screen.getByLabelText('Obstacle uncertainty')).toHaveProperty('value','.05');
+    expect(screen.queryByLabelText('Replace LiDAR unknown box')).toBeNull();
+    const button=()=>screen.getByRole('button',{name:'Preview obstacle'});expect(button()).toHaveProperty('disabled',true);
+    fireEvent.change(screen.getByLabelText('Obstacle X'),{target:{value:'1.3'}});expect(button()).toHaveProperty('disabled',true);
+    fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'.4'}});expect(button()).toHaveProperty('disabled',true);
+    fireEvent.click(screen.getByLabelText('Candidate duplicate reviewed'));expect(button()).toHaveProperty('disabled',false);
+    fireEvent.click(button());
+    expect(await screen.findByText('Outside the scanned floor. Against a wall: keep the center at least half the depth + 0.15 m away.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'1'}});fireEvent.click(button());
+    await waitFor(()=>expect(h.api.environmentAction).toHaveBeenCalledTimes(2));
+    expect(h.api.environmentAction).toHaveBeenLastCalledWith(expect.objectContaining({action:'photo_candidate_preview',duplicate_reviewed:true,
+      candidate_ref:{job_id:'photo-job',candidate_id:'Candidate_1'},obstacle:{kind:'unknown',label:'Sofa',position_xy_m:[1.3,1],dimensions_m:[1.6,.8,.85],yaw_deg:0,uncertainty_m:.05}}));
+    expect(h.api.environmentAction.mock.calls[1][0]).not.toHaveProperty('replace_object_id');expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();
+  });
+  it('keeps Replace for a same-kind candidate and disables Review for a recognised-only object',async()=>{
+    const blind=photoCandidate({id:'Candidate_2',kind:'window_blind',label:'Blind',dimensions_m:[.8,.08,.8],overlay_kind:null,addable:false});
+    const h=harness(withPhoto(photoCandidate({}),blind));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
+    await screen.findByText('Added obstacles · 1');fireEvent.click(screen.getByText('Added obstacles · 1'));
+    expect(screen.getByRole('button',{name:'Review Candidate_2'})).toHaveProperty('disabled',true);expect(screen.getByText(/Recognised only/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
+    expect(screen.getByLabelText('Obstacle type')).toHaveProperty('value','basket');expect(screen.getByLabelText('Obstacle uncertainty')).toHaveProperty('value','.2');
+    expect(screen.getByLabelText('Replace LiDAR unknown box')).toBeTruthy();expect(h.api.environmentAction).not.toHaveBeenCalled();
   });
   it('previews an estimated catalog obstacle separately without applying or calling a model',async()=>{
     const h=harness(snapshot('imported'));render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);
@@ -420,5 +459,19 @@ describe('Twin-edit auto-apply',()=>{
       else{await act(async()=>{});expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();}
       view.unmount();
     }
+  });
+  it('applies a reviewed furniture photo preview once, only after Review, placement, duplicate check and Preview',async()=>{
+    const preview={operation:{operation_id:'op-photo'},preview_digest:'d',result_revision:'scene-b',affected_before:{},affected_after:{Added_x:{position_m:[1.3,1,.425]}},preserved_object_count:1} as unknown as SceneEditPreview;
+    const state=withPhoto(sofa),h=harness(state);h.api.environmentAction=vi.fn(async(_body:EnvironmentAction)=>({...state,preview}));
+    render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} autoApply/>);
+    await screen.findByText('Added obstacles · 1');fireEvent.click(screen.getByText('Added obstacles · 1'));
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
+    fireEvent.change(screen.getByLabelText('Obstacle X'),{target:{value:'1.3'}});fireEvent.change(screen.getByLabelText('Obstacle Y'),{target:{value:'1'}});
+    fireEvent.click(screen.getByLabelText('Candidate duplicate reviewed'));await act(async()=>{});
+    expect(h.api.environmentAction).not.toHaveBeenCalled();expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button',{name:'Preview obstacle'}));
+    await waitFor(()=>expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1));await act(async()=>{});
+    expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1);expect(h.api.applyEnvironmentEdit).toHaveBeenCalledWith(preview.operation,'d');
+    expect(h.api.environmentAction).toHaveBeenCalledTimes(1);
   });
 });

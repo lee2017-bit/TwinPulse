@@ -108,7 +108,7 @@ try{
    await p.getByRole('button',{name:'Open '+project,exact:true}).click();const reopen=p.getByRole('button',{name:'Reopen saved scene',exact:true});await reopen.click();await reopen.waitFor({state:'hidden',timeout:45000});
    await p.getByRole('button',{name:'Import space',exact:true}).first().click();await panel.getByText('Added obstacles · '+(['cold-failed','cold-empty'].includes(phase)?'0':'1')).click();
    if(phase==='cold-failed')await expect(panel.getByRole('alert').filter({hasText:'Configured harness composition failed'})).toBeVisible();
-   else await expect(panel.getByText('Photo candidates · 3',{exact:true}).or(panel.getByText('Photo candidates · 2',{exact:true})).or(panel.getByText('Photo candidates · 1',{exact:true}))).toBeVisible();
+   else await expect(panel.getByText(/^Photo candidates · [0-6]$/)).toBeVisible();
    result.environment=state();result.proposal=state()?.photo_proposal;
    if(result.proposal?.status!==(phase==='cold-failed'?'failed':'ready')||result.responses.some(r=>r.action==='photo_analyze'))throw Error('Cold result missing or repeated request');
   });

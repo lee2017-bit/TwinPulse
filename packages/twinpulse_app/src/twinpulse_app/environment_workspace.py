@@ -20,6 +20,7 @@ from twinpulse_core.scene_tools import SceneToolCall
 from twinpulse_core.site_tools import SiteToolPlan
 from twinpulse_core.environment_source import checked_environment,move_environment,object_bounds
 from twinpulse_core.environment_overlays import add_overlay,remove_overlay
+from twinpulse_core.environment_photo import overlay_kind_for
 from twinpulse_core.room_item_catalog import room_item_catalog_version
 from twinpulse_core.room_items import room_item_risk
 from twinpulse_provider import CancellationToken
@@ -373,7 +374,10 @@ class EnvironmentWorkspace:
                     if action=='photo_candidate_preview':
                         if body['duplicate_reviewed'] is not True:raise ValueError('PHOTO_DUPLICATE_REVIEW_REQUIRED')
                         job,candidate=self.photos.reference(body['candidate_ref'],original_environment)
-                        if candidate['kind']!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
+                        # Furniture becomes a labelled conservative unknown box; wall/ceiling/door/surface kinds are recognised only.
+                        target=overlay_kind_for(candidate['kind'])
+                        if target is None:raise ValueError('PHOTO_CANDIDATE_NOT_ADDABLE: wall, ceiling, door or surface objects are recognised only')
+                        if target!=item['kind']:raise ValueError('PHOTO_CANDIDATE_KIND_CHANGED')
                         color=photo_crop_color(self.photos._check_photo(job['photo'])[0],candidate.get('bbox'))
                         if color:item['display_color']=color  # display only: the box takes the photo's dominant colour
                         base=original_environment

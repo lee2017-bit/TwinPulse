@@ -23,7 +23,8 @@ export interface EnvironmentState {
   proposal?:EnvironmentProposal;
   photo_proposal?:EnvironmentPhotoProposal|null;
 }
-export interface EnvironmentPhotoCandidate {id:string;kind:string;label:string;confidence:number;bbox:[number,number,number,number];description:string;dimensions_m:[number,number,number];dimensions_basis:'catalog_estimate';duplicate_check_required:true}
+export interface EnvironmentPhotoCandidate {id:string;kind:string;label:string;confidence:number;bbox:[number,number,number,number];description:string;dimensions_m:[number,number,number];dimensions_basis:'catalog_estimate';
+  overlay_kind:string|null;addable:boolean;possible_duplicates:string[];duplicate_check_required:true}
 export interface EnvironmentPhotoProposal {job_id?:string;request_id?:string;status:'running'|'ready'|'failed'|'cancelled';error:string|null;
   model_id?:string|null;photo?:{source_name:string;sha256:string};source_revision?:string;response_sha256?:string|null;
   explanation?:string|null;candidates:EnvironmentPhotoCandidate[]}
