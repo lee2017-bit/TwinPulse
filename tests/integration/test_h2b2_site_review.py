@@ -170,6 +170,7 @@ class H2b2Tests(unittest.IsolatedAsyncioTestCase):
             stored["site_draft"]["site"]["scene"]["source"] = "photo"
             with self.assertRaises(ValueError):
                 ProjectRecord.from_dict(stored)
+            app.diagnostics.flush()  # drain the diagnostics writer before TemporaryDirectory removes the tree (WinError 32/145 on Windows)
 
     async def test_legacy_reader_does_not_gain_v2_authority(self):
         with TemporaryDirectory() as directory:

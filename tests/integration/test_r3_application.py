@@ -129,6 +129,7 @@ class R3ApplicationTests(unittest.IsolatedAsyncioTestCase):
             # Restoring metadata never silently activates old UI input bytes.
             self.assertFalse(restored.snapshot().build_allowed)
             self.assertTrue(restored.snapshot(prepared.revision).build_allowed)
+            service.diagnostics.flush();restored.diagnostics.flush()  # both writers drain before TemporaryDirectory removes the tree (WinError 32/145 on Windows)
 
     async def test_superseded_late_response_never_promotes(self) -> None:
         with TemporaryDirectory(prefix="case-", dir=TEST_TMP) as directory:
@@ -167,6 +168,7 @@ class R3ApplicationTests(unittest.IsolatedAsyncioTestCase):
             service.cancel_generation()
             self.assertEqual(service.last_event.code, "cancelled")
             self.assertEqual(service.record, first.record)
+            service.diagnostics.flush()  # drain the diagnostics writer before TemporaryDirectory removes the tree (WinError 32/145 on Windows)
 
     async def test_fake_port_uses_validated_revision_and_rejects_bad_receipt(self) -> None:
         with TemporaryDirectory(prefix="case-", dir=TEST_TMP) as directory:
