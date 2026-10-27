@@ -118,6 +118,7 @@ class CommandBroker:
         self._lock = RLock()
         self._artifacts: dict[str, RegisteredArtifact] = {}
         self._site_scenes: dict[str, RegisteredSiteScene] = {}
+        self._frame_digests: dict[str, str] = {}  # scene revision -> world-frame digest (immutable content)
         self._engine_session_id: str | None = None
         self._stage_epoch: str | None = None
         self._engine_heartbeat_at = 0.0
@@ -151,6 +152,30 @@ class CommandBroker:
             environment=item.scene.environment if item is not None else None
             return ({k:environment[k] for k in ('source_sha256','units_basis','meters_per_unit')}
                 if environment is not None else None)
+
+    def navigation_frame_lineage(self, declared, current):
+        """True when `current` descends from `declared` only through Twin edits of one import: same input,
+        source file, units, floor offset and fixed structure (walls, floor), so the same world frame.
+        A new import, another source or an unregistered revision is False. Provenance, never authority."""
+        with self._lock:
+            scenes={v.revision:v.scene for v in self._site_scenes.values()}
+        frames=self._frame_digests
+        def frame(revision):
+            scene=scenes.get(revision);environment=scene.environment if scene is not None else None
+            if environment is None:return None
+            if revision not in frames:
+                from twinpulse_core.environment_source import MOVABLE
+                from twinpulse_core.revisions import canonical_sha256
+                frames[revision]=canonical_sha256(dict(input=scene.source_ref,frame=scene.frame_id,
+                    **{k:environment[k] for k in ('source_sha256','source_up_axis','source_meters_per_unit','meters_per_unit','units_basis','floor_offset_m')},
+                    fixed=[[m['id'],m['points_m'],m['translation_m']] for m in environment['meshes'] if m['category'] not in MOVABLE]))
+            return frames[revision]
+        start=frame(current);node=current
+        for _ in range(1024):
+            if start is None or frame(node)!=start:return False
+            if node==declared:return True
+            node=scenes[node].parent_revision
+        return False
 
     def bind_artifact_diagnostics(self, artifact_id, **values):
         from twinpulse_core.execution_diagnostics import metadata

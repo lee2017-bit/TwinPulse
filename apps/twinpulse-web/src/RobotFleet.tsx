@@ -15,7 +15,7 @@ import type {FloorMapState} from './robot-fleet-types';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
 import {LidarPointView} from './LidarPointView';
 import {LidarReviewDialog} from './LidarReviewDialog';
-import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
+import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRecordingNotice,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
 
 const keyDirections:Record<string,FleetDirection>={ArrowUp:'forward',w:'forward',ArrowDown:'backward',s:'backward',ArrowLeft:'left',a:'left',ArrowRight:'right',d:'right'};
 const scalar=(value:unknown,limit=120):string=>{
@@ -27,6 +27,15 @@ const scalar=(value:unknown,limit=120):string=>{
 const record=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const age=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?`${Math.round(value)} ms`:'unknown';
 const profileLimit=64*1024;
+const fixed=(value:number,digits:number)=>Number.isFinite(value)?value.toFixed(digits):'?';
+// Next declared-route start after a COMPLETED physical route: declared start + wheel odometry, never localization.
+function routeStartLabel(estimate:NonNullable<RobotFleetRobot['route_start_estimate']>):string{
+  const pose=`(${fixed(estimate.pose[0],2)}, ${fixed(estimate.pose[1],2)}) m · yaw ${fixed(estimate.pose[2],2)} rad`;
+  const bound=`±${fixed(estimate.uncertainty.position_m*100,0)} cm / ±${fixed(estimate.uncertainty.yaw_rad*180/Math.PI,1)}°`;
+  if(estimate.usable)return `Next route starts at the last route's end estimate ${pose} · ${bound} after ${fixed(estimate.driven_m,1)} m driven (declared start + wheel odometry, not localized). Set position replaces it.`;
+  if(estimate.overridden)return `Last route end estimate ${pose} · ${bound} is replaced by the position set by hand.`;
+  return `Last route end estimate ${pose} · ${bound} is not used for the next route: ${scalar(estimate.reason??estimate.carry_refused??'not carried',200)}. Set position before the next route.`;
+}
 const evidenceName=(value:unknown):string|null=>typeof value==='string'&&/^(?:events-[0-9]{5}\.jsonl|receipt\.json|ssh-stderr\.log)$/.test(value)?value:null;
 type ProfileReview={name:string;document:Record<string,unknown>;json:string};
 const blankFields=(names:string)=>Object.fromEntries(names.split(' ').map(name=>[name,null]));
@@ -247,14 +256,22 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
     setPrepareConfirmed(false);setQualifyConfirmed(false);
     setMarkerX('0');setMarkerY('0');setMarkerYaw('0');setMarkerOpen(false);
   },[api,context,selectedId]);
-  const previousEpoch=useRef<string|null|undefined>(undefined);const [epochNotice,setEpochNotice]=useState<string|null>(null);
+  // Last live (non-null) epoch seen for this selection. null = session ended, undefined = row absent from one
+  // projection: neither is a new session, so neither is announced (the link alert covers an ended session).
+  const lastLiveEpoch=useRef<{robot:string|null;epoch:string}|null>(null);
+  const [epochNotice,setEpochNotice]=useState<{robot:string|null;connection:string;motion:string|null}|null>(null);
   useEffect(()=>{
-    setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false);
+    setPrepareConfirmed(false);setQualifyConfirmed(false);setProfileReviewed(false); // unchanged: every epoch change clears the ticks
+    const epoch=robot?.connection_epoch;
+    if(typeof epoch!=='string')return;
     // A new connection epoch clears every supervisor tick; say so instead of silently unticking (PHYS09).
-    if(previousEpoch.current!==undefined&&previousEpoch.current!==robot?.connection_epoch)setEpochNotice('Confirmations reset: new connection epoch');
-    previousEpoch.current=robot?.connection_epoch;
-  },[robot?.connection_epoch]);
-  useEffect(()=>{setEpochNotice(null);previousEpoch.current=undefined;},[selectedId]);
+    const prior=lastLiveEpoch.current;
+    if(prior&&prior.robot===selectedId&&prior.epoch!==epoch)setEpochNotice({robot:selectedId,connection:epoch,motion:robot?.motion_epoch??null});
+    lastLiveEpoch.current={robot:selectedId,epoch};
+  },[robot?.connection_epoch,selectedId]);
+  useEffect(()=>{setEpochNotice(null);},[selectedId]);
+  // Shown only until the next motion generation, so a later Stop/step/Arm-expiry reset is never blamed on a reconnect.
+  const epochNoticeCurrent=!!epochNotice&&!!robot&&epochNotice.robot===selectedId&&epochNotice.connection===robot.connection_epoch&&epochNotice.motion===robot.motion_epoch;
   useEffect(()=>{setOperation(null);},[logOperationId]);
   useEffect(()=>{if(!drawerOpen)release.current();},[drawerOpen]);
   // Layout changes invalidate the current gesture; moving a console never
@@ -397,7 +414,8 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <span className={`robot-connection-dot ${available&&fleetRobotFresh(row)?'fresh':''}`} aria-label={available&&fleetRobotFresh(row)?'Fresh connected heartbeat':'Connection not current'}/>
         <span><span className="robot-fleet-row-heading"><strong>{row.label}</strong> <small>{row.kind==='sim'?'SIM':'Physical'}</small></span>
           {expanded&&<small>{available?row.connection_state:'STALE'} · {row.control_state} · LiDAR {lidarDiagnosticLabel(row,available)}</small>}
-          <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small></span>
+          <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small>
+          {(notice=>notice&&<small className="robot-fleet-row-recording" role={notice.limit?'alert':'status'}>{notice.text}</small>)(fleetRecordingNotice(row))}</span>
       </button>)}
       {!state?.robots.length&&<p>No fleet robot registered yet. Add a SIM robot below, or register a supported physical robot in Robots.</p>}
     </div>
@@ -438,12 +456,14 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       <div className="robot-fleet-notices" aria-label="Robot control readiness">
       {error&&<p role="alert">{error}</p>}
       {pollError&&<p role="status">{pollError}</p>}
+      {(notice=>notice&&<p className="robot-fleet-recording-notice" role={notice.limit?'alert':'status'}>{notice.text}</p>)(fleetRecordingNotice(robot))}
       {(robot.setup?.maintenance_phase||robot.reason)&&<p className="robot-fleet-reason" role="status" title={robot.setup?.maintenance_phase?`Prepare: ${robot.setup.maintenance_phase} · ${robot.reason??'No motion during build/check'}`:robot.reason??undefined}>
         {robot.setup?.maintenance_phase?({BUILDING_OUTPUT_GUARD:'Building output guard…',CHECKING_OUTPUT_GUARD:'Checking output guard…',CHECKING_OUTPUT_GUARD_LOADER:'Loading output guard…',VERIFYING_OUTPUT_GUARD_READBACK:'Verifying applied settings…'} as Record<string,string>)[robot.setup.maintenance_phase]??robot.setup.maintenance_phase:robot.reason}</p>}
       {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&
         <p role="status">{physical?'Physical movement paused · current motor stop/readback is not established by an Isaac engine ACK.':robot.motion_epoch!==null&&robot.applied_motion_epoch===robot.motion_epoch?'Engine stop confirmed':'Stop requested · waiting for engine confirmation'}</p>}
       {!focusConfirmed&&!selectionPending&&<p role="status">Control focus differs from this drawer. Select this robot again before driving or sending a command.</p>}
       {!adapterAvailable&&<p className="robot-fleet-reason" role="status">Physical control unavailable in this build. This robot is not replaced with a SIM robot.</p>}
+      {physical&&robot.route_start_estimate&&<p className="robot-fleet-route-start" role="status">{routeStartLabel(robot.route_start_estimate)}</p>}
       {state?.last_command?.robot_id===robot.robot_id&&<p className="robot-fleet-command-result" role="status" title={state.last_command.message}>{state.last_command.status} · {physical?'Check robot telemetry':'Check engine telemetry'}</p>}
       </div>
       <div className="robot-fleet-actions">
@@ -458,7 +478,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <h5>Supervised session gate</h5>
         {robot.connection_state!=='CONNECTED'&&<p role="alert" className="robot-fleet-link-status">Link {robot.connection_state} · {robot.link_detail??robot.reason??'no detail reported'} · Disconnect, then Connect to start a new session</p>}
         {robot.control_owner_state==='EXITED_RECONNECT_REQUIRED'&&<p role="alert" className="robot-fleet-link-status">Recording fault on the robot ({robot.recording_failure_reason??'reason not reported'}) · controls closed · Disconnect, then Connect</p>}
-        {epochNotice&&<p role="status">{epochNotice}</p>}
+        {epochNoticeCurrent&&<p role="status">Confirmations reset: new connection epoch</p>}
         <label className="robot-fleet-confirm"><input type="checkbox" checked={prepareConfirmed} onChange={event=>setPrepareConfirmed(event.target.checked)}/>I am present and confirm zero-command controller preparation.</label>
         {(()=>{const why=!available?'Fleet state unavailable; refresh before sending an action.':!adapterAvailable?'Physical adapter missing in this build.':busy||selectionPending?'Another request is in flight.':
           !fresh?`Waiting for a fresh heartbeat · link ${robot.connection_state} · ${robot.link_detail??robot.reason??'no reason reported'}`:
@@ -532,7 +552,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
             <label key={name}>{name}<input type="number" step="any" value={value} onChange={event=>set(event.target.value)} required/></label>)}</div>
           <button aria-label="Place estimated robot marker" disabled={!available||busy||selectionPending}>Place robot</button>
         </form>
-        <small>The saved marker belongs to the current confirmed Twin revision. Placing it starts no connection, sensor or movement.</small>
+        <small>The saved marker belongs to this Twin's frame: added, moved or removed objects keep it; a new import, another source file or a changed frame needs a new marker. It starts one route; a completed route carries its end estimate to the next. Placing it starts no connection, sensor or movement.</small>
       </details>}
       {state?.last_command?.robot_id===robot.robot_id&&<p>Last request: {state.last_command.status} · {state.last_command.message}</p>}
       {(robot.command||submitted)&&<p>Command request: <code>{robot.command?.request_id??submitted?.request_id}</code> · {robot.command?.text??submitted?.text}</p>}

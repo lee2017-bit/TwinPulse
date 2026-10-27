@@ -253,6 +253,22 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(fleetBatteryLabel({...r,battery:{...r.battery,age_ms:40000}})).toContain('stale');
     expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_protection:'UNKNOWN',reserve_state:'AT_OR_BELOW_RESERVE'}})).toContain('20% or below');
   });
+  it('warns on the robot card from 75% of the recording budget with minutes left and names the limit when reached',()=>{
+    const budget={state:'NEAR_LIMIT' as const,source:'pc' as const,used_bytes:640e6,limit_bytes:805306368,fraction:.795,warning_fraction:.75,rate_bytes_per_s:150000,minutes_left:18.4};
+    const near={...robot(),kind:'physical' as const,live_heartbeat:true,recording_budget:budget};
+    const {container,props,rerender}=setup(fleet([near]));
+    const warning='Recording 79% of session limit · about 18 min left · reconnect to start a new recording';
+    expect(container.querySelector('.robot-fleet-row .robot-fleet-row-recording')?.textContent).toBe(warning);
+    expect(container.querySelector('.robot-fleet-row-recording')?.getAttribute('role')).toBe('status');
+    expect(container.querySelector('.robot-fleet-drawer .robot-fleet-recording-notice')?.textContent).toBe(warning);
+    rerender(<RobotFleet {...props} state={fleet([{...near,recording_budget:{...budget,fraction:.5,state:'OK'}}])}/>);
+    expect(container.querySelector('.robot-fleet-row-recording')).toBeNull();
+    rerender(<RobotFleet {...props} state={fleet([{...near,connection_state:'DEGRADED',live_heartbeat:false,link_detail:'Recording limit reached - reconnect to continue',
+      recording_budget:{...budget,state:'LIMIT_REACHED',fraction:1,minutes_left:null}}])}/>);
+    const limit=container.querySelector('.robot-fleet-row .robot-fleet-row-recording');
+    expect([limit?.textContent,limit?.getAttribute('role')]).toEqual(['Recording limit reached - reconnect to continue','alert']);
+    expect(screen.getByText(/^Link DEGRADED · Recording limit reached - reconnect to continue/)).toBeTruthy();
+  });
   it('renders actual physical voltage-only battery replies without inventing a percentage or crashing',()=>{
     const physical={...robot(),kind:'physical' as const,live_heartbeat:true,
       battery:{voltage_v:12.35,source:'measured',age_ms:50} as RobotFleetRobot['battery']};
@@ -761,6 +777,20 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Place estimated robot marker'}));
     expect(await screen.findByRole('alert')).toHaveProperty('textContent','Display a current confirmed Twin revision before placing the marker.');
     expect(action).toHaveBeenCalledTimes(1);expect(physical.display_pose.position_m).toEqual([.1,.2,.3]);
+  });
+  it('tells the operator the next route starts from the carried route end estimate with its bound, or why it does not',()=>{
+    const physical=livePhysical(),estimate={label:'ROUTE_END_ESTIMATE_DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED',from_plan_id:'plan-a',
+      pose:[1.234,.5,1.5708] as [number,number,number],driven_m:4.2,carry_over:true,carry_refused:null,usable:true,overridden:false,reason:null,
+      uncertainty:{position_m:.105,yaw_rad:.042,relative_to:'operator_declared_start',basis:'ENGINEERING_BOUND_NOT_MEASURED_CONFIDENCE'}};
+    const {props,rerender}=setup(physicalState({...physical,route_start_estimate:estimate}));
+    const notices=screen.getByLabelText('Robot control readiness');
+    expect(notices.textContent).toContain("Next route starts at the last route's end estimate (1.23, 0.50) m · yaw 1.57 rad · ±11 cm / ±2.4° after 4.2 m driven");
+    expect(notices.textContent).toContain('declared start + wheel odometry, not localized');
+    rerender(<RobotFleet {...props} state={physicalState({...physical,route_start_estimate:{...estimate,usable:false,reason:'the wheels moved 12 cm / 3.0 deg after the route ended'}})}/>);
+    expect(notices.textContent).toContain('is not used for the next route: the wheels moved 12 cm / 3.0 deg after the route ended. Set position before the next route.');
+    expect(notices.textContent).not.toContain('Next route starts');
+    rerender(<RobotFleet {...props} state={physicalState({...physical,route_start_estimate:{...estimate,usable:false,overridden:true,reason:'the position set by hand is used instead'}})}/>);
+    expect(notices.textContent).toContain('is replaced by the position set by hand.');
   });
   it('shows live SSH and measured battery independently of preparation, sensor and recording authority',()=>{
     const physical=livePhysical(),{props,rerender}=setup(physicalState(physical));

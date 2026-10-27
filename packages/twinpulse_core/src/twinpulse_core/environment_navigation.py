@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Conservative cells from actual floor triangles and robot-height geometry."""
 import math
+from .bounded_grid_plan import SYNTHETIC_KEEPOUT_CELL
 
 
 def clip(poly,axis,value,positive):
@@ -48,7 +49,7 @@ NAVIGATION_CELL_BUDGET=40000
 
 
 def navigation_cells(meshes,resolution=.1,*,keepout_polygons=()):
-    floor=[];obstacles=[];targets=[]
+    floor=[];obstacles=[];synthetic=[];targets=[]
     for mesh in meshes:
         points=mesh['points_m'];delta=mesh.get('translation_m',[0,0,0])
         points=[[p[i]+delta[i] for i in range(3)] for p in points]
@@ -62,7 +63,7 @@ def navigation_cells(meshes,resolution=.1,*,keepout_polygons=()):
             elif mesh.get('synthetic_keepout',False):
                 # Fill the complete conservative box footprint, including its
                 # interior, even when top/bottom lie outside the height slice.
-                obstacles.append([[p[0],p[1],.175] for p in poly])
+                synthetic.append([[p[0],p[1],.175] for p in poly])
             else:
                 poly=clip(clip(poly,2,.005,True),2,.30,False)
                 if poly:obstacles.append(poly)
@@ -97,8 +98,14 @@ def navigation_cells(meshes,resolution=.1,*,keepout_polygons=()):
             coverage[key]=coverage.get(key,0.)+area(part)
     for poly in obstacles:
         for key,part in each_cell(poly):blocked.add(key)  # Includes vertical zero-area walls.
-    free={key for key,value in coverage.items() if abs(value-resolution**2)<1e-8 and key not in blocked and key not in ambiguous}
-    cells=[[(ix+.5)*resolution,(iy+.5)*resolution,'free' if (ix,iy) in free else 'occupied',0,0,0,0]
+    envelope=set()
+    for poly in synthetic:
+        for key,part in each_cell(poly):envelope.add(key)
+    full={key for key,value in coverage.items() if abs(value-resolution**2)<1e-8 and key not in ambiguous}
+    free=full-blocked-envelope
+    # Occupied only by a synthetic envelope on full floor: tagged, still occupied.
+    tagged=(full&envelope)-blocked
+    cells=[[(ix+.5)*resolution,(iy+.5)*resolution,'free' if (ix,iy) in free else 'occupied',0,0,0,SYNTHETIC_KEEPOUT_CELL if (ix,iy) in tagged else 0]
         for iy in range(iy0,iy1) for ix in range(ix0,ix1)]
     # Merge adjacent occupied runs into rectangles for the existing manual guard.
     rectangles=[];active={}

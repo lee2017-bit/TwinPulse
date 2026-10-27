@@ -798,6 +798,31 @@ class LidarMatchThresholdTest(unittest.TestCase):
             self.assertEqual([o['candidate'] for o in calls[0]['obstacles']],[1])
             with self.assertRaises(BrokerError):cls._add_route_obstacles(self_,'o',plan_id,candidates,exclude=[0,1])
 
+    def test_a_route_box_leaves_a_way_round_it_in_a_room_wide_corridor(self):
+        """2026-10-27 build 59 physical run: the auto-applied box got 0.30 m + 0.10 m (unknown kind), a 0.4 m band that with the 0.35 m
+        route berth closed both sides of the real box, so the re-planned route after the LiDAR update had no path."""
+        import json,tempfile
+        from types import SimpleNamespace
+        from twinpulse_app.api import LocalApiServer as cls
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through
+        calls=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'declared-routes').mkdir();plan_id='b'*32
+            (root/'declared-routes'/(plan_id+'.json')).write_text(json.dumps(dict(candidates=[])),encoding='utf-8')
+            workspace=SimpleNamespace(action=lambda body,owner:calls.append(body) or dict(preview=dict(operation=dict(operation_id='op'),preview_digest='d'),lidar_added=1),
+                pinned_environment_operation=lambda *a,**k:('op','d'))
+            self_=SimpleNamespace(robot_fleet=SimpleNamespace(root=root),_environment_workspace=lambda:workspace,
+                _workflow=lambda:SimpleNamespace(scene_edit_transaction=SimpleNamespace(start=lambda *a:None)))
+            cls._add_route_obstacles(self_,'o',plan_id,[dict(position_xy_m=[2.,0.],radius_m=.15,extent_m=[.3,.3],yaw_deg=0.,returns=6)])
+        box=calls[0]['obstacles'][0]
+        def plan(uncertainty):
+            geometry,cells=lidar_twin([0,-1.2,4.,1.2],[('b'*20,box['position_xy_m'],box['dimensions_m'][:2],box['yaw_deg'],uncertainty)])
+            return plan_through([.5,0.,0.],[[3.5,0.]],geometry,cells,kind='physical')
+        route=plan(box['uncertainty_m'])
+        self.assertEqual(route['polyline'][-1],[.5,0.])
+        with self.assertRaisesRegex(NoBoundedPath,'NO_PATH'):plan(.3)  # the build 59 band in the same 2.4 m wide room
+
     def test_lidar_outline_boxes_carry_the_dark_display_colour(self):
         import inspect
         from twinpulse_app import environment_workspace as ws
@@ -1076,3 +1101,123 @@ class SimLoopStageContractTest(unittest.TestCase):
         # 6 a grid that never comes back gives up honestly after the wait instead of pending forever
         s._auto_replan_ready=__import__('time').monotonic()-1000;s.robot_fleet.navigation_scene=None;s._sync_feedback('o')
         self.assertIsNone(s._auto_replan_ready);self.assertIn('Auto re-plan skipped',messages[-1]['content']);self.assertEqual(len([a for a in applied if a[0]=='plan']),1)
+
+
+def lidar_twin(bounds,boxes,meshes=()):
+    """Imported floor plus LiDAR 'unknown' boxes added as the App adds them (add_overlay, lidar_estimate),
+    then the Kit -> App path: overlay meshes -> navigation cells -> grid wire -> decoded observed cells."""
+    import hashlib
+    from twinpulse_core.environment_overlays import add_overlay,overlay_meshes
+    from twinpulse_core.environment_navigation import navigation_cells
+    from twinpulse_core.navigation_grid import encode_navigation_grid,decode_navigation_grid
+    from twinpulse_core.room_item_catalog import room_item_catalog_version
+    def mesh(name,category,points):
+        return dict(id='Env_'+hashlib.sha256(name.encode()).hexdigest()[:20],source_path='/Source/'+name,category=category,label=name,
+            points_m=points,triangles=[[0,1,2],[0,2,3]],color_rgb=[.5,.6,.7],translation_m=[0,0,0])
+    x0,y0,x1,y1=bounds
+    environment=dict(schema_version='environment-static-1.0',source_name='room.usda',source_sha256=hashlib.sha256(b'room').hexdigest(),
+        source_up_axis='Z',source_meters_per_unit=None,meters_per_unit=1.,units_basis='selected_for_sim',floor_offset_m=0.,
+        meshes=[mesh('Floor','floor',[[x0,y0,0],[x1,y0,0],[x1,y1,0],[x0,y1,0]])]+[mesh(*m) for m in meshes])
+    for identity,xy,size,yaw,uncertainty in boxes:
+        item=dict(id='Added_'+identity,kind='unknown',label='LiDAR object',catalog_version=room_item_catalog_version('unknown'),
+            position_m=[*xy,.2],dimensions_m=[*size,.4],yaw_deg=yaw,observation_time_utc=None)
+        environment=add_overlay(environment,dict(item=item,uncertainty_m=uncertainty,
+            evidence=dict(basis='lidar_estimate',source_name='route.json',sha256='a'*64,alignment_verified=False)))
+    nav=navigation_cells(environment['meshes']+overlay_meshes(environment))
+    return {k:nav[k] for k in ('bounds','obstacles','targets')},decode_navigation_grid(encode_navigation_grid(nav['cells']),nav['bounds'])
+
+
+def berth(polyline,start,cells):
+    """Smallest gap from the driven polyline to real non-free cells, and to synthetic-envelope cells beyond the start zone."""
+    from twinpulse_core.bounded_grid_plan import SYNTHETIC_KEEPOUT_CELL
+    points=[start[:2],*polyline];samples=[]
+    for a,b in zip(points,points[1:]):
+        n=max(1,math.ceil(math.dist(a,b)/.02));samples+=[(a[0]+(b[0]-a[0])*i/n,a[1]+(b[1]-a[1])*i/n) for i in range(n+1)]
+    def gap(p,c):return math.hypot(max(abs(p[0]-c[0])-.05,0.),max(abs(p[1]-c[1])-.05,0.))
+    real=[c for c in cells if c[2]!='free' and c[6]!=SYNTHETIC_KEEPOUT_CELL];synthetic=[c for c in cells if c[6]==SYNTHETIC_KEEPOUT_CELL]
+    return (min([gap(p,c) for p in samples for c in real if abs(p[0]-c[0])<.6 and abs(p[1]-c[1])<.6] or [1.]),
+            min([gap(p,c) for p in samples if math.dist(p,start[:2])>.4 for c in synthetic if abs(p[0]-c[0])<.6 and abs(p[1]-c[1])<.6] or [1.]))
+
+
+class LidarBoxAtStartTest(unittest.TestCase):
+    """2026-10-27 build 59 physical run on the saved Twin: the six auto-applied LiDAR boxes; the real box's uncertainty
+    envelope (margin 0.4 m) reached the declared start's 0.35 m band, so an empty start was START_OR_GOAL_BLOCKED."""
+    START=[.681,.206,.489]
+    BOXES=[('c418ab4424675197e86d',[2.822,2.367],[.3,.3],-15.5,.1),('3ce9af1a2a4337f78441',[1.54,.578],[.378,.205],-49.,.3),
+           ('ea7964f0a41d8a9e6a5b',[.025,1.142],[.3,.3],22.1,.1),('3ebb274001760ced6375',[.183,-1.234],[.3,.2],-52.3,.1),
+           ('0d74ae65cb07c73b7d25',[.777,-2.191],[.3,.3],-52.,.1),('e7a6d0cbcb28be12d5c0',[-2.117,-.543],[.579,.387],43.1,.3)]
+    ROOM=[-3.5,-3.5,4.,3.5]
+
+    def test_a_carried_start_s_wider_berth_does_not_widen_the_envelope_relaxation_zone(self):
+        """Build 60 batch review: a carried start widens the berth by its uncertainty. That must not also widen the
+        zone where a LiDAR envelope blocks only its footprint, or a LESS certain start would plan closer to the box."""
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through,plan_survey,replan_legs
+        geometry,cells=lidar_twin([0,0,6,4],[('c'*20,[3.03,2.03],[.4,.4],0.,.1)])
+        start=[2.45,1.36,0.];stop=[2.85,1.36]  # 0.24 m from the envelope, 0.40 m from the start
+        for margin in (0.,.06):
+            with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[stop],geometry,cells,kind='physical',margin_m=margin)
+            with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):replan_legs(start,[stop],geometry,cells,kind='physical',home=start[:2],margin_m=margin)
+        # A carried start inside the band (the robot came back to it) still plans and returns, with the wider berth.
+        geometry,cells=lidar_twin(self.ROOM,self.BOXES)
+        plan=plan_through(self.START,[[1.,-.8]],geometry,cells,kind='physical',margin_m=.07)
+        self.assertEqual(plan['polyline'][-1],self.START[:2]);self.assertAlmostEqual(plan['clearance_m'],.42)
+        real,band=berth(plan['polyline'],self.START,cells);self.assertGreater(real,.40);self.assertGreater(band,.40)
+        survey=plan_survey(self.START,geometry,cells,kind='physical',budget_m=8.,margin_m=.07)
+        self.assertGreaterEqual(len(survey['waypoints']),1);self.assertEqual(survey['polyline'][-1],self.START[:2])
+
+    def test_envelope_in_the_start_band_plans_and_returns_but_real_geometry_and_the_far_band_still_block(self):
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath,plan_bounded_grid
+        from twinpulse_core.declared_route import plan_through,replan_legs
+        geometry,cells=lidar_twin(self.ROOM,self.BOXES);start=self.START
+        plan=plan_through(start,[[1.,-.8]],geometry,cells,kind='physical')
+        self.assertEqual(plan['polyline'][-1],start[:2])
+        survey=plan_survey(start,geometry,cells,kind='physical',budget_m=8.)
+        self.assertGreaterEqual(len(survey['waypoints']),2);self.assertEqual(survey['polyline'][-1],start[:2])
+        for route in (plan,survey):
+            real,band=berth(route['polyline'],start,cells)
+            self.assertGreater(real,.33);self.assertGreater(band,.33)  # full berth from the box itself, and from its envelope once away
+        # A recovery near the start re-plans home (the declared start's zone holds on the way back too).
+        legs=replan_legs([.75,.1,0.],[[1.,-.8],start[:2]],geometry,cells,kind='physical',home=start[:2])
+        self.assertEqual(legs[-1][-1],start[:2])
+        # Goals are unchanged: an operator stop inside the envelope band far from the start is refused.
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[[2.3,.0]],geometry,cells,kind='physical')
+        # ...also when an earlier stop sits within 0.35 m of it (0.22 m from the Added_ea79 envelope, 1.75 m from the start).
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[[-1.03,1.15],[-.72,1.26]],geometry,cells,kind='physical')
+        # A straight segment out of the start zone that passes 0.25 m from the envelope is still blocked beyond the zone.
+        a,b,c,d=geometry['bounds']
+        with self.assertRaisesRegex(NoBoundedPath,'REVIEWED_ROUTE_BLOCKED'):
+            plan_bounded_grid(start[:2],(1.5,-.7),(a,c,b,d),resolution=.1,clearance=.35,observed_cells=cells,checked_route=[(1.5,-.7)],home=start[:2])
+        # Inside the start zone real geometry keeps the full berth: a wall 0.25 m behind the start, or a LiDAR box whose
+        # own body is 0.3 m away (its 0.15 m envelope is not); and an envelope's own footprint still blocks there.
+        geometry,cells=lidar_twin(self.ROOM,self.BOXES,[('Wall','wall',[[.43,-.3,0],[.43,.7,0],[.43,.7,1],[.43,-.3,1]])])
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[[1.,-.8]],geometry,cells,kind='physical')
+        geometry,cells=lidar_twin(self.ROOM,[('f'*20,[-1.,3.],[.3,.3],0.,.05),('e'*20,[-2.6,1.4],[.3,.3],0.,.3)])
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through([-1.5,3.,0.],[[-1.,2.]],geometry,cells,kind='physical')
+        self.assertEqual(plan_through([-1.6,3.,0.],[[-1.,2.]],geometry,cells,kind='physical')['polyline'][-1],[-1.6,3.])  # 0.4 m from that body
+        self.assertEqual(plan_through([-1.8,1.4,0.],[[-1.,2.]],geometry,cells,kind='physical')['polyline'][-1],[-1.8,1.4])  # 0.2 m from the other envelope
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through([-1.8,1.4,0.],[[-2.04,1.4]],geometry,cells,kind='physical')
+
+    def test_only_the_declared_start_relaxes_an_envelope_not_each_leg_start_or_step(self):
+        # Review of the first fix: relaxing around every leg start let a chain of stops, a recovery pose or 0.1 m task
+        # steps walk into an envelope band far from the declared start.
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through,replan_legs
+        from twinpulse_core.robot_survey import checked_motion_segment
+        geometry,cells=lidar_twin([0.,0.,6.,4.],[('c'*20,[3.03,2.03],[.4,.4],0.,.1)]);band=[2.85,1.36]  # 0.24 m from the envelope, 0.47 m from the body
+        self.assertEqual(plan_through([*band,0.],[[1.5,1.]],geometry,cells,kind='physical')['polyline'][-1],band)  # the declared start may be there
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through([.6,1.,0.],[[2.64,1.08],band],geometry,cells,kind='physical')
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):replan_legs([*band,0.],[[.6,1.]],geometry,cells,kind='physical',home=[.6,1.])
+        with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):checked_motion_segment([*band,math.pi/2],'forward',.1,geometry,observed_cells=cells)
+
+
+class LidarBoxAheadSurveyTest(unittest.TestCase):
+    def test_box_straight_ahead_in_a_narrow_room_still_gives_a_returning_survey(self):
+        # 3.4 x 2.6 m room, LiDAR box 0.9 m straight ahead: every stop beyond it needs a detour (old rule: path <= 1.2 x distance + 0.2).
+        geometry,cells=lidar_twin([0.,0.,3.4,2.6],[('b'*20,[1.5,1.3],[.4,.4],0.,.1)]);start=[.6,1.3,0.]
+        plan=plan_survey(start,geometry,cells,kind='physical',budget_m=8.)
+        self.assertGreaterEqual(len(plan['waypoints']),2,plan['waypoints']);self.assertEqual(plan['polyline'][-1],start[:2])
+        self.assertLessEqual(plan['length_m'],8.)
+        real,band=berth(plan['polyline'],start,cells);self.assertGreater(real,.33);self.assertGreater(band,.33)
+        blocked=[c for c in cells if c[2]!='free']
+        self.assertTrue(all(math.dist(w,c[:2])>=.6 for w in plan['waypoints'] for c in blocked))  # stop clearance unchanged

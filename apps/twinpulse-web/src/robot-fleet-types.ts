@@ -47,12 +47,17 @@ export type RobotFleetRobot = {
     voltage_protection?:'UNKNOWN'|'CLEAR'|'LOW_VOLTAGE_GUARD';low_voltage_guard_v?:number;read_status?:Record<string,unknown>};
   pose:{position_m:[number,number,number];frame_id:string;source:string;aligned:boolean}|null;
   display_pose?:{position_m:[number,number,number];source:'operator_estimate_not_localized';scene_revision:string;frame_id:'isaac_world';aligned:false}|null;
+  display_pose_current?:boolean;  // the marker's Twin frame is the shown one (object edits keep it; a new import does not)
+  route_start_estimate?:{label:string;from_plan_id:string;pose:[number,number,number];driven_m:number;carry_over:boolean;carry_refused:string|null;
+    uncertainty:{position_m:number;yaw_rad:number;relative_to:string;basis:string};usable:boolean;overridden?:boolean;reason:string|null}|null;
   telemetry_age_ms:number|null; telemetry_sequence:number;
   live_heartbeat?:boolean;
   controller_state?:string|null;
   cleanup_confirmed?:boolean|null;
   link_detail?:string|null; recording_failure_reason?:string|null;
   control_owner_state?:'ACTIVE'|'EXITED_RECONNECT_REQUIRED'|null; last_reported_lidar_state?:string|null; lidar_state_source?:'robot'|'pc_after_exit';
+  recording_budget?:{state:'OK'|'NEAR_LIMIT'|'LIMIT_REACHED';source:'pc'|'robot';used_bytes:number;limit_bytes:number;fraction:number;
+    warning_fraction:number;rate_bytes_per_s:number|null;minutes_left:number|null}|null;
   sensor_frame?:Record<string,unknown>|null;
   telemetry_diagnostic?:Record<string,unknown>|null;
   motion_observation?:Record<string,unknown>|null;
@@ -122,6 +127,14 @@ export function fleetRobotFresh(robot:RobotFleetRobot){
   // A successful one-shot physical read is not a persistent heartbeat.
   if(robot.kind==='physical'&&robot.live_heartbeat!==true)return false;
   return robot.connection_state==='CONNECTED'&&robot.telemetry_age_ms!==null&&robot.telemetry_age_ms>=0&&robot.telemetry_age_ms<(robot.kind==='physical'?2500:1000);
+}
+/** Warning from the session's recording budget (display only; reaching the limit already stops the robot). */
+export function fleetRecordingNotice(robot:RobotFleetRobot):{text:string;limit:boolean}|null{
+  const budget=robot.recording_budget;
+  if(!budget||budget.state==='OK')return null;
+  if(budget.state==='LIMIT_REACHED')return {text:'Recording limit reached - reconnect to continue',limit:true};
+  const left=typeof budget.minutes_left==='number'&&Number.isFinite(budget.minutes_left)?`about ${Math.max(0,Math.floor(budget.minutes_left))} min left`:'estimating time left';
+  return {text:`Recording ${Math.min(99,Math.floor(budget.fraction*100))}% of session limit · ${left} · reconnect to start a new recording`,limit:false};
 }
 export function fleetBatteryLabel(robot:RobotFleetRobot){
   const battery=robot.battery;

@@ -94,6 +94,9 @@ class _Session:
 
 LIDAR_MATCH_ALIGNED_M=.1   # a LiDAR candidate within this of a Twin object: the Twin already explains it, no move
 LIDAR_MATCH_MOVE_M=.6      # up to this a position correction is offered; beyond it the candidate is a new object
+# Outline boxes come from the robot's own stop scans in the plan frame (extent padded 5 cm a side), so 0.10 m covers drift since the
+# scan; the unknown-kind +0.10 m stays (parts below the scan plane). 0.30 (build 59) closed every way round a box in a living room.
+LIDAR_OUTLINE_UNCERTAINTY_M=.1
 
 
 class LocalApiServer:
@@ -1090,6 +1093,7 @@ class LocalApiServer:
                         if body.get('action')=='adopt' and self.conversation and self.conversation._state['mode']=='REAL':
                             raise BrokerError('environment_sim_required','Import space in a new SIM chat.',status=409)
                         result=self._environment_workspace().action(body,session.session_id)
+                    if body.get('action')=='adopt' and getattr(self,'robot_fleet',None) is not None:self.robot_fleet.twin_imported()
                     if body.get('action')=='adopt' and self.conversation:
                         self.conversation.record_environment_import(body['request_id'],result['source_name'],result['source_sha256'],result['scene_revision'])
                     return self._json(request,200,result)
@@ -1739,7 +1743,7 @@ class LocalApiServer:
             size=round(min(1.2,max(.2,2*candidate['radius_m'])),3)
             extent=candidate.get('extent_m') or [size,size]  # oriented rough outline when the cluster has one
             obstacles.append(dict(label='LiDAR unknown #%d (route scan outline)'%(index+1),position_xy_m=list(candidate['position_xy_m']),
-                dimensions_m=[extent[0],extent[1],.4],yaw_deg=float(candidate.get('yaw_deg') or 0.),uncertainty_m=.3,candidate=index))
+                dimensions_m=[extent[0],extent[1],.4],yaw_deg=float(candidate.get('yaw_deg') or 0.),uncertainty_m=LIDAR_OUTLINE_UNCERTAINTY_M,candidate=index))
         if not obstacles:raise BrokerError('route_candidates_empty','Every LiDAR candidate is explained by an existing Twin object.',status=409)
         workspace=self._environment_workspace()
         result=workspace.action(dict(action='lidar_route_preview',request_id='lidar-route-'+uuid4().hex,obstacles=obstacles,

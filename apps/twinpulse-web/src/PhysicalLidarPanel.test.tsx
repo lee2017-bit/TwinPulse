@@ -49,6 +49,15 @@ describe('always-visible physical sensor panel',()=>{
     expect(screen.queryByText('Robot model visible · estimated')).toBeNull();
     expect(screen.getByText('Robot not placed in this Twin')).toBeTruthy();
   });
+  it('keeps a marker placed after a Twin edit of the same import, such as an auto-applied LiDAR box, but not across imports',()=>{
+    const pose={position_m:[1,2,0] as [number,number,number],source:'operator_estimate_not_localized' as const,scene_revision:'before-box',frame_id:'isaac_world' as const,aligned:false as const};
+    const component=render(<PhysicalLidarPanel robot={{...robot(),display_pose:pose,display_pose_current:true}} rendered currentRevision="after-box"/>);
+    expect(screen.getByText('Robot model visible · estimated')).toBeTruthy();
+    component.rerender(<PhysicalLidarPanel robot={{...robot(),display_pose:pose,display_pose_current:false}} rendered currentRevision="new-import"/>);
+    expect(screen.getByText('Robot not placed in this Twin')).toBeTruthy();
+    component.rerender(<PhysicalLidarPanel robot={{...robot(),display_pose:pose,display_pose_current:true}} rendered/>);
+    expect(screen.getByText('Robot not placed in this Twin')).toBeTruthy();
+  });
   it('clears an otherwise fresh row when App/fleet reception is unavailable',()=>{
     const r=robot(),component=render(<PhysicalLidarPanel robot={r} rendered={false}/>);
     expect(screen.getByRole('img')).toBeTruthy();
