@@ -818,14 +818,16 @@ class RobotFleet:
     def twin_imported(self):
         """Import space (adopt) makes a new Twin frame: every declared start and carried route end is void, even
         for a byte-identical file (its first revision can equal an earlier one). Robots must be placed again."""
-        with self.lock:
-            for identity,pose in self.physical_display_poses.items():self.consumed_display_epochs[identity]=pose['visual_epoch']
-            self.physical_display_poses={};self.physical_tracking_anchors.clear();self.physical_navigation_reviews.clear()
-            for row in self.robots.values():
-                if row['kind']=='physical':row['display_pose']=None
-            self._persist()
-        reset=getattr(self,'declared_route_reset',None)
-        if reset:reset()
+        try:
+            with self.lock:
+                for identity,pose in self.physical_display_poses.items():self.consumed_display_epochs[identity]=pose['visual_epoch']
+                self.physical_display_poses={};self.physical_tracking_anchors.clear();self.physical_navigation_reviews.clear()
+                for row in self.robots.values():
+                    if row['kind']=='physical':row['display_pose']=None
+                self._persist()
+        finally:  # a failed save must not leave a carried route end on the new import
+            reset=getattr(self,'declared_route_reset',None)
+            if reset:reset()
 
     def same_twin_frame(self,declared,revision):
         """The marker's Twin frame is the current one: the same revision, or one reached only through Twin edits

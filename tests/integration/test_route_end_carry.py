@@ -14,6 +14,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 from uuid import uuid4
 
 from tests.integration import test_r5_product_api  # noqa: F401  (adds package source paths)
@@ -98,6 +99,7 @@ class Robot:
         self.connection=uuid4().hex;self.motion=uuid4().hex;self.boot='boot-1'
         self.body=list(START);self.odom=[2.,-1.,.3]  # odom frame differs from the Twin frame
         self.command=None;self.sequence=1;self.received=time.monotonic();self.boxes=[ROOM['obstacles'][0],BOX];self.on_drive=None;self.drives=0
+        self.frozen=None  # a re-emitted frame: these points whatever the body does
 
     def snapshot(self,owner=None):
         with self.lock:
@@ -106,7 +108,7 @@ class Robot:
                 applied_motion_epoch=self.motion,connection_state='CONNECTED',live_heartbeat=True,control_state='READY',reason=None,
                 pose=dict(x=x,y=y,yaw=yaw,position_m=[x,y,0.],yaw_rad=yaw,aligned=False,frame_id='odom',source='wheel_odom',independent_body=False),
                 command=deepcopy(self.command),lidar_state='STREAMING',
-                scan=dict(points=ring(self.body,self.boxes),stream_id='lidar-1',frame_sequence=self.sequence,raw_sha256='%064x'%self.sequence),
+                scan=dict(points=ring(self.body,self.boxes) if self.frozen is None else self.frozen,stream_id='lidar-1',frame_sequence=self.sequence,raw_sha256='%064x'%self.sequence),
                 scan_receipt=dict(age_ms=(time.monotonic()-self.received)*1000,age_basis='pc_scan_receipt',frame_id='native_sensor',aligned=False),
                 capabilities=dict(read_only_connection=True,prepare=True,qualify=True,profile=True,lidar=True,drive=True),
                 field=dict(mode='SUPERVISED_FIELD_TEST',armed=True,blockers=[],tracking=dict(status='INCONCLUSIVE',epoch=uuid4().hex,pose=None)),
@@ -188,7 +190,7 @@ class RouteEndCarryTests(unittest.TestCase):
         def sleep(s):clock[0]+=s;time.sleep(.0005)
         runner=DeclaredRouteRunner(self.fleet,self.temp.name,clock=lambda:clock[0],sleep=sleep,poll_s=1.,
             on_result=lambda result:(self.chat.s.declared_route_finished(result),self.results.append(result)))
-        self.addCleanup(runner.cancel)
+        self.addCleanup(runner.cancel);self.clock=clock
         return runner
 
     def show(self,fleet=None):
@@ -219,6 +221,9 @@ class RouteEndCarryTests(unittest.TestCase):
         self.assertGreater(len(self.results),count,'the route did not finish')
         self.robot.tick()
         return self.results[-1]
+
+    def view(self):
+        return next(r for r in self.fleet.snapshot()['robots'] if r['robot_id']==self.identity)['route_start_estimate']
 
     def refused(self,text):
         with self.assertRaises(BrokerError) as caught:self.runner.plan(self.identity)
@@ -259,7 +264,8 @@ class RouteEndCarryTests(unittest.TestCase):
         self.assertTrue(view['usable']);self.assertEqual(view['label'],'ROUTE_END_ESTIMATE_DECLARED_START_PLUS_WHEEL_ODOMETRY_NOT_LOCALIZED')
         second=self.finish(card)  # Run route on the re-plan card; nobody re-placed the robot
         self.assertEqual(second['state'],'COMPLETED',second['reason'])
-        self.assertGreater(second['end_estimate']['uncertainty']['position_m'],unc['position_m'])  # chained drift accumulates
+        # Chained drift accumulates: the carried start's bound plus this route's own drift.
+        self.assertGreaterEqual(second['end_estimate']['uncertainty']['position_m'],unc['position_m']+.025*second['end_estimate']['driven_m']-.001)
         self.assertEqual(self.runner.plan(self.identity)['start_basis'],'route_end_odometry_estimate')
 
     def test_re_plan_right_at_the_finish_uses_the_carried_start_but_not_a_stalled_lidar(self):
@@ -330,6 +336,44 @@ class RouteEndCarryTests(unittest.TestCase):
         self.assertEqual(self.runner.plan(self.identity)['start_basis'],'operator_declared_display_pose')
         view=next(r for r in self.fleet.snapshot()['robots'] if r['robot_id']==self.identity)['route_start_estimate']
         self.assertFalse(view['usable']);self.assertIn('set by hand',view['reason'])
+
+    def hand_set_after_a_refused_carry(self,refuse,reason):
+        self.completed_then_auto_replanned();refuse()
+        self.assertIn(reason,self.view()['reason'])  # the robot card asks for Set position ...
+        self.declare([.9,.8,0.])  # ... and the operator sets it
+        self.assertEqual(self.runner.plan(self.identity)['start_basis'],'operator_declared_display_pose')
+        view=self.view()  # efe8716: still "... is not used for the next route: <reason>. Set position before the next route."
+        self.assertTrue(view['overridden'],view);self.assertFalse(view['usable']);self.assertIn('set by hand',view['reason'])
+
+    def test_set_position_after_a_stop_replaces_the_refused_carry_on_the_robot_card(self):
+        self.hand_set_after_a_refused_carry(lambda:self.send('stop'),'Stop, manual drive')
+
+    def test_set_position_after_wheel_motion_replaces_the_refused_carry_on_the_robot_card(self):
+        def push():
+            with self.robot.lock:
+                for pose in (self.robot.body,self.robot.odom):pose[0]+=.1*math.cos(pose[2]);pose[1]+=.1*math.sin(pose[2])
+            self.robot.tick()
+        self.hand_set_after_a_refused_carry(push,'the wheels moved 10 cm')
+
+    def test_lidar_re_emitting_the_route_end_frame_is_not_a_new_scan(self):
+        # native_stream re-emits its last complete frame (same frame_sequence, fresh receipt) while only partial
+        # frames arrive, so the receipt age stays under 1 s however long the LiDAR has stalled.
+        self.chat.s._state['twin_edit_approval']='review'
+        first=self.finish(self.route())
+        self.assertEqual(first['state'],'COMPLETED',first['reason'])
+        with self.robot.lock:
+            self.robot.sequence-=1;self.robot.frozen=ring(self.robot.body,self.robot.boxes)  # the route end's frame ...
+            self.robot.body[0]+=.25;self.robot.body[2]+=.1  # ... while the robot is carried away by hand
+            self.robot.received=time.monotonic()
+        self.clock[0]+=5.  # 5 s after the end, re-emitted just now
+        self.refused('no new LiDAR scan to compare with the route end')  # efe8716: plans from the carried start
+
+    def test_reimport_whose_save_fails_still_refuses_the_carried_start(self):
+        self.completed_then_auto_replanned()
+        self.twin.imported('home.usda');self.show()  # byte-identical file: the import revision route 1 ran on
+        with mock.patch.object(self.fleet,'_persist',side_effect=OSError(28,'No space left on device')):
+            with self.assertRaises(OSError):self.fleet.twin_imported()
+        self.refused('Set the robot position and heading on this Twin first.')  # efe8716: plans from the carried start
 
     def test_route_beyond_the_drift_bound_is_not_carried(self):
         stops=[[3.3,1.7],[1.0,2.2],[3.3,1.5],[1.0,1.6]]

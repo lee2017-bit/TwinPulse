@@ -57,7 +57,7 @@ RING_MIN_BINS=25
 RING_TOL_M=.05
 RING_TOL_REL=.03
 RING_MIN_AGREEMENT=.75
-RING_SAME_FRAME_MS=1000  # the route end's own frame, received < 1 s ago: a re-plan at the finish (Run checks again)
+RING_SAME_FRAME_MS=1000  # the route end's own frame only < 1 s after the end: a re-plan at the finish (Run checks again)
 
 
 def step_timeout_s(step):
@@ -123,12 +123,16 @@ class DeclaredRouteRunner:
         same=getattr(self.fleet,'same_twin_frame',None)
         return revision==scene['binding'][2] or bool(same and same(revision,scene['binding'][2]))
 
+    def _declared(self,row,scene):
+        """(placed on this Twin's frame, and no route started from it yet) for the operator's manual start."""
+        declared=row.get('display_pose') or {}
+        placed=bool(_pose3(declared.get('position_m')) and self._same_frame(declared.get('scene_revision'),scene))
+        return placed,placed and declared.get('visual_epoch') not in self.used_declarations
+
     def _start_pose(self,row,scene):
         if row['kind']=='physical':
-            declared=row.get('display_pose') or {}
-            placed=_pose3(declared.get('position_m')) and self._same_frame(declared.get('scene_revision'),scene)
-            if placed and declared.get('visual_epoch') not in self.used_declarations:
-                return list(declared['position_m']),'operator_declared_display_pose'  # a fresh manual declaration always wins
+            placed,fresh=self._declared(row,scene)
+            if fresh:return list(row['display_pose']['position_m']),'operator_declared_display_pose'  # a fresh manual declaration always wins
             carried,why=self._carried_start(row,scene)
             if carried is not None:return carried,CARRY_BASIS
             note=' The last route end pose cannot be used: %s.'%why if why else ''
@@ -161,10 +165,11 @@ class DeclaredRouteRunner:
         then=est['tracking'];now=(row.get('field') or {}).get('tracking') or {}
         if then and now.get('status')=='ESTIMATED' and now.get('epoch')==then['epoch'] and _pose3(now.get('pose')) and _moved(now['pose'],then['pose']):
             return None,'LiDAR tracking shows the robot moved after the route ended'
-        # Lifted or carried: wheel odometry does not see it, the surroundings do.
+        # Lifted or carried: wheel odometry does not see it, the surroundings do. The end frame itself counts only just
+        # after the end: native_stream re-emits its last complete frame with a fresh receipt while partial frames arrive.
         scan=row.get('scan') or {};age=(row.get('scan_receipt') or {}).get('age_ms')
         if (row.get('lidar_state')!='STREAMING' or not est['ring'] or (scan.get('stream_id'),scan.get('frame_sequence'))==est['scan_id']
-                and not (type(age) in (int,float) and 0<=age<RING_SAME_FRAME_MS)):
+                and not (type(age) in (int,float) and 0<=age<RING_SAME_FRAME_MS and 0<=(self.clock()-est['at'])*1000<RING_SAME_FRAME_MS)):
             return None,'no new LiDAR scan to compare with the route end'
         agreement=ring_agreement(est['ring'],ring_ranges(scan.get('points')))
         if agreement is None or agreement<RING_MIN_AGREEMENT:
@@ -189,7 +194,7 @@ class DeclaredRouteRunner:
             'no LiDAR ring at the end to check later that the robot was not moved' if len(ring)<RING_MIN_BINS else None)
         public=dict(label=CARRY_LABEL,from_plan_id=plan['plan_id'],pose=[round(v,4) for v in end],
             uncertainty=unc,driven_m=round(driven_m,3),carry_over=refused is None,carry_refused=refused)
-        return dict(public=public,start=list(plan['start']),origin=list(origin),odom_end=list(measured),uncertainty=unc,cancels=plan['cancels'],
+        return dict(public=public,at=self.clock(),start=list(plan['start']),origin=list(origin),odom_end=list(measured),uncertainty=unc,cancels=plan['cancels'],
             pins=self._pins(row),revision=plan['scene_revision'],ring=ring,scan_id=(scan.get('stream_id'),scan.get('frame_sequence')),
             tracking=dict(epoch=tracking['epoch'],pose=list(tracking['pose'])) if tracking.get('status')=='ESTIMATED' and _pose3(tracking.get('pose')) else None)
 
@@ -198,8 +203,7 @@ class DeclaredRouteRunner:
         est=self.end_estimates.get((row or {}).get('robot_id'));scene=self.fleet.navigation_scene
         if est is None or row.get('kind')!='physical':return None
         pose,why=self._carried_start(row,scene) if scene else (None,'no current Twin')
-        declared=row.get('display_pose') or {}
-        manual=bool(pose and scene and declared.get('visual_epoch') not in self.used_declarations and self._same_frame(declared.get('scene_revision'),scene))
+        manual=bool(scene) and self._declared(row,scene)[1]  # also after a refused carry: that is when the card asks for it
         if manual:pose,why=None,'the position set by hand is used instead'
         return dict(est['public'],usable=pose is not None,overridden=manual,reason=why,pose=[round(v,4) for v in pose] if pose else est['public']['pose'])
 
