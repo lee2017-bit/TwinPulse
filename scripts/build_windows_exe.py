@@ -50,7 +50,7 @@ def reuse_desktop(package, destination, sources):
     return dict(electron=manifest['tools']['Electron'],source_build_id=verified['build_id'])
 
 
-def sprint_gate_receipt(root,max_age_s=2*3600):
+def sprint_gate_receipt(root,max_age_s=24*3600):
     """Refuse to build unless Verify-Sprint passed on this exact commit recently (phys09 review P0-8).
 
     A fix that was never run through its own test suite reached installed builds 33-52 on

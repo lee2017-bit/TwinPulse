@@ -158,13 +158,19 @@ def main(argv=None):
     root = ROOT
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     out_dir = root / 'outputs' / 'verify-sprint' / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
     baseline_path = root / 'outputs' / 'verify-sprint' / 'baseline.json'
     head = git(root, 'rev-parse', 'HEAD')
-    dirty = bool(git(root, 'status', '--porcelain', '--untracked-files=no'))
+    dirty_files = git(root, 'status', '--porcelain', '--untracked-files=no')
+    dirty = bool(dirty_files)
     rows = steps(root, sys.executable, skip_web=args.skip_web)
     wanted = {s.strip() for s in args.steps.split(',') if s.strip()}
     partial = bool(wanted) or args.skip_web
+    if dirty and not partial:
+        # A full run exists to produce a build receipt, and the build refuses a dirty receipt anyway (gate run 4,
+        # 2026-10-27, spent 60 minutes on a tree with one uncommitted file). Refuse within seconds, naming the files.
+        raise SystemExit('SPRINT_GATE_DIRTY_TREE: tracked files changed; commit or stash them before a full run '
+                         '(partial --steps runs are allowed):\n' + dirty_files)
+    out_dir.mkdir(parents=True, exist_ok=True)
     if wanted:
         unknown = wanted - {r['name'] for r in rows}
         if unknown:

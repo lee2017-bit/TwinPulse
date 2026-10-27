@@ -3,6 +3,7 @@
 # Source: https://github.com/lee2017-bit/TwinPulse
 """The build refuses to start without a fresh Verify-Sprint PASS for the exact committed tree (P0-8)."""
 from datetime import datetime,timedelta,timezone
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -45,7 +46,10 @@ class SprintGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'^SPRINT_GATE_STALE_COMMIT'):build.sprint_gate_receipt(self.root)
         self.receipt(dirty=True)
         with self.assertRaisesRegex(ValueError,'^SPRINT_GATE_DIRTY_TREE'):build.sprint_gate_receipt(self.root)
-        old=(datetime.now(timezone.utc)-timedelta(hours=3)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # A full gate run takes about an hour and the robot evening may start long after it: 24 h is fresh enough.
+        self.receipt(finished_utc=(datetime.now(timezone.utc)-timedelta(hours=3)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+        self.assertEqual(build.sprint_gate_receipt(self.root)['status'],'PASS')
+        old=(datetime.now(timezone.utc)-timedelta(hours=25)).strftime('%Y-%m-%dT%H:%M:%SZ')
         self.receipt(finished_utc=old)
         with self.assertRaisesRegex(ValueError,'^SPRINT_GATE_STALE_TIME'):build.sprint_gate_receipt(self.root)
         self.receipt()
@@ -57,6 +61,26 @@ class SprintGateTests(unittest.TestCase):
         (self.root/'scratch.txt').write_text('untracked')  # e.g. outputs/ or a local note
         self.assertEqual(build.sprint_gate_receipt(self.root)['run_id'],expected['run_id'])
         self.assertEqual(build.sprint_gate_receipt(self.root,max_age_s=60)['status'],'PASS')
+
+    def test_full_gate_run_refuses_a_dirty_tree_at_once_naming_the_files_but_partial_runs_proceed(self):
+        row=dict(name='compileall',argv=['py','-c','pass'],required=True)
+        done=dict(name='compileall',required=True,exit_code=0,seconds=0.1,failures=[],text='')
+        (self.root/'tracked.txt').write_text('edited');(self.root/'scratch.txt').write_text('untracked only')
+        with patch.object(gate,'ROOT',self.root),patch.object(gate,'steps',return_value=[row]),patch.object(gate,'run_step',return_value=done) as run, \
+                patch('sys.stdout',new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as stop:gate.main([])
+            self.assertRegex(str(stop.exception),r'^SPRINT_GATE_DIRTY_TREE(?s:.*)\n ?M tracked\.txt');self.assertNotIn('scratch.txt',str(stop.exception))
+            run.assert_not_called();self.assertFalse((self.root/'outputs/verify-sprint').exists())
+            # A partial run is a developer loop, not a build receipt: it runs, records dirty=True and never writes latest.json.
+            self.assertEqual(gate.main(['--steps','compileall']),1)  # exit 1: a PARTIAL receipt is never a PASS (unchanged)
+            run.assert_called_once()
+            receipt=json.loads(next((self.root/'outputs/verify-sprint').glob('*/receipt.json')).read_text(encoding='utf-8-sig'))
+            self.assertEqual((receipt['dirty'],receipt['status'],receipt['partial']),(True,'PARTIAL',True))
+            self.assertFalse((self.root/'outputs/verify-sprint/latest.json').exists())
+            # Clean tree (untracked file still present): the full run proceeds and writes a receipt for the build.
+            git(self.root,'checkout','--','tracked.txt');run.reset_mock()
+            self.assertEqual(gate.main([]),0);run.assert_called_once()
+            self.assertEqual(json.loads((self.root/'outputs/verify-sprint/latest.json').read_text(encoding='utf-8-sig'))['status'],'PASS')
 
     def test_build_main_checks_the_gate_before_tool_versions_unless_skipped(self):
         out=self.root/'never-created'
