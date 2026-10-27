@@ -241,8 +241,12 @@ class PreparedRobotTests(unittest.TestCase):
         for fault in ('stale_scan','stop_at_fit'):
             with self.subTest(fault=fault),TemporaryDirectory() as td:
                 root=Path(td);fake=root/'fake';fake.mkdir();outline,objects=recipe(root,'test_room',1.)
-                (fake/'synthetic-world.json').write_text(json.dumps({'vertices':[a for a,_ in outline['segments']],
-                    'start':[0.,-.6,0.],'fault':fault}))
+                world={'vertices':[a for a,_ in outline['segments']],'start':[0.,-.6,0.],'fault':fault}
+                # The fit must still be running when the Stop arrives, or this is
+                # a stop-during-NAVIGATE test. The fixture holds the fit (up to 5 s)
+                # until the robot cancels, then lets the real fit finish late.
+                if fault=='stop_at_fit':world['hold_fit_until_stop_s']=5.
+                (fake/'synthetic-world.json').write_text(json.dumps(world))
                 value={'schema':'observed-mission-scope-2.0','project_id':'test_room',
                     'goal':{'mode':'SURVEY_THEN_NAVIGATE','xy':[.15,-.6],'room_revision':'f'*64,'duration_s':45.},
                     'reference':None,'alignment':None,'nominal':nominal_room(objects,.182,'f'*64)}
@@ -271,6 +275,11 @@ class PreparedRobotTests(unittest.TestCase):
                         self.assertEqual(diagnostic['stage'],'ALIGN')
                         stopped=next(i for i,(kind,_) in enumerate(events) if kind=='stop_requested')
                         self.assertFalse(any(kind=='published' for kind,_ in events[stopped+1:]))
+                        # The Stop was received during the fit, nothing moved after it,
+                        # and the late fit result was never consumed (never resumes).
+                        self.assertTrue(final['synthetic_fit_held_until_cancelled'])
+                        self.assertEqual(final['status'],'FORCE_STOPPED');self.assertEqual(final['synthetic_nonzero_after_stop'],0)
+                        self.assertEqual(diagnostic['alignment_status'],'NOT_RUN')
                     self.assertFalse(controller.snapshot(adapter.owner)['busy'])
                     self.save_pipe_fixture_evidence(root,fake,value,fault)
                 finally:adapter.close();controller.close()
