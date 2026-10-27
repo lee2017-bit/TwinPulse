@@ -1148,6 +1148,24 @@ class LidarBoxAtStartTest(unittest.TestCase):
            ('0d74ae65cb07c73b7d25',[.777,-2.191],[.3,.3],-52.,.1),('e7a6d0cbcb28be12d5c0',[-2.117,-.543],[.579,.387],43.1,.3)]
     ROOM=[-3.5,-3.5,4.,3.5]
 
+    def test_a_carried_start_s_wider_berth_does_not_widen_the_envelope_relaxation_zone(self):
+        """Build 60 batch review: a carried start widens the berth by its uncertainty. That must not also widen the
+        zone where a LiDAR envelope blocks only its footprint, or a LESS certain start would plan closer to the box."""
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through,plan_survey,replan_legs
+        geometry,cells=lidar_twin([0,0,6,4],[('c'*20,[3.03,2.03],[.4,.4],0.,.1)])
+        start=[2.45,1.36,0.];stop=[2.85,1.36]  # 0.24 m from the envelope, 0.40 m from the start
+        for margin in (0.,.06):
+            with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):plan_through(start,[stop],geometry,cells,kind='physical',margin_m=margin)
+            with self.assertRaisesRegex(NoBoundedPath,'START_OR_GOAL_BLOCKED'):replan_legs(start,[stop],geometry,cells,kind='physical',home=start[:2],margin_m=margin)
+        # A carried start inside the band (the robot came back to it) still plans and returns, with the wider berth.
+        geometry,cells=lidar_twin(self.ROOM,self.BOXES)
+        plan=plan_through(self.START,[[1.,-.8]],geometry,cells,kind='physical',margin_m=.07)
+        self.assertEqual(plan['polyline'][-1],self.START[:2]);self.assertAlmostEqual(plan['clearance_m'],.42)
+        real,band=berth(plan['polyline'],self.START,cells);self.assertGreater(real,.40);self.assertGreater(band,.40)
+        survey=plan_survey(self.START,geometry,cells,kind='physical',budget_m=8.,margin_m=.07)
+        self.assertGreaterEqual(len(survey['waypoints']),1);self.assertEqual(survey['polyline'][-1],self.START[:2])
+
     def test_envelope_in_the_start_band_plans_and_returns_but_real_geometry_and_the_far_band_still_block(self):
         from twinpulse_core.bounded_grid_plan import NoBoundedPath,plan_bounded_grid
         from twinpulse_core.declared_route import plan_through,replan_legs

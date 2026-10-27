@@ -61,7 +61,7 @@ def _finite_pair(value):
 def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05,
                       clearance=.30, max_cells=40000, max_expansions=32000,
                       max_waypoints=16, observed_cells=None, cell_size_m=.10, checked_route=None,
-                      allow_direct_over_grid_budget=False, home=None):
+                      allow_direct_over_grid_budget=False, home=None, pose_margin_m=0.):
     """A* with inflated obstacles, fixed budgets and collision-checked segments.
 
     Boxes are (cx, cy, half_x, half_y, yaw_rad); discs are (cx, cy, radius).
@@ -70,12 +70,17 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
     home is the declared start (where the robot stood when the plan was made):
     within one clearance of it a synthetic envelope blocks only its own footprint
     plus 5 cm (never discs, walls or real cells). Without home nothing is relaxed.
+    pose_margin_m is the extra uncertainty of every pose in this plan frame (a carried
+    start); the caller already widened clearance by it. The escape zones keep the
+    un-widened radius and their allowances grow by it, so a less certain start is
+    never relaxed more than a sure one.
     """
     if (not _finite_pair(start) or not _finite_pair(goal)
             or type(bounds) not in (tuple, list) or len(bounds) != 4
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds)
             or not all(type(v) in (int, float) and math.isfinite(v) for v in (resolution, clearance))
             or not .02 <= resolution <= .20 or not .10 <= clearance <= 1.
+            or type(pose_margin_m) not in (int, float) or not 0. <= pose_margin_m < clearance - .05
             or type(max_cells) is not int or not 1 <= max_cells <= 40000
             or type(max_expansions) is not int or not 1 <= max_expansions <= 40000
             or type(max_waypoints) is not int or not 1 <= max_waypoints <= 16
@@ -130,13 +135,13 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
             # Inside the declared start's (home) escape zone a synthetic cell blocks only its
             # own footprint plus 5 cm, like a keepout disc below; real cells keep the full berth.
             # Only home, never each leg's start: a chain of stops must not ratchet into a band.
-            escape=home is not None and math.hypot(x-home[0],y-home[1])<=clearance
+            escape=home is not None and math.hypot(x-home[0],y-home[1])<=clearance-pose_margin_m
             for ix in range(math.floor((x-clearance)/cell_size_m),math.floor((x+clearance)/cell_size_m)+1):
                 for iy in range(math.floor((y-clearance)/cell_size_m),math.floor((y+clearance)/cell_size_m)+1):
                     dx=max(ix*cell_size_m-x,0.,x-(ix+1)*cell_size_m)
                     dy=max(iy*cell_size_m-y,0.,y-(iy+1)*cell_size_m)
                     gap=math.hypot(dx,dy);state=known.get((ix,iy))
-                    if gap<=clearance and state!='free' and not (escape and state=='synthetic' and gap>.05):return False
+                    if gap<=clearance and state!='free' and not (escape and state=='synthetic' and gap>.05+pose_margin_m):return False
         for cx, cy, hx, hy, yaw in boxes:
             co, si = math.cos(yaw), math.sin(yaw)
             dx, dy = x - cx, y - cy
@@ -150,7 +155,7 @@ def plan_bounded_grid(start, goal, bounds, boxes=(), discs=(), *, resolution=.05
         # disc's clearance band and no path could start. Within one clearance of the
         # start, a keepout disc blocks only its own radius (plus 5 cm); walls, boxes
         # and unknown cells keep the full clearance.
-        margin = clearance if math.hypot(x - start[0], y - start[1]) > clearance else .05
+        margin = clearance if math.hypot(x - start[0], y - start[1]) > clearance - pose_margin_m else .05 + pose_margin_m
         return all(math.hypot(x - cx, y - cy) > radius + margin
                    for cx, cy, radius in discs)
 
