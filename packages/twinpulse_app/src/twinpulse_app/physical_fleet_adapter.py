@@ -612,7 +612,7 @@ class PhysicalFleetAdapter:
             setup['maintenance_phase']=live.get('maintenance_phase')
             setup['output_guard_build']=deepcopy(live.get('output_guard_build'))
             ended=entry.disconnected or entry.services.live.closed
-            local_recording=live.get('recording') or {};robot_recording=live.get('robot_recording') or {}
+            local_recording=live.get('recording') or {};robot_recording=live.get('robot_recording') or {};budget=live.get('recording_budget')
             recording_error=local_recording.get('error') or robot_recording.get('error')
             setup['recording']=dict(pc=local_recording,robot=robot_recording)
             return dict(robot_id=entry.binding['instance_id'],label=entry.label,kind='physical',
@@ -625,6 +625,8 @@ class PhysicalFleetAdapter:
                 reason='DISCONNECTING_AWAITING_ROBOT_CLEANUP' if entry.disconnecting else live.get('transport_error') or live.get('reason') or entry.reason or live.get('link_detail'),
                 link_detail=live.get('link_detail'),remote_stderr_tail=live.get('remote_stderr_tail'),
                 recording_failure_reason=live.get('recording_failure_reason'),control_owner_state=None if ended else live.get('control_owner_state'),
+                # After the session ends only the limit itself still explains anything.
+                recording_budget=deepcopy(budget) if not ended or (budget or {}).get('state')=='LIMIT_REACHED' else None,
                 last_reported_lidar_state=live.get('last_reported_lidar_state'),lidar_state_source='pc_after_exit' if ended else live.get('lidar_state_source','robot'),
                 robot_storage=deepcopy(live.get('robot_storage')),
                 battery=battery,pose=live.get('pose'),field=live.get('field'),command=deepcopy(live.get('command')),scan=None if ended else live.get('scan'),sensor_frame=live.get('sensor_frame'),

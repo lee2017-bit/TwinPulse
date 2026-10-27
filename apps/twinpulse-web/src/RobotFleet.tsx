@@ -15,7 +15,7 @@ import type {FloorMapState} from './robot-fleet-types';
 import {lidarDiagnosticLabel} from './robot-operation-diagnostics';
 import {LidarPointView} from './LidarPointView';
 import {LidarReviewDialog} from './LidarReviewDialog';
-import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
+import {fleetBatteryLabel,fleetBatteryPolicyMessage,fleetRecordingNotice,fleetRobotFresh,fleetStopCommand as stopCommand,fleetReadCommand as readCommand,type FleetDirection,type RobotFleetAction,type RobotFleetOperation,type RobotFleetRobot,type RobotFleetState} from './robot-fleet-types';
 
 const keyDirections:Record<string,FleetDirection>={ArrowUp:'forward',w:'forward',ArrowDown:'backward',s:'backward',ArrowLeft:'left',a:'left',ArrowRight:'right',d:'right'};
 const scalar=(value:unknown,limit=120):string=>{
@@ -397,7 +397,8 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
         <span className={`robot-connection-dot ${available&&fleetRobotFresh(row)?'fresh':''}`} aria-label={available&&fleetRobotFresh(row)?'Fresh connected heartbeat':'Connection not current'}/>
         <span><span className="robot-fleet-row-heading"><strong>{row.label}</strong> <small>{row.kind==='sim'?'SIM':'Physical'}</small></span>
           {expanded&&<small>{available?row.connection_state:'STALE'} · {row.control_state} · LiDAR {lidarDiagnosticLabel(row,available)}</small>}
-          <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small></span>
+          <small className="robot-fleet-row-battery">{fleetBatteryLabel(row)}{!available?' · receipt stale':''}</small>
+          {(notice=>notice&&<small className="robot-fleet-row-recording" role={notice.limit?'alert':'status'}>{notice.text}</small>)(fleetRecordingNotice(row))}</span>
       </button>)}
       {!state?.robots.length&&<p>No fleet robot registered yet. Add a SIM robot below, or register a supported physical robot in Robots.</p>}
     </div>
@@ -438,6 +439,7 @@ export function RobotFleet({api,state,selectedId,onSelect,onChange,available=tru
       <div className="robot-fleet-notices" aria-label="Robot control readiness">
       {error&&<p role="alert">{error}</p>}
       {pollError&&<p role="status">{pollError}</p>}
+      {(notice=>notice&&<p className="robot-fleet-recording-notice" role={notice.limit?'alert':'status'}>{notice.text}</p>)(fleetRecordingNotice(robot))}
       {(robot.setup?.maintenance_phase||robot.reason)&&<p className="robot-fleet-reason" role="status" title={robot.setup?.maintenance_phase?`Prepare: ${robot.setup.maintenance_phase} · ${robot.reason??'No motion during build/check'}`:robot.reason??undefined}>
         {robot.setup?.maintenance_phase?({BUILDING_OUTPUT_GUARD:'Building output guard…',CHECKING_OUTPUT_GUARD:'Checking output guard…',CHECKING_OUTPUT_GUARD_LOADER:'Loading output guard…',VERIFYING_OUTPUT_GUARD_READBACK:'Verifying applied settings…'} as Record<string,string>)[robot.setup.maintenance_phase]??robot.setup.maintenance_phase:robot.reason}</p>}
       {robot.connection_state==='CONNECTED'&&robot.control_state==='PAUSED'&&robot.applied_motion_epoch!==undefined&&

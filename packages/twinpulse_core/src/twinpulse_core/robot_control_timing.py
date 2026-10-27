@@ -18,7 +18,11 @@ TRACKING_RESULT_S = .6
 # 2026-10-20 all-load capture used 268MB in 524s; 900s at that rate is 461MB.
 # 768MiB keeps a finite ~1.7x allowance for that observed session rate. It is
 # not a guarantee for arbitrary workloads. Producer, PC and cold reader agree.
+# 2026-10-27 session 2 recorded 26MB/min and reached it after 31 min; the
+# heartbeat/scan/raw-ROS volume cuts, not a larger budget, extend sessions.
 EVENT_ARCHIVE_BYTES = 768 * 1024 * 1024
+# Display-only warning threshold; the hard budget above still fails closed.
+RECORDING_WARNING_FRACTION = .75
 EVENT_ARCHIVE_SEGMENTS = 256
 TIMING_POLICY = {
     'schema': 'robot-control-timing-1.1',

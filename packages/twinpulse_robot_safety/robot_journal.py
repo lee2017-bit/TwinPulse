@@ -88,6 +88,7 @@ class RobotJournal:
         with self.lock:
             return {'accepted':self.accepted,'saved':self.saved,'queued':len(self.pending),
                     'pending_bytes':self.pending_bytes,'pending_byte_limit':self.max_pending_bytes,
+                    'reserved_bytes':self.reserved,'byte_limit':self.max_bytes,
                     'error':self.error,'max_write_s':self.max_write_s,
                     'recording_state':'FAILED' if self.error else 'BUFFERING' if self.buffering else 'RECORDING',
                     'oldest_pending_age_s':self.oldest_pending_age_s,

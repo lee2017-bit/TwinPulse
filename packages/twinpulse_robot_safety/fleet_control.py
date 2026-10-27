@@ -38,16 +38,54 @@ def reason_code(exc):
     return code if re.fullmatch('[A-Z0-9_]{1,120}', code) else type(exc).__name__
 
 
+REPEAT_POLICY='EXACT_REPEAT_1S_KEEPALIVE_1.0'
+REPEAT_KEEPALIVE_NS=1_000_000_000
+
+
 class RosRecordDelivery:
-    """Bounded original-message FIFO; no CDR/base64/journal in ROS callbacks."""
+    """Bounded original-message FIFO; no CDR/base64/journal in ROS callbacks.
+
+    Two exact repeats are counted instead of re-recorded: a /tf whose single
+    transform equals a just-recorded odom pose (same stamp, frames and floats),
+    and a motion_guard/status string equal to the last recorded one. Each such
+    topic is still recorded at least once per second, and the next record of
+    the topic carries the count, sequences and receipt gaps of what it skipped.
+    """
     def __init__(self,emit,serializer,topics):
         from uuid import uuid4
         self.emit,self.serializer,self.topics=emit,serializer,topics
         self.stream_id='ros-'+uuid4().hex
         self.queue=queue.Queue(maxsize=256);self.cancel=threading.Event();self.lock=threading.Lock()
         self.error=None;self.accepted=self.saved=self.offset=0;self.pending={};self.closed=False
+        self.odom_keys=[];self.kept={};self.previous={};self.runs={};self.suppressed={}
         self.max_delivery_s=0.;self.thread=threading.Thread(target=self._run,daemon=True,name='FleetRosRecording')
         self.thread.start()
+
+    def _repeat(self,topic,message,metadata):
+        try:
+            if topic=='odom':
+                h=message.header;p=message.pose.pose;a,q=p.position,p.orientation
+                self.odom_keys=[*self.odom_keys[-3:],((h.stamp.sec,h.stamp.nanosec),h.frame_id,message.child_frame_id,(a.x,a.y,a.z),(q.x,q.y,q.z,q.w))]
+                return False
+            if topic not in {'/tf','motion_guard/status'}:return False
+            receipt=metadata['receipt_monotonic_ns'];sequence=metadata['sequence']
+            previous=self.previous.get(topic,receipt);self.previous[topic]=receipt
+            if topic=='/tf':
+                if len(message.transforms)!=1:return False
+                t=message.transforms[0];h=t.header;a,q=t.transform.translation,t.transform.rotation
+                key=((h.stamp.sec,h.stamp.nanosec),h.frame_id,t.child_frame_id,(a.x,a.y,a.z),(q.x,q.y,q.z,q.w))
+                if key not in self.odom_keys:return False
+            else:key=message.data
+        except (AttributeError,TypeError,KeyError):return False
+        kept=self.kept.get(topic)
+        if kept is None or receipt-kept[0]>=REPEAT_KEEPALIVE_NS or topic!='/tf' and kept[1]!=key:
+            self.kept[topic]=(receipt,key);return False
+        run=self.runs.setdefault(topic,dict(count=0,first_observation_sequence=sequence,first_receipt_s=receipt/1e9,max_receipt_gap_s=0.))
+        run.update(count=run['count']+1,last_observation_sequence=sequence,last_receipt_s=receipt/1e9,
+            max_receipt_gap_s=max(run['max_receipt_gap_s'],(receipt-previous)/1e9),
+            basis='COPY_OF_RECORDED_ODOM' if topic=='/tf' else 'SAME_AS_PREVIOUS_RECORD')
+        self.suppressed[topic]=self.suppressed.get(topic,0)+1
+        return True
 
     def __call__(self,topic,message,metadata):
         self.check()
@@ -56,10 +94,13 @@ class RosRecordDelivery:
         # and order are frozen at callback entry, never at eventual delivery.
         with self.lock:
             if self.closed:raise ValueError('RAW_ROS_DELIVERY_CLOSED')
-            index=self.accepted
-            try:self.queue.put_nowait((index,topic,message,dict(metadata)))
+            if self._repeat(topic,message,metadata):return
+            index=self.accepted;frozen=dict(metadata)
+            if topic in self.runs:frozen['suppressed_since_previous']=self.runs[topic]
+            try:self.queue.put_nowait((index,topic,message,frozen))
             except queue.Full:
                 self.error='RAW_ROS_DELIVERY_CAPACITY';raise ValueError(self.error)
+            self.runs.pop(topic,None)
             self.accepted+=1;self.pending[index]=time.monotonic()
 
     def check(self):
@@ -69,7 +110,8 @@ class RosRecordDelivery:
         with self.lock:
             return dict(accepted=self.accepted,saved=self.saved,pending=len(self.pending),error=self.error,
                 oldest_pending_s=max(0.,time.monotonic()-min(self.pending.values())) if self.pending else 0.,
-                maximum_delivery_s=self.max_delivery_s,worker_reaped=not self.thread.is_alive())
+                maximum_delivery_s=self.max_delivery_s,worker_reaped=not self.thread.is_alive(),
+                repeat_policy=REPEAT_POLICY,suppressed=dict(self.suppressed),unreported_runs=deepcopy(self.runs))
 
     def _run(self):
         while not self.cancel.is_set() or not self.queue.empty():
@@ -83,7 +125,8 @@ class RosRecordDelivery:
                     sha256=hashlib.sha256(raw).hexdigest(),base64=base64.b64encode(raw).decode(),
                     receipt_start_s=metadata['receipt_monotonic_ns']/1e9,receipt_end_s=metadata['receipt_monotonic_ns']/1e9,
                     callback_timing={k:metadata[k] for k in ('receipt_ros_now_ns','source_stamp_ns','source_age_at_receipt_s') if k in metadata},
-                    observation_sequence=metadata['sequence'],publish_attempt=topic=='guarded_cmd_vel'))
+                    observation_sequence=metadata['sequence'],publish_attempt=topic=='guarded_cmd_vel',
+                    **({'suppressed_since_previous':metadata['suppressed_since_previous']} if 'suppressed_since_previous' in metadata else {})))
                 with self.lock:
                     self.offset+=len(raw);self.saved+=1
                     self.max_delivery_s=max(self.max_delivery_s,time.monotonic()-self.pending.pop(index))

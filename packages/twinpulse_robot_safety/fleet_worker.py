@@ -206,6 +206,31 @@ def stderr_receipt(line):
     os.write(2,line.encode('utf-8'))
 
 
+# Liveness and supervision keys travel in every heartbeat. Any other key, and
+# any other member of the field block, is omitted while its JSON is
+# byte-identical to the previous heartbeat and named in 'unchanged'. Display
+# diagnostics are sampled once per HEARTBEAT_SAMPLE_S; a newer value not yet
+# sent is named in 'held'. The PC restores both lists from the previous
+# heartbeat, and a full heartbeat follows every HEARTBEAT_FULL_S.
+HEARTBEAT_EVERY_BEAT=frozenset({'live_heartbeat','control_state','reason','maintenance_phase','blockers','drive_ready','battery','pose',
+    'challenge','watch_challenge','motion_generation','applied_motion_epoch','recording_failure_reason','lidar_state','storage','field'})
+FIELD_EVERY_BEAT=frozenset({'mode','armed','remaining_s','blockers','active_trial','evidence_error','config_sha256'})
+HEARTBEAT_SAMPLED=frozenset({'timing_measurement','telemetry_diagnostic','event_emission','ros_record_delivery','lidar','sensor_frame',
+    'motion_observation','recording','field.native_observation'})
+HEARTBEAT_SAMPLE_S=1.
+HEARTBEAT_FULL_S=30.
+
+
+def _holdable(key,value,sent):
+    """Only counters and ages wait for the sample: what the PC acts on goes out on its own beat."""
+    if key not in {'motion_observation','recording'}:return True
+    previous=json.loads(sent)
+    if not isinstance(value,dict) or not isinstance(previous,dict):return False
+    if key=='recording':return all(value.get(k)==previous.get(k) for k in ('error','recording_state','writer_alive'))
+    # A wheel observation's start, end or replacement is never held.
+    return value.get('state')==previous.get('state')=='OBSERVING' and all(value.get(k)==previous.get(k) for k in ('motion_epoch','request_id','started_s'))
+
+
 class FleetWorker:
     def __init__(self,context,directory,writer,*,clock=time.monotonic,control_factory=RobotControl,native_factory=NativeStream,line_writer=None,receipt_writer=None):
         self.context=checked_context(context);self.directory=Path(directory);self.clock=clock
@@ -229,6 +254,26 @@ class FleetWorker:
         self.board_lock=threading.Lock();self.board_read_status={'state':'NOT_READ'}
         self.board_thread=None
         self.preparation_challenges={}
+        self.heartbeat_sent={};self.heartbeat_full_s=self.heartbeat_sample_s=-math.inf;self.recording_fault_reported=False
+
+    def _heartbeat_delta(self,body,now):
+        encoded=lambda value:json.dumps(value,allow_nan=False,separators=(',',':'))
+        if 'unchanged' in body or 'held' in body:raise ValueError('EVENT_PAYLOAD_SHAPE')
+        field=body.get('field');sent=self.heartbeat_sent
+        current={k:encoded(v) for k,v in body.items() if k not in HEARTBEAT_EVERY_BEAT}
+        if isinstance(field,dict):current.update(('field.'+k,encoded(v)) for k,v in field.items() if k not in FIELD_EVERY_BEAT)
+        full=now-self.heartbeat_full_s>=HEARTBEAT_FULL_S;sample=full or now-self.heartbeat_sample_s>=HEARTBEAT_SAMPLE_S
+        unchanged=[] if full else [k for k,v in current.items() if sent.get(k)==v]
+        value=lambda k:field.get(k[6:]) if k.startswith('field.') else body.get(k)
+        held=[] if sample else [k for k,v in current.items() if k in HEARTBEAT_SAMPLED and k in sent and sent[k]!=v and _holdable(k,value(k),sent[k])]
+        current.update((k,sent[k]) for k in held)
+        if unchanged or held:
+            skip={*unchanged,*held}
+            body={k:v for k,v in body.items() if k not in skip}
+            if isinstance(field,dict):body['field']={k:v for k,v in field.items() if 'field.'+k not in skip}
+            if unchanged:body['unchanged']=unchanged
+            if held:body['held']=held
+        return body,current,(full,sample)
 
     def emit(self,kind,data,*,record=True):
         if kind=='fault' and isinstance(data,dict) and data.get('subsystem')=='native_archive':
@@ -242,6 +287,8 @@ class FleetWorker:
         try:
             owned=deepcopy(data)
             if not isinstance(owned,dict) or 'event_delivery' in owned:raise ValueError('EVENT_PAYLOAD_SHAPE')
+            # Only the run loop emits heartbeats; the delta is committed once the line is sent.
+            if kind=='heartbeat':owned,heartbeat_sent,(heartbeat_full,heartbeat_sample)=self._heartbeat_delta(owned,began)
             wire_body=json.dumps(owned,allow_nan=False,separators=(',',':'))
             archive_body=(json.dumps({k:v for k,v in owned.items() if k not in {'challenge','watch_challenge'}},
                 allow_nan=False,separators=(',',':')) if record and ('challenge' in owned or 'watch_challenge' in owned) else wire_body)
@@ -279,6 +326,10 @@ class FleetWorker:
                 except Exception as error:self._recording_fault(reason_code(error))
             try:self.protocol.send_prepared(wire)
             except Exception as error:self._recording_fault(reason_code(error));raise
+            if kind=='heartbeat':
+                self.heartbeat_sent=heartbeat_sent
+                if heartbeat_full:self.heartbeat_full_s=began
+                if heartbeat_sample:self.heartbeat_sample_s=began
 
     def _recording_fault(self,reason='RECORDING_INCOMPLETE'):
         with self.lock:
@@ -413,6 +464,10 @@ class FleetWorker:
                 self.protocol.check()
                 try:self.journal.check()
                 except Exception as error:self._recording_fault(reason_code(error))
+                if self.recording_failed and not self.recording_fault_reported:
+                    # The owner is revoked without a pause/fault of its own; name the cause once.
+                    self.recording_fault_reported=True
+                    self.emit('fault',{'subsystem':'recording','reason':self.recording_failure_reason,'recording':self.journal.status()})
                 for _ in range(16):
                     try:value=incoming.messages.get_nowait()
                     except queue.Empty:break

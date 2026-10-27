@@ -253,6 +253,22 @@ describe('robot fleet controls (supplementary UI tests)',()=>{
     expect(fleetBatteryLabel({...r,battery:{...r.battery,age_ms:40000}})).toContain('stale');
     expect(fleetBatteryPolicyMessage({...r,battery:{...r.battery,voltage_protection:'UNKNOWN',reserve_state:'AT_OR_BELOW_RESERVE'}})).toContain('20% or below');
   });
+  it('warns on the robot card from 75% of the recording budget with minutes left and names the limit when reached',()=>{
+    const budget={state:'NEAR_LIMIT' as const,source:'pc' as const,used_bytes:640e6,limit_bytes:805306368,fraction:.795,warning_fraction:.75,rate_bytes_per_s:150000,minutes_left:18.4};
+    const near={...robot(),kind:'physical' as const,live_heartbeat:true,recording_budget:budget};
+    const {container,props,rerender}=setup(fleet([near]));
+    const warning='Recording 79% of session limit · about 18 min left · reconnect to start a new recording';
+    expect(container.querySelector('.robot-fleet-row .robot-fleet-row-recording')?.textContent).toBe(warning);
+    expect(container.querySelector('.robot-fleet-row-recording')?.getAttribute('role')).toBe('status');
+    expect(container.querySelector('.robot-fleet-drawer .robot-fleet-recording-notice')?.textContent).toBe(warning);
+    rerender(<RobotFleet {...props} state={fleet([{...near,recording_budget:{...budget,fraction:.5,state:'OK'}}])}/>);
+    expect(container.querySelector('.robot-fleet-row-recording')).toBeNull();
+    rerender(<RobotFleet {...props} state={fleet([{...near,connection_state:'DEGRADED',live_heartbeat:false,link_detail:'Recording limit reached - reconnect to continue',
+      recording_budget:{...budget,state:'LIMIT_REACHED',fraction:1,minutes_left:null}}])}/>);
+    const limit=container.querySelector('.robot-fleet-row .robot-fleet-row-recording');
+    expect([limit?.textContent,limit?.getAttribute('role')]).toEqual(['Recording limit reached - reconnect to continue','alert']);
+    expect(screen.getByText(/^Link DEGRADED · Recording limit reached - reconnect to continue/)).toBeTruthy();
+  });
   it('renders actual physical voltage-only battery replies without inventing a percentage or crashing',()=>{
     const physical={...robot(),kind:'physical' as const,live_heartbeat:true,
       battery:{voltage_v:12.35,source:'measured',age_ms:50} as RobotFleetRobot['battery']};

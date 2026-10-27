@@ -200,7 +200,7 @@ class PhysicalLiveSessionTests(unittest.TestCase):
     def test_large_recording_manifest_copy_cannot_hold_stop_admission_lock(self):
         self.heartbeat();entered=Event();release=Event();stopped=Event()
         def report():entered.set();release.wait(2);return {'segments':[]}
-        self.session.evidence=SimpleNamespace(snapshot=report,error=None)
+        self.session.evidence=SimpleNamespace(snapshot=report,usage=lambda:(0,1),error=None)
         reader=threading.Thread(target=self.session.snapshot,daemon=True);reader.start()
         self.assertTrue(entered.wait(1))
         writer=threading.Thread(target=lambda:(self.session.command('stop',{},motion_epoch=uuid4().hex,request_id=uuid4().hex),stopped.set()),daemon=True)
