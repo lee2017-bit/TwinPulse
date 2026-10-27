@@ -492,3 +492,67 @@ describe('Twin-edit auto-apply',()=>{
     expect(h.api.environmentAction).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('photo candidates placed beside their named neighbour',()=>{
+  const placement=(x:number,y:number,anchor='Sofa0')=>({position_m:[x,y,.2] as [number,number,number],yaw_deg:0,dimensions_m:[.35,.3,.4] as [number,number,number],uncertainty_m:.2,
+    anchor,gap_m:.05,side:'-y',basis:'photo_near_anchor' as const,alignment_verified:false as const,envelope_xy:[[x-.375,y-.35],[x+.375,y-.35],[x+.375,y+.35],[x-.375,y+.35]] as [number,number][]});
+  const suggested=()=>{const state=withPhoto(photoCandidate({near:'Sofa0',suggested:placement(1.8,1.8),suggestion_reason:null,batch_addable:true}),
+    photoCandidate({id:'Candidate_2',label:'Second basket',near:'Sofa0',suggested:placement(2.7,1.8),suggestion_reason:null,batch_addable:true}),
+    photoCandidate({id:'Candidate_3',kind:'office_chair',label:'Desk chair',overlay_kind:'unknown',dimensions_m:[.6,.6,.9],possible_duplicates:['Chair0'],near:'Chair0',suggested:placement(1,1,'Chair0'),suggestion_reason:null,batch_addable:false}),
+    photoCandidate({id:'Candidate_4',label:'Loose basket',near:null,suggested:null,suggestion_reason:'NO_ANCHOR',batch_addable:false}));return state;};
+  const open=async()=>{await screen.findByText('Added obstacles · 1');fireEvent.click(screen.getByText('Added obstacles · 1'));};
+  // A scene whose revision advances on each committed edit, through the same preview/Apply/transaction API as one Review.
+  function scene(refuse?:number){
+    const h=harness(suggested());let revision='scene-a',n=0,applied:SceneEditPreview|null=null;
+    const now=():EnvironmentState=>({...suggested(),scene_revision:revision});
+    h.api.environment.mockImplementation(async()=>now());h.api.workflow.mockImplementation(async()=>({...workflow,site_draft:{revision}}) as WorkflowState);
+    h.api.environmentAction.mockImplementation(async body=>{if(body.action!=='photo_candidate_preview')return now();n++;
+      if(n===refuse)throw new ApiError('invalid_request','PHOTO_CANDIDATE_ALREADY_REPRESENTED');
+      const preview={operation:{operation_id:'op-'+n},preview_digest:'d'+n,source_revision:revision,parent_revision:revision,result_revision:'scene-'+n,
+        affected_before:{},affected_after:{['Added_'+n]:{position_m:[...body.obstacle.position_xy_m,.2],dimensions_m:body.obstacle.dimensions_m,kind:'basket'}},
+        preserved_object_count:2,review_required:true,physical_validation:'NOT_RUN'} as SceneEditPreview;applied=preview;return {...now(),preview};});
+    h.api.applyEnvironmentEdit.mockImplementation(async operation=>({...editTransaction('DISPATCHED',false),operation_id:String(operation.operation_id)}));
+    h.api.sceneEditTransaction.mockImplementation(async()=>{if(!applied)return null as unknown as SceneEditTransaction;revision=applied.result_revision;
+      return {...editTransaction(),operation_id:String(applied.operation.operation_id),result_revision:applied.result_revision};});
+    return h;
+  }
+  it('pre-fills the suggested center, yaw and uncertainty on Review and still needs the duplicate check',async()=>{
+    const h=harness(suggested());render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);await open();
+    expect(screen.getAllByText(/Suggested: next to Sofa0 · 0\.05 m gap · estimate/)).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_1'}));
+    expect(screen.getByLabelText('Obstacle X')).toHaveProperty('value','1.8');expect(screen.getByLabelText('Obstacle Y')).toHaveProperty('value','1.8');
+    expect(screen.getByLabelText('Obstacle yaw')).toHaveProperty('value','0');expect(screen.getByLabelText('Obstacle uncertainty')).toHaveProperty('value','0.2');
+    expect(screen.getByText(/Placed next to Sofa0 from the photo \(estimate\) · click the map or edit X\/Y to adjust; the robot LiDAR refines it\./)).toBeTruthy();
+    expect(screen.getByRole('button',{name:'Preview obstacle'})).toHaveProperty('disabled',true);
+    fireEvent.click(screen.getByLabelText('Candidate duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Preview obstacle'}));
+    await waitFor(()=>expect(h.api.environmentAction).toHaveBeenCalledWith(expect.objectContaining({action:'photo_candidate_preview',candidate_ref:{job_id:'photo-job',candidate_id:'Candidate_1'},
+      obstacle:{kind:'basket',label:'Basket candidate',position_xy_m:[1.8,1.8],dimensions_m:[.35,.3,.4],yaw_deg:0,uncertainty_m:.2}})));
+    expect(h.api.applyEnvironmentEdit).not.toHaveBeenCalled();
+  });
+  it('keeps manual entry with the reason when a candidate has no suggestion',async()=>{
+    const h=harness(suggested());render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()}/>);await open();
+    expect(screen.getByText(/No suggested spot: the photo model named no neighbouring scanned or added object\. Place the center on the map\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Review Candidate_4'}));
+    expect(screen.getByLabelText('Obstacle X')).toHaveProperty('value','');expect(screen.getByText(/Reviewing Candidate_4 · set the center on the map\./)).toBeTruthy();
+    expect(screen.getByRole('button',{name:'Preview obstacle'})).toHaveProperty('disabled',true);
+  });
+  it('adds only the batch-safe suggestions, one preview and Apply at a time, after one duplicate check',async()=>{
+    const h=scene(),ready=vi.fn();render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={ready}/>);await open();
+    const button=screen.getByRole('button',{name:'Add 2 suggested objects'});expect(button).toHaveProperty('disabled',true);  // Desk chair may be Chair0; Candidate_4 has no spot
+    fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(button);
+    await screen.findByText('Added 2 suggested objects. Positions are estimates; the robot LiDAR refines them.');
+    const previews=h.api.environmentAction.mock.calls.map(([body])=>body).filter(body=>body.action==='photo_candidate_preview');
+    expect(previews.map(body=>body.action==='photo_candidate_preview'&&[body.candidate_ref.candidate_id,body.obstacle.position_xy_m,body.expected_scene_revision,body.duplicate_reviewed]))
+      .toEqual([['Candidate_1',[1.8,1.8],'scene-a',true],['Candidate_2',[2.7,1.8],'scene-1',true]]);
+    expect(h.api.applyEnvironmentEdit.mock.calls.map(([operation,digest])=>[operation.operation_id,digest])).toEqual([['op-1','d1'],['op-2','d2']]);
+    expect(ready).toHaveBeenCalledTimes(2);
+  });
+  it('stops at the first refused candidate and reports it without retrying',async()=>{
+    const h=scene(2);render(<EnvironmentImport api={h.typed} close={vi.fn()} onReady={vi.fn()} autoApply/>);await open();
+    fireEvent.click(screen.getByLabelText('Suggested objects duplicate reviewed'));fireEvent.click(screen.getByRole('button',{name:'Add 2 suggested objects'}));
+    await screen.findByText('Stopped at Candidate_2 after 1 added: PHOTO_CANDIDATE_ALREADY_REPRESENTED');
+    await act(async()=>{});
+    expect(h.api.environmentAction.mock.calls.filter(([body])=>body.action==='photo_candidate_preview')).toHaveLength(2);
+    expect(h.api.applyEnvironmentEdit).toHaveBeenCalledTimes(1);
+  });
+});

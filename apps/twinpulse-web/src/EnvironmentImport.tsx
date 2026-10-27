@@ -49,7 +49,11 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   };
   const refresh=async()=>{const reading=++sequence.current,next=await api.environment();
     if(current()&&reading===sequence.current){setState(next);receiveProposal(next);}return next;};
-  useEffect(()=>{mounted.current=true;setState(null);setPreview(null);setTransaction(null);trackEdit(null);discardProposal();setMoveRequest('');setUnknown(false);setSelected('');setError(null);setBusy(false);
+  // "Add N suggested objects": one candidate at a time through the same photo_candidate_preview -> Apply -> ACK/commit path as one Review.
+  const batch=useRef<{jobId:string;ids:string[];step:'next'|'previewing'|'previewed'|'failed';revision?:string;operationId?:string;failure?:string;added:number}|null>(null);
+  const [batchStatus,setBatchStatus]=useState<string|null>(null),[batching,setBatching]=useState(false);
+  const stopBatch=(message:string|null)=>{batch.current=null;setBatching(false);setBatchStatus(message);};
+  useEffect(()=>{mounted.current=true;stopBatch(null);setState(null);setPreview(null);setTransaction(null);trackEdit(null);discardProposal();setMoveRequest('');setUnknown(false);setSelected('');setError(null);setBusy(false);
     let active=true;void refresh().catch(e=>{if(active&&current())setError(describe(e));});
     return()=>{active=false;mounted.current=false;proposalOwner.current=null;sequence.current++;};},[api,context]);
   useEffect(()=>{if(initialFile){setFile(initialFile);setUnits('');setDirty(true);setPreview(null);discardProposal();}},[initialFile]);
@@ -124,9 +128,39 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
   const autoApplied=useRef<string|null>(null);
   useEffect(()=>{  // Twin-edit auto-apply (chat setting): the same transaction path as the Apply button, once per preview
     const operationId=preview?.operation?.operation_id;
-    if(!autoApply||!preview||typeof operationId!=='string'||blocked||modelRunning||autoApplied.current===operationId)return;
+    // A batch the user started applies its own previews the same way, one at a time, even with the setting off.
+    const owned=batch.current?.step==='previewed'&&batch.current.operationId===operationId;
+    if(!(autoApply||owned)||!preview||typeof operationId!=='string'||blocked||modelRunning||autoApplied.current===operationId)return;
     autoApplied.current=operationId;applyPreview();
   });
+  useEffect(()=>{const run=batch.current;if(!run)return;
+    const stopped=(reason:string)=>stopBatch(`Stopped at ${run.ids[0]} after ${run.added} added: ${reason}`);
+    if(run.step==='failed'){stopped(run.failure??'refused');return;}
+    if(run.step==='previewing')return;
+    if(run.step==='previewed'){
+      if(pendingEdit||busy||lock.current)return;  // Apply, ACK and commit still in flight
+      if(preview&&!error&&!unknown)return;  // waiting for its Apply
+      if(preview||unknown||state?.scene_revision===run.revision){stopped(error??'the edit was not applied');return;}
+      run.ids.shift();run.added++;run.step='next';
+      if(!run.ids.length){stopBatch(`Added ${run.added} suggested object${run.added===1?'':'s'}. Positions are estimates; the robot LiDAR refines them.`);return;}
+    }
+    if(blocked||lock.current||modelRunning||photoRunning||preview)return;
+    const proposal=state?.photo_proposal,c=proposal?.job_id===run.jobId?proposal.candidates.find(row=>row.id===run.ids[0]):undefined,s=c?.suggested;
+    // Recomputed by the server for the current scene: a suggestion that is gone or no longer batch-safe stops the batch.
+    if(!c||!s||!c.batch_addable||!c.overlay_kind||!state?.scene_revision){stopped(c?.suggestion_reason??'no current suggestion');return;}
+    const revision=state.scene_revision;run.step='previewing';run.revision=revision;
+    void perform(async()=>{try{
+      const next=await act({action:'photo_candidate_preview',request_id:crypto.randomUUID(),candidate_ref:{job_id:run.jobId,candidate_id:c.id},duplicate_reviewed:true,
+        expected_scene_revision:revision,obstacle:{kind:c.overlay_kind!,label:c.label,position_xy_m:[s.position_m[0],s.position_m[1]],dimensions_m:s.dimensions_m,
+          yaw_deg:s.yaw_deg,uncertainty_m:s.uncertainty_m}});
+      const operationId=next.preview?.operation.operation_id;
+      if(!next.preview||typeof operationId!=='string')throw new Error('No preview for this suggestion.');
+      if(batch.current===run&&current()){run.operationId=operationId;run.step='previewed';setPreview(next.preview);}
+    }catch(e){if(batch.current===run){run.step='failed';run.failure=describe(e);}throw e;}});
+  });
+  const startBatch=(ids:string[])=>{const job=state?.photo_proposal?.job_id;if(!job||!ids.length||batch.current)return;
+    batch.current={jobId:job,ids:[...ids],step:'next',added:0};setBatching(true);setError(null);setPreview(null);discardProposal();
+    setBatchStatus(`Adding ${ids.length} suggested object${ids.length===1?'':'s'} one at a time…`);};
   return <section className="library-workspace" aria-label="Import space" style={{margin:'8px 16px',padding:'12px',border:'1px solid #cbd7df',borderRadius:12,maxHeight:'45vh',overflow:'auto',background:'#fff',color:'#172836'}}>
     <header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong>Import space · USD</strong><button type="button" onClick={close}>Close import space</button></header>
     <p>Keep the source geometry as your environment. Inspect locally, import, then show the Twin.</p>
@@ -164,7 +198,8 @@ export function EnvironmentImport({api,initialFile,close,onReady,onSubmitted,ena
         {surveyOpen&&<EnvironmentSurvey api={api} revision={state.scene_revision!} photo={state.photo_proposal} disabled={blocked||modelRunning||photoRunning}
           onInvalidate={()=>setPreview(null)} onPreview={v=>{discardProposal();setPreview(v);}}/>}</details>
       {state.operation&&<p role="status">Build command: {state.operation.status} · {state.operation.receipt?'receipt received':'ACK pending'}</p>}
-      <EnvironmentObstacles key={context} state={state} disabled={blocked||modelRunning||photoRunning}
+      <EnvironmentObstacles key={context} state={state} disabled={blocked||modelRunning||photoRunning||batching}
+        addAll={startBatch} batch={{running:batching,status:batchStatus}}
         invalidate={()=>{setPreview(null);discardProposal();}}
         analyze={photo=>void perform(async()=>{
           if(!/\.(jpe?g|png)$/i.test(photo.name)||photo.size>5*1024*1024)throw new Error('Choose a JPEG or PNG photo up to 5 MiB for analysis.');

@@ -77,8 +77,10 @@ try{
   if(!candidateId)throw Error('Explicit reviewed candidate id required');
   finish=await recordRenderedPage(p,path.join(output,'recording'));
   await step('Review image candidate with explicit test placement and duplicate check',async()=>{
+   // Schema 1.2: a candidate next to a named scanned/added object arrives with a local suggested center (estimate); otherwise X stays empty.
+   const reviewed=state()?.photo_proposal?.candidates?.find(c=>c.id===candidateId);result.suggested=reviewed?.suggested??null;result.suggestion_reason=reviewed?.suggestion_reason??null;
    await panel.getByRole('button',{name:'Review '+candidateId,exact:true}).click();
-   await expect(panel.getByLabel('Obstacle X',{exact:true})).toHaveValue('');
+   await expect(panel.getByLabel('Obstacle X',{exact:true})).toHaveValue(reviewed?.suggested?String(reviewed.suggested.position_m[0]):'');
    const xy=allowanceFile?JSON.parse(await fs.readFile(allowanceFile,'utf8')).obstacle_xy:[-3.15,-.45];
    await panel.getByLabel('Obstacle X',{exact:true}).fill(String(xy[0]));await panel.getByLabel('Obstacle Y',{exact:true}).fill(String(xy[1]));
    await panel.getByLabel('Obstacle name').fill('Photo candidate - test placement');
