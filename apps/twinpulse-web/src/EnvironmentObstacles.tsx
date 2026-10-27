@@ -23,6 +23,10 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
   const reviewed=proposal?.job_id===candidate?.job_id?proposal?.candidates.find(c=>c.id===candidate?.candidate_id):undefined;
   // Leaving a review restores the default uncertainty when a furniture Review set .05 and the user did not type a value.
   const endReview=()=>{setCandidate(undefined);if(autoMargin){setMargin('.2');setAutoMargin(false);}};
+  // 2026-10-27: a finished add (one Review committed, or "Add N suggested objects") clears every field a Review filled, so the form never shows another object's kind, name or spot.
+  const clearForm=()=>{endReview();setKind('');setLabel('');setXY(['','']);setSize(['','','']);setYaw('0');setDuplicate(false);setReplaceId('');};
+  // The server reports the reviewed candidate ALREADY_ADDED only once its own add committed (a Replace's removal does not), so the Review ends there.
+  useEffect(()=>{if(reviewed?.suggestion_reason==='ALREADY_ADDED')clearForm();},[state.scene_revision]);
   useEffect(()=>{let active=true;setPhotoSHA('');if(photo&&crypto.subtle&&typeof photo.arrayBuffer==='function'){
     void photo.arrayBuffer().then(bytes=>crypto.subtle.digest('SHA-256',bytes)).then(hash=>{if(active)setPhotoSHA(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));}).catch(()=>{});
   }return()=>{active=false;};},[photo]);
@@ -79,7 +83,7 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
         </div>)}
         {(()=>{const ready=proposal.candidates.filter(c=>c.batch_addable&&c.suggested),n=ready.length;return n>0&&addAll&&<div>
           <label><input aria-label="Suggested objects duplicate reviewed" type="checkbox" checked={batchReviewed} onChange={e=>setBatchReviewed(e.target.checked)}/> I checked that {n===1?'this suggested object is':`these ${n} suggested objects are`} not already represented.</label>
-          <button type="button" disabled={!batchReviewed||!!batch?.running} onClick={()=>{setBatchReviewed(false);endReview();setDuplicate(false);invalidate();addAll(ready.map(c=>c.id));}}>Add {n} suggested object{n===1?'':'s'}</button>
+          <button type="button" disabled={!batchReviewed||!!batch?.running} onClick={()=>{setBatchReviewed(false);clearForm();invalidate();addAll(ready.map(c=>c.id));}}>Add {n} suggested object{n===1?'':'s'}</button>
           <small>{batch?.autoApply?'Twin-edit auto-apply is on: each one is previewed and applied automatically in order (Engine ACK, Undo available).':
             'Each one opens its own preview in order; check it and Apply space edit to continue (Engine ACK, Undo available).'} Cancel or the first refusal stops the rest. Positions and sides are estimates; the robot LiDAR corrects offsets up to 0.6 m, not a wrong side.</small></div>;})()}
         {batch?.status&&<p role="status">{batch.status}</p>}
@@ -94,14 +98,14 @@ export function EnvironmentObstacles({state,disabled,preview,remove,invalidate,a
         <label><input aria-label="Candidate duplicate reviewed" type="checkbox" checked={duplicate} onChange={e=>{setDuplicate(e.target.checked);invalidate();}}/> I checked that this object is not already represented.</label>
         <button type="button" onClick={()=>{endReview();setDuplicate(false);invalidate();}}>Use manual entry</button></>}
       <label className="library-field">Type<select aria-label="Obstacle type" value={kind} onChange={e=>{const k=e.target.value;setKind(k);setLabel(k.replaceAll('_',' '));setSize(presets[k].map(String));endReview();setDuplicate(false);invalidate();}}>
-        {Object.keys(presets).map(k=><option key={k} value={k}>{k.replaceAll('_',' ')}</option>)}</select></label>
+        {!kind&&<option value="" disabled>Choose a type…</option>}{Object.keys(presets).map(k=><option key={k} value={k}>{k.replaceAll('_',' ')}</option>)}</select></label>
       <label className="library-field">Name<input aria-label="Obstacle name" maxLength={120} value={label} onChange={e=>{setLabel(e.target.value);invalidate();}}/></label>
       <div className="library-position">{['X','Y'].map((axis,i)=><label key={axis}>Center {axis} (m)<input aria-label={`Obstacle ${axis}`} type="number" step="any" value={xy[i]} onChange={e=>{setXY(v=>v.map((n,j)=>j===i?e.target.value:n));invalidate();}}/></label>)}</div>
       <div className="library-position">{['width','depth','height'].map((axis,i)=><label key={axis}>{axis} (m)<input aria-label={`Obstacle ${axis}`} type="number" min="0.01" max="3" step="any" value={size[i]} onChange={e=>{setSize(v=>v.map((n,j)=>j===i?e.target.value:n));invalidate();}}/></label>)}</div>
       <div className="library-position"><label>Yaw (deg)<input aria-label="Obstacle yaw" type="number" min="-180" max="180" value={yaw} onChange={e=>{setYaw(e.target.value);invalidate();}}/></label>
         <label>Uncertainty (m)<input aria-label="Obstacle uncertainty" type="number" min=".05" max="1" step=".05" value={margin} onChange={e=>{setMargin(e.target.value);setAutoMargin(false);invalidate();}}/></label></div>
       <small>Scene X/Y coordinates; bottom on the floor. Catalog sizes are editable estimates. The whole uncertainty footprint must fit the scanned floor. A hidden keepout blocks SIM paths; LiDAR uses visible shapes only.</small>
-      <button type="button" disabled={!valid||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate,undefined)}>Preview obstacle</button>
+      <button type="button" disabled={!valid||!kind||!label.trim()||!!candidate&&!duplicate} onClick={()=>preview({kind,label:label.trim(),position_xy_m:xy.map(Number) as [number,number],dimensions_m:size.map(Number) as [number,number,number],yaw_deg:Number(yaw),uncertainty_m:Number(margin)},photo,candidate,undefined)}>Preview obstacle</button>
     </fieldset>
     {added.length>0&&<ul style={{paddingInlineStart:20,overflowWrap:'anywhere'}}>{added.map(o=><li key={o.id}>
       {o.label} · {o.category} · {o.evidence?.basis==='photo_estimate'?'photo estimate':o.evidence?.basis==='lidar_estimate'?'LiDAR estimate':'manual estimate'} · not aligned

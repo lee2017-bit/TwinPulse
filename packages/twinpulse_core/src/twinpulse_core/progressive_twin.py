@@ -200,7 +200,7 @@ def _check_pending_geometry(issue, parameters, parent):
 def pending_support_eligible(parameters):
     from .room_item_catalog import ROOM_ITEM_KINDS
     return (parameters.get('kind') in ROOM_ITEM_KINDS and parameters['kind'] not in
-        {'office_chair','floor_fan','clothes_rack','door_leaf','pallet'} and
+        {'office_chair','floor_fan','floor_lamp','clothes_rack','door_leaf','pallet'} and
         parameters.get('placement',{}).get('relation')=='surface')
 
 

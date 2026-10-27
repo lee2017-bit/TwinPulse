@@ -45,7 +45,7 @@ SIZES = {
     'cable_bundle':(.3,.2,.04),'power_adapter':(.18,.12,.08),'power_strip':(.25,.12,.08),
     'small_equipment':(.2,.2,.15),'monitor':(.45,.15,.35),'tabletop_item':(.2,.2,.2),
     'window_blind':(.8,.08,.8),'ceiling_light':(.3,.3,.12),'unknown':(.3,.3,.3),
-    'pallet':(1.2,.8,.12),
+    'pallet':(1.2,.8,.12),'floor_lamp':(.4,.4,1.6),
 }
 KINDS = (*furniture_kinds(), *ROOM_ITEM_KINDS, *WAREHOUSE_KINDS)
 _ID = re.compile(r'^[A-Za-z][A-Za-z0-9_-]{0,31}$')
@@ -474,7 +474,7 @@ def _model_fields(kind=None, *, reviewed_support=None, allowed_parents=None, rec
         elevation_m={'type':['number','null'],'minimum':0,'maximum':4})
     # Prevent known-invalid output in the grammar, not by rewriting a rejected
     # response. The compiler independently enforces these same relationships.
-    if kind in (*furniture_kinds(),'office_chair','floor_fan','clothes_rack','door_leaf','pallet','floor_covering',*WAREHOUSE_KINDS):
+    if kind in (*furniture_kinds(),'office_chair','floor_fan','floor_lamp','clothes_rack','door_leaf','pallet','floor_covering',*WAREHOUSE_KINDS):
         placement=dict(relation={'enum':['floor']},parent_id={'type':'null'},
             part={'type':'null'},anchor={'enum':['centre']},elevation_m={'type':'null'})
         if reviewed_support is not None:
@@ -495,7 +495,7 @@ def _model_fields(kind=None, *, reviewed_support=None, allowed_parents=None, rec
             part={'type':'string','maxLength':32},anchor={'enum':['centre']},elevation_m={'type':'null'})
     placement_schema={'type':'object','additionalProperties':False,
         'required':['relation','parent_id','part','anchor','elevation_m'],'properties':placement}
-    floor_kinds=(*furniture_kinds(),'office_chair','floor_fan','clothes_rack','door_leaf','pallet','floor_covering',*WAREHOUSE_KINDS)
+    floor_kinds=(*furniture_kinds(),'office_chair','floor_fan','floor_lamp','clothes_rack','door_leaf','pallet','floor_covering',*WAREHOUSE_KINDS)
     if (kind in KINDS and kind not in (*floor_kinds,*WALL_ITEMS,*CEILING_ITEMS)
             and reviewed_support is None and allowed_parents is not None):
         # Each branch binds a parent ID to its actual library parts. A union of
@@ -654,7 +654,7 @@ def build_layout_body(request, observation, planner_model, reference, *, quality
             'wall (parent left_wall/right_wall/rear_wall), or ceiling (parent ceiling). '
             'Furniture bed, wardrobe, desk, chair, sofa, dining_table and storage MUST be floor-standing; '
             'never put furniture on another furniture object. '
-            'office_chair, floor_fan, clothes_rack, door_leaf, pallet, rack and pallet_stack also stand on the floor. '
+            'office_chair, floor_fan, floor_lamp, clothes_rack, door_leaf, pallet, rack and pallet_stack also stand on the floor. '
             'Use warehouse.pallet for an empty pallet; warehouse.pallet_stack already includes cargo. '
             'Rack and pallet_stack require warehouse_parameters and yaw_deg=0, per the typed schema. '
             'Rack supports are shelf_1 through its selected level_count; pallet supports deck; '

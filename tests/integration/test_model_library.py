@@ -49,15 +49,18 @@ class ModelLibraryTests(unittest.TestCase):
             with urlopen(req,timeout=3) as response:cookie=response.headers['Set-Cookie'].split(';')[0]
             with urlopen(Request(server.base_url+'/v1/product/model-library',headers={'Cookie':cookie}),timeout=3) as response:
                 result=json.load(response)
-            self.assertEqual(len(result['models']),34);self.assertFalse(result['physical_authority'])
+            self.assertEqual(len(result['models']),35);self.assertFalse(result['physical_authority'])
             self.assertIn('warehouse.pallet',{m['model_id'] for m in result['models']})
         finally:server.stop()
 
     def test_shared_family_discovery_has_no_scene_side_effect(self):
         all_models=library_models();home=library_models('home');warehouse=library_models('warehouse')
-        self.assertEqual(len(all_models),34)
+        self.assertEqual(len(all_models),35)  # 2026-10-27: + home.floor_lamp
         self.assertIn('warehouse.pallet',{m['model_id'] for m in all_models})
-        self.assertEqual(len({m['model_id'] for m in all_models}),34)
+        self.assertEqual(len({m['model_id'] for m in all_models}),35)
+        lamp=next(m for m in all_models if m['kind']=='floor_lamp')
+        self.assertEqual((lamp['model_id'],lamp['tool'],lamp['catalog_version'],lamp['environments']),('home.floor_lamp','place_room_item','room-items-1.3',['home']))
+        self.assertIn('home.floor_lamp',{m['model_id'] for m in library_for_request('warehouse with a floor lamp')['models']})
         self.assertIn('common.desk',{m['model_id'] for m in home}&{m['model_id'] for m in warehouse})
         self.assertNotIn('warehouse.rack',{m['model_id'] for m in home})
         self.assertIn('warehouse.rack',{m['model_id'] for m in warehouse})

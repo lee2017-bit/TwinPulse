@@ -35,7 +35,8 @@ def item(kind='cable_bundle', object_id='cables', x=0.,y=0.,z=.05):
 
 def clutter_plan():
     """All compiler categories; not the legacy manual profile's 24-pick UI."""
-    items=[item(kind,kind, -2.4+(i%5)*1.2, 1.2+(i//5)*.6,
+    # 2026-10-27: rows start at y=.6 so the sixth row (26 kinds with floor_lamp) stays on the 8 m floor.
+    items=[item(kind,kind, -2.4+(i%5)*1.2, .6+(i//5)*.6,
                 .8 if kind in {'monitor','tabletop_item','window_blind','ceiling_light'} else .05)
            for i,kind in enumerate(room_item_kinds())]
     from twinpulse_core.site_tools import SceneToolCall,SiteCallEvidence
@@ -97,6 +98,25 @@ class RoomItemTests(unittest.TestCase):
         self.assertTrue(all(r['placement_status']=='represented' for r in inventory['items']))
         self.assertFalse(inventory['live_observation'])
         self.assertTrue(all(r['last_observation_utc'] is None for r in inventory['items']))
+
+    def test_floor_lamp_is_a_tall_slim_rigid_prop_in_its_own_catalog_version(self):
+        # 2026-10-27: a photographed floor lamp only fitted small_equipment (a 0.3 m cube).
+        from twinpulse_core.room_visuals import display_meshes
+        from twinpulse_provider.photo_layout import _model_fields
+        args=dict(item('floor_lamp','lamp',z=.8),dimensions_m=[.4,.4,1.6])
+        self.assertEqual(args['catalog_version'],'room-items-1.3')
+        with self.assertRaises(ValueError):checked_room_item({**args,'catalog_version':'room-items-1.0'})
+        call=next(x for x in site_tool_plan_json_schema('2.2')['properties']['calls']['items']['anyOf'] if x['properties']['tool']['const']=='place_room_item')
+        self.assertIn('floor_lamp',call['properties']['arguments']['properties']['kind']['enum'])
+        self.assertIn('room-items-1.3',call['properties']['arguments']['properties']['catalog_version']['enum'])
+        parts=expand_room_item(args);self.assertEqual(room_item_risk(args),'collision');self.assertTrue(all(p.collision for p in parts))
+        self.assertAlmostEqual(max(p.transform.position_m[2]+p.shape.dimensions_m[2]/2 for p in parts),1.6)
+        self.assertLess(parts[1].shape.dimensions_m[0],.1)  # the pole between base disc and shade is slim
+        self.assertEqual({p['name'] for p in display_meshes('floor_lamp',(.4,.4,1.6))},{'base_disc','pole','shade'})
+        # The planner may only stand it on the floor, like floor_fan, and the compiler checks the same.
+        from twinpulse_core.room_item_catalog import REQUIRED_ROOM_RELATIONS
+        self.assertEqual(_model_fields('floor_lamp',allowed_parents={'desk':'desk'})['placement']['properties']['relation'],{'enum':['floor']})
+        self.assertEqual(REQUIRED_ROOM_RELATIONS['floor_lamp'],'floor')
 
     def test_strict_invalid_arguments_no_hidden_collision_or_timestamp(self):
         for changed in ({'position_m':[0,0,0]}, {'dimensions_m':[0,.3,.1]}, {'position_m':[float('nan'),0,.05]},
