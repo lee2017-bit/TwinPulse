@@ -798,6 +798,31 @@ class LidarMatchThresholdTest(unittest.TestCase):
             self.assertEqual([o['candidate'] for o in calls[0]['obstacles']],[1])
             with self.assertRaises(BrokerError):cls._add_route_obstacles(self_,'o',plan_id,candidates,exclude=[0,1])
 
+    def test_a_route_box_leaves_a_way_round_it_in_a_room_wide_corridor(self):
+        """2026-10-27 build 59 physical run: the auto-applied box got 0.30 m + 0.10 m (unknown kind), a 0.4 m band that with the 0.35 m
+        route berth closed both sides of the real box, so the re-planned route after the LiDAR update had no path."""
+        import json,tempfile
+        from types import SimpleNamespace
+        from twinpulse_app.api import LocalApiServer as cls
+        from twinpulse_core.bounded_grid_plan import NoBoundedPath
+        from twinpulse_core.declared_route import plan_through
+        calls=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'declared-routes').mkdir();plan_id='b'*32
+            (root/'declared-routes'/(plan_id+'.json')).write_text(json.dumps(dict(candidates=[])),encoding='utf-8')
+            workspace=SimpleNamespace(action=lambda body,owner:calls.append(body) or dict(preview=dict(operation=dict(operation_id='op'),preview_digest='d'),lidar_added=1),
+                pinned_environment_operation=lambda *a,**k:('op','d'))
+            self_=SimpleNamespace(robot_fleet=SimpleNamespace(root=root),_environment_workspace=lambda:workspace,
+                _workflow=lambda:SimpleNamespace(scene_edit_transaction=SimpleNamespace(start=lambda *a:None)))
+            cls._add_route_obstacles(self_,'o',plan_id,[dict(position_xy_m=[2.,0.],radius_m=.15,extent_m=[.3,.3],yaw_deg=0.,returns=6)])
+        box=calls[0]['obstacles'][0]
+        def plan(uncertainty):
+            geometry,cells=lidar_twin([0,-1.2,4.,1.2],[('b'*20,box['position_xy_m'],box['dimensions_m'][:2],box['yaw_deg'],uncertainty)])
+            return plan_through([.5,0.,0.],[[3.5,0.]],geometry,cells,kind='physical')
+        route=plan(box['uncertainty_m'])
+        self.assertEqual(route['polyline'][-1],[.5,0.])
+        with self.assertRaisesRegex(NoBoundedPath,'NO_PATH'):plan(.3)  # the build 59 band in the same 2.4 m wide room
+
     def test_lidar_outline_boxes_carry_the_dark_display_colour(self):
         import inspect
         from twinpulse_app import environment_workspace as ws
