@@ -36,8 +36,10 @@ REQUIRED_INTEGRATION_PREFIXES = (
     'test_adaptive_robot_', 'test_chat_robot_', 'test_build_sprint_gate', 'test_license_policy',
 )
 # Integration modules that reproduce fixes made on real runs (2026-10-26/27) and must stay green before a build:
-# the route readiness guard, the photo observer (schema 1.1) and the WinError-145 diagnostics flushes.
-REGRESSION_INTEGRATION_MODULES = ('test_declared_route', 'test_environment_photo', 'test_h2b2_site_review', 'test_r3_application')
+# the route readiness guard, the photo observer (schema 1.1), the WinError-145 diagnostics flushes and the
+# build-59 route-end carry-over / frame-bound declared start.
+REGRESSION_INTEGRATION_MODULES = ('test_declared_route', 'test_environment_photo', 'test_h2b2_site_review', 'test_r3_application',
+                                  'test_route_end_carry')
 # The scripted functional pass (New chat -> USD -> Twin -> Auto-apply -> photo -> robot -> pose -> drag -> survey refusal)
 # needs Isaac, an exclusive App instance and a 180 s one-use browser ticket, so it cannot run unattended inside this gate.
 # It is the mandatory, recorded post-install acceptance step of the build chain, not a gate step.

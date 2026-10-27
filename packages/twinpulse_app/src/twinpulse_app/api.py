@@ -1093,6 +1093,7 @@ class LocalApiServer:
                         if body.get('action')=='adopt' and self.conversation and self.conversation._state['mode']=='REAL':
                             raise BrokerError('environment_sim_required','Import space in a new SIM chat.',status=409)
                         result=self._environment_workspace().action(body,session.session_id)
+                    if body.get('action')=='adopt' and getattr(self,'robot_fleet',None) is not None:self.robot_fleet.twin_imported()
                     if body.get('action')=='adopt' and self.conversation:
                         self.conversation.record_environment_import(body['request_id'],result['source_name'],result['source_sha256'],result['scene_revision'])
                     return self._json(request,200,result)

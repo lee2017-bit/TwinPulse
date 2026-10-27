@@ -47,6 +47,9 @@ export type RobotFleetRobot = {
     voltage_protection?:'UNKNOWN'|'CLEAR'|'LOW_VOLTAGE_GUARD';low_voltage_guard_v?:number;read_status?:Record<string,unknown>};
   pose:{position_m:[number,number,number];frame_id:string;source:string;aligned:boolean}|null;
   display_pose?:{position_m:[number,number,number];source:'operator_estimate_not_localized';scene_revision:string;frame_id:'isaac_world';aligned:false}|null;
+  display_pose_current?:boolean;  // the marker's Twin frame is the shown one (object edits keep it; a new import does not)
+  route_start_estimate?:{label:string;from_plan_id:string;pose:[number,number,number];driven_m:number;carry_over:boolean;carry_refused:string|null;
+    uncertainty:{position_m:number;yaw_rad:number;relative_to:string;basis:string};usable:boolean;overridden?:boolean;reason:string|null}|null;
   telemetry_age_ms:number|null; telemetry_sequence:number;
   live_heartbeat?:boolean;
   controller_state?:string|null;

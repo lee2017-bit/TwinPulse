@@ -95,10 +95,16 @@ def _spread_step(pose,visited,reachable,geometry,observed_cells,remaining,cleara
     return None,None
 
 
-def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6,discs=()):
+def _route_clearance(kind,margin_m):
+    """Planner berth; margin_m widens it by a start pose's extra uncertainty (more conservative only)."""
+    if type(margin_m) not in (int,float) or not 0.<=margin_m<=.5:raise ValueError('DECLARED_ROUTE_MARGIN_INVALID')
+    return max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)+margin_m
+
+
+def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.,max_waypoints=4,min_spacing_m=.6,discs=(),margin_m=0.):
     """Bounded, spread-out observation stops on the model, then back to the declared start."""
-    clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
-    reachable=_reachable(start,geometry,observed_cells,clearance,PHYSICAL_STOP_CLEARANCE_M if kind=='physical' else 0.,budget_m,discs)
+    clearance=_route_clearance(kind,margin_m)
+    reachable=_reachable(start,geometry,observed_cells,clearance,PHYSICAL_STOP_CLEARANCE_M+margin_m if kind=='physical' else 0.,budget_m,discs)
     pose=list(start);visited=[list(start)];polyline=[];legs=[];waypoints=[];remaining=budget_m;reason=None;first_leg_m=None
     # First leg straight ahead (2026-10-26): the operator places the test obstacle on
     # the line the robot faces, so stop 1 is the farthest reachable stop on that line
@@ -132,13 +138,13 @@ def plan_survey(start,geometry,observed_cells=None,*,kind='physical',budget_m=6.
         first_leg_straight_m=first_leg_m)
 
 
-def plan_through(start,stops,geometry,observed_cells=None,*,kind='physical',discs=()):
+def plan_through(start,stops,geometry,observed_cells=None,*,kind='physical',discs=(),margin_m=0.):
     """Operator-chosen stops (clicked on the floor map) in order, then back to the start.
 
     Same model paths, clearance and keepouts as the survey; the stops are the
     operator's request, not an observation plan.
     """
-    clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
+    clearance=_route_clearance(kind,margin_m)
     pose=list(start);polyline=[];legs=[];waypoints=[]
     for stop in list(stops)[:8]:
         goal=[float(stop[0]),float(stop[1])]
@@ -292,13 +298,13 @@ def heading_move(pose,yaw,*,tolerance_rad=HEADING_TOLERANCE_RAD):
     return dict(direction='left' if delta>0 else 'right',amount=min(abs(delta),MAX_TURN_RAD)) if abs(delta)>=tolerance_rad else None
 
 
-def replan_legs(pose,goals,geometry,observed_cells=None,*,kind='physical',discs=(),home=None):
+def replan_legs(pose,goals,geometry,observed_cells=None,*,kind='physical',discs=(),home=None,margin_m=0.):
     """Fresh model paths from the measured pose through the remaining goals (with new keepout discs).
 
     home is the declared start; only its escape zone relaxes synthetic envelopes,
     so a recovery pose inside an envelope band elsewhere fails closed.
     """
-    clearance=max(task_clearance(kind,planning=True),PHYSICAL_ROUTE_CLEARANCE_M if kind=='physical' else 0.)
+    clearance=_route_clearance(kind,margin_m)
     legs=[];at=list(pose)
     for goal in goals:
         legs.append([list(q) for q in route_to(at,goal[:2],geometry,observed_cells=observed_cells,discs=discs,clearance_m=clearance,home=home)])
