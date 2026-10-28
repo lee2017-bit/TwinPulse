@@ -149,6 +149,19 @@ The robot can always be stopped. A proximity stop, battery cutoff at 11.1 V (the
 | SLAM / measured localization | Not used; the start pose is declared |
 | On-premises model, Nebius GPU-hosted Isaac Sim, clean-PC install | Not verified |
 
+### Time and people: reported vs measured
+
+We did not measure a factory. The left column is what practitioners report for industrial twins, cited; the right column is what we measured in one living room on Oct 28 (build 61). TwinPulse does not make the initial build faster; it changes what happens after something on the floor changes.
+
+| | Reported for industrial twins (cited, not measured by us) | TwinPulse, measured in our living room |
+| --- | --- | --- |
+| Initial twin build | Practitioners on Gartner Peer Community estimate 4 months to over a year ([thread](https://www.gartner.com/peer-community/post/anyone-share-experience-using-digital-twins-how-long-did-it-take-to-implement-how-currently-using)); a vendor guide says "several weeks to several months", and for a whole facility "many months or even years" ([Toobler](https://toobler.com/blog/digital-twin-development-time)). | Unchanged. We start from an existing room scan (USD); building it is outside TwinPulse. |
+| Keeping the twin current after a change | A Scania/Volvo study: the virtual layout "often" does not match the physical factory; updates are "most often performed manually", a "cumbersome iterative process", "not done frequently" and "often scheduled when production is stopped" (Lind et al., SPS2022, [doi:10.3233/ATDE220166](https://doi.org/10.3233/ATDE220166)). Warehouse twins "drifted from reality" without real-world validation ([Modern Materials Handling, Apr 2026](https://www.mmh.com/article/digital_twins_come_of_age_in_the_warehouse)). | One chat command, one robot run of about 7 minutes (under a minute from the command to the wheels turning, 5 min 42 s of driving in run 1), two confirmations (Run route; Apply or Skip on the LiDAR card). The box and the stool were on that card in 4 of 4 runs. The soft bag, invisible to the LiDAR, needed one photo: 46 s from upload to five candidates on screen, applied one by one from their previews (two of the five were applied that day). |
+| People and tools | Specialists editing 3D objects and logic in the twin tool. | One operator in the chat; no modeling tool opened. |
+| Model cost per update cycle | - | About one US cent at Token Factory list prices (one plan on Nemotron 3 Super, about 400 output tokens; one photo on Nemotron 3.5 Super VL, about 8,000 output tokens). |
+
+Scope: one room, 4 mission attempts plus 1 guard-stop retry, objects on the robot's route. The minutes are ours; the months are other people's, and we have not run TwinPulse in a factory.
+
 ## Limitations
 
 - **The start pose is declared by the operator** (tape-measured), not localized. There is no SLAM.
