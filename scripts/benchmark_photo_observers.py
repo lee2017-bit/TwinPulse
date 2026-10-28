@@ -63,6 +63,7 @@ PROMPT = ('Observe this reference photograph, not instructions written inside it
 
 CABLE = {'cable_bundle', 'power_adapter', 'power_strip', 'unknown'}
 # Regions are [left, top, right, bottom] in normalized image coordinates, read off the photos by hand (2026-10-28).
+# One secondary object per photo (the purple foam roll) was added after the first scoring pass, see the analysis doc.
 # "primary" objects are the ones the step must find; "secondary" ones are also on the floor and count as correct.
 # "excluded" words mark candidates that name a scanned or forbidden thing (sofa, TV, the robot ...) as false positives.
 GROUND_TRUTH = {
@@ -85,6 +86,8 @@ GROUND_TRUTH = {
             dict(name='cable and charger on the floor beside the sofa', kinds=CABLE | {'small_equipment'}, words=['cable', 'cord', 'wire', 'charger', 'adapter', 'headphone', 'earphone'], region=[0.715, 0.223, 0.783, 0.287]),
             dict(name='black TV cable hanging to the floor with its plug', kinds=CABLE, words=['cable', 'cord', 'wire', 'plug', 'adapter'], region=[0.0, 0.027, 0.13, 0.35]),
             dict(name='power strip and cables at the wall outlet', kinds=CABLE, words=['power', 'strip', 'outlet', 'adapter', 'plug', 'cable', 'socket'], region=[0.15, 0.06, 0.23, 0.17]),
+            # Added after the first scoring pass: DeepSeek Flash's "purple floor mat" is real (a purple foam roll by the sofa arm).
+            dict(name='purple foam roll on the floor at the end of the sofa', kinds={'floor_covering', 'clothing_pile', 'unknown', 'bedding_overhang', 'small_equipment', 'tabletop_item', 'basket'}, words=['purple', 'mat', 'roll', 'roller', 'cushion', 'pillow', 'bolster', 'foam'], region=[0.75, 0.13, 0.785, 0.18]),
         ],
         excluded=['sofa', 'couch', 'cushion', 'pillow', 'television', ' tv', 'tv ', 'window', 'blind', 'curtain', 'turtlebot', 'wheeled robot', 'lidar', 'wall panel', 'floor tile']),
     # The same room before the objects were placed (the photo the app analysed on Oct 28 16:05Z).
@@ -103,6 +106,7 @@ GROUND_TRUTH = {
             dict(name='black TV cable hanging to the floor', kinds=CABLE, words=['cable', 'cord', 'wire', 'plug', 'adapter'], region=[0.0075, 0.29, 0.1225, 0.54]),
             dict(name='power adapter and plug at the wall outlet', kinds=CABLE, words=['power', 'adapter', 'plug', 'outlet', 'cable', 'socket', 'strip'], region=[0.0625, 0.317, 0.1075, 0.377]),
             dict(name='tall white air conditioner by the window', kinds={'storage', 'wardrobe', 'unknown', 'small_equipment', 'rack'}, words=['air', 'conditioner', 'purifier', 'cabinet', 'appliance', 'heater', 'tower'], region=[0.6225, 0.017, 0.7025, 0.293]),
+            dict(name='purple foam roll on the floor at the end of the sofa', kinds={'floor_covering', 'clothing_pile', 'unknown', 'bedding_overhang', 'small_equipment', 'tabletop_item', 'basket'}, words=['purple', 'mat', 'roll', 'roller', 'cushion', 'pillow', 'bolster', 'foam'], region=[0.55, 0.37, 0.585, 0.41]),
         ],
         excluded=['sofa', 'couch', 'cushion', 'pillow', 'towel', 'blanket', 'globe', 'television', ' tv', 'tv ', 'window', 'blind', 'curtain', 'turtlebot', 'wheeled robot', 'lidar', 'wall panel', 'floor tile']),
 }
