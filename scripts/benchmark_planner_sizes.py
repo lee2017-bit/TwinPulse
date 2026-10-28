@@ -6,8 +6,8 @@ Each call sends the installed app's planning request for "Survey the room and co
 prompts: the planner instruction from robot_task_planner.py (copied verbatim), the capability-restricted
 JSON schema from twinpulse_core.robot_task_plan.plan_schema, response_format=json_schema (strict),
 temperature 0, the app's planner output cap. Not reproduced: the two lines the app's transport appends to the
-system prompt (the one-sentence guidance of the harness profile bound to the planner stage and a compact copy
-of the schema, see stage_transport.explicit_json_contract) and the saved routing's thinking-mode flag.
+system prompt (the guidance text of the harness profile bound to the planner stage, possibly a locally edited one, and a
+compact copy of the schema, see stage_transport.explicit_json_contract) and the saved routing's thinking-mode flag.
 Every answer is validated with checked_plan(), the same function the app uses, so "valid" here means
 "the app would have executed it".
 
