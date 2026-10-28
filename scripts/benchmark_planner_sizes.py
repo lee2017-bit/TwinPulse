@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Jaewon Lee
 # SPDX-License-Identifier: Apache-2.0
-r"""Measure Nemotron sizes on the TwinPulse robot mission-planning task (same request shape as the app).
+r"""Measure Nemotron sizes on the TwinPulse robot mission-planning task (the app's instruction, schema and settings).
 
-Each call sends exactly what the installed app sends for "Survey the room and come back" and the other
+Each call sends the installed app's planning request for "Survey the room and come back" and the other
 prompts: the planner instruction from robot_task_planner.py (copied verbatim), the capability-restricted
 JSON schema from twinpulse_core.robot_task_plan.plan_schema, response_format=json_schema (strict),
-temperature 0, the app's planner output cap. Every answer is validated with checked_plan(), the same
-function the app uses, so "valid" here means "the app would have executed it".
+temperature 0, the app's planner output cap. Not reproduced: the two lines the app's transport appends to the
+system prompt (the one-sentence guidance of the harness profile bound to the planner stage and a compact copy
+of the schema, see stage_transport.explicit_json_contract) and the saved routing's thinking-mode flag.
+Every answer is validated with checked_plan(), the same function the app uses, so "valid" here means
+"the app would have executed it".
 
 Records per call: wall latency, HTTP status, finish_reason, usage (prompt/completion/reasoning tokens),
 validity (or the ROBOT_TASK_* error code), the step list, and the raw content. Writes a JSONL log and a
