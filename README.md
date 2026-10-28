@@ -52,7 +52,7 @@ One loop, all inside the TwinPulse app:
 3. **Say what you want:** "Survey the room and come back." Nemotron picks the tasks (survey → return to start → stop), and TwinPulse plans the numbered route on the USD scene.
 4. **Drive it for real.** The physical TurtleBot3 runs the route while its live pose and LiDAR appear in Isaac Sim.
 5. **Update the twin.** LiDAR returns that the twin does not explain become "not in model" objects and are added to the USD scene, automatically (Auto-apply, with Undo) or after review.
-6. **Re-plan on the updated twin.** The next route goes around the new obstacle and returns to the start.
+6. **Re-plan on the updated twin.** Pick one point past the new box, and TwinPulse plans the next route on the updated twin: around the box and back to the start.
 
 **Why a living room?** It is the most accessible real site for a personally owned TurtleBot3, where real and simulated behavior can be compared under control. It is a practical testbed, not a pivot away from factories.
 
@@ -62,7 +62,7 @@ Every model call goes to the **Nebius Token Factory** OpenAI-compatible API (`ht
 
 | Step | Model (Token Factory ID) | Input → output | Why this model |
 | --- | --- | --- | --- |
-| Mission planning | `nvidia/nemotron-3-super-120b-a12b` | English instruction + the robot's capability list → JSON plan (`observe → survey → return_to_start → stop`). The route card shows "Planned by … via Nebius Token Factory" and the measured latency (about 4–5 s; 4.5 s in the filmed run) | In our benchmarks the smaller Nemotron models produced cut-off JSON and runaway whitespace; Super returned schema-valid plans |
+| Mission planning | `nvidia/nemotron-3-super-120b-a12b` | English instruction + the robot's capability list → JSON plan (`survey → return_to_start → stop`; in 2 of 5 repeated calls on Oct 28 the plan also began with `observe`). The route card shows "Planned by … via Nebius Token Factory" and the measured latency (4.5 s in the filmed run; 4.5–8.9 s, median 5.1 s, over the 5 repeated calls) | In our benchmarks the smaller Nemotron models produced cut-off JSON and runaway whitespace; Super returned schema-valid plans |
 | Twin editing from text/photo | `nvidia/nemotron-3-super-120b-a12b` (planner; set in API keys → Model routing) | Instruction (+ photo observation) → validated scene tool plan for the USD stage | Same planner role, so one model to validate against |
 | Photo observation | `nvidia/Nemotron-3.5-Super-VL` | Room photo + the twin's object list → objects the twin is missing, each with uncertainty and the furniture it sits next to | NVIDIA vision model on Token Factory; it reasons before answering, so the output cap is 40,000 tokens (one photo used about 8,000) |
 
@@ -126,7 +126,7 @@ TwinPulse was developed in a **develop → operate → observe → diagnose → 
 
 1. Clone this repository and double-click **`Install-TwinPulse.cmd`**. It asks for your Isaac Sim folder, installs locked dependencies into `.venv`, builds the UI and starts the app with Isaac Sim.
 2. In the app, open **API keys**, add your Token Factory key, and under **Model routing** set the planner to `nvidia/nemotron-3-super-120b-a12b` and the photo observer to `nvidia/Nemotron-3.5-Super-VL`.
-3. **Try it without a robot:** import your own RoomPlan USD (the demo room is a private scan and is not in the repo), add a SIM TurtleBot3 under Manage, place it on the twin, and type "Survey the room and come back". A 29-minute unedited SIM run is in the [sim-demo-2026-10-26 release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-demo-2026-10-26).
+3. **Try it without a robot:** import your own RoomPlan USD (the demo room is a private scan and is not in the repo), add a SIM TurtleBot3 under Manage, place it on the twin, and type "Survey the room and come back". A 29-minute unedited SIM run from an earlier build (Oct 26: older layout, and a non-NVIDIA photo observer at the time) is in the [sim-demo-2026-10-26 release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-demo-2026-10-26).
 4. **With the real robot:** run `Prepare-Robot.cmd` once, start `Start-TwinPulse.cmd` (development channel), then Connect → Prepare → Arm → Bootstrap stop before running a route. Details: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 Later starts: `Start-TwinPulse.cmd`. Stop with Ctrl+C in the launcher window. Developers: `Start-TwinPulse-Development.cmd` runs from source.
@@ -140,9 +140,10 @@ The robot can always be stopped. A proximity stop, battery cutoff at 11.1 V (the
 | Area | Status |
 | --- | --- |
 | RoomPlan USD import, photo-based missing-object proposals, text edits with Undo, save/reopen | Implemented, tested in the installed app |
-| Nemotron mission planning via Token Factory → route on the twin | Working in the demo build (4.5 s in the filmed run) |
-| Physical TurtleBot3 survey and return | Filmed run (Oct 27): 3 stops, 6.57 m, back to the start; earlier run: 4 stops, 6.42 m |
-| LiDAR "not in model" → twin update | Filmed run: 5 real objects (including a cardboard box) added automatically on route 1, 2 more on route 2; outlines are rough |
+| Nemotron mission planning via Token Factory → route on the twin | Working in the demo build (4.5 s in the filmed run). Oct 28 repeat runs: 5 of 5 calls returned a schema-valid plan (4.5–8.9 s, median 5.1 s), and the deterministic route on the twin was identical in all 5 (4 stops, 6.22 m) |
+| Physical TurtleBot3 survey and return | Filmed run (Oct 27): 3 stops, 6.57 m, back to the start; earlier run: 4 stops, 6.42 m. Oct 28 repeat runs (build 61, same command, same taped start): 4 mission attempts plus 1 guard-stop retry: 3 completed, 1 reached all 4 stops and the start but its final heading turn was refused by the robot's fail-closed recording guard (its session journal reached its 768 MB budget after about 75 minutes connected), 1 robot-side guard stop at the third move with no contact; 16 of 20 stops reached. Details: [docs/analysis/TWINPULSE_REPEATABILITY_2026-10-28.md](docs/analysis/TWINPULSE_REPEATABILITY_2026-10-28.md) |
+| Return to the start (tape-measured) | Oct 28 repeat runs: 0–7 cm along the heading and 4.5–29 cm to the side, while the app's odometry estimate was within 2 cm of the start every time |
+| LiDAR "not in model" → twin update | Filmed run: 5 real objects (including a cardboard box) added automatically on route 1, 2 more on route 2; outlines are rough. Oct 28 repeat runs: cardboard box found 4 of 4 (mean position error 13 cm by tape), stool 4 of 4 (mean 32 cm), soft bag 0 of 4; four pre-existing objects recurred within about ±10 cm |
 | Obstacle replanning | Filmed run: route 2 (6.21 m) planned around the box on the updated twin. Oct 25–27 box tests: proximity stop, back-off, replan around the box |
 | Natural-language AGV dispatch-logic changes | Founding goal, not yet implemented |
 | SLAM / measured localization | Not used; the start pose is declared |
@@ -151,12 +152,12 @@ The robot can always be stopped. A proximity stop, battery cutoff at 11.1 V (the
 ## Limitations
 
 - **The start pose is declared by the operator** (tape-measured), not localized. There is no SLAM.
-- **Motion is wheel-odometry based.** In our living room the robot curves left by a few degrees on a 3 m leg, so TwinPulse re-aims after every leg. The return position is not measured against ground truth.
-- **LiDAR objects are rough outlines** placed from odometry, not precise reconstructions. Photo-added objects are catalogue boxes sized by kind, not exact shapes. In the SIM recording the obstacle outline was added manually; LiDAR-based position correction has only been exercised on the physical robot. Objects below the LiDAR plane (cables, clothes) are invisible to it.
+- **Motion is wheel-odometry based, and the app cannot see the drift.** In our living room the robot curves left by a few degrees on a 3 m leg, so TwinPulse re-aims after every leg. In the Oct 28 repeat runs the robot came back 4.5–29 cm to the left of its tape mark while the app's own estimate was within 2 cm of the start every time. Twin-based relocalization is the next step.
+- **LiDAR objects are rough outlines** placed from odometry, not precise reconstructions. Photo-added objects are catalogue boxes sized by kind, not exact shapes. In the SIM recording the obstacle outline was added manually; LiDAR-based position correction has only been exercised on the physical robot. Objects below the LiDAR plane (cables, clothes) are invisible to it, and in the Oct 28 repeat runs a soft bag 1.2 m ahead and 0.9 m to the left was missed in 4 of 4 runs: survey stops are chosen for free-floor coverage, not to look at objects.
 - A home test does not prove industrial AGV dispatch optimization.
 - Windows only, and Isaac Sim needs an RTX GPU.
 
-Every failed physical run and its fix is documented: [docs/analysis/TWINPULSE_PATH_B_PHYSICAL_RUNS_2026-10-25.md](docs/analysis/TWINPULSE_PATH_B_PHYSICAL_RUNS_2026-10-25.md) and [DEVLOG.md](DEVLOG.md).
+Failed physical runs are documented with their cause and the fix that followed: [docs/analysis/TWINPULSE_PATH_B_PHYSICAL_RUNS_2026-10-25.md](docs/analysis/TWINPULSE_PATH_B_PHYSICAL_RUNS_2026-10-25.md), the [Oct 28 repeatability runs](docs/analysis/TWINPULSE_REPEATABILITY_2026-10-28.md) and [DEVLOG.md](DEVLOG.md).
 
 ## Roadmap
 
@@ -165,7 +166,7 @@ Every failed physical run and its fix is documented: [docs/analysis/TWINPULSE_PA
 - Tighter twin alignment with open-source reconstruction such as COLMAP, run on Nebius AI Cloud.
 - A capability router that picks models from measured benchmarks, not model names.
 - On-premises and enterprise LLM endpoints behind the same contract.
-- Measured localization in place of a declared start pose.
+- Twin-based relocalization in place of a declared start pose, so the app can see the odometry drift measured on Oct 28.
 
 ## Built during the hackathon
 
