@@ -41,6 +41,8 @@ plain English   a planned task  vs. the twin    into the USD   updated twin
 3. **LiDAR-assisted alignment** — the robot's sensor shows where the twin and reality disagree.
 4. **Re-simulate and validate** — every change keeps review, approval, Undo and a recorded result.
 
+**Why not just refresh the robot's map?** A SLAM map is an occupancy grid, cells that are free or blocked, built for one robot's navigation. The engineering twin is a different artifact: the USD scene in Isaac Sim on which routes are planned today and on which plant dispatch logic will be simulated. TwinPulse does not redraw a grid; it adds named, reviewable, undoable objects with sensor provenance into that scene and re-plans on it. And a photo step covers what the LiDAR cannot see (the soft bag: 0/4 by LiDAR, 5/5 by photo), which a map refresh does not do and the RoomPlan scan itself had missed.
+
 Natural-language changes to plant-wide AGV dispatch logic are the founding goal. Today TwinPulse changes the environment and robot tasks; dispatch-logic editing is on the roadmap, not in this demo.
 
 ## What the demo shows
