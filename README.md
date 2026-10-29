@@ -85,6 +85,8 @@ Earlier builds used `deepseek-ai/DeepSeek-V4.1-Flash` for photos; the demo build
 
 This is a design principle, not a shipped feature. A stronger model should let TwinPulse solve harder tasks with fewer steps — for example, reasoning over image + LiDAR + scene together instead of chaining observer, planner and repair passes. The rule: simplify the harness only when a simpler path wins on the same held-out scenarios, and **never remove validation, approval or physical safety because a model is more accurate on average.**
 
+Today's harness has three kinds of parts. **(A)** scaffolding around 2026-model weaknesses: regex intent routing, the observer/planner split with a repair pass, flags tied to model names, long rule sentences in prompts. **(B)** fixed host rules where the model was not yet trusted: the host picks survey positions, six fixed capabilities, LiDAR clusters become boxes only on the user's Apply, a declared start pose. **(C)** safety, approval and evidence contracts. With a much stronger model, (A) is deleted, (B) becomes "the model proposes, the host verifies" (observation positions, new composite capabilities verified in SIM, re-plans from live LiDAR, start pose from the first scan against the USD geometry), and (C) stays exactly as it is. Each deletion follows the same procedure: keep the old path, add the simpler one as opt-in, compare both on the same held-out scenarios (geometry validity, collisions, completion, safety stops, cost, latency), promote only when the evidence says so; unit tests and the model's own report do not count. The item-by-item list, with the code each item lives in and the preparation that can start now (separating A/B/C, a held-out evaluation set, routing by measured model profiles instead of names, a capability-registration path, a re-plan hook), is in [docs/analysis/TWINPULSE_AGENT_PIPELINE_AND_10X_DIRECTION_2026-10-29.md](docs/analysis/TWINPULSE_AGENT_PIPELINE_AND_10X_DIRECTION_2026-10-29.md).
+
 ### Local-first by intent
 
 Factories often cannot send drawings, production data or operating logic outside their network. TwinPulse keeps simulation local and model routing configurable so it can move to on-premises or private-cloud models. Today's Token Factory calls are cloud calls; a fully offline model path is a goal, not a tested deployment.
@@ -110,6 +112,20 @@ flowchart LR
 | Token Factory transport, plan validation | `packages/twinpulse_provider/src/twinpulse_provider/` |
 | Isaac Sim scene and bridge | `extensions/twinpulse.extension/` |
 | Robot-side execution and guards | `packages/twinpulse_robot_safety/` |
+
+### The agent pipeline, stage by stage
+
+Models propose; the host validates; the user approves; the robot's own guards execute.
+
+1. **Intent.** The user's sentence is classified by host rules; stop words are always handled deterministically.
+2. **Observe.** Nemotron 3.5 Super VL reads a room photo with the twin's object list and returns candidate objects as strict-schema JSON, re-validated by the host.
+3. **Plan.** Nemotron 3 Super turns the instruction plus the robot's declared capabilities (`observe, move_relative, navigate, survey, return_to_start, stop`) into a short JSON plan. A versioned harness profile and an explicit JSON contract are bound to each stage, so a stage can change model without code changes.
+4. **Validate.** The plan is checked against the capability list and the step, distance and time limits, with at most one repair pass. Nothing invalid reaches the robot.
+5. **Route.** The route is computed on the twin geometry with keepouts, deterministically, and shown on a route card that waits for Run route.
+6. **Execute.** Finite moves with host re-aim rules; robot-side guards run independently of the app and the model, behind the Arm gate.
+7. **Sense and update.** LiDAR returns the twin cannot explain are reported at every stop and added as rough boxes with Undo. Every request, operation and move carries a trace ID and a recorded outcome.
+
+What this pipeline keeps fixed and what a stronger model is allowed to replace: [docs/analysis/TWINPULSE_AGENT_PIPELINE_AND_10X_DIRECTION_2026-10-29.md](docs/analysis/TWINPULSE_AGENT_PIPELINE_AND_10X_DIRECTION_2026-10-29.md).
 
 ## Built and tested with AI agents
 
