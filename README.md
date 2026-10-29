@@ -6,9 +6,9 @@
 
 ## Demo
 
-▶ **[Watch the demo (YouTube, 2:55)](https://youtu.be/E4bx8Yp5gzg)**
+▶ **[Watch the demo (YouTube, 2:59)](https://youtu.be/v8mOFSjLvd4)**
 
-[![The real TurtleBot3 in the living room (phone camera) next to its live Isaac Sim twin with the planned route](docs/media/twinpulse-hero-20261027.jpg)](https://youtu.be/E4bx8Yp5gzg)
+[![The real TurtleBot3 in the living room (phone camera) next to its live Isaac Sim twin with the planned route](docs/media/twinpulse-hero-20261027.jpg)](https://youtu.be/v8mOFSjLvd4)
 
 ## The problem
 
@@ -41,6 +41,8 @@ plain English   a planned task  vs. the twin    into the USD   updated twin
 3. **LiDAR-assisted alignment** — the robot's sensor shows where the twin and reality disagree.
 4. **Re-simulate and validate** — every change keeps review, approval, Undo and a recorded result.
 
+**Why not just refresh the robot's map?** A SLAM map is an occupancy grid, cells that are free or blocked, built for one robot's navigation. The engineering twin is a different artifact: the USD scene in Isaac Sim on which routes are planned today and on which, later, plant dispatch logic is meant to be simulated (the founding goal; not in this demo). TwinPulse does not redraw a grid; it adds named, reviewable, undoable objects with sensor provenance into that scene and re-plans on it. And a photo step covers what the LiDAR cannot see (the soft bag: 0/4 by LiDAR, 5/5 by photo), which a map refresh does not do and which the room scan does not contain either.
+
 Natural-language changes to plant-wide AGV dispatch logic are the founding goal. Today TwinPulse changes the environment and robot tasks; dispatch-logic editing is on the roadmap, not in this demo.
 
 ## What the demo shows
@@ -64,7 +66,7 @@ Every model call goes to the **Nebius Token Factory** OpenAI-compatible API (`ht
 | --- | --- | --- | --- |
 | Mission planning | `nvidia/nemotron-3-super-120b-a12b` | English instruction + the robot's capability list → JSON plan (`survey → return_to_start → stop`; in 2 of 5 repeated calls on Oct 28 the plan also began with `observe`). The route card shows "Planned by … via Nebius Token Factory" and the measured latency (4.5 s in the filmed run; 4.5–8.9 s, median 5.1 s, over the 5 repeated calls) | Chosen after the Oct 9–11 scene-design trials, where Nano produced cut-off JSON and runaway whitespace (Ultra once) and Super matched Ultra at about a quarter of the cost (one trial each). Measured on the robot-plan request itself on Oct 28 (60 live calls): Nano, Super and Ultra 15/15 valid each, Lightning 13/15; see [the size benchmark](docs/analysis/TWINPULSE_PLANNER_SIZE_BENCHMARK_2026-10-28.md) |
 | Twin editing from text/photo | `nvidia/nemotron-3-super-120b-a12b` (planner; set in API keys → Model routing) | Instruction (+ photo observation) → validated scene tool plan for the USD stage | Same planner role, so one model to validate against |
-| Photo observation | `nvidia/Nemotron-3.5-Super-VL` | Room photo + the twin's object list → objects the twin is missing, each with uncertainty and the furniture it sits next to | NVIDIA vision model on Token Factory; it reasons before answering, so the output cap is 40,000 tokens (one photo used about 8,000) Measured on Oct 28 against a hand-made object list for two room photos (5 trials each, 40 live calls): 10/10 valid, zero false positives, the same answer every trial, box and soft bag 5/5, stool 0/5; DeepSeek V4.1 Flash found more objects; see [the photo observer benchmark](docs/analysis/TWINPULSE_PHOTO_OBSERVER_BENCHMARK_2026-10-28.md). |
+| Photo observation | `nvidia/Nemotron-3.5-Super-VL` | Room photo + the twin's object list → objects the twin is missing, each with uncertainty and the furniture it sits next to | NVIDIA vision model on Token Factory; it reasons before answering, so the output cap is 40,000 tokens (one photo used about 8,000) Measured on Oct 28 against a hand-made object list for two room photos (5 trials each, 40 live calls): 10/10 valid, zero false positives, the same objects found every trial, box and soft bag 5/5, stool 0/5; DeepSeek V4.1 Flash found more objects; see [the photo observer benchmark](docs/analysis/TWINPULSE_PHOTO_OBSERVER_BENCHMARK_2026-10-28.md). |
 
 Earlier builds used `deepseek-ai/DeepSeek-V4.1-Flash` for photos; the demo build runs on NVIDIA models only. If the planner call fails, the app shows the error and offers an explicit deterministic-route fallback card; it never falls back silently.
 
@@ -120,7 +122,7 @@ Models propose; the host validates; the user approves; the robot's own guards ex
 1. **Intent.** The user's sentence is classified by host rules; stop words are always handled deterministically.
 2. **Observe.** Nemotron 3.5 Super VL reads a room photo with the twin's object list and returns candidate objects as strict-schema JSON, re-validated by the host.
 3. **Plan.** Nemotron 3 Super turns the instruction plus the robot's declared capabilities (`observe, move_relative, navigate, survey, return_to_start, stop`) into a short JSON plan. A versioned harness profile and an explicit JSON contract are bound to each stage, so a stage can change model without code changes.
-4. **Validate.** The plan is checked against the capability list and the step, distance and time limits, with at most one repair pass. Nothing invalid reaches the robot.
+4. **Validate.** The plan is checked against the capability list and the step, distance and time limits. An invalid robot plan is rejected, not repaired or retried (only the scene-design planner has one repair pass). Nothing invalid reaches the robot.
 5. **Route.** The route is computed on the twin geometry with keepouts, deterministically, and shown on a route card that waits for Run route.
 6. **Execute.** Finite moves with host re-aim rules; robot-side guards run independently of the app and the model, behind the Arm gate.
 7. **Sense and update.** LiDAR returns the twin cannot explain are reported at every stop and added as rough boxes with Undo. Every request, operation and move carries a trace ID and a recorded outcome.
@@ -207,4 +209,4 @@ Attended Builders & Brews: Seoul Hack Edition (September 11, 2026, WOOMUL, Hapje
 
 TwinPulse-owned code is [Apache-2.0](LICENSE). Copyright 2026 Jaewon Lee. See [NOTICE](NOTICE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [CITATION.cff](CITATION.cff). Isaac Sim and other third-party components keep their own licenses.
 
-More: [status as of Oct 25, before Run 6](docs/STATUS_2026-10-25.md) · [development log](DEVLOG.md) · [founder narrative](docs/reference/creator-20261022/README.md) · [product spec v1.2](TWINPULSE_PRODUCT_SPEC_v1_2.md)
+More: [status as of Oct 25, before the Oct 26–28 runs](docs/STATUS_2026-10-25.md) · [development log](DEVLOG.md) · [founder narrative](docs/reference/creator-20261022/README.md) · [product spec v1.2](TWINPULSE_PRODUCT_SPEC_v1_2.md)
