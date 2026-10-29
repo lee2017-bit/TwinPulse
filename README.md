@@ -185,6 +185,8 @@ Failed physical runs are documented with their cause and the fix that followed: 
 
 Started during the submission period (first commit after August 26, 2026). Built during the hackathon: the declared-start route planner and runner, physical TurtleBot3 driving with live pose and LiDAR in Isaac Sim, LiDAR → "not in model" → twin update, obstacle replanning, Nemotron mission planning for the robot, and Nemotron VL photo observation.
 
+Attended Builders & Brews: Seoul Hack Edition (September 11, 2026, WOOMUL, Hapjeong, Seoul) and entered as a Seoul attendee. One-person project, built in Seoul.
+
 ## License and credits
 
 TwinPulse-owned code is [Apache-2.0](LICENSE). Copyright 2026 Jaewon Lee. See [NOTICE](NOTICE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [CITATION.cff](CITATION.cff). Isaac Sim and other third-party components keep their own licenses.
