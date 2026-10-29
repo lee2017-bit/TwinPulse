@@ -6,9 +6,9 @@
 
 ## Demo
 
-▶ **[Watch the demo (YouTube, 2:55)](https://youtu.be/E4bx8Yp5gzg)**
+▶ **[Watch the demo (YouTube, 2:59)](https://youtu.be/v8mOFSjLvd4)**
 
-[![The real TurtleBot3 in the living room (phone camera) next to its live Isaac Sim twin with the planned route](docs/media/twinpulse-hero-20261027.jpg)](https://youtu.be/E4bx8Yp5gzg)
+[![The real TurtleBot3 in the living room (phone camera) next to its live Isaac Sim twin with the planned route](docs/media/twinpulse-hero-20261027.jpg)](https://youtu.be/v8mOFSjLvd4)
 
 ## The problem
 
@@ -66,7 +66,7 @@ Every model call goes to the **Nebius Token Factory** OpenAI-compatible API (`ht
 | --- | --- | --- | --- |
 | Mission planning | `nvidia/nemotron-3-super-120b-a12b` | English instruction + the robot's capability list → JSON plan (`survey → return_to_start → stop`; in 2 of 5 repeated calls on Oct 28 the plan also began with `observe`). The route card shows "Planned by … via Nebius Token Factory" and the measured latency (4.5 s in the filmed run; 4.5–8.9 s, median 5.1 s, over the 5 repeated calls) | Chosen after the Oct 9–11 scene-design trials, where Nano produced cut-off JSON and runaway whitespace (Ultra once) and Super matched Ultra at about a quarter of the cost (one trial each). Measured on the robot-plan request itself on Oct 28 (60 live calls): Nano, Super and Ultra 15/15 valid each, Lightning 13/15; see [the size benchmark](docs/analysis/TWINPULSE_PLANNER_SIZE_BENCHMARK_2026-10-28.md) |
 | Twin editing from text/photo | `nvidia/nemotron-3-super-120b-a12b` (planner; set in API keys → Model routing) | Instruction (+ photo observation) → validated scene tool plan for the USD stage | Same planner role, so one model to validate against |
-| Photo observation | `nvidia/Nemotron-3.5-Super-VL` | Room photo + the twin's object list → objects the twin is missing, each with uncertainty and the furniture it sits next to | NVIDIA vision model on Token Factory; it reasons before answering, so the output cap is 40,000 tokens (one photo used about 8,000) Measured on Oct 28 against a hand-made object list for two room photos (5 trials each, 40 live calls): 10/10 valid, zero false positives, the same answer every trial, box and soft bag 5/5, stool 0/5; DeepSeek V4.1 Flash found more objects; see [the photo observer benchmark](docs/analysis/TWINPULSE_PHOTO_OBSERVER_BENCHMARK_2026-10-28.md). |
+| Photo observation | `nvidia/Nemotron-3.5-Super-VL` | Room photo + the twin's object list → objects the twin is missing, each with uncertainty and the furniture it sits next to | NVIDIA vision model on Token Factory; it reasons before answering, so the output cap is 40,000 tokens (one photo used about 8,000) Measured on Oct 28 against a hand-made object list for two room photos (5 trials each, 40 live calls): 10/10 valid, zero false positives, the same objects found every trial, box and soft bag 5/5, stool 0/5; DeepSeek V4.1 Flash found more objects; see [the photo observer benchmark](docs/analysis/TWINPULSE_PHOTO_OBSERVER_BENCHMARK_2026-10-28.md). |
 
 Earlier builds used `deepseek-ai/DeepSeek-V4.1-Flash` for photos; the demo build runs on NVIDIA models only. If the planner call fails, the app shows the error and offers an explicit deterministic-route fallback card; it never falls back silently.
 
