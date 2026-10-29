@@ -12,7 +12,7 @@ The [Oct 28 repeat runs](TWINPULSE_REPEATABILITY_2026-10-28.md) kept twin edits 
 - App: build 61 (`20261027T233111Z-059aab92576d`, unchanged since Oct 28), a new chat, Control view, twin edits = **Auto-apply** (with Undo available, as in the filmed run).
 - Placed objects, from the Oct 28 positions: A cardboard box 1.0 m ahead, 0.7 m right (twin ≈ (1.89, 0.06)); B stool 2.1 m ahead, 0.2 m right (≈ (2.63, 1.02)). The soft bag C is placed again (1.2 m ahead, 0.9 m left) only to confirm the Oct 28 miss; its result is reported but not counted as a failure of the loop.
 - Base twin: the room scan plus the two photo objects accepted on Oct 28 (cable beside the sofa, bag behind the sofa). Between runs every auto-applied object is removed with Undo, so each run starts from the same twin; the Undo is recorded.
-- Before the first run: battery at or above 12.0 V (the 11.1 V robot-side guard is unchanged), at least 10 GB free on the PC disk, screen recording on.
+- Before the first run: battery voltage recorded (no extra start threshold; the code guards decide: 11.1 V low-voltage stop, 11.2 V re-arm), at least 10 GB free on the PC disk, screen recording on.
 - Connection: reconnect the robot before every run so each physical session stays well under 60 minutes and the 768 MiB recording budget that ended attempt 4-2 on Oct 28 cannot recur.
 
 ## 3. One run, step by step
@@ -33,7 +33,7 @@ A household member who has not used TwinPulse sits at the PC after the robot is 
 ## 5. Stop rules
 
 - Any contact with an object or a person: stop, record, end the run.
-- Battery below 11.3 V at the start of a run: end the session (the robot-side guard at 11.1 V stays as is).
+- Battery: no threshold beyond the code guards. If the robot-side 11.1 V guard stops a run, record it as a guard stop and charge before the next run (motion re-arms at 11.2 V).
 - A second guard stop in the same run: end the run, no second retry.
 - More than 45 minutes of connection: reconnect before the next run.
 - Any run that cannot start or finish is reported with its reason; nothing is excluded from the table.
