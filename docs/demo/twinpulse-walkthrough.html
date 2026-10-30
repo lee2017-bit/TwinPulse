@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body style="margin:0">
 <title>TwinPulse Walkthrough</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
@@ -113,7 +113,7 @@ let S; // state
 function fresh(){return{
   step:0, maxStep:0, usd:false, photo:false, photoAccepted:{}, robot:null, plan:null, route:null,
   obstacle:null, twinLidar:[], pts:[], candidates:[], running:false, pose:null, trail:[],
-  log:[], done6:false, route2:null, pick:null, plannedMs:null};}
+  log:[], done6:false, route2:null, picks:[], done7:false, plannedMs:null};}
 
 // ---------- geometry helpers ----------
 const realObjs=()=>{const o=SCANNED.concat(PHOTO);if(S.obstacle)o.push(S.obstacle);return o;};
@@ -193,7 +193,7 @@ function draw(){layoutCanvas();
   const ps=Math.max(3,2.5*FK);S.pts.forEach(p=>{const q=M(p.x,p.y);c.fillStyle=explained(p.x,p.y)?css('--ok-pt'):css('--new-pt');c.fillRect(q[0]-ps/2,q[1]-ps/2,ps,ps);});
   if(S.route)drawRoute(c,S.route,css('--route'));
   if(S.route2)drawRoute(c,S.route2,css('--route'));
-  if(S.pick){const q=M(S.pick.x,S.pick.y);c.strokeStyle=css('--route');c.lineWidth=2*FK;c.beginPath();c.arc(q[0],q[1],11*FK,0,7);c.stroke();}
+  S.picks.forEach(p=>{const q=M(p.x,p.y);c.strokeStyle=css('--route');c.lineWidth=2*FK;c.beginPath();c.arc(q[0],q[1],11*FK,0,7);c.stroke();});
   if(rp)drawRobot(c,rp,css('--robot'));
 }
 
@@ -245,7 +245,7 @@ const STEPS=[
  {k:'Ask for a mission',why:'One sentence. Nemotron 3 Super on Nebius Token Factory turns it into a short task plan; TwinPulse computes a deterministic route on the twin.'},
  {k:'Change the real room',why:'Someone leaves a box in the way. Drag it onto the dashed route in the REAL room. The twin does not know about it.'},
  {k:'Run the route',why:'The robot drives the route in the real room. LiDAR points the twin can explain turn green; points it cannot explain turn red and become a "not in model" candidate.'},
- {k:'Next route on the updated twin',why:'Click any point on the twin. The next route is planned on the corrected twin: around the new box and back to the start.'}];
+ {k:'Next route on the updated twin',why:'Tap one or more points on the twin, then drive. The next route is planned on the corrected twin, so it goes around the new box and back to the start without a stop.'}];
 function setStep(n){S.step=n;S.maxStep=Math.max(S.maxStep,n);renderSteps();renderSide();draw();}
 function renderSteps(){const ol=document.getElementById('steps');ol.innerHTML='';STEPS.forEach((st,i)=>{const li=document.createElement('li');const b=document.createElement('button');b.type='button';b.title=st.k;
   b.innerHTML='<span class="n">'+(i+1)+'</span><span class="nm">'+st.k+'</span>';b.className=i===S.step?'cur':isDone(i)?'done':'';b.onclick=()=>{rail.classList.remove('open');jump(i);};li.appendChild(b);ol.appendChild(li);});}
@@ -313,7 +313,10 @@ function renderSide(){const st=STEPS[S.step];bar.innerHTML='';details.innerHTML=
       card(`<div class="t">Not in model · rough box ${k.w.toFixed(2)} × ${k.h.toFixed(2)} m</div><div class="m">${k.n} LiDAR points the twin cannot explain, at x ${(k.x+k.w/2).toFixed(2)}, y ${(k.y+k.h/2).toFixed(2)}.</div>`);});
     if(S.waiting)act.appendChild(el(`<span class="log" style="color:var(--warn);font-weight:600">Robot stopped in front of the box and waits.</span>`));
     if(!S.obstacle)card(`<div class="m">No box in the room (step 5), so the route runs clean.</div>`);}
-  if(S.step===6){act.appendChild(el(`<span class="log">${S.route2?'Through your point and back to start · '+S.route2.len.toFixed(2)+' m, planned on the updated twin.':'Tap any point on the twin, for example past the new box.'}</span>`));
+  if(S.step===6){const n=S.picks.length;
+    act.appendChild(B(S.running?'Driving…':S.done7?'Drive again':'Drive this route',()=>runRoute2(),false,S.running||!S.route2));
+    if(n)act.appendChild(B('Clear points',()=>{S.picks=[];S.route2=null;S.done7=false;S.pose=Object.assign({},S.robot);draw();renderSide();},true,S.running));
+    act.appendChild(el(`<span class="log">${S.route2?n+' point'+(n>1?'s':'')+' and back to start · '+S.route2.len.toFixed(2)+' m, planned on the updated twin. Tap the twin to add more (up to 5).':'Tap points on the twin to build the next route (up to 5), for example past the new box.'}</span>`));
     card(`<div class="t">That is the loop</div><div class="m">Build → operate → observe → update → re-plan. The real robot did this in a living room; the same loop is meant for factory floors where AGVs already drive every shift.</div>`);}
   if(cards.children.length)details.appendChild(cards);
   if(S.log.length)details.appendChild(el(`<div class="log">${S.log.slice(-5).map(t=>'• '+t).join('<br>')}</div>`));}
@@ -341,7 +344,15 @@ function toWorld(c,e){const r=c.getBoundingClientRect();const px=(e.clientX-r.le
 let dragRobot=false;
 cv.twin.addEventListener('pointerdown',e=>{const w=toWorld(cv.twin,e);
   if(S.step===2&&S.robot&&Math.hypot(w.x-S.robot.x,w.y-S.robot.y)<0.35){dragRobot=true;cv.twin.setPointerCapture(e.pointerId);}
-  if(S.step===6&&S.usd&&S.robot){if(w.x<0||w.y<0||w.x>W||w.y>H)return;S.pick=w;const from=S.robot;const r=planRoute(from,[w,{x:START.x,y:START.y}]);r.home=true;S.route2=r;S.route=null;S.pts=S.pts;S.pose=Object.assign({},S.robot);log('Next route planned on the updated twin.');draw();renderSide();renderSteps();}});
+  if(S.step===6&&S.usd&&S.robot&&!S.running){if(w.x<0||w.y<0||w.x>W||w.y>H)return;if(S.picks.length>=5)S.picks.shift();S.picks.push(w);replan2();log('Point '+S.picks.length+' added; route re-planned on the updated twin.');draw();renderSide();renderSteps();}});
+function replan2(){const r=planRoute(S.robot,[...S.picks,{x:START.x,y:START.y}]);r.home=true;S.route2=r;S.route=null;S.done7=false;S.pose=Object.assign({},S.robot);}
+function runRoute2(){if(S.running||!S.route2)return;replan2();const r=S.route2;lastRays=[];
+  drive(r,res=>{S.running=false;lastRays=[];
+    if(res==='blocked')log('Proximity stop: the twin is missing something on this route.');
+    else{S.done7=true;log('Route done. No proximity stop this time: the twin already had the box.');}
+    renderSide();renderSteps();draw();});
+  const iv=setInterval(()=>{const nx=r.stops.find(s=>!s.reached);if(nx&&Math.hypot(nx.x-S.pose.x,nx.y-S.pose.y)<0.03)nx.reached=true;if(!S.running)clearInterval(iv);},60);
+  renderSide();}
 cv.twin.addEventListener('pointermove',e=>{if(!dragRobot)return;const w=toWorld(cv.twin,e);S.robot.x=Math.min(W-0.3,Math.max(0.3,w.x));S.robot.y=Math.min(H-0.3,Math.max(0.3,w.y));START.x=S.robot.x;START.y=S.robot.y;draw();});
 cv.twin.addEventListener('pointerup',()=>{if(dragRobot){dragRobot=false;renderSide();}});
 let ghost=null;
@@ -363,5 +374,4 @@ new MutationObserver(draw).observe(document.documentElement,{attributes:true,att
 window.__tp={get S(){return S},jump,setStep};
 })();
 </script>
-
 </body></html>
