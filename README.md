@@ -8,7 +8,7 @@
 
 ▶ **[Watch the demo (YouTube, 2:59)](https://youtu.be/v8mOFSjLvd4)**
 
-🖱 **[Try the loop in your browser](https://raw.githack.com/lee2017-bit/TwinPulse/main/docs/demo/twinpulse-walkthrough.html)**: a click-through simulation in one HTML file (no install, no robot, no key; a virtual room, not the product UI). Source: [`docs/demo/twinpulse-walkthrough.html`](docs/demo/twinpulse-walkthrough.html).
+🖱 **[Try the loop in your browser](https://htmlpreview.github.io/?https://github.com/lee2017-bit/TwinPulse/blob/main/docs/demo/twinpulse-walkthrough.html)**: a click-through simulation in one HTML file (no install, no robot, no key; a virtual room, not the product UI). Source: [`docs/demo/twinpulse-walkthrough.html`](docs/demo/twinpulse-walkthrough.html).
 
 [![The real TurtleBot3 in the living room (phone camera) next to its live Isaac Sim twin with the planned route](docs/media/twinpulse-hero-20261027.jpg)](https://youtu.be/v8mOFSjLvd4)
 
