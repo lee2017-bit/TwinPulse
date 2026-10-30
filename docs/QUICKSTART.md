@@ -1,6 +1,6 @@
 # TwinPulse Quick Start
 
-TwinPulse runs a local web app and a separate Isaac Sim 3D window on the **same Windows PC**. Today you can add a photo or drawing, create and review an approximate AI draft, and build it in Isaac Sim. The legacy v1 plan can run a limited simulated route; the separate v2 site-scene plan is geometry-only and does not enable Run. Robot scans, route optimization/comparison, and real TurtleBot3 control are not available yet. Do not use this prototype to control a physical robot.
+TwinPulse runs a local app and a separate Isaac Sim window on the **same Windows PC**. In the current build you import a RoomPlan USD scan, add missing objects from a photo, place a robot, ask for a mission in one sentence (Nemotron plans it via Nebius Token Factory), and run the route on a SIM TurtleBot3 or, in a supervised session, on a physical TurtleBot3 Burger. LiDAR returns the twin cannot explain are added to the twin as "not in model" objects (Review or Auto-apply, always with Undo). Measured results and known limits are in the [README](../README.md#what-is-proven-and-what-is-not).
 
 ## Choose an install path
 
@@ -39,22 +39,25 @@ Replace `<release-id>` with the directory created by the first command. Transfer
 
 An archive hash proves transfer integrity, not publisher identity. Compare the release digest through a trusted channel and follow your company's transfer/execution policy. Do not bypass AppLocker, WDAC, or other company controls. No API key, user input, or Isaac Sim installation is included in the release. Company-workstation install, Nebius network access, and actual Isaac Build/Run have **not** been verified yet.
 
-## Create and inspect a draft
+## Run the loop
 
-1. In the local web app, open **AI settings**. Select the provider preset and enter that PC's API key. The key is stored in Windows Credential Manager and is not copied from another PC. A saved key does not prove the provider is reachable or that a paid AI request succeeded. Check the provider's cost and permissions before creating a draft.
-2. In **Add Photo**, choose a PNG/JPG/WEBP site photo or drawing (up to 10 MiB). Add **Instructions (optional)** if needed. Photo observation (`nvidia/Nemotron-3.5-Super-VL` on Nebius Token Factory, selected under **API keys → Model routing** as in the demo build) requires exactly one image. A supported provider may accept instructions alone. No input means **Create Draft** stays disabled.
-3. Select **Create Draft**. Review the generated tool/object list and the approximate-model warning. A photo does not establish exact scale, hidden geometry, or equipment locations. For accuracy, supply verified dimensions or scans when supported.
-4. In **Review Twin**, confirm the current draft version and select the enabled Build action. A validated draft is not yet a built scene. The optional **Nebius · site scene proposal (v2)** profile requires a matching v2-capable Isaac adapter and builds site geometry only; it does not install a robot or task. Switching provider profiles requires re-entering the API key under the current credential-binding policy. Wait for the engine result and check the separate Isaac 3D window. An isolated deterministic v2 fixture passed a headless Isaac Build/Reset, but the full browser path, interactive view, and paid/live v2 request have not yet been verified.
-5. In **Simulate**, use **Run**, **Pause**, **Reset**, and **Show 3D View** only for a matching built v1 robot-task scene when the app permits the action. Run is blocked for v2 site scenes. The web status illustration is not the live 3D view. A safety stop may require Reset.
+1. **Model keys and routing.** Open **API keys**, add your Nebius Token Factory key (stored in Windows Credential Manager, never in the repository), and under **Model routing** set the planner to `nvidia/nemotron-3-super-120b-a12b` and the photo observer to `nvidia/Nemotron-3.5-Super-VL`. A saved key does not prove a request has succeeded.
+2. **Build the twin.** Start a new chat and import a RoomPlan USD scan; the scene opens in the Isaac Sim window. Add a room photo: Nemotron VL proposes objects the scan is missing, and accepted ones are placed next to the furniture they belong to. Photo-added objects are catalogue boxes sized by kind, not exact shapes.
+3. **Choose how twin edits apply.** **Review** (default for a new chat) waits for Apply on each LiDAR or photo candidate; **Auto-apply** applies them as they arrive. **Undo last edit** reverts the latest change in both modes.
+4. **Place the robot.** Under **Manage**, add a SIM TurtleBot3 (no hardware) or your registered physical robot, then place it on the twin where it stands, with its heading.
+5. **Ask for a mission.** Type for example "Survey the room and come back". Nemotron returns a short task plan from the robot's declared capabilities; TwinPulse validates it, computes the route on the twin and shows it on a card with the model name and latency. Nothing moves until you click **Run route**. If the planner call fails, the app shows the error and offers the deterministic route as an explicit card instead of substituting it silently.
+6. **Watch the twin update.** During and after the route, LiDAR returns that the twin cannot explain appear as "not in model" candidates; in Review mode click Apply or Skip. You can then ask for the next route, which is planned on the updated twin.
 
-The current simulator's supported robot task is constrained; it is not general obstacle-avoiding navigation. The scene may differ materially from the photo. Do not claim a successful build, safe route, or better path from draft validation alone.
+### Physical TurtleBot3 (supervised only)
+
+Run `Prepare-Robot.cmd` once, start `Start-TwinPulse.cmd` (development channel), then **Connect → Prepare → Arm → Bootstrap stop** before the first route, and confirm the supervised-session checks. Stop is always one click. A proximity stop, battery cutoff at 11.1 V, output timeout and wheel-readback check run on the robot side, independent of the app and the model. The robot refuses motion when the session record cannot be written; keep a physical session under about an hour or reconnect between runs. The start pose is declared, not localized, so check the robot's real position against the twin before each run.
 
 ## If something fails
 
-- **API key saved, but no draft:** Check that an image/instructions were selected, the provider profile is correct, and the workstation can reach the provider. A saved key is not a successful AI request. Do not repeat an uncertain paid request without checking its outcome.
+- **API key saved, but no plan or photo result:** Check the model routing, the key, and that the PC can reach `api.tokenfactory.nebius.com`. A saved key is not a successful AI request. Do not repeat an uncertain paid request without checking its outcome.
 - **Session expired:** Reopen TwinPulse from the secure link provided by its launcher. Failed state-changing actions are not automatically retried.
 - **Isaac disconnected or unresponsive:** Check the owned launcher and Isaac window. Do not force-close an unrelated user Isaac session.
-- **Build blocked or safety stop:** Keep the reported error code and non-secret diagnostics. Do not substitute a sample scene or bypass validation; use Reset when the app requires it.
+- **Route refused or safety stop:** Keep the reported error code and trace ID. Do not bypass validation or the robot-side guards; re-arm and run a bootstrap stop before the next physical route.
 - **Company offline install blocked:** Verify every transfer part, the Python/Isaac prerequisites, and company execution policy. Do not disable security controls to make the installer run.
 
 For detailed Korean company-install notes see [Company PC install](COMPANY_PC_INSTALL.md). For verified and unverified milestones see [Progress](progress.md). Local checks and actual Isaac acceptance are different; only report an actual Isaac pass with the corresponding run/capture evidence.

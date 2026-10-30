@@ -1,5 +1,7 @@
 # 추정 Twin에서 로봇 관측 확인하기
 
+> **Historical (mid-October 2026 builds).** This page describes an earlier build. For the current app, including physical TurtleBot3 runs, see [QUICKSTART.md](QUICKSTART.md) and the [README](../README.md).
+
 현재 `robot-observation` 설치판은 SIM과 명시적인 읽기 전용 연결만 지원한다. 모터·주행·배포·연속 survey 시작은 지원하거나 승인하지 않는다. 초기 Twin은 센서 없이 만들 수 있는 수정 가능한 추정 장면이다.
 
 1. 일반 설치 Start로 TwinPulse를 열고 Isaac 연결 표시를 기다린다.
