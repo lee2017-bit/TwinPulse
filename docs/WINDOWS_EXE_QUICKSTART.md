@@ -1,5 +1,7 @@
 # TwinPulse Windows EXE
 
+> **Historical (mid-October 2026 builds).** This page describes an earlier build. For the current app, including physical TurtleBot3 runs, see [QUICKSTART.md](QUICKSTART.md) and the [README](../README.md).
+
 This is an unsigned Windows x64 simulation alpha candidate with an independent Electron app window. It includes the desktop host, App's Python runtime, built React interface and the reviewed ROBOTIS Burger simulation assets. Install Isaac Sim separately on a compatible Windows/GPU system; Isaac, GPU drivers and API credentials are not bundled. Physical robot controls are not available in this alpha. A separately declared read-only robot build can offer explicit connection observations; check the capability message in Robots.
 
 1. Extract the complete ZIP. Keep `TwinPulse.exe`, `_internal`, `desktop` and the manifest together.
