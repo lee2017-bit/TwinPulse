@@ -227,7 +227,7 @@ function drive(route,onDone){S.running=true;let seg=1,stopIdx=0;S.pose=Object.as
     const dx=tgt.x-S.pose.x,dy=tgt.y-S.pose.y,dist=Math.hypot(dx,dy),want=Math.atan2(dy,dx);
     let dth=((want-S.pose.th+Math.PI*3)%(Math.PI*2))-Math.PI;
     if(Math.abs(dth)>0.05){S.pose.th+=Math.sign(dth)*Math.min(Math.abs(dth),3.5*dt);}
-    else{ if(blockedAhead(S.pose,S.pose.th,0.32)){S.running=false;const pts=scan(S.pose,240);addPts(pts);findCandidates();log('Proximity stop: something ahead that the twin does not have.');draw();onDone('blocked');return;}
+    else{ if(blockedAhead(S.pose,S.pose.th,Math.min(0.32,dist+0.02))){S.running=false;const pts=scan(S.pose,240);addPts(pts);findCandidates();log('Proximity stop: something ahead that the twin does not have.');draw();onDone('blocked');return;}
       const step=Math.min(dist,speed*dt);S.pose.x+=Math.cos(want)*step;S.pose.y+=Math.sin(want)*step;
       if(Math.random()<0.25){addPts(scan(S.pose,90));}
       if(dist-step<1e-3){S.pose.x=tgt.x;S.pose.y=tgt.y;const si=route.stops.findIndex(s=>Math.hypot(s.x-tgt.x,s.y-tgt.y)<1e-3);
@@ -267,7 +267,7 @@ function fastRun(){// deterministic non-animated run used when jumping
   S.pose=Object.assign({},S.robot);let route=S.route;let guard=0;
   while(guard++<4000){let moved=false;for(let seg=1;seg<route.pts.length;seg++){const t=route.pts[seg];
       while(Math.hypot(t.x-S.pose.x,t.y-S.pose.y)>0.02){const a=Math.atan2(t.y-S.pose.y,t.x-S.pose.x);S.pose.th=a;
-        if(blockedAhead(S.pose,a,0.32)){addPts(scan(S.pose,240));findCandidates();S.candidates.forEach(applyCand);route=replanFromHere();moved=true;break;}
+        if(blockedAhead(S.pose,a,Math.min(0.32,Math.hypot(t.x-S.pose.x,t.y-S.pose.y)+0.02))){addPts(scan(S.pose,240));findCandidates();S.candidates.forEach(applyCand);route=replanFromHere();moved=true;break;}
         const st=Math.min(0.05,Math.hypot(t.x-S.pose.x,t.y-S.pose.y));S.pose.x+=Math.cos(a)*st;S.pose.y+=Math.sin(a)*st;if(Math.random()<0.15)addPts(scan(S.pose,90));}
       if(moved)break;if(route.stops.some(s=>Math.hypot(s.x-t.x,s.y-t.y)<1e-3)){addPts(scan(S.pose,240));findCandidates();}}
     if(!moved)break;}
