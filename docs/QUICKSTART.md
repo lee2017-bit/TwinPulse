@@ -1,6 +1,18 @@
 # TwinPulse Quick Start
 
-TwinPulse runs a local web app and a separate Isaac Sim 3D window on the **same Windows PC**. Today you can add a photo or drawing, create and review an approximate AI draft, and build it in Isaac Sim. The legacy v1 plan can run a limited simulated route; the separate v2 site-scene plan is geometry-only and does not enable Run. Robot scans, route optimization/comparison, and real TurtleBot3 control are not available yet. Do not use this prototype to control a physical robot.
+TwinPulse runs a local app and a separate Isaac Sim window on the **same Windows PC**. The current build (the one in the demo video) imports an iPhone RoomPlan USD as the twin, places a SIM or physical TurtleBot3 Burger on it at a declared start pose, turns "Survey the room and come back" into a Nemotron plan and a route on the twin, drives it, and offers LiDAR returns the twin cannot explain as reviewable twin edits. A physical run is a supervised session (see [Run the current demo](#run-the-current-demo) below). The start pose is declared, not measured, and the robot drives on wheel odometry; there is no SLAM or twin-based relocalization yet. The sections after the install steps also describe the earlier photo-to-draft workflow; some labels there may differ in the current build.
+
+## Run the current demo
+
+1. Start TwinPulse (`Start-TwinPulse.cmd`). Open **API keys**, add your Nebius Token Factory key, and under **Model routing** set the planner to `nvidia/nemotron-3-super-120b-a12b` and the photo observer to `nvidia/Nemotron-3.5-Super-VL`.
+2. In a new chat open **Import space**, choose your RoomPlan USD, check it, import it and **Show Twin**. After every app restart use **Rebuild Twin in Isaac**.
+3. Optional: in Import space open **Added obstacles**, choose an **Obstacle reference photo**, tick **Allow photo analysis** and analyze it. Add the candidates you agree with one by one.
+4. In the Digital Twin pane open **Robots → Manage → Add SIM robot**, or select your registered physical robot, and set its position and heading on the Twin.
+5. Select the robot, then **Connect** and **Prepare**. For a physical robot run `Prepare-Robot.cmd` once beforehand, and in the session gate confirm supervision → **Arm** → **Bootstrap stop** (a fixed 0.03 m/s forward for at most 0.6 s) before the first route. Arm expires; after a reconnect, Prepare comes first again.
+6. Type **Survey the room and come back**. Check the route card (model, latency, stops, length), then **Run route**. **Stop** is always one click, and robot-side guards (proximity stop, battery cutoff, output timeout) act on their own.
+7. After the route, the LiDAR card lists objects that are not in the twin. Apply or Skip each one. **Twin edits** can be set to Review (default) or Auto-apply; **Undo last edit** reverts the latest change.
+
+Measured runs, including the failed ones, are in [the repeatability record](analysis/TWINPULSE_REPEATABILITY_2026-10-28.md).
 
 ## Choose an install path
 
@@ -39,7 +51,7 @@ Replace `<release-id>` with the directory created by the first command. Transfer
 
 An archive hash proves transfer integrity, not publisher identity. Compare the release digest through a trusted channel and follow your company's transfer/execution policy. Do not bypass AppLocker, WDAC, or other company controls. No API key, user input, or Isaac Sim installation is included in the release. Company-workstation install, Nebius network access, and actual Isaac Build/Run have **not** been verified yet.
 
-## Create and inspect a draft
+## Create and inspect a draft (earlier photo-to-draft workflow)
 
 1. In the local web app, open **AI settings**. Select the provider preset and enter that PC's API key. The key is stored in Windows Credential Manager and is not copied from another PC. A saved key does not prove the provider is reachable or that a paid AI request succeeded. Check the provider's cost and permissions before creating a draft.
 2. In **Add Photo**, choose a PNG/JPG/WEBP site photo or drawing (up to 10 MiB). Add **Instructions (optional)** if needed. Photo observation (`nvidia/Nemotron-3.5-Super-VL` on Nebius Token Factory, selected under **API keys → Model routing** as in the demo build) requires exactly one image. A supported provider may accept instructions alone. No input means **Create Draft** stays disabled.
