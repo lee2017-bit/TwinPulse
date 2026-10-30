@@ -1,0 +1,367 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>TwinPulse Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root{
+  --bg:#eef1ea;--panel:#ffffff;--ink:#1b211d;--mut:#5d6860;--line:#d6ddd0;
+  --acc:#4f7a1f;--acc-ink:#ffffff;--acc-soft:#e3eed2;--warn:#b4590b;--warn-soft:#fbe9d6;--bad:#c8382b;
+  --floor:#efe6d6;--wall:#3c3a36;--furn:#b9a68b;--furn-ink:#4a3f30;
+  --twin-bg:#1f2523;--twin-grid:#2c3532;--twin-wall:#c9d3cc;--twin-furn:#5f7f73;--twin-photo:#6f7fae;--twin-lidar:#8d5a2b;
+  --route:#7bc043;--ok-pt:#58c48a;--new-pt:#ff5a4a;--robot:#2f6fd6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#121614;--panel:#1b201d;--ink:#e5ebe4;--mut:#9aa69d;--line:#2f3833;
+  --acc:#9cc960;--acc-ink:#142006;--acc-soft:#26331a;--warn:#f0a75c;--warn-soft:#3a2a18;--bad:#ff7a6c;
+  --floor:#3a352d;--wall:#d9d2c4;--furn:#7d6d57;--furn-ink:#f1e6d4;
+  --twin-bg:#0e1211;--twin-grid:#1c2421;--twin-wall:#c9d3cc;--twin-furn:#5f7f73;--twin-photo:#7d8ec0;--twin-lidar:#b07a45;
+  --route:#8fd34f;--ok-pt:#58c48a;--new-pt:#ff6a5a;--robot:#5d9bff;color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121614;--panel:#1b201d;--ink:#e5ebe4;--mut:#9aa69d;--line:#2f3833;
+  --acc:#9cc960;--acc-ink:#142006;--acc-soft:#26331a;--warn:#f0a75c;--warn-soft:#3a2a18;--bad:#ff7a6c;
+  --floor:#3a352d;--wall:#d9d2c4;--furn:#7d6d57;--furn-ink:#f1e6d4;
+  --twin-bg:#0e1211;--twin-grid:#1c2421;--twin-wall:#c9d3cc;--twin-furn:#5f7f73;--twin-photo:#7d8ec0;--twin-lidar:#b07a45;
+  --route:#8fd34f;--ok-pt:#58c48a;--new-pt:#ff6a5a;--robot:#5d9bff;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px 40px}
+.app{max-width:1240px;margin:0 auto;display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start}
+.rail{position:sticky;top:8px;display:flex;flex-direction:column;gap:6px;width:44px;z-index:30}
+.rail button{transition:width .15s}
+.rail.open button{width:230px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.rail.open button:not(.cur){background:var(--panel)}
+.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rail button{font:inherit;display:flex;align-items:center;gap:8px;width:100%;border:1px solid var(--line);background:var(--panel);color:var(--mut);border-radius:10px;padding:0;height:40px;cursor:pointer;overflow:hidden;text-align:left}
+.rail .n{flex:0 0 40px;text-align:center;font-weight:700}
+.rail .nm{white-space:nowrap;font-size:.84rem;display:none;padding-right:8px}
+.rail.open .nm{display:inline}
+.rail button.done{color:var(--acc);border-color:var(--acc)}
+.rail button.cur{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.rail .tog{justify-content:center;font-size:1.1rem;color:var(--ink)}
+.content{display:flex;flex-direction:column;gap:10px;min-width:0}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+h1{font-size:1.25rem;margin:0}
+.badge{font-size:.75rem;border:1px solid var(--warn);color:var(--warn);background:var(--warn-soft);border-radius:999px;padding:1px 9px}
+.lead{margin:0;color:var(--mut);font-size:.88rem;max-width:80ch}
+.bar{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.bar .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.bar h3{margin:0;font-size:1.02rem}
+.bar .why{margin:0;color:var(--mut);font-size:.86rem}
+.nav{display:flex;gap:6px;flex:0 0 auto}
+.nav .btn{padding:6px 10px}
+.views{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0}
+.view{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px;min-width:0}
+.view h2{font-size:.74rem;letter-spacing:.05em;text-transform:uppercase;margin:0 0 4px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+canvas{width:100%;height:auto;display:block;border-radius:6px;touch-action:none}
+.details{display:flex;flex-direction:column;gap:8px}
+.details:empty{display:none}
+.btn{font:inherit;font-weight:600;background:var(--acc);color:var(--acc-ink);border:0;border-radius:8px;padding:8px 13px;cursor:pointer}
+.btn[disabled]{opacity:.45;cursor:default}
+.btn.ghost{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:.86rem;display:flex;flex-direction:column;gap:6px}
+.card .t{font-weight:600}
+.card .m{color:var(--mut);font-size:.8rem}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}
+pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border-radius:6px;padding:7px;overflow-x:auto}
+.cmd{display:flex;gap:6px}.cmd input{flex:1;min-width:0;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:.74rem;color:var(--mut)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.foot{font-size:.8rem;color:var(--mut);border-top:1px solid var(--line);padding-top:10px}
+.foot a{color:var(--acc)}
+.photo{width:100%;max-width:420px;height:auto;border-radius:6px;display:block}
+.log{font-size:.78rem;color:var(--mut)}
+.chip{background:var(--warn);color:#fff;border-radius:8px;padding:8px 12px;cursor:grab;user-select:none;touch-action:none;font-weight:600}
+@media (max-width:719px){.lead{display:none}.bar .why{font-size:.82rem}}
+</style>
+
+<div class="app">
+<nav class="rail" id="rail" aria-label="Steps"><button class="tog" id="tog" type="button" aria-label="Show step names">☰</button><ol id="steps"></ol></nav>
+<div class="content">
+<header>
+  <h1>TwinPulse: click through the loop</h1>
+  <span class="badge">Simulated in your browser · not the product UI</span>
+  <p class="lead">A virtual room so you can try each step in a minute. Left: the real room. Right: its digital twin. The real robot, LiDAR and Nemotron calls are in the <a href="https://youtu.be/v8mOFSjLvd4" target="_blank" rel="noopener">2:59 video</a>.</p>
+</header>
+<section class="bar" id="bar"></section>
+<div class="views">
+  <div class="view"><h2>Real room</h2><canvas id="real" width="600" height="450"></canvas></div>
+  <div class="view"><h2>Digital twin</h2><canvas id="twin" width="600" height="450"></canvas></div>
+</div>
+<div class="legend"><span><i style="background:var(--twin-furn)"></i>scanned</span><span><i style="background:var(--twin-photo)"></i>from photo</span><span><i style="background:var(--twin-lidar)"></i>from LiDAR</span><span><i style="background:var(--ok-pt)"></i>LiDAR point the twin explains</span><span><i style="background:var(--new-pt)"></i>not in model</span></div>
+<section class="details" id="details"></section>
+<div class="foot">What this page simulates, the real system did on Oct 27-28 in a living room with a TurtleBot3: Nemotron 3 Super planned the mission in 4.5 s; the robot drove 3 stops (6.57 m) and back; LiDAR added 5 objects the scan was missing; the next route went around the new box. Repeat runs, failures and benchmarks: <a href="https://youtu.be/v8mOFSjLvd4" target="_blank" rel="noopener">video</a> · <a href="https://github.com/lee2017-bit/TwinPulse" target="_blank" rel="noopener">GitHub repo</a> · <a href="https://devpost.com/software/twinpulse" target="_blank" rel="noopener">Devpost</a>.</div>
+</div>
+</div>
+
+<script>
+(()=>{
+// ---------- world (metres) ----------
+const W=6.0,H=4.5,START={x:0.7,y:0.65,th:0.35};
+const SCANNED=[
+ {id:'sofa',label:'sofa',short:'sofa',x:0.25,y:3.35,w:2.2,h:0.9},
+ {id:'table',label:'coffee table',short:'table',x:2.75,y:2.05,w:1.1,h:0.6},
+ {id:'shelf',label:'shelf',short:'shelf',x:5.35,y:0.3,w:0.4,h:1.6},
+ {id:'plant',label:'plant',short:'plant',x:5.25,y:3.7,w:0.5,h:0.5},
+ {id:'tv',label:'TV stand',short:'TV',x:2.4,y:0.0,w:1.6,h:0.4}];
+const PHOTO=[ // real but missing from the scan
+ {id:'stool',label:'stool',short:'stool',x:4.35,y:3.75,w:0.45,h:0.45,photo:true},
+ {id:'bag',label:'soft bag',short:'bag',x:5.3,y:2.15,w:0.45,h:0.35,photo:true,lowSoft:true}];
+const ROBOT_R=0.11, CLEAR=0.17;
+const SURVEY=[{x:2.0,y:1.05},{x:4.55,y:1.3},{x:4.55,y:3.05},{x:2.1,y:2.95}];
+
+let S; // state
+function fresh(){return{
+  step:0, maxStep:0, usd:false, photo:false, photoAccepted:{}, robot:null, plan:null, route:null,
+  obstacle:null, twinLidar:[], pts:[], candidates:[], running:false, pose:null, trail:[],
+  log:[], done6:false, route2:null, pick:null, plannedMs:null};}
+
+// ---------- geometry helpers ----------
+const realObjs=()=>{const o=SCANNED.concat(PHOTO);if(S.obstacle)o.push(S.obstacle);return o;};
+const twinObjs=()=>{const o=S.usd?SCANNED.slice():[];PHOTO.forEach(p=>{if(S.photoAccepted[p.id])o.push(p)});return o.concat(S.twinLidar);};
+function rectSegs(r){return[[r.x,r.y,r.x+r.w,r.y],[r.x+r.w,r.y,r.x+r.w,r.y+r.h],[r.x+r.w,r.y+r.h,r.x,r.y+r.h],[r.x,r.y+r.h,r.x,r.y]];}
+const WALLS=[[0,0,W,0],[W,0,W,H],[W,H,0,H],[0,H,0,0]];
+function ray(x,y,a,objs,max){let best=max;const dx=Math.cos(a),dy=Math.sin(a);
+  const segs=WALLS.concat(...objs.filter(o=>!o.lowSoft).map(rectSegs));
+  for(const[x1,y1,x2,y2]of segs){const ex=x2-x1,ey=y2-y1,den=dx*ey-dy*ex;if(Math.abs(den)<1e-9)continue;
+    const t=((x1-x)*ey-(y1-y)*ex)/den,u=((x1-x)*dy-(y1-y)*dx)/den;if(t>0.02&&u>=0&&u<=1&&t<best)best=t;}
+  return best;}
+function distRect(px,py,r){const dx=Math.max(r.x-px,0,px-(r.x+r.w)),dy=Math.max(r.y-py,0,py-(r.y+r.h));return Math.hypot(dx,dy);}
+function explained(px,py){if(px<0.06||py<0.06||px>W-0.06||py>H-0.06)return true;return twinObjs().some(o=>distRect(px,py,o)<0.07);}
+
+// ---------- planner: A* on twin occupancy ----------
+const C=0.05,GW=Math.round(W/C),GH=Math.round(H/C);
+function grid(objs){const g=new Uint8Array(GW*GH);const m=ROBOT_R+CLEAR;
+  for(let j=0;j<GH;j++)for(let i=0;i<GW;i++){const x=(i+.5)*C,y=(j+.5)*C;
+    if(x<m||y<m||x>W-m||y>H-m||objs.some(o=>distRect(x,y,o)<m))g[j*GW+i]=1;}return g;}
+function nearestFree(g,p){let i=Math.floor(p.x/C),j=Math.floor(p.y/C);if(!g[j*GW+i])return p;
+  for(let r=1;r<30;r++)for(let dj=-r;dj<=r;dj++)for(let di=-r;di<=r;di++){const a=i+di,b=j+dj;if(a<0||b<0||a>=GW||b>=GH)continue;if(!g[b*GW+a])return{x:(a+.5)*C,y:(b+.5)*C};}return p;}
+function astar(g,s,t){const si=Math.floor(s.x/C),sj=Math.floor(s.y/C),ti=Math.floor(t.x/C),tj=Math.floor(t.y/C);
+  const N=GW*GH,gs=new Float32Array(N).fill(1e9),came=new Int32Array(N).fill(-1),open=[];const k=(i,j)=>j*GW+i;
+  const h=(i,j)=>Math.hypot(i-ti,j-tj);gs[k(si,sj)]=0;open.push([h(si,sj),si,sj]);const closed=new Uint8Array(N);
+  while(open.length){let bi=0;for(let q=1;q<open.length;q++)if(open[q][0]<open[bi][0])bi=q;const[,i,j]=open.splice(bi,1)[0];const kk=k(i,j);
+    if(closed[kk])continue;closed[kk]=1;if(i===ti&&j===tj)break;
+    for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){if(!di&&!dj)continue;const a=i+di,b=j+dj;if(a<0||b<0||a>=GW||b>=GH)continue;const kb=k(a,b);
+      const esc=(x,y)=>Math.hypot(x-si,y-sj)*C<0.4;if(g[kb]&&!(a===ti&&b===tj)&&!esc(a,b))continue;if(di&&dj&&((g[k(i+di,j)]&&!esc(i+di,j))||(g[k(i,j+dj)]&&!esc(i,j+dj))))continue;const ng=gs[kk]+Math.hypot(di,dj);
+      if(ng<gs[kb]){gs[kb]=ng;came[kb]=kk;open.push([ng+h(a,b),a,b]);}}}
+  let cur=k(ti,tj);if(came[cur]<0&&cur!==k(si,sj))return null;const path=[];while(cur>=0){path.push({x:(cur%GW+.5)*C,y:(Math.floor(cur/GW)+.5)*C});cur=came[cur];}
+  path.reverse();path[0]={x:s.x,y:s.y};path[path.length-1]={x:t.x,y:t.y};return smooth(g,path);}
+function los(g,a,b){const n=Math.ceil(Math.hypot(b.x-a.x,b.y-a.y)/(C/2));for(let q=1;q<n;q++){const x=a.x+(b.x-a.x)*q/n,y=a.y+(b.y-a.y)*q/n;if(g[Math.floor(y/C)*GW+Math.floor(x/C)])return false;}return true;}
+function smooth(g,p){const out=[p[0]];let i=0;while(i<p.length-1){let j=p.length-1;while(j>i+1&&!los(g,p[i],p[j]))j--;out.push(p[j]);i=j;}return out;}
+function planRoute(from,goals){const g=grid(twinObjs());let cur=from,legs=[],stops=[];
+  for(const gl of goals){const t=nearestFree(g,gl);const leg=astar(g,cur,t);if(!leg)continue;legs.push(leg);stops.push(t);cur=t;}
+  const pts=[from];legs.forEach(l=>pts.push(...l.slice(1)));let len=0;for(let q=1;q<pts.length;q++)len+=Math.hypot(pts[q].x-pts[q-1].x,pts[q].y-pts[q-1].y);
+  return{pts,stops,len};}
+
+// ---------- drawing ----------
+const cv={real:document.getElementById('real'),twin:document.getElementById('twin')};
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const PAD=22,SC=(600-2*PAD)/W;let PORT=false,CW=600,CH=450,FK=1,DPR=1;
+function layoutCanvas(){PORT=window.innerWidth<720;if(PORT){CW=Math.round(2*PAD+H*SC);CH=600;}else{CW=600;CH=Math.round(2*PAD+H*SC);}
+  DPR=Math.min(2,Math.ceil(window.devicePixelRatio||1));for(const c of[cv.real,cv.twin]){if(c.width!==CW*DPR)c.width=CW*DPR;if(c.height!==CH*DPR)c.height=CH*DPR;c.getContext('2d').setTransform(DPR,0,0,DPR,0,0);}
+  const dw=cv.real.clientWidth||CW;FK=Math.max(1,CW/dw*0.85);}
+function M(x,y){return PORT?[PAD+(H-y)*SC,PAD+(W-x)*SC]:[PAD+x*SC,PAD+(H-y)*SC];}
+const lbl=o=>PORT?(o.short||o.label):o.label;
+function rr(ctx,o,fill,stroke,label,ink){const a=M(o.x,o.y),b=M(o.x+o.w,o.y+o.h);const x=Math.min(a[0],b[0]),y=Math.min(a[1],b[1]),w=Math.abs(a[0]-b[0]),h=Math.abs(a[1]-b[1]);
+  ctx.fillStyle=fill;ctx.fillRect(x,y,w,h);if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1.5*FK;ctx.strokeRect(x,y,w,h);}
+  if(label){ctx.fillStyle=ink;ctx.font=Math.round(11*FK)+'px system-ui';ctx.textAlign='center';ctx.fillText(label,x+w/2,y+h/2+4*FK);}}
+function drawRobot(ctx,p,col){const a=M(p.x,p.y),b=M(p.x+Math.cos(p.th),p.y+Math.sin(p.th));const ang=Math.atan2(b[1]-a[1],b[0]-a[0]);const r=Math.max(ROBOT_R*SC,7*FK);
+  ctx.save();ctx.translate(a[0],a[1]);ctx.rotate(ang);ctx.fillStyle=col;ctx.beginPath();ctx.arc(0,0,r,0,7);ctx.fill();
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(r*0.95,0);ctx.lineTo(-r*0.3,r*0.55);ctx.lineTo(-r*0.3,-r*0.55);ctx.fill();ctx.restore();}
+function drawRoute(ctx,r,col,dash){if(!r)return;ctx.save();ctx.strokeStyle=col;ctx.lineWidth=2.5*FK;if(dash)ctx.setLineDash([6*FK,5*FK]);ctx.beginPath();
+  r.pts.forEach((p,i)=>{const q=M(p.x,p.y);i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);});ctx.stroke();ctx.setLineDash([]);
+  r.stops.forEach((s,i)=>{const q=M(s.x,s.y);ctx.fillStyle=col;ctx.beginPath();ctx.arc(q[0],q[1],9*FK,0,7);ctx.fill();ctx.fillStyle='#10200a';ctx.font='bold '+Math.round(11*FK)+'px system-ui';ctx.textAlign='center';
+    ctx.fillText(i===r.stops.length-1&&r.home?'S':String(i+1),q[0],q[1]+4*FK);});ctx.restore();}
+function roomRect(ctx){const a=M(0,0),b=M(W,H);return[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1])];}
+let lastRays=[];
+function draw(){layoutCanvas();
+  let c=cv.real.getContext('2d');c.clearRect(0,0,CW,CH);const R=roomRect();
+  c.fillStyle=css('--floor');c.fillRect(...R);
+  realObjs().forEach(o=>{const isObs=o===S.obstacle;rr(c,o,isObs?css('--warn'):css('--furn'),null,lbl(o),isObs?'#fff':css('--furn-ink'));});
+  c.strokeStyle=css('--wall');c.lineWidth=5;c.strokeRect(...R);
+  if(S.route)drawRoute(c,S.route,css('--route'),true);
+  if(S.route2)drawRoute(c,S.route2,css('--route'),true);
+  if(lastRays.length&&S.pose){const a=M(S.pose.x,S.pose.y);c.strokeStyle='rgba(255,70,60,.2)';c.lineWidth=FK;lastRays.forEach(([x,y])=>{const b=M(x,y);c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();});}
+  const rp=S.pose||S.robot;if(rp)drawRobot(c,rp,css('--robot'));
+  c=cv.twin.getContext('2d');c.clearRect(0,0,CW,CH);c.fillStyle=css('--twin-bg');c.fillRect(0,0,CW,CH);
+  if(!S.usd){c.fillStyle=css('--mut');c.font=Math.round(13*FK)+'px system-ui';c.textAlign='center';c.fillText('Empty stage',CW/2,CH/2-8*FK);c.fillText('import a USD scan',CW/2,CH/2+10*FK);return;}
+  c.strokeStyle=css('--twin-grid');c.lineWidth=1;for(let x=0;x<=W;x+=0.5){const a=M(x,0),b=M(x,H);c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();}
+  for(let y=0;y<=H;y+=0.5){const a=M(0,y),b=M(W,y);c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();}
+  c.strokeStyle=css('--twin-wall');c.lineWidth=4;c.strokeRect(...R);
+  twinObjs().forEach(o=>{const col=o.lidar?css('--twin-lidar'):o.photo?css('--twin-photo'):css('--twin-furn');rr(c,o,col,o.lidar?'#ffd2a8':null,o.lidar?(PORT?'box':'box (LiDAR)'):lbl(o),'#eef3ef');});
+  S.candidates.filter(k=>!k.applied).forEach(k=>{const a=M(k.x,k.y),b=M(k.x+k.w,k.y+k.h);c.save();c.setLineDash([4*FK,3*FK]);c.strokeStyle=css('--new-pt');c.lineWidth=2*FK;
+    c.strokeRect(Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1]));c.restore();});
+  const ps=Math.max(3,2.5*FK);S.pts.forEach(p=>{const q=M(p.x,p.y);c.fillStyle=explained(p.x,p.y)?css('--ok-pt'):css('--new-pt');c.fillRect(q[0]-ps/2,q[1]-ps/2,ps,ps);});
+  if(S.route)drawRoute(c,S.route,css('--route'));
+  if(S.route2)drawRoute(c,S.route2,css('--route'));
+  if(S.pick){const q=M(S.pick.x,S.pick.y);c.strokeStyle=css('--route');c.lineWidth=2*FK;c.beginPath();c.arc(q[0],q[1],11*FK,0,7);c.stroke();}
+  if(rp)drawRobot(c,rp,css('--robot'));
+}
+
+// ---------- LiDAR ----------
+function scan(pose,n=180){const pts=[];lastRays=[];for(let q=0;q<n;q++){const a=pose.th+q*2*Math.PI/n;const d=ray(pose.x,pose.y,a,realObjs(),3.5);
+  if(d<3.5){const p={x:pose.x+d*Math.cos(a),y:pose.y+d*Math.sin(a)};pts.push(p);if(q%3===0)lastRays.push([p.x,p.y]);}}return pts;}
+function addPts(pts){S.pts.push(...pts);if(S.pts.length>2500)S.pts.splice(0,S.pts.length-2500);}
+function findCandidates(){const bad=S.pts.filter(p=>!explained(p.x,p.y));const cl=[];
+  bad.forEach(p=>{let c=cl.find(c=>Math.hypot(c.cx-p.x,c.cy-p.y)<0.45);if(!c){c={cx:p.x,cy:p.y,pts:[]};cl.push(c);}c.pts.push(p);c.cx=c.pts.reduce((s,q)=>s+q.x,0)/c.pts.length;c.cy=c.pts.reduce((s,q)=>s+q.y,0)/c.pts.length;});
+  cl.filter(c=>c.pts.length>=4).forEach(c=>{const xs=c.pts.map(p=>p.x),ys=c.pts.map(p=>p.y);
+    let x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);const pad=0.04;x0-=pad;y0-=pad;x1+=pad;y1+=pad;
+    // only the visible faces are seen: extend to a minimum depth away from the robot
+    const minD=0.35;if(x1-x0<minD){if(S.pose.x<x0)x1=x0+minD;else x0=x1-minD;}if(y1-y0<minD){if(S.pose.y<y0)y1=y0+minD;else y0=y1-minD;}
+    const box={x:x0,y:y0,w:x1-x0,h:y1-y0};
+    const cx=box.x+box.w/2,cy=box.y+box.h/2;
+    const own=S.twinLidar.find(o=>Math.hypot(o.x+o.w/2-cx,o.y+o.h/2-cy)<0.7);
+    if(own){const X0=Math.min(own.x,box.x),Y0=Math.min(own.y,box.y),X1=Math.max(own.x+own.w,box.x+box.w),Y1=Math.max(own.y+own.h,box.y+box.h);
+      if(X1-X0<0.9&&Y1-Y0<0.9){own.x=X0;own.y=Y0;own.w=X1-X0;own.h=Y1-Y0;return;}}
+    if(!S.candidates.some(k=>Math.hypot(k.x+k.w/2-cx,k.y+k.h/2-cy)<0.7))S.candidates.push(Object.assign(box,{id:'c'+S.candidates.length,applied:false,n:c.pts.length}));});}
+
+// ---------- driving ----------
+let anim=null;
+function blockedAhead(p,th,look){const g=realObjs();for(let d=0.05;d<=look;d+=0.05){const x=p.x+d*Math.cos(th),y=p.y+d*Math.sin(th);
+  if(g.some(o=>!o.lowSoft&&distRect(x,y,o)<ROBOT_R+0.03))return true;}return false;}
+function drive(route,onDone){S.running=true;let seg=1,stopIdx=0;S.pose=Object.assign({},S.pose||S.robot);const speed=0.9;// m/s simulated (x2)
+  let last=performance.now(),pauseUntil=0;
+  function tick(now){const dt=Math.min(0.05,(now-last)/1000);last=now;
+    if(!S.running){anim=null;return;}
+    if(now<pauseUntil){draw();anim=requestAnimationFrame(tick);return;}
+    const tgt=route.pts[seg];if(!tgt){S.running=false;onDone('done');return;}
+    const dx=tgt.x-S.pose.x,dy=tgt.y-S.pose.y,dist=Math.hypot(dx,dy),want=Math.atan2(dy,dx);
+    let dth=((want-S.pose.th+Math.PI*3)%(Math.PI*2))-Math.PI;
+    if(Math.abs(dth)>0.05){S.pose.th+=Math.sign(dth)*Math.min(Math.abs(dth),3.5*dt);}
+    else{ if(blockedAhead(S.pose,S.pose.th,0.32)){S.running=false;const pts=scan(S.pose,240);addPts(pts);findCandidates();log('Proximity stop: something ahead that the twin does not have.');draw();onDone('blocked');return;}
+      const step=Math.min(dist,speed*dt);S.pose.x+=Math.cos(want)*step;S.pose.y+=Math.sin(want)*step;
+      if(Math.random()<0.25){addPts(scan(S.pose,90));}
+      if(dist-step<1e-3){S.pose.x=tgt.x;S.pose.y=tgt.y;const si=route.stops.findIndex(s=>Math.hypot(s.x-tgt.x,s.y-tgt.y)<1e-3);
+        if(si>=0){addPts(scan(S.pose,240));findCandidates();log(si===route.stops.length-1&&route.home?'Back at the start.':'Stop '+(si+1)+': 360° LiDAR scan.');pauseUntil=now+550;if(onStop)onStop(si);}
+        seg++;}}
+    draw();renderSide();anim=requestAnimationFrame(tick);}
+  let onStop=null;anim=requestAnimationFrame(tick);}
+function log(t){S.log.push(t);}
+
+// ---------- steps ----------
+const STEPS=[
+ {k:'Import USD scan',why:'Start from an existing room scan. In the real demo this is an iPhone RoomPlan USD of a living room; here it is a virtual room.'},
+ {k:'Add a room photo',why:'The scan misses small things. Nemotron VL looks at a photo and proposes what the twin is missing; you accept them.'},
+ {k:'Place the robot',why:'Put the robot on the twin where it really stands, with its heading (in the real demo: tape-measured). Drag it if you like.'},
+ {k:'Ask for a mission',why:'One sentence. Nemotron 3 Super on Nebius Token Factory turns it into a short task plan; TwinPulse computes a deterministic route on the twin.'},
+ {k:'Change the real room',why:'Someone leaves a box in the way. Drag it onto the dashed route in the REAL room. The twin does not know about it.'},
+ {k:'Run the route',why:'The robot drives the route in the real room. LiDAR points the twin can explain turn green; points it cannot explain turn red and become a "not in model" candidate.'},
+ {k:'Next route on the updated twin',why:'Click any point on the twin. The next route is planned on the corrected twin: around the new box and back to the start.'}];
+function setStep(n){S.step=n;S.maxStep=Math.max(S.maxStep,n);renderSteps();renderSide();draw();}
+function renderSteps(){const ol=document.getElementById('steps');ol.innerHTML='';STEPS.forEach((st,i)=>{const li=document.createElement('li');const b=document.createElement('button');b.type='button';b.title=st.k;
+  b.innerHTML='<span class="n">'+(i+1)+'</span><span class="nm">'+st.k+'</span>';b.className=i===S.step?'cur':isDone(i)?'done':'';b.onclick=()=>{rail.classList.remove('open');jump(i);};li.appendChild(b);ol.appendChild(li);});}
+function isDone(i){return[S.usd,S.photo&&Object.keys(S.photoAccepted).length>0,!!S.robot,!!S.route,!!S.obstacle,S.done6,!!S.route2][i];}
+
+// replay to step n with default choices (Back / jump)
+function jump(n){if(anim)cancelAnimationFrame(anim);S=fresh();lastRays=[];
+  if(n>=1)doUSD(true);if(n>=2){doPhoto(true);PHOTO.forEach(p=>S.photoAccepted[p.id]=true);}
+  if(n>=3)S.robot=Object.assign({},START);if(n>=4)doPlan(true);if(n>=5)S.obstacle=defaultObstacle();
+  if(n>=6){fastRun();}
+  S.step=n;S.maxStep=n;renderSteps();renderSide();draw();}
+function defaultObstacle(){return{id:'obs',label:'box',x:1.2,y:0.62,w:0.42,h:0.42};}
+
+function doUSD(q){S.usd=true;if(!q)log('Imported living_room.usd: walls + 5 scanned objects.');}
+function doPhoto(q){S.photo=true;if(!q)log('Photo sent to nvidia/Nemotron-3.5-Super-VL (recorded answer).');}
+function doPlan(q){S.plan={tasks:['survey','return_to_start','stop']};const goals=SURVEY.concat([{x:START.x,y:START.y}]);
+  S.route=planRoute(S.robot,goals);S.route.home=true;S.pose=Object.assign({},S.robot);if(!q)log('Plan valid against the 6 declared capabilities. Route: '+(S.route.stops.length-1)+' stops, '+S.route.len.toFixed(2)+' m.');}
+function fastRun(){// deterministic non-animated run used when jumping
+  S.pose=Object.assign({},S.robot);let route=S.route;let guard=0;
+  while(guard++<4000){let moved=false;for(let seg=1;seg<route.pts.length;seg++){const t=route.pts[seg];
+      while(Math.hypot(t.x-S.pose.x,t.y-S.pose.y)>0.02){const a=Math.atan2(t.y-S.pose.y,t.x-S.pose.x);S.pose.th=a;
+        if(blockedAhead(S.pose,a,0.32)){addPts(scan(S.pose,240));findCandidates();S.candidates.forEach(applyCand);route=replanFromHere();moved=true;break;}
+        const st=Math.min(0.05,Math.hypot(t.x-S.pose.x,t.y-S.pose.y));S.pose.x+=Math.cos(a)*st;S.pose.y+=Math.sin(a)*st;if(Math.random()<0.15)addPts(scan(S.pose,90));}
+      if(moved)break;if(route.stops.some(s=>Math.hypot(s.x-t.x,s.y-t.y)<1e-3)){addPts(scan(S.pose,240));findCandidates();}}
+    if(!moved)break;}
+  S.candidates.forEach(applyCand);S.done6=true;S.pose=Object.assign({},S.robot,{x:S.route.stops[S.route.stops.length-1].x,y:S.route.stops[S.route.stops.length-1].y});lastRays=[];}
+function applyCand(k){if(k.applied)return;k.applied=true;S.twinLidar.push({id:'L'+k.id,label:'box',x:k.x,y:k.y,w:k.w,h:k.h,lidar:true,cand:k.id});}
+function undoLast(){const o=S.twinLidar.pop();if(!o)return;const k=S.candidates.find(c=>c.id===o.cand);if(k)k.applied=false;log('Undo: removed the LiDAR box from the twin.');}
+function remainingGoals(){const r=S.route;const idx=r.stops.findIndex(s=>!s.reached);return r.stops.slice(Math.max(0,idx));}
+function replanFromHere(){const left=S.route.stops.filter(s=>!s.reached);const nr=planRoute(S.pose,left.map(s=>({x:s.x,y:s.y})));nr.home=true;
+  // keep stop numbering visible: carry reached flags
+  S.route=nr;return nr;}
+
+// ---------- panels ----------
+const bar=document.getElementById('bar'),details=document.getElementById('details'),rail=document.getElementById('rail');
+document.getElementById('tog').onclick=e=>{e.stopPropagation();rail.classList.toggle('open');};
+document.addEventListener('click',e=>{if(rail.classList.contains('open')&&!rail.contains(e.target))rail.classList.remove('open');});
+function el(h){const d=document.createElement('div');d.innerHTML=h.trim();return d.firstChild;}
+function B(t,fn,ghost,dis){const b=document.createElement('button');b.type='button';b.className='btn'+(ghost?' ghost':'');b.textContent=t;b.disabled=!!dis;b.onclick=fn;return b;}
+function renderSide(){const st=STEPS[S.step];bar.innerHTML='';details.innerHTML='';
+  const top=el(`<div class="top"><h3>${S.step+1}. ${st.k}</h3></div>`);const nav=document.createElement('div');nav.className='nav';
+  nav.appendChild(B('←',()=>jump(Math.max(0,S.step-1)),true,S.step===0||S.running));
+  nav.appendChild(B(S.step===6?'Start over':'Next →',()=>{if(S.step===6){jump(0);return;}setStep(S.step+1);},false,S.running||!isDone(S.step)&&S.step!==4));
+  top.appendChild(nav);bar.appendChild(top);bar.appendChild(el(`<p class="why">${st.why}</p>`));
+  const act=document.createElement('div');act.className='row';bar.appendChild(act);
+  const cards=document.createElement('div');cards.className='cards';
+  const card=h=>{const c=el(`<div class="card">${h}</div>`);cards.appendChild(c);return c;};
+  if(S.step===0){act.appendChild(B(S.usd?'Imported ✓':'Import USD scan',()=>{doUSD();draw();renderSide();renderSteps();},false,S.usd));
+    if(S.usd)card(`<div class="t">living_room.usd</div><div class="m">Walls and 5 scanned objects. The stool and the soft bag are in the real room but not in the scan.</div>`);}
+  if(S.step===1){act.appendChild(B(S.photo?'Photo added ✓':'Add room photo',()=>{doPhoto();renderSide();renderSteps();},false,S.photo));
+    if(S.photo){PHOTO.forEach(p=>act.appendChild(B(S.photoAccepted[p.id]?p.label+' ✓':'Accept '+p.label,()=>{S.photoAccepted[p.id]=true;draw();renderSide();renderSteps();},false,S.photoAccepted[p.id])));
+      const c=card(`<div class="t">nvidia/Nemotron-3.5-Super-VL · Nebius Token Factory</div><div class="m">Proposes objects the twin is missing. The soft bag is low and soft: the LiDAR cannot see it, so only the photo can add it. (Illustration. On Oct 28 the real model found the cardboard box and the soft bag 5/5 but missed the stool 0/5 in our photo.)</div>`);
+      c.insertBefore(el(photoSVG()),c.firstChild);}}
+  if(S.step===2){act.appendChild(B(S.robot?'Placed ✓':'Place robot',()=>{S.robot=Object.assign({},START);S.pose=null;draw();renderSide();renderSteps();},false,!!S.robot));
+    if(S.robot)act.appendChild(el(`<span class="log">x ${S.robot.x.toFixed(2)} m · y ${S.robot.y.toFixed(2)} m · ${(S.robot.th*180/Math.PI).toFixed(0)}° · drag it on the twin</span>`));}
+  if(S.step===3){const c=el(`<div class="cmd" style="flex:1;min-width:220px"><input id="cmdin" value="Survey the room and come back" aria-label="Mission"></div>`);
+    c.appendChild(B(S.thinking?'…':'Send',()=>{if(S.route)return;S.thinking=true;renderSide();setTimeout(()=>{S.thinking=false;doPlan();draw();renderSide();renderSteps();},900);},false,!!S.route||S.thinking));act.appendChild(c);
+    if(S.route){card(`<div class="t">Plan · nvidia/nemotron-3-super-120b-a12b via Nebius Token Factory</div><div class="m">4.5 s in the filmed run (recorded; replayed here). The model only picks task names from the robot's declared capabilities; it never drives.</div><pre>{"tasks": ["survey", "return_to_start", "stop"]}</pre>`);
+      card(`<div class="t">Route on the twin</div><div class="m">${S.route.stops.length-1} survey stops + back to start · ${S.route.len.toFixed(2)} m. Same twin, same route, every time.</div>`);}}
+  if(S.step===4){const chip=el(`<div class="chip">📦 drag me into the real room</div>`);chip.onpointerdown=e=>startDragChip(e);act.appendChild(chip);
+    act.appendChild(el(`<span class="log">${S.obstacle?'Box is in the real room. The twin does not know. Drag it again to move it.':'Drop it on the dashed route (left view).'}</span>`));}
+  if(S.step===5){act.appendChild(B(S.done6?'Route complete ✓':S.running?'Driving…':'Run route',()=>runStep6(),false,S.running||S.done6));
+    S.candidates.forEach(k=>{act.appendChild(B(k.applied?'Added to twin ✓':'Apply box to twin',()=>{applyCand(k);log('Applied: box added to the twin (with Undo).');if(S.waiting){S.waiting=false;const nr=replanFromHere();log('Re-planned on the updated twin: around the box.');drive(nr,onDrive);}draw();renderSide();},false,k.applied));
+      if(k.applied)act.appendChild(B('Undo',()=>{undoLast();draw();renderSide();},true,S.running));
+      card(`<div class="t">Not in model · rough box ${k.w.toFixed(2)} × ${k.h.toFixed(2)} m</div><div class="m">${k.n} LiDAR points the twin cannot explain, at x ${(k.x+k.w/2).toFixed(2)}, y ${(k.y+k.h/2).toFixed(2)}.</div>`);});
+    if(S.waiting)act.appendChild(el(`<span class="log" style="color:var(--warn);font-weight:600">Robot stopped in front of the box and waits.</span>`));
+    if(!S.obstacle)card(`<div class="m">No box in the room (step 5), so the route runs clean.</div>`);}
+  if(S.step===6){act.appendChild(el(`<span class="log">${S.route2?'Through your point and back to start · '+S.route2.len.toFixed(2)+' m, planned on the updated twin.':'Tap any point on the twin, for example past the new box.'}</span>`));
+    card(`<div class="t">That is the loop</div><div class="m">Build → operate → observe → update → re-plan. The real robot did this in a living room; the same loop is meant for factory floors where AGVs already drive every shift.</div>`);}
+  if(cards.children.length)details.appendChild(cards);
+  if(S.log.length)details.appendChild(el(`<div class="log">${S.log.slice(-5).map(t=>'• '+t).join('<br>')}</div>`));}
+function photoSVG(){return `<svg class="photo" viewBox="0 0 320 180" role="img" aria-label="Illustrated room photo with detected objects">
+ <rect width="320" height="180" fill="#d9cdb6"/><rect y="118" width="320" height="62" fill="#a8916d"/>
+ <rect x="18" y="74" width="120" height="50" rx="8" fill="#6e7a8a"/><rect x="24" y="60" width="108" height="24" rx="8" fill="#7e8a9a"/>
+ <rect x="232" y="40" width="40" height="92" fill="#8a6d4a"/><rect x="200" y="128" width="34" height="26" fill="#b88c55"/>
+ <ellipse cx="282" cy="150" rx="22" ry="12" fill="#5a4b7a"/><rect x="150" y="122" width="26" height="30" fill="#9b7b55"/>
+ <g fill="none" stroke-width="2"><rect x="196" y="124" width="42" height="34" stroke="#ff5a4a"/><rect x="256" y="134" width="52" height="30" stroke="#ff5a4a"/></g>
+ <g font-family="system-ui" font-size="10" fill="#fff"><rect x="196" y="112" width="78" height="12" fill="#ff5a4a"/><text x="199" y="121">stool (proposed)</text>
+ <rect x="226" y="166" width="88" height="12" fill="#ff5a4a"/><text x="229" y="175">soft bag (proposed)</text></g>
+ <text x="6" y="12" font-family="system-ui" font-size="9" fill="#3a3226">illustration</text></svg>`;}
+
+// ---------- step 6 run ----------
+function onDrive(res){if(res==='blocked'){S.waiting=true;renderSide();draw();return;}
+  S.running=false;S.done6=true;lastRays=[];log('Route complete. The twin now has what the robot saw.');renderSide();renderSteps();draw();}
+function runStep6(){if(S.running||S.done6)return;S.route.stops.forEach(s=>s.reached=false);S.pose=Object.assign({},S.robot);
+  const orig=drive;drive(S.route,onDrive);
+  // mark stops reached while driving
+  const iv=setInterval(()=>{if(!S.route){clearInterval(iv);return;}const nx=S.route.stops.find(s=>!s.reached);if(nx&&Math.hypot(nx.x-S.pose.x,nx.y-S.pose.y)<0.03)nx.reached=true;if(S.done6)clearInterval(iv);},60);
+  renderSide();}
+
+// ---------- pointer interactions ----------
+function toWorld(c,e){const r=c.getBoundingClientRect();const px=(e.clientX-r.left)*CW/r.width,py=(e.clientY-r.top)*CH/r.height;return PORT?{x:W-(py-PAD)/SC,y:H-(px-PAD)/SC}:{x:(px-PAD)/SC,y:H-(py-PAD)/SC};}
+let dragRobot=false;
+cv.twin.addEventListener('pointerdown',e=>{const w=toWorld(cv.twin,e);
+  if(S.step===2&&S.robot&&Math.hypot(w.x-S.robot.x,w.y-S.robot.y)<0.35){dragRobot=true;cv.twin.setPointerCapture(e.pointerId);}
+  if(S.step===6&&S.usd&&S.robot){if(w.x<0||w.y<0||w.x>W||w.y>H)return;S.pick=w;const from=S.robot;const r=planRoute(from,[w,{x:START.x,y:START.y}]);r.home=true;S.route2=r;S.route=null;S.pts=S.pts;S.pose=Object.assign({},S.robot);log('Next route planned on the updated twin.');draw();renderSide();renderSteps();}});
+cv.twin.addEventListener('pointermove',e=>{if(!dragRobot)return;const w=toWorld(cv.twin,e);S.robot.x=Math.min(W-0.3,Math.max(0.3,w.x));S.robot.y=Math.min(H-0.3,Math.max(0.3,w.y));START.x=S.robot.x;START.y=S.robot.y;draw();});
+cv.twin.addEventListener('pointerup',()=>{if(dragRobot){dragRobot=false;renderSide();}});
+let ghost=null;
+function startDragChip(e){e.preventDefault();ghost=document.createElement('div');ghost.textContent='📦';ghost.style.cssText='position:fixed;z-index:20;font-size:28px;pointer-events:none;transform:translate(-50%,-50%)';document.body.appendChild(ghost);moveGhost(e);
+  window.addEventListener('pointermove',moveGhost);window.addEventListener('pointerup',dropChip,{once:true});}
+function moveGhost(e){if(ghost){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';}}
+function dropChip(e){window.removeEventListener('pointermove',moveGhost);if(ghost){ghost.remove();ghost=null;}placeObstacleAt(cv.real,e);}
+cv.real.addEventListener('pointerdown',e=>{if(S.step!==4||!S.obstacle)return;const w=toWorld(cv.real,e);const o=S.obstacle;if(w.x>o.x-0.1&&w.x<o.x+o.w+0.1&&w.y>o.y-0.1&&w.y<o.y+o.h+0.1){cv.real.setPointerCapture(e.pointerId);S.dragObs=true;}});
+cv.real.addEventListener('pointermove',e=>{if(S.dragObs)placeObstacleAt(cv.real,e,true);});
+cv.real.addEventListener('pointerup',()=>{S.dragObs=false;});
+function placeObstacleAt(c,e,quiet){const w=toWorld(c,e);if(w.x<0.2||w.y<0.2||w.x>W-0.2||w.y>H-0.2)return;const o={id:'obs',label:'box',x:w.x-0.21,y:w.y-0.21,w:0.42,h:0.42};
+  if(SCANNED.concat(PHOTO).some(r=>distRect(w.x,w.y,r)<0.3))return;if(S.robot&&Math.hypot(S.robot.x-w.x,S.robot.y-w.y)<0.45)return;
+  S.obstacle=o;if(!quiet)log('A box is now in the real room. The twin does not know.');draw();renderSide();renderSteps();}
+
+// ---------- boot ----------
+S=fresh();renderSteps();renderSide();draw();addEventListener('resize',draw);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
+new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+window.__tp={get S(){return S},jump,setStep};
+})();
+</script>
+
+</body></html>
