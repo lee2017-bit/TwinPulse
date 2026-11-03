@@ -17,7 +17,8 @@ def read_settings(state_dir: Path):
         return {'schema_version': '1.0', 'preferred_port': DEFAULT_PORT}
     if path.is_symlink() or path.stat().st_size > 8192:
         raise ValueError('DESKTOP_SETTINGS_INVALID')
-    value = json.loads(path.read_text(encoding='utf-8'))
+    # A hand-edited file may carry a BOM; save_settings writes none.
+    value = json.loads(path.read_text(encoding='utf-8-sig'))
     if (not isinstance(value, dict) or value.get('schema_version') != '1.0'
             or type(value.get('preferred_port')) is not int
             or not 1024 <= value['preferred_port'] <= 65535
@@ -25,6 +26,14 @@ def read_settings(state_dir: Path):
             or ('isaac_root' in value and not isinstance(value['isaac_root'], str))):
         raise ValueError('DESKTOP_SETTINGS_INVALID')
     return value
+
+
+def configured_isaac_root(runtime_dir: Path, environ=None) -> Path:
+    """The launcher's Isaac root, else the saved setting, else C:\\isaacsim."""
+    selected = (os.environ if environ is None else environ).get('TWINPULSE_ISAAC_ROOT') or ''
+    if selected and Path(selected).is_absolute() and (Path(selected) / 'python.bat').is_file():
+        return Path(selected)
+    return Path(read_settings(runtime_dir).get('isaac_root') or r'C:\isaacsim')
 
 
 def save_settings(state_dir: Path, **changes):

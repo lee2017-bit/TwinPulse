@@ -13,11 +13,22 @@ import time
 from typing import Any, Mapping
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from twinpulse_core import CommandEnvelope, CommandReceipt, SimulationSnapshot
 
 from .isaac_adapter import IsaacSimulationAdapter
+
+# The backend is loopback-only. Never route its bootstrap secret or bearer
+# token through an environment or system proxy.
+_LOOPBACK_OPENER = None
+
+
+def _loopback_opener():
+    global _LOOPBACK_OPENER
+    if _LOOPBACK_OPENER is None:  # Built on first use, like urlopen's own opener.
+        _LOOPBACK_OPENER = build_opener(ProxyHandler({}))
+    return _LOOPBACK_OPENER
 
 
 class BridgeProtocolError(RuntimeError):
@@ -454,7 +465,7 @@ class BridgeClient:
             return self._post_viewport(payload,headers)
         request = Request(self.base_url + path, data=payload, headers=headers, method="POST")
         try:
-            with urlopen(request, timeout=2.0) as response:
+            with _loopback_opener().open(request, timeout=2.0) as response:
                 value = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             try:

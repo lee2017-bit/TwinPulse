@@ -86,9 +86,9 @@ class LibraryWorkspace:
         return revision
 
     def _isaac_python(self):
-        from .desktop_settings import read_settings
+        from .desktop_settings import configured_isaac_root
         runtime=Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'TwinPulse'/'runtime'
-        return Path(read_settings(runtime).get('isaac_root',r'C:\isaacsim'))/'python.bat'
+        return configured_isaac_root(runtime)/'python.bat'
 
     def extensions(self):
         rows=[]

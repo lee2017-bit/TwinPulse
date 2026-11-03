@@ -20,7 +20,7 @@ import time
 from typing import Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 from .credentials import DEFAULT_CREDENTIAL_TARGET
@@ -28,6 +28,11 @@ from .credentials import DEFAULT_CREDENTIAL_TARGET
 
 REQUIRED_ENGINE_CAPABILITIES = frozenset({"simulation", "build", "telemetry", "watchdog"})
 ALLOWED_BROWSER_NAMES = frozenset({"chrome.exe", "msedge.exe", "chrome", "msedge"})
+# Startup phases the engine host may report; anything else is ignored.
+ENGINE_PROGRESS_PHASES = frozenset({
+    "isaac_import", "simulation_app_init", "simulation_app_ready", "stage_ready",
+    "extension_enable", "extension_enabled", "bridge_wait", "bridge_connected",
+})
 
 
 class _JobBasicLimitInformation(ctypes.Structure):
@@ -192,7 +197,7 @@ class TwinPulseProcessManager:
         browser_executable: Path | None = None,
         port: int | None = None,
         headless: bool = False,
-        ready_timeout_s: float = 120.0,
+        ready_timeout_s: float = 600.0,
         popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -275,6 +280,7 @@ class TwinPulseProcessManager:
         self.launcher_open_dir = self.launch_dir / "open-requests"
         self.requested_project_id: str | None = None
         self.engine_result_file = self.launch_dir / "engine-result.json"
+        self.engine_progress_file = self.launch_dir / "engine-progress.json"
         self.viewport_capture_file = self.launch_dir / "isaac-viewport.png"
         self.backend_log_file = self.launch_dir / "backend.log"
         self.engine_log_file = self.launch_dir / "engine.log"
@@ -368,6 +374,9 @@ class TwinPulseProcessManager:
             backend_env["TWINPULSE_ENGINE_BOOTSTRAP"] = engine_secret
             backend_env["TWINPULSE_LAUNCH_ID"] = self._launch_id
             backend_env['TWINPULSE_LAUNCH_EXECUTION_ID']=self._launch_trace.execution_id
+            # Workers that run Isaac python.bat use the root this launch uses.
+            backend_env['TWINPULSE_ISAAC_ROOT'] = str(self.isaac_python.parent)
+            _no_proxy_loopback(backend_env)
             backend = self._spawn("backend", self._backend_command(), backend_env, hidden=True)
             with self._launch_trace.span('backend_ready_wait'):
                 ready = self._wait_backend_ready(backend)
@@ -394,6 +403,11 @@ class TwinPulseProcessManager:
             engine_env["TWINPULSE_SESSION_HISTORY_ROOT"] = str(self.session_history_root)
             engine_env["TWINPULSE_LAUNCH_ID"] = self._launch_id
             engine_env["TWINPULSE_PROJECT_ID"] = self.project_id
+            # Keep engine.log complete if the engine is killed, and keep a
+            # user-site NumPy or similar out of Isaac Python. No EULA variable.
+            engine_env["PYTHONUNBUFFERED"] = "1"
+            engine_env["PYTHONNOUSERSITE"] = "1"
+            _no_proxy_loopback(engine_env)
             engine = self._spawn("engine", self._engine_command(), engine_env, hidden=self.headless)
             with self._launch_trace.span('engine_ready_wait'):
                 engine_status = self._wait_engine_ready(backend, engine)
@@ -703,7 +717,8 @@ class TwinPulseProcessManager:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=5.0) as response:
+            # Loopback only: never send the owner secret to a configured proxy.
+            with build_opener(ProxyHandler({})).open(request, timeout=5.0) as response:
                 value = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ProcessManagerError(
@@ -734,7 +749,8 @@ class TwinPulseProcessManager:
             "--retry-remaining", str(self.retry_remaining),
             # The one-use engine credential is issued before Kit initializes.
             # Keep it valid for the bounded owned startup window, not forever.
-            # Default120s startup still uses the existing180s bootstrap lifetime.
+            # The default 600 s window gives 660 s for the engine credential and
+            # product tickets; both stay one-use and loopback-only.
             "--bootstrap-ttl-s", str(math.ceil(max(180.,self.ready_timeout_s+60.))),
             '--launcher-shutdown-file', str(self.launcher_shutdown_file),
             '--backend-stop-file', str(self.backend_stop_file),
@@ -757,6 +773,7 @@ class TwinPulseProcessManager:
             "--stop-file", str(self.engine_stop_file),
             "--result-file", str(self.engine_result_file),
             "--viewport-capture", str(self.viewport_capture_file),
+            "--progress-file", str(self.engine_progress_file),
         ]
         if self.headless:
             command.append("--headless")
@@ -818,7 +835,8 @@ class TwinPulseProcessManager:
         return process
 
     def _wait_backend_ready(self, process: subprocess.Popen[bytes]) -> dict[str, object]:
-        deadline = self._clock() + min(self.ready_timeout_s, 30.0)
+        # A first start under antivirus scanning can take well over 30 s.
+        deadline = self._clock() + min(self.ready_timeout_s, 90.0)
         while self._clock() < deadline:
             code = process.poll()
             if code is not None:
@@ -833,6 +851,7 @@ class TwinPulseProcessManager:
         self, backend: subprocess.Popen[bytes], engine: subprocess.Popen[bytes],
     ) -> dict[str, object]:
         deadline = self._clock() + self.ready_timeout_s
+        progress, next_progress_read = None, self._clock()
         while self._clock() < deadline:
             if _read_json(self.launcher_cancel_file) == {"schema_version": "1.0", "action": "cancel_startup"}:
                 raise ProcessManagerError("startup_cancelled", "Startup cancelled by the authenticated local user")
@@ -845,13 +864,30 @@ class TwinPulseProcessManager:
             if engine_code is not None:
                 raise ProcessManagerError("engine_start_failed", self._exit_message("engine", engine_code))
             self._handle_open_requests()
+            if self._clock() >= next_progress_read:
+                next_progress_read = self._clock() + 1.0
+                current = _engine_progress(_read_json(self.engine_progress_file))
+                if current is not None and (progress is None or current["phase"] != progress["phase"]):
+                    try:
+                        self._write_status("starting", "engine_start",
+                            f"Starting Isaac 3D engine: {current['phase']} ({current['elapsed_s']:.0f} s)")
+                    except OSError:
+                        current = progress  # Informational only; retry on the next read.
+                progress = current or progress
             value = _read_json(self.engine_status_file)
             if value is not None and self._engine_ready(value):
                 return value
             self._sleep(0.1)
+        progress = _engine_progress(_read_json(self.engine_progress_file)) or progress
+        if progress is None:
+            detail = "no startup phase was reported"
+        else:
+            detail = f"last phase: {progress['phase']}, {progress['elapsed_s']:.0f} s"
+            if progress["http_status"] is not None:
+                detail += f", HTTP {progress['http_status']}"
         raise ProcessManagerError(
             "engine_ready_timeout",
-            "Isaac did not complete authenticated handshake, capabilities, and stage readiness before timeout",
+            f"Isaac did not finish starting within {self.ready_timeout_s:g} s ({detail})",
         )
 
     @staticmethod
@@ -992,8 +1028,18 @@ class TwinPulseProcessManager:
                     continue
                 pid = existing.get("owner_pid", existing.get("pid"))
                 if isinstance(pid, int) and _pid_alive(pid):
-                    if existing.get('process_identity') is not None and existing['process_identity'] != _process_identity(pid):
-                        raise ProcessManagerError('launcher_owner_identity_changed', 'The recorded launcher process identity changed; its record was preserved')
+                    recorded = existing.get('process_identity')
+                    if recorded is not None:
+                        current = _process_identity(pid)
+                        started = [value.get('creation_filetime') if isinstance(value, Mapping) else None
+                                   for value in (recorded, current)]
+                        if all(type(item) is int for item in started) and started[0] != started[1]:
+                            # Another process now has this PID: the recorded owner is gone.
+                            self._archive_stale_lock()
+                            continue
+                        if current != recorded:
+                            raise ProcessManagerError('launcher_owner_identity_changed',
+                                'The recorded launcher process could not be verified; its record was preserved')
                     error = ProcessManagerError(
                         "launcher_already_running",
                         f"TwinPulse launcher is already running (PID {pid}); no process was terminated",
@@ -1019,6 +1065,20 @@ class TwinPulseProcessManager:
                     "launcher_lock_access_denied", "Launcher lock could not be created or opened",
                 ) from error
         raise ProcessManagerError("launcher_lock_failed", "Could not acquire the TwinPulse launcher lock")
+
+    def _archive_stale_lock(self) -> None:
+        """Keep a stale launcher record as evidence; it no longer grants ownership."""
+        archive = self.state_dir / 'stale-launch-records' / (uuid4().hex + '.json')
+        try:
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            self.lock_file.rename(archive)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise ProcessManagerError(
+                "launcher_lock_access_denied", "Existing stale launcher lock could not be archived",
+            ) from error
+        print('TWINPULSE_STALE_LAUNCHER_LOCK_ARCHIVED record=' + archive.name, flush=True)
 
     def _reopen_existing(self, existing: Mapping[str, object], *, open_browser: bool) -> LaunchResult:
         """Ask the live owner to open its App; never copy a credential or adopt its children."""
@@ -1179,7 +1239,7 @@ class TwinPulseProcessManager:
     def _clear_runtime_files(self) -> None:
         for path in (
             self.ready_file, self.engine_status_file, self.engine_stop_file,
-            self.engine_result_file, self.viewport_capture_file, self.launcher_retry_file,
+            self.engine_result_file, self.engine_progress_file, self.viewport_capture_file, self.launcher_retry_file,
             self.launcher_project_switch_file,
             self.launcher_cancel_file,
         ):
@@ -1192,7 +1252,7 @@ class TwinPulseProcessManager:
         browser = previous.get("browser") if isinstance(previous.get("browser"), Mapping) else {}
         payload = {
             "schema_version": "1.0", "status": status, "phase": phase,
-            "retry_remaining": self.retry_remaining,
+            "retry_remaining": self.retry_remaining, "ready_timeout_s": self.ready_timeout_s,
             "message": str(message)[:240], "started_at_utc": self._started_at,
             "updated_at_utc": _utc_now(),
             "launch": {
@@ -1254,6 +1314,35 @@ def _validated_loopback_url(value: object) -> str:
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ProcessManagerError("backend_url_invalid", "Backend URL contains unsupported components")
     return f"http://127.0.0.1:{parsed.port}"
+
+
+def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
+    """Append loopback to NO_PROXY/no_proxy; existing entries stay unchanged.
+
+    Windows names are case-insensitive, so a missing spelling starts from the
+    other one and both keys always carry the same entries there.
+    """
+    for key, other in (("NO_PROXY", "no_proxy"), ("no_proxy", "NO_PROXY")):
+        value = environment.get(key, environment.get(other, ""))
+        present = {item.strip().lower() for item in value.split(",")}
+        missing = [host for host in ("127.0.0.1", "localhost") if host not in present]
+        if missing and value.strip() != "*":  # a lone "*" already bypasses every host
+            value = ",".join(item for item in (value.rstrip(" ,"), *missing) if item)
+        environment[key] = value
+    return environment
+
+
+def _engine_progress(value: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Allowlisted engine startup phase; no free text from the engine is kept."""
+    phase = value.get("phase") if isinstance(value, Mapping) else None
+    if not isinstance(phase, str) or phase not in ENGINE_PROGRESS_PHASES or value.get("schema_version") != "1.0":
+        return None
+    elapsed = value.get("elapsed_s")
+    if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or not 0 <= elapsed <= 86400:
+        return None
+    status = value.get("http_status")
+    return {"phase": value["phase"], "elapsed_s": float(elapsed),
+            "http_status": status if type(status) is int and 100 <= status <= 599 else None}
 
 
 def _engine_status_win_api():
