@@ -48,21 +48,46 @@ def burger_inventory():
     return _inventory(ASSET_ROOT)
 
 
+def _named(names):
+    # Two fixed relative names at most, so truncated UI messages keep them.
+    return ', '.join(names[:2]) + (f' and {len(names)-2} more' if len(names) > 2 else '')
+
+
+def digest_mismatch_detail(inventory):
+    """Name the files (never a path) of an inventory equal to neither pin set.
+
+    A mix of public and original files is refused too; it names the minority.
+    """
+    pins = (PUBLIC_BURGER_MANIFEST, BURGER_MANIFEST)
+    unpinned = [name for name in PUBLIC_BURGER_MANIFEST if all(inventory.get(name) != pin[name] for pin in pins)]
+    if unpinned:
+        return f"{_named(unpinned)} ({'matches' if len(unpinned) == 1 else 'match'} neither the public nor the original pins)"
+    mixed = min(([name for name in PUBLIC_BURGER_MANIFEST if inventory.get(name) != pin[name]] for pin in pins), key=len)
+    return f'{_named(mixed)} (mixes public and original pins)'
+
+
 def _inventory(asset_root: Path):
     files = sorted(asset_root.rglob('*'))
     if not (asset_root/'turtlebot3_burger.usda').is_file():
         raise ValueError('SIM_BURGER_ASSET_MISSING')
     if asset_root.is_symlink() or any(p.is_symlink() or not p.resolve().is_relative_to(asset_root.resolve()) for p in files):
         raise ValueError('SIM_ASSET_DEPENDENCY_UNSAFE')
-    expected = {'turtlebot3_burger.usda', 'payloads/base.usda', 'payloads/robot.usda',
-                'payloads/materials.usda', 'payloads/instances.usda', 'payloads/geometries.usd',
-                'payloads/Physics/physx.usda', 'payloads/Physics/physics.usda', 'payloads/Physics/mujoco.usda'}
-    if {p.relative_to(asset_root).as_posix() for p in files if p.is_file()} != expected:
+    if {p.relative_to(asset_root).as_posix() for p in files if p.is_file()} != set(PUBLIC_BURGER_MANIFEST):
         raise ValueError('SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED')
     if any(p.stat().st_size > 32*1024*1024 for p in files if p.is_file()):
         raise ValueError('SIM_BURGER_ASSET_SIZE_LIMIT')
     inventory = {p.relative_to(asset_root).as_posix(): sha256(p.read_bytes()).hexdigest()
                  for p in files if p.is_file()}
     if inventory not in (BURGER_MANIFEST, PUBLIC_BURGER_MANIFEST):
-        raise ValueError('SIM_BURGER_ASSET_DIGEST_MISMATCH')
+        raise ValueError('SIM_BURGER_ASSET_DIGEST_MISMATCH: ' + digest_mismatch_detail(inventory))
+    return inventory
+
+
+def verify_public_burger_assets(asset_root):
+    """Build/install check of a usd folder: exactly the tracked public bytes."""
+    inventory = _inventory(Path(asset_root))
+    if inventory != PUBLIC_BURGER_MANIFEST:
+        changed = [name for name in PUBLIC_BURGER_MANIFEST if inventory[name] != PUBLIC_BURGER_MANIFEST[name]]
+        raise ValueError(f"SIM_BURGER_ASSET_DIGEST_MISMATCH: {_named(changed)} "
+                         f"({'matches' if len(changed) == 1 else 'match'} the original pins, not the public pins)")
     return inventory

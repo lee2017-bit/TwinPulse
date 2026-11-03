@@ -18,26 +18,18 @@ from twinpulse_core import InputArtifactStore, InputRevision, SiteToolPlan, cano
 
 from .image_validation import decode_image
 from .project_store import ProjectRecord, ProjectStore, checked_project_id
+from .simulation_assets import BURGER_MANIFEST, PUBLIC_BURGER_MANIFEST, digest_mismatch_detail
 from .site_draft import SiteDraftRecord
 
 
 ROOM_RECIPE_VERSION = "room-recipe-1.0"
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\Z")
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
-# These are the already-reviewed local visual-only Burger bytes. A project may
-# carry a portable copy, but may not turn arbitrary USD references into a Build.
-_BURGER_HASHES = {
-    "turtlebot3_burger.usda": "58af6e5f75f5cf96362f4abb175971dd555870add77c50a0baaa8028d2293b37",
-    "payloads/base.usda": "750889ff799fbe55efe50af7a47e32c38d664ce50fb360aa1802d2daacfcb4f7",
-    "payloads/geometries.usd": "0bda8f94edce82b534d2d58013ecaf8b33d6854a99827fe6fccfbd84a47cf43d",
-    "payloads/instances.usda": "06798e126ee49d958c4201abdd8ef578eb9a6fc48eed7951c3171e005162aa55",
-    "payloads/materials.usda": "2be307ad3d46d77b19c0bea7f229c66af8b35e3dcf7d00455f9ef44927b1328b",
-    "payloads/robot.usda": "f384b6a2b53094a18e10b02b18f254f10c2c972a8b9cf8fcccbf2f0159f5ed36",
-    "payloads/Physics/mujoco.usda": "a613ea9405af764aac0b31758b7703e18f74708d238fd8ad158d81a86b65cd98",
-    "payloads/Physics/physics.usda": "8c1e6353f364638bd6e8d823351811a353ab5235588d395cf3f56f71c3482195",
-    "payloads/Physics/physx.usda": "218b0c0f2b82c3859d184c59b8fd36b2b8c28b633609df7325906e370307408a",
-}
-_BURGER_FILES = frozenset(_BURGER_HASHES)
+# The same reviewed visual-only Burger bytes as the SIM inventory (public or
+# original pins, never a mix). A project may carry a portable copy, but may
+# not turn arbitrary USD references into a Build.
+_BURGER_PINS = (PUBLIC_BURGER_MANIFEST, BURGER_MANIFEST)
+_BURGER_FILES = frozenset(PUBLIC_BURGER_MANIFEST)
 
 
 def _unique_object(pairs):
@@ -83,10 +75,9 @@ def _checked_burger_files(asset_root: Path) -> dict[str, str]:
         path = asset_root.joinpath(*PurePosixPath(name).parts)
         if not path.is_file() or path.stat().st_size > 20 * 1024 * 1024:
             raise ValueError("project Burger asset file is invalid")
-        actual = sha256(path.read_bytes()).hexdigest()
-        if actual != _BURGER_HASHES[name]:
-            raise ValueError("project Burger asset hash changed")
-        hashes[name] = actual
+        hashes[name] = sha256(path.read_bytes()).hexdigest()
+    if hashes not in _BURGER_PINS:
+        raise ValueError("project Burger asset hash changed: " + digest_mismatch_detail(hashes))
     return hashes
 
 

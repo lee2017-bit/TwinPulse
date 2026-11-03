@@ -95,7 +95,7 @@ def package_checklist(repo_root: Path, *, python_executable: Path | None = None)
         ('web_dependencies', lambda: f'{_web_manifest(repo_root/"apps/twinpulse-web/dist")} built Web files match their build manifest.',
          'Restore a reviewed built Web package or explicitly rebuild locally. No source is overwritten automatically.'),
         ('burger_asset_manifest', lambda: f'{len(_inventory(asset_root(repo_root)))} bundled Burger dependencies match reviewed SHA256 values.',
-         'Restore the reviewed bundled asset. Do not download or replace the model automatically.'),
+         'Restore the bundled Burger files from this TwinPulse release (re-extract or reinstall). Nothing is downloaded or replaced automatically.'),
         ('extension_contract', lambda: _extension_contract(repo_root),
          'Restore the reviewed extension package. Engine dependency availability is checked at runtime.'),
         ('python_dependencies', lambda: _python_dependencies(python_executable),
@@ -104,7 +104,8 @@ def package_checklist(repo_root: Path, *, python_executable: Path | None = None)
     for name, check, action in checks:
         try: rows.append(_row(name, 'ready', check()+' Static check only; not runtime qualification.'))
         except (OSError, ValueError, UnicodeError, PackageNotFoundError) as error:
-            code = str(error) if type(error) is ValueError and re.fullmatch(r'[A-Z0-9_]{1,80}', str(error)) else type(error).__name__
+            # A code, optionally with fixed relative file names (Burger row), never a path.
+            code = str(error) if type(error) is ValueError and re.fullmatch(r'[A-Z0-9_]{1,80}(: [A-Za-z0-9_][A-Za-z0-9_./, ()-]{0,150})?', str(error)) else type(error).__name__
             rows.append(_row(name, 'needs_action', code, action))
     return rows
 
@@ -177,11 +178,15 @@ def file_checklist(required: dict[str, Path], *, state_dir: Path, isaac_python: 
     version_path = isaac_python.parent / 'VERSION'
     try:
         if version_path.stat().st_size > 1024: raise OSError('version metadata size limit')
-        version = version_path.read_text(encoding='utf-8').strip()[:120]
-        reviewed = version == '6.0.1-rc.7+release.42383.32955d8d.gl'
-        rows.append({'id':'isaac_version','state':'ready' if reviewed else 'needs_action',
-                     'detail':f'Observed Isaac version: {version}. '+('Matches the reviewed local runtime.' if reviewed else 'This runtime version has not been qualified by this checkout.'),
-                     'action':None if reviewed else 'Qualify this version or point the launcher to the reviewed existing runtime.', 'sampled_at':sampled})
+        version = version_path.read_text(encoding='utf-8-sig').strip()[:120]
+        reviewed = '6.0.1-rc.7+release.42383.32955d8d.gl'
+        # Any 6.0.1 build (pre-release or build suffix) counts; 6.0.10 or 6.1 does not.
+        release = re.fullmatch(r'6\.0\.1([-+].*)?', version) is not None
+        rows.append({'id':'isaac_version','state':'ready' if release else 'needs_action',
+                     'detail':f'Observed Isaac version: {version}. '+('Matches the reviewed local runtime.' if version == reviewed
+                         else f'Accepted as Isaac Sim 6.0.1; the reviewed build is {reviewed}.' if release
+                         else 'This runtime version has not been qualified by this checkout.'),
+                     'action':None if release else 'Point the launcher to an Isaac Sim 6.0.1 runtime, or qualify this version first.', 'sampled_at':sampled})
     except (OSError, UnicodeError):
         rows.append({'id':'isaac_version','state':'needs_action','detail':'Isaac version metadata not available beside the configured executable.',
                      'action':'Verify the existing Isaac runtime path; no installer is run.', 'sampled_at':sampled})
