@@ -344,10 +344,12 @@ class UrllibChatCompletionsTransport:
     ) -> ChatCompletion:
         if token.is_cancelled:
             raise GenerationCancelledError("generation cancelled before dispatch")
+        from .http_identity import json_headers
+        from .reliability import provider_connection_error, provider_http_error
         endpoint = config.endpoint_url()
         request = urllib.request.Request(
             endpoint, data=json.dumps(body, separators=(",", ":")).encode("utf-8"), method="POST",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={**json_headers(), "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         )
         try:
             with self._opener(request, timeout=config.timeout_s) as response:
@@ -355,21 +357,12 @@ class UrllibChatCompletionsTransport:
                     raise ProviderRequestError("provider redirect was rejected")
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
-            if error.code in (401, 403):
-                raise ProviderAuthenticationError("provider rejected the API key") from error
-            if error.code == 429:
-                raise ProviderRateLimitError("provider rate limit") from error
-            if 300 <= error.code < 400:
-                raise ProviderRequestError("provider redirect was rejected") from error
-            if 500 <= error.code < 600:
-                raise ProviderUnavailableError(f"provider unavailable ({error.code})") from error
-            failure = ProviderRequestError(f"provider request failed ({error.code})")
-            failure.http_status = error.code
-            raise failure from error
+            # One bounded body read: a short redacted reason in the message, raw bytes for evidence only.
+            raise provider_http_error(error, secret=key) from error
         except (TimeoutError, socket.timeout) as error:
             raise ProviderTimeoutError("provider transport timed out") from error
         except urllib.error.URLError as error:
-            raise ProviderRequestError("provider connection failed") from error
+            raise provider_connection_error(error, secret=key) from error
         if token.is_cancelled:
             raise GenerationCancelledError("late or cancelled response was ignored")
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -839,6 +832,9 @@ class NebiusChatCompletionsPipelineProvider:
                 if http_status is not None:
                     attempt['http_status'] = http_status
                     failure.http_status = http_status
+                if isinstance(getattr(error, 'provider_error', None), dict):
+                    attempt['provider_error'] = dict(error.provider_error)
+                    failure.provider_error = dict(error.provider_error)
                 if getattr(error,'attempt_id',None):attempt['attempt_id']=error.attempt_id
                 failure.diagnostics = json.loads(json.dumps(diagnostic))
                 raise failure from error

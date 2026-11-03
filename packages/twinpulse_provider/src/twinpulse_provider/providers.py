@@ -20,11 +20,11 @@ from .contracts import CancellationToken, GenerationRequest, ProviderConfig, Pro
 from .errors import (
     GenerationCancelledError,
     InvalidProviderResponseError,
-    ProviderAuthenticationError,
     ProviderCapabilityError,
     ProviderConfigurationError,
     ProviderRateLimitError,
 )
+from .http_identity import json_headers
 from .schema import scene_tool_plan_json_schema
 from .scene_edit_provider import SCENE_EDIT_PROPOSAL_VERSION, scene_edit_proposal_json_schema
 
@@ -113,9 +113,11 @@ class StructuredJsonHttpProvider:
         http_request = urllib.request.Request(
             config.endpoint_url(),
             data=raw,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={**json_headers(), "Content-Type": "application/json"},
             method="POST",
         )
+        # urlopen follows some redirects; an unredirected credential is never re-sent to their target.
+        http_request.add_unredirected_header("Authorization", f"Bearer {key}")
         try:
             with urllib.request.urlopen(http_request, timeout=config.timeout_s) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -270,7 +272,7 @@ class OpenAIResponsesProvider:
         import hashlib
         import time
         from uuid import uuid4
-        from .reliability import utc_now
+        from .reliability import provider_connection_error, provider_http_error, utc_now
         body = self.build_request_body(request, config)
         raw = json.dumps(body).encode("utf-8")
         identity = uuid4().hex
@@ -289,9 +291,10 @@ class OpenAIResponsesProvider:
         http_request = urllib.request.Request(
             config.endpoint_url(),
             data=raw,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={**json_headers(), "Content-Type": "application/json"},
             method="POST",
         )
+        http_request.add_unredirected_header("Authorization", f"Bearer {key}")
         captured = None
         primary = None
         started = time.monotonic()
@@ -302,13 +305,13 @@ class OpenAIResponsesProvider:
                     response_payload = json.loads(captured.decode('utf-8'))
                     facts.update(usage=response_payload.get('usage'),http_status=200)
             except urllib.error.HTTPError as error:
-                captured = error.read(262145)
+                # Same typed errors as Chat Completions; the captured body stays private evidence.
+                failure = provider_http_error(error, secret=key)
+                captured = failure.raw_error_body
                 facts['http_status'] = error.code
-                if error.code in (401, 403):
-                    raise ProviderAuthenticationError('provider rejected the API key') from error
-                if error.code == 429:
-                    raise ProviderRateLimitError('provider rate limit') from error
-                raise
+                raise failure from error
+            except urllib.error.URLError as error:
+                raise provider_connection_error(error, secret=key) from error
             if token.is_cancelled:
                 raise GenerationCancelledError('late or cancelled response was ignored')
             bundle_payload = self.parse_response(response_payload)
