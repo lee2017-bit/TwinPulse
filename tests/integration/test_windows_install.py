@@ -9,11 +9,13 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import shutil
 import sys
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
 from twinpulse_app.windows_install import install_package
+from twinpulse_app.windows_package import verify_package
 from twinpulse_app.release_contract import MaintenanceLock, DATA_CONTRACT, atomic_json, initialize_data_epoch
 
 
@@ -38,6 +40,30 @@ class WindowsInstallTests(unittest.TestCase):
         previous=list(self.installed.glob('active-release.previous.*.json'))
         self.assertEqual(previous[0].read_bytes(),original)
         self.assertEqual(install_package(self.source,self.installed)['build_id'],'build_1')
+    def test_bom_legacy_pointer_installs_with_identical_backup_and_parsed_journal(self):
+        self.installed.mkdir();active=self.installed/'active-release.json'
+        # Install-Offline.cmd (PowerShell 5.1 Set-Content -Encoding UTF8) wrote a BOM.
+        original=(b'\xef\xbb\xbf{\r\n    "release_id":  "tp-550821745917",\r\n'
+                  b'    "isaac_root":  "D:\\\\isaacsim\\\\isaac-sim-standalone-6.0.1-windows-x86_64"\r\n}\r\n')
+        active.write_bytes(original)
+        result=install_package(self.source,self.installed)
+        self.assertTrue(Path(result['exe']).is_file())
+        self.assertEqual(next(self.installed.glob('active-release.previous.*.json')).read_bytes(),original)
+        journal=json.loads(next((self.installed/'update-journals').glob('*.json')).read_text(encoding='utf-8'))
+        self.assertEqual(journal['previous'],{'release_id':'tp-550821745917',
+            'isaac_root':'D:\\isaacsim\\isaac-sim-standalone-6.0.1-windows-x86_64'})
+        self.assertEqual(journal['phase'],'completed')
+        self.assertEqual(json.loads(active.read_bytes())['release_id'],'build_1')
+
+    def test_unparseable_legacy_pointer_is_recorded_not_fatal(self):
+        self.installed.mkdir();active=self.installed/'active-release.json'
+        original=b'\xff\xfe{not json';active.write_bytes(original)
+        self.assertEqual(install_package(self.source,self.installed)['build_id'],'build_1')
+        self.assertEqual(next(self.installed.glob('active-release.previous.*.json')).read_bytes(),original)
+        journal=json.loads(next((self.installed/'update-journals').glob('*.json')).read_text(encoding='utf-8'))
+        self.assertEqual(journal['previous'],{'unparsed':True,'bytes':len(original)})
+        self.assertEqual(json.loads(active.read_bytes())['release_id'],'build_1')
+
     def test_corrupt_package_does_not_change_active_pointer(self):
         self.installed.mkdir();active=self.installed/'active-release.json';active.write_bytes(b'old')
         (self.source/'TwinPulse.exe').write_bytes(b'bad')
@@ -135,6 +161,49 @@ class WindowsInstallTests(unittest.TestCase):
         with patch('twinpulse_app.process_manager._pid_alive',return_value=False):
             install_package(self.source,self.installed)
         self.assertEqual(next((state/'stale-launch-records').glob('*.json')).read_bytes(),original)
+
+    def test_reused_launcher_pid_is_archived_but_matching_or_unknown_owner_refuses(self):
+        state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True);lock=state/'launcher.lock'
+        recorded={'executable':'C:\\TwinPulse\\releases\\old\\TwinPulse.exe','creation_filetime':133}
+        other={'executable':'C:\\Windows\\explorer.exe','creation_filetime':134}
+        for stored,current in ((recorded,recorded),(recorded,None),(None,other)):
+            lock.write_text(json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':stored}),encoding='utf-8')
+            with patch('twinpulse_app.process_manager._pid_alive',return_value=True), \
+                    patch('twinpulse_app.process_manager._process_identity',return_value=current):
+                with self.assertRaisesRegex(ValueError,'EXIT_TWINPULSE_BEFORE_INSTALL'):
+                    install_package(self.source,self.installed)
+            self.assertTrue(lock.exists());self.assertFalse(self.installed.exists())
+        # The same live PID now belongs to another process: the record is stale.
+        original=json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':recorded}).encode()
+        lock.write_bytes(original)
+        with patch('twinpulse_app.process_manager._pid_alive',return_value=True), \
+                patch('twinpulse_app.process_manager._process_identity',return_value=other):
+            self.assertEqual(install_package(self.source,self.installed)['build_id'],'build_1')
+        self.assertFalse(lock.exists())
+        self.assertEqual(next((state/'stale-launch-records').glob('*.json')).read_bytes(),original)
+
+    def test_file_manager_junk_never_enters_a_release_and_stage_name_is_short(self):
+        (self.source/'desktop.ini').write_bytes(b'[.ShellClassInfo]');(self.source/'sub').mkdir()
+        (self.source/'sub/Thumbs.db').write_bytes(b'thumbnail')
+        data=b'listed-content'  # A listed junk-named file is package content and is kept.
+        (self.source/'.DS_Store').write_bytes(data)
+        self.manifest['files'].append(dict(path='.DS_Store',bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+        (self.source/'windows-release-manifest.json').write_text('\ufeff'+json.dumps(self.manifest),encoding='utf-8')
+        stages=[];copytree=shutil.copytree
+        def record(source,target,*arguments,**options):  # shutil recurses through this name
+            stages.append(Path(target).name);return copytree(source,target,*arguments,**options)
+        with patch('twinpulse_app.windows_install.shutil.copytree',side_effect=record):
+            release=Path(install_package(self.source,self.installed)['exe']).parent
+        self.assertRegex(stages[0],r'^\.stage-[0-9a-f]{12}$')
+        self.assertEqual(sorted(p.relative_to(release).as_posix() for p in release.rglob('*') if p.is_file()),
+                         ['.DS_Store','TwinPulse.exe','windows-release-manifest.json'])
+        self.assertEqual(verify_package(release)['files'],2)
+        (self.source/'notes.txt').write_bytes(b'unlisted');self.manifest['build_id']='build_2'
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        active=(self.installed/'active-release.json').read_bytes()
+        with self.assertRaisesRegex(ValueError,'^WINDOWS_PACKAGE_UNMANIFESTED_FILE: notes.txt$'):
+            install_package(self.source,self.installed)
+        self.assertEqual((self.installed/'active-release.json').read_bytes(),active)
 
     def test_dangling_compatibility_link_is_rejected_without_replacement(self):
         state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True)

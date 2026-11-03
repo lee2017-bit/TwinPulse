@@ -103,5 +103,20 @@ class DesktopContractTests(unittest.TestCase):
             extra.unlink(); entry.write_bytes(b'changed')
             with self.assertRaises(ValueError): verify_package(root)
 
+    def test_package_check_tolerates_file_manager_junk_and_names_unexpected_files(self):
+        # build_windows_exe and archive tools load the verifier standalone through runpy.
+        standalone=runpy.run_path(str(ROOT/'packages/twinpulse_app/src/twinpulse_app/windows_package.py'))['verify_package']
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); entry=root/'TwinPulse.exe'; entry.write_bytes(b'owned-test-placeholder')
+            manifest={'schema':'twinpulse-windows-exe-1.0','build_id':'test','source_manifest_sha256':'a'*64,
+                'files':[{'path':entry.name,'bytes':entry.stat().st_size,'sha256':hashlib.sha256(entry.read_bytes()).hexdigest()}]}
+            (root/'windows-release-manifest.json').write_text('\ufeff'+json.dumps(manifest),encoding='utf-8')
+            (root/'_internal').mkdir()
+            for junk in ('Thumbs.db','desktop.ini','_internal/.DS_Store'):(root/junk).write_bytes(b'file-manager')
+            for check in (verify_package,standalone):self.assertEqual(check(root)['files'],1)
+            (root/'_internal/injected.dll').write_bytes(b'x')
+            for check in (verify_package,standalone):
+                with self.assertRaisesRegex(ValueError,r'^WINDOWS_PACKAGE_UNMANIFESTED_FILE: _internal/injected\.dll$'): check(root)
+
 
 if __name__ == '__main__': unittest.main()

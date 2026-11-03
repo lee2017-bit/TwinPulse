@@ -6,6 +6,14 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 
+# File-manager metadata (Explorer, Finder); never imported, executed or read.
+OS_JUNK = frozenset({'thumbs.db', 'desktop.ini', '.ds_store'})
+
+
+def unmanifested(names):
+    shown = ', '.join(names[:5]) + (' (+%d more)' % (len(names) - 5) if len(names) > 5 else '')
+    return 'WINDOWS_PACKAGE_UNMANIFESTED_FILE' + (': ' + shown if names else '')
+
 
 def digest(path):
     value = sha256()
@@ -20,7 +28,7 @@ def verify_package(root: Path):
     manifest = root / 'windows-release-manifest.json'
     if manifest.is_symlink() or manifest.stat().st_size > 4 * 1024 * 1024:
         raise ValueError('WINDOWS_MANIFEST_INVALID')
-    value = json.loads(manifest.read_text(encoding='utf-8'))
+    value = json.loads(manifest.read_text(encoding='utf-8-sig'))
     if not isinstance(value, dict) or value.get('schema') != 'twinpulse-windows-exe-1.0':
         raise ValueError('WINDOWS_MANIFEST_INVALID')
     files = value.get('files')
@@ -39,9 +47,10 @@ def verify_package(root: Path):
                 or not path.is_file() or path.stat().st_size != entry.get('bytes')
                 or digest(path) != entry.get('sha256')):
             raise ValueError('WINDOWS_PACKAGE_FILE_MISMATCH: ' + name)
-    observed = {p.relative_to(root).as_posix().casefold() for p in root.rglob('*') if p.is_file() and p != manifest}
-    if observed != names:
-        raise ValueError('WINDOWS_PACKAGE_UNMANIFESTED_FILE')
+    observed = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and p != manifest}
+    extra = sorted(n for n in observed if n.casefold() not in names and n.rsplit('/', 1)[-1].casefold() not in OS_JUNK)
+    if extra or not names <= {n.casefold() for n in observed}:
+        raise ValueError(unmanifested(extra))
     contract = value.get('data_contract')
     if contract is not None and (not isinstance(contract, dict) or
             contract.get('schema') != 'twinpulse-data-contract-1.0' or

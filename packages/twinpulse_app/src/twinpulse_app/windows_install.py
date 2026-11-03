@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 from uuid import uuid4
-from .windows_package import verify_package
+from .windows_package import OS_JUNK, verify_package
 from .release_contract import MaintenanceLock, DATA_CONTRACT, check_data_epoch, atomic_json
 
 
@@ -31,13 +31,19 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
         try:
             owner = json.loads(launcher_lock.read_text(encoding='utf-8'))
             pid = owner.get('owner_pid', owner.get('pid'))
-            if type(pid) is not int or pid <= 0 or _pid_alive(pid):
+            if type(pid) is not int or pid <= 0:
                 raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL')
-            # A proven dead owner is retained as a diagnostic, never a lock.
+            if _pid_alive(pid):
+                # A live PID is stale only when Windows proves it is now another
+                # process (PID reuse after a reboot); unknown identity refuses.
+                recorded, current = owner.get('process_identity'), _process_identity(pid)
+                if recorded is None or current is None or recorded == current:
+                    raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL')
+            # A proven dead or replaced owner is retained as a diagnostic, never a lock.
             preserved = state / 'stale-launch-records' / (uuid4().hex + '.json')
             preserved.parent.mkdir(parents=True, exist_ok=True)
             launcher_lock.rename(preserved)
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
             raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL') from None
     # A legacy package has no support for newly required capabilities. Never
     # attribute the current program's feature support to an older package.
@@ -52,14 +58,16 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
     target = releases / identity
     desktop_links=0
     if not target.exists():
-        stage = releases / ('.stage-' + uuid4().hex)
-        previous=None;old_files={};new_files={}
+        # A short stage name keeps deep package paths under MAX_PATH.
+        stage = releases / ('.stage-' + uuid4().hex[:12])
+        previous=None;old_files={}
+        new_files={x['path']:x for x in json.loads((source/'windows-release-manifest.json').read_text(encoding='utf-8-sig'))['files']}
+        listed={name.casefold() for name in new_files}
         if reuse_desktop_from is not None:
             previous=Path(reuse_desktop_from).resolve()
             if previous.parent!=releases:raise ValueError('INSTALL_DESKTOP_REUSE_OUTSIDE_RELEASE_STORE')
             verify_package(previous)
-            old_files={x['path']:x for x in json.loads((previous/'windows-release-manifest.json').read_text())['files']}
-            new_files={x['path']:x for x in json.loads((source/'windows-release-manifest.json').read_text())['files']}
+            old_files={x['path']:x for x in json.loads((previous/'windows-release-manifest.json').read_text(encoding='utf-8-sig'))['files']}
         def copy_file(src,dst):
             nonlocal desktop_links
             name=Path(src).relative_to(source).as_posix()
@@ -69,7 +77,12 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
                 try:os.link(previous/name,dst);desktop_links+=1;return dst
                 except OSError:pass  # Cross-volume/non-NTFS: ordinary copy.
             return shutil.copy2(src,dst)
-        shutil.copytree(source, stage,copy_function=copy_file)
+        def unlisted_junk(directory,names):
+            # Explorer/Finder files beside the extracted ZIP never enter a release.
+            base=Path(directory).relative_to(source).as_posix()
+            return {n for n in names if n.casefold() in OS_JUNK and os.path.isfile(os.path.join(directory,n))
+                    and (n if base=='.' else base+'/'+n).casefold() not in listed}
+        shutil.copytree(source, stage,copy_function=copy_file,ignore=unlisted_junk)
         verify_package(stage)
         stage.rename(target)
     elif verify_package(target)['source_manifest_sha256'] != checked['source_manifest_sha256']:
@@ -80,7 +93,13 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
     value = {'schema': 'twinpulse-windows-install-1.0', 'release_id': identity,
              'source_manifest_sha256': checked['source_manifest_sha256'],
              'exe': 'releases/' + identity + '/TwinPulse.exe'}
-    old = json.loads(active.read_text(encoding='utf-8')) if active.exists() else None
+    old = None
+    if active.exists():
+        # An offline-installer pointer may carry a UTF-8 BOM. An unreadable one
+        # never blocks the update; its bytes are copied unchanged below.
+        raw = active.read_bytes()
+        try:old = json.loads(raw.decode('utf-8-sig'))
+        except ValueError:old = {'unparsed': True, 'bytes': len(raw)}
     journal = destination / 'update-journals' / (uuid4().hex + '.json')
     transaction = dict(schema='twinpulse-update-1.0', previous=old, target=value,
         data_epoch=epoch, data_conversion=False, phase='package_verified')
@@ -94,10 +113,13 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
     os.replace(temporary, active)
     transaction['phase'] = 'active_pointer_committed'
     atomic_json(journal, transaction)
-    # A stable entry follows the current pointer. User data stays outside releases.
+    # Stable entries are rewritten at every install and rollback, so they follow
+    # the pointer. The .cmd entries need no PowerShell; the .ps1 is a fallback.
+    # User data stays outside releases.
+    program = '"%~dp0releases\\' + identity + '\\TwinPulse.exe"'
     for filename, script in (
-        ('Start-TwinPulse.cmd', '@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-installed.ps1"\r\n'),
-        ('Start-TwinPulse-Test.cmd', '@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-installed.ps1" -AutomationTest\r\n'),
+        ('Start-TwinPulse.cmd', '@echo off\r\nstart "" ' + program + ' %*\r\n'),
+        ('Start-TwinPulse-Test.cmd', '@echo off\r\nstart "" ' + program + ' --automation-test %*\r\n'),
         ('start-installed.ps1', 'param([switch]$AutomationTest)\n$ErrorActionPreference="Stop"\n'
             '$pointer=Get-Content -LiteralPath (Join-Path $PSScriptRoot "active-release.json") -Raw | ConvertFrom-Json\n'
             'if ($pointer.schema -ne "twinpulse-windows-install-1.0" -or $pointer.release_id -notmatch "^[A-Za-z0-9_-]{1,80}$" '

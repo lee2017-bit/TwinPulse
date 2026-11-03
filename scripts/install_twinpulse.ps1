@@ -120,7 +120,8 @@ try {
     Write-Host "API key is not part of this installer. Configure it in the local App."
     $localRuntime = Join-Path $repoRoot ".runtime"
     New-Item -ItemType Directory -Path $localRuntime -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $localRuntime "isaac-root.txt") -Value $resolvedIsaacRoot -Encoding UTF8
+    # UTF-8 without BOM: Set-Content -Encoding UTF8 adds one in PowerShell 5.1.
+    [IO.File]::WriteAllText((Join-Path $localRuntime "isaac-root.txt"), $resolvedIsaacRoot, (New-Object System.Text.UTF8Encoding($false)))
 
     if ($Launch) {
         & $venvPython scripts\twinpulse_launcher.py --isaac-root $resolvedIsaacRoot

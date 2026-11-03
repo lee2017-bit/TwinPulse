@@ -16,6 +16,9 @@ if ($releaseId -notmatch '^[a-zA-Z0-9._-]{1,80}$' -or
 if (Test-Path -LiteralPath $OutputRoot) { throw "Output folder already exists; will not overwrite: $OutputRoot" }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+# .NET needs a plain absolute path: it resolves relative ones against the
+# process folder, not $PWD, and cannot open provider-qualified UNC paths.
+$OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).ProviderPath
 $archive = Join-Path $OutputRoot "$releaseId.zip"
 [IO.Compression.ZipFile]::CreateFromDirectory($ReleaseRoot, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
 $archiveItem = Get-Item -LiteralPath $archive
@@ -52,7 +55,8 @@ $transfer = [ordered]@{
     schema = "twinpulse-transfer-1.0"; release_id = $releaseId
     archive_bytes = $archiveLength; archive_sha256 = $archiveHash; parts = $parts
 }
-$transfer | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $OutputRoot "transfer-manifest.json") -Encoding UTF8
+# UTF-8 without BOM: Set-Content -Encoding UTF8 adds one in PowerShell 5.1.
+[IO.File]::WriteAllText((Join-Path $OutputRoot "transfer-manifest.json"), ($transfer | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) "Reassemble-TwinPulse.cmd") -Destination $OutputRoot
 New-Item -ItemType Directory -Path (Join-Path $OutputRoot "scripts") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "reassemble_offline_release.ps1") -Destination (Join-Path $OutputRoot "scripts")

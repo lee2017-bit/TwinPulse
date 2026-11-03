@@ -18,6 +18,9 @@ import zipfile
 import runpy
 
 ROOT = Path(__file__).resolve().parents[1]
+# Installed path for a 20-character Windows user name; MAX_PATH leaves 259 characters.
+INSTALL_RELEASES = 'C:\\Users\\' + 'u' * 20 + '\\AppData\\Local\\TwinPulse\\installed\\releases\\'
+MAX_PATH_CHARS = 259
 
 
 def hash_file(path):
@@ -48,6 +51,34 @@ def reuse_desktop(package, destination, sources):
         raise ValueError('DESKTOP_REUSE_RUNTIME_CHANGED')
     shutil.copytree(package/'desktop',destination,copy_function=os.link)
     return dict(electron=manifest['tools']['Electron'],source_build_id=verified['build_id'])
+
+
+def burger_asset_check(assets):
+    """The packaged Burger USD folder must hold exactly the reviewed public bytes."""
+    sys.dont_write_bytecode = True
+    for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
+        if str(ROOT / 'packages' / name / 'src') not in sys.path:
+            sys.path.insert(0, str(ROOT / 'packages' / name / 'src'))
+    from twinpulse_app.simulation_assets import PUBLIC_BURGER_MANIFEST, _inventory
+    inventory = _inventory(Path(assets))
+    changed = sorted(name for name in {*inventory, *PUBLIC_BURGER_MANIFEST} if inventory.get(name) != PUBLIC_BURGER_MANIFEST.get(name))
+    if changed:
+        raise ValueError('BUILD_BURGER_ASSET_NOT_PUBLIC: ' + ', '.join(changed))
+    return inventory
+
+
+def install_path_check(names, release_id):
+    """Fail when the longest package path would pass MAX_PATH once installed.
+
+    The staged copy (.stage- plus 12 hex) and the final release folder are
+    both measured; the longer one counts."""
+    longest = max(names, key=len)
+    folder = max('.stage-' + 'x' * 12, release_id, key=len)
+    total = len(INSTALL_RELEASES + folder + '\\') + len(longest)
+    if total > MAX_PATH_CHARS:
+        print('Longest package path (%d characters installed): %s' % (total, longest))
+        raise ValueError('BUILD_INSTALL_PATH_TOO_LONG: %d > %d: %s' % (total, MAX_PATH_CHARS, longest))
+    return total, longest
 
 
 def sprint_gate_receipt(root,max_age_s=24*3600):
@@ -105,8 +136,8 @@ def main():
     assets = ROOT / 'assets/simulation/turtlebot3_burger/usd'
     if not (web_dist / 'index.html').is_file() or not list((web_dist / 'assets').glob('*.js')):
         raise ValueError('BUILD_WEB_DIST_MISSING_RUN_LOCKED_WEB_BUILD')
-    if len(list(assets.rglob('*.usd'))) + len(list(assets.rglob('*.usda'))) + len(list(assets.rglob('*.usdc'))) != 9:
-        raise ValueError('BUILD_BURGER_ASSET_CLOSURE_MISSING')
+    # A wrong Burger byte fails here, on the build PC, not on a company PC.
+    burger_asset_check(assets)
     if not (ROOT / 'assets/simulation/turtlebot3_burger/ROBOTIS-LICENSE').is_file():
         raise ValueError('BUILD_BURGER_UPSTREAM_NOTICE_MISSING')
     output.mkdir(parents=True)
@@ -239,6 +270,7 @@ def main():
     (package/'Start-TwinPulse-Test.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --automation-test\n',encoding='utf-8')
     files = [{'path': p.relative_to(package).as_posix(), 'bytes': p.stat().st_size, 'sha256': hash_file(p)}
              for p in sorted(package.rglob('*')) if p.is_file()]
+    install_path_check([row['path'] for row in files], build_id)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     manifest = {'schema': 'twinpulse-windows-exe-1.0', 'build_id': build_id,
         'product_version': product, 'git_revision': revision, 'dirty': bool(subprocess.check_output(

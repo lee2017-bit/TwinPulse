@@ -9,6 +9,10 @@ import runpy
 import sys
 import traceback
 
+# Usual Isaac Sim 6.0.1 folders, tried after the saved setting.
+ISAAC_CANDIDATES = (r'C:\isaacsim', r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64',
+                    r'C:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64', r'D:\isaacsim')
+
 
 def should_show_error_dialog(arguments):
     """Interactive launches may show errors; headless install must terminate."""
@@ -31,14 +35,33 @@ def apply_packaged_capabilities(package,role,environment):
     environment['TWINPULSE_RELEASE_VERSION']=str(package.get('product_version',''))
 
 
+def check_package(arguments, root):
+    """Package check by role, before any bundled source is imported.
+
+    A start (also --install and --inspect-package) checks that every listed
+    file exists, is no link and has its recorded size; install_package and
+    --inspect-package then hash every file (verify_package). An --internal-role
+    child of that launcher only validates the manifest it reads its
+    capabilities from and does not check the files again."""
+    from twinpulse_bootstrap_integrity import read_manifest, verify_before_import
+    return (read_manifest if arguments[:1] == ['--internal-role'] else verify_before_import)(root)
+
+
+def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
+    """First folder with python.bat: the saved setting, then the usual folders."""
+    for candidate in ([configured] if configured else []) + list(candidates):
+        if (Path(candidate) / 'python.bat').is_file():
+            return str(candidate)
+    return None
+
+
 def main():
     sys.dont_write_bytecode = True
     frozen = bool(getattr(sys, 'frozen', False))
     root = Path(sys._MEIPASS) / 'resources' if frozen else Path(__file__).resolve().parents[1]
     package=None
     if frozen:
-        from twinpulse_bootstrap_integrity import verify_before_import
-        package=verify_before_import(Path(sys.executable).parent)
+        package=check_package(sys.argv[1:], Path(sys.executable).parent)
     for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
         sys.path.insert(0, str(root / 'packages' / name / 'src'))
     sys.path.insert(0, str(root / 'scripts'))
@@ -94,9 +117,12 @@ def main():
         result = verify_package(Path(sys.executable).parent if frozen else root)
         print(json.dumps(result, sort_keys=True))
         return 0
-    if role == 'launcher' and frozen:
-        configuration = read_settings(state)
-        if '--isaac-root' not in arguments and not (Path(configuration.get('isaac_root', r'C:\isaacsim')) / 'python.bat').is_file():
+    if role == 'launcher' and frozen and '--isaac-root' not in arguments:
+        configured = read_settings(state).get('isaac_root')
+        found = find_isaac_root(configured)
+        if found and found != configured:
+            save_settings(state, isaac_root=found)
+        if not found:
             import tkinter as tk
             from tkinter import filedialog
             window = tk.Tk(); window.withdraw()
