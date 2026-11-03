@@ -4,16 +4,26 @@
 """Supplementary manager adapter contracts. No actual Electron is simulated as PASS."""
 import io
 import json
+import os
 from pathlib import Path
+import socket
 import sys
 from tempfile import TemporaryDirectory
+import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
-from twinpulse_app.desktop_ui_host import DesktopUiHost,PROTOCOL,desktop_ui_test_arguments
-from twinpulse_app.process_manager import TwinPulseProcessManager
+from twinpulse_app.desktop_ui_host import DesktopUiHost,HANDSHAKE_TIMEOUT_S,PROTOCOL,desktop_ui_test_arguments
+from twinpulse_app.process_manager import ProcessManagerError,TwinPulseProcessManager
+
+class Connection:
+    def __init__(self,nonce):self.stream=io.BytesIO((json.dumps(dict(version=PROTOCOL,auth_nonce=nonce))+'\n').encode());self.closed=False
+    def settimeout(self,value):pass
+    def makefile(self,*args,**kwargs):return self.stream
+    def close(self):self.closed=True
 
 class AdapterTests(unittest.TestCase):
     def test_desktop_debugging_is_off_without_explicit_test_environment(self):
@@ -78,5 +88,73 @@ class AdapterTests(unittest.TestCase):
         process=Process();owner=SimpleNamespace(_owned={'engine':process},_jobs={})
         with self.assertRaises(OSError):TwinPulseProcessManager._stop_owned(owner,'engine',graceful_s=0)
         self.assertIs(owner._owned['engine'],process)
+
+class HostAvailabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=TemporaryDirectory(dir=ROOT/'artifacts/test-tmp');self.addCleanup(self.temp.cleanup)
+        self.base=Path(self.temp.name);self.launch=self.base/'launch'
+        self.manager=SimpleNamespace(_launch_id='launch',_owner_pid=os.getpid(),launch_dir=self.launch,
+            supervisor_status_file=self.launch/'supervisor-status.json')
+        environment=patch.dict(os.environ);environment.start();self.addCleanup(environment.stop)
+        os.environ.pop('TWINPULSE_UI_TEST_CDP_PORT',None)
+    def host(self,built,**kwargs):
+        host=DesktopUiHost(self.base/'repo',self.base/'state',**kwargs)
+        if built:host._executable().parent.mkdir(parents=True);host._executable().write_bytes(b'fixture')
+        return host
+    def test_available_reports_only_whether_the_source_host_exists(self):
+        host=self.host(False)
+        self.assertEqual(host._executable(),self.base/'repo/apps/twinpulse-desktop/node_modules/electron/dist/electron.exe')
+        self.assertFalse(host.available())
+        host._executable().parent.mkdir(parents=True);host._executable().write_bytes(b'fixture')
+        self.assertTrue(host.available())
+        self.assertEqual(host._command(),[str(host._executable()),str(self.base/'repo/apps/twinpulse-desktop'),
+            '--twinpulse-state',str((self.base/'state').resolve())])
+    def test_frozen_host_is_the_bundled_desktop_exe(self):
+        package=self.base/'package'
+        with patch.object(sys,'frozen',True,create=True),patch.object(sys,'executable',str(package/'TwinPulse.exe')):
+            host=self.host(False)
+            self.assertEqual(host._executable(),package/'desktop'/'TwinPulseDesktop.exe');self.assertFalse(host.available())
+            host._executable().parent.mkdir(parents=True);host._executable().write_bytes(b'fixture')
+            self.assertTrue(host.available())
+            self.assertEqual(host._command(),[str(package/'desktop'/'TwinPulseDesktop.exe'),'--twinpulse-state',str((self.base/'state').resolve())])
+    def test_available_does_not_hide_invalid_test_switches(self):
+        host=self.host(True);os.environ['TWINPULSE_UI_TEST_CDP_PORT']='80'
+        self.assertTrue(host.available())
+        with self.assertRaisesRegex(ValueError,'UI_TEST_PORT_INVALID'):host._command()
+    def test_missing_host_is_typed_and_leaves_no_half_state(self):
+        host=self.host(False,popen=lambda *a,**k:self.fail('must not spawn'))
+        with self.assertRaises(ProcessManagerError) as caught:host.open(self.manager,'http://127.0.0.1:8765/')
+        self.assertEqual(caught.exception.code,'desktop_host_not_built')
+        self.assertIn('DESKTOP_HOST_NOT_BUILT',str(caught.exception))
+        self.assertFalse((self.launch/'desktop-automation.json').exists())
+        self.assertIsNone(host.manager);self.assertIsNone(host.child);self.assertIsNone(host.listener)
+        host.close_after_stop(self.manager)
+        self.launch.mkdir();self.manager.supervisor_status_file.write_text(json.dumps({'status':'stopped'}),encoding='utf-8')
+        host.close_after_stop(self.manager)
+    def test_handshake_window_is_45_seconds(self):
+        self.assertEqual(HANDSHAKE_TIMEOUT_S,45.0)
+    def test_slow_host_can_connect_after_more_than_four_accept_timeouts(self):
+        child=SimpleNamespace(poll=lambda:None);host=self.host(False);host.child=child;seen=[]
+        host._read_requests=lambda current,stream:seen.append(current)
+        class Listener:
+            calls=0
+            def accept(self):
+                self.calls+=1
+                if self.calls<=6:raise socket.timeout()
+                return Connection('exact-nonce'),('127.0.0.1',1)
+            def close(self):pass
+        host._accept_host(Listener(),'exact-nonce',child)
+        self.assertEqual(seen,[child])
+    def test_accept_stops_when_the_host_exits(self):
+        listener=SimpleNamespace(accept=lambda:(_ for _ in ()).throw(socket.timeout()),close=lambda:None)
+        host=self.host(False);child=SimpleNamespace(poll=lambda:1);host.child=child
+        host._read_requests=lambda current,stream:self.fail('no connection')
+        host._accept_host(listener,'exact-nonce',child)
+    def test_exited_host_ends_the_handshake_wait_early(self):
+        child=SimpleNamespace(poll=lambda:1,stdout=None,stdin=None,stderr=None)
+        host=self.host(True,popen=lambda *a,**k:child);started=time.monotonic()
+        with self.assertRaises(ProcessManagerError) as caught:host.open(self.manager,'http://127.0.0.1:8765/')
+        self.assertEqual(caught.exception.code,'desktop_handshake_failed')
+        self.assertLess(time.monotonic()-started,10)
 
 if __name__=='__main__':unittest.main()

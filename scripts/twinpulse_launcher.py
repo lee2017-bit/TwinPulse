@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import sys
+import traceback
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +26,9 @@ from twinpulse_app.process_manager import PROJECT_SWITCH_REQUESTED, RESTART_REQU
 
 
 def _browser(configured: str | None) -> Path | None:
+    if configured and not Path(configured).is_file():
+        # An explicit choice never silently becomes another browser.
+        raise ProcessManagerError("browser_missing", "Configured browser was not found. Check the --browser path.")
     candidates = [
         Path(configured) if configured else None,
         Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
@@ -35,7 +40,26 @@ def _browser(configured: str | None) -> Path | None:
     return next((item for item in candidates if item is not None and item.is_file()), None)
 
 
+def _report_error(error: Exception) -> int:
+    """One searchable stderr line; an unexpected error adds its traceback. Tickets stay redacted."""
+    typed = isinstance(error, ProcessManagerError)
+    text = (f"TWINPULSE_LAUNCH_ERROR code={error.code if typed else type(error).__name__} "
+            f"message={' '.join(str(error).split())[:300]}\n")
+    if not typed:
+        text += "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    print(re.sub(r"(#bootstrap=)[A-Za-z0-9_-]+", r"\1[REDACTED]", text), end="", file=sys.stderr, flush=True)
+    return 1
+
+
 def main() -> int:
+    try:
+        return _main()
+    except Exception as error:
+        # Raised outside a launch attempt, for example by settings, a flag, or cleanup.
+        return _report_error(error)
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--isaac-root", type=Path)
     parser.add_argument("--state-dir", type=Path)
@@ -46,7 +70,7 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--offline", action="store_true", help="Disable provider generation; run local Isaac only")
     parser.add_argument("--project-id", default="default", help="Portable local project name; default keeps legacy project")
-    parser.add_argument("--ready-timeout-s", type=float, default=120.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=600.0)
     args = parser.parse_args()
 
     local_app_data = Path(os.environ.get("LOCALAPPDATA", ROOT / ".runtime"))
@@ -54,8 +78,21 @@ def main() -> int:
     from twinpulse_app.desktop_settings import read_settings
     configuration = read_settings(state_dir)
     saved_path = ROOT / '.runtime' / 'isaac-root.txt'
+    # PowerShell 5.1 writes this file with a UTF-8 BOM.
     isaac_root = args.isaac_root or Path(configuration.get('isaac_root') or
-        (saved_path.read_text(encoding='utf-8').strip() if saved_path.is_file() else r'C:\isaacsim'))
+        (saved_path.read_text(encoding='utf-8-sig').strip() if saved_path.is_file() else r'C:\isaacsim'))
+    browser = _browser(args.browser)
+    desktop = False
+    if args.ui_host == 'desktop' and not args.browser and not args.no_browser:
+        from twinpulse_app.desktop_ui_host import DesktopUiHost
+        desktop = DesktopUiHost(ROOT, state_dir).available()
+        if not desktop and browser is None:
+            # Decide before any process starts; nothing could show the App.
+            return _report_error(ProcessManagerError("ui_host_unavailable",
+                "Desktop window is not installed and Chrome or Edge was not found."))
+        if not desktop:
+            # The manager opens this browser with its one-use ticket; never print that URL.
+            print("TWINPULSE_UI_HOST=browser reason=desktop_host_not_built", flush=True)
     # Each explicit UI retry uses a fresh launch identity, backend session and
     # engine child. The prior manager is fully stopped in finally first.
     retry_count = 0
@@ -66,7 +103,7 @@ def main() -> int:
             state_dir=state_dir,
             python_executable=Path(sys.executable),
             isaac_python=isaac_root / "python.bat",
-            browser_executable=_browser(args.browser),
+            browser_executable=browser,
             port=args.port,
             headless=args.headless,
             ready_timeout_s=args.ready_timeout_s,
@@ -76,8 +113,7 @@ def main() -> int:
             defer_engine_validation=bool(getattr(sys, 'frozen', False)),
         )
         desktop_host = None
-        if args.ui_host == 'desktop' and not args.browser and not args.no_browser:
-            from twinpulse_app.desktop_ui_host import DesktopUiHost
+        if desktop:
             desktop_host = DesktopUiHost(ROOT, state_dir)
             manager.ui_host = desktop_host
         try:
@@ -128,6 +164,9 @@ def main() -> int:
                 except KeyboardInterrupt:
                     return 0
             return 1
+        except Exception as error:
+            # Report before cleanup, which may wait for the owned engine to stop.
+            return _report_error(error)
         finally:
             manager.stop()
             if desktop_host is not None:
