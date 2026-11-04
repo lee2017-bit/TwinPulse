@@ -272,7 +272,7 @@ class OpenAIResponsesProvider:
         import hashlib
         import time
         from uuid import uuid4
-        from .reliability import provider_connection_error, provider_http_error, utc_now
+        from .reliability import provider_connection_error, provider_http_error, provider_page_error, utc_now
         body = self.build_request_body(request, config)
         raw = json.dumps(body).encode("utf-8")
         identity = uuid4().hex
@@ -302,7 +302,14 @@ class OpenAIResponsesProvider:
             try:
                 with urllib.request.urlopen(http_request, timeout=config.timeout_s) as response:
                     captured = response.read()
-                    response_payload = json.loads(captured.decode('utf-8'))
+                    try:
+                        response_payload = json.loads(captured.decode('utf-8'))
+                    except ValueError as error:
+                        # A followed redirect or filter page answers 200 with HTML: name its title only.
+                        facts['http_status'] = getattr(response, 'status', 200)
+                        failure = provider_page_error(captured, status=facts['http_status'],
+                            headers=getattr(response, 'headers', None), secret=key)
+                        raise (failure or InvalidProviderResponseError('Responses API response is not valid JSON')) from error
                     facts.update(usage=response_payload.get('usage'),http_status=200)
             except urllib.error.HTTPError as error:
                 # Same typed errors as Chat Completions; the captured body stays private evidence.
@@ -310,7 +317,7 @@ class OpenAIResponsesProvider:
                 captured = failure.raw_error_body
                 facts['http_status'] = error.code
                 raise failure from error
-            except urllib.error.URLError as error:
+            except (urllib.error.URLError, ConnectionError) as error:
                 raise provider_connection_error(error, secret=key) from error
             if token.is_cancelled:
                 raise GenerationCancelledError('late or cancelled response was ignored')

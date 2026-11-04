@@ -60,10 +60,26 @@ def check_benchmark_dispatch_deadline(*, now=None):
         raise ProviderConfigurationError('BENCHMARK_APPROVAL_EXPIRED_NO_DISPATCH')
 
 
+_DATA_URI_RUN = re.compile(r'data:[^\s"<>]*')
+_BASE64_RUN = re.compile(r'[A-Za-z0-9+/=]+')
+
+
+def _without_base64_data(match):
+    # Same text as data:[^\s"<>]*;base64,[A-Za-z0-9+/=]+ (the run's LAST ';base64,' with a payload)
+    # without its backtracking, which was quadratic on a page of many non-base64 data: URIs.
+    run, end = match.group(), len(match.group())
+    while (index := run.rfind(';base64,', 5, end)) >= 0:
+        payload = _BASE64_RUN.match(run, index + 8)
+        if payload:
+            return '[IMAGE_REMOVED]' + run[payload.end():]
+        end = index + 7
+    return run
+
+
 def safe_text(value: str, *, secret: str | None = None, limit: int = 262144) -> str:
     if secret:
         value = value.replace(secret, '[REDACTED]')
-    value = re.sub(r'data:[^\s"<>]*;base64,[A-Za-z0-9+/=]+', '[IMAGE_REMOVED]', value)
+    value = _DATA_URI_RUN.sub(_without_base64_data, value)
     value = re.sub(r'(?i)Bearer\s+[^\s"<>]+', 'Bearer [REDACTED]', value)
     value = re.sub(r'(?i)("(?:api[_-]?key|authorization|access_token|secret)"\s*:\s*")[^"]*',
                    r'\1[REDACTED]', value)
@@ -75,6 +91,7 @@ def safe_text(value: str, *, secret: str | None = None, limit: int = 262144) -> 
 MAX_ERROR_BODY_BYTES = 262145
 _ERROR_FIELD = re.compile(r'[A-Za-z0-9_.:\[\]-]{1,80}')
 _ERROR_KINDS = {'json_error': ('type', 'code', 'param', 'message'), 'html_page': ('title',), 'unparsed': ('bytes',)}
+_KEY_IN_FIELD = re.compile(r'(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}')  # a key, not e.g. 'disk-quota_exceeded'
 
 
 def _short(value, *, secret=None, limit=300):
@@ -90,7 +107,7 @@ def _short(value, *, secret=None, limit=300):
 
 def public_provider_error(value):
     """Re-validated copy of a provider_error_summary() result; anything else is dropped."""
-    if not isinstance(value, dict) or value.get('kind') not in _ERROR_KINDS:
+    if not isinstance(value, dict) or not isinstance(value.get('kind'), str) or value['kind'] not in _ERROR_KINDS:
         return None
     public = {'kind': value['kind']}
     for key in _ERROR_KINDS[value['kind']]:
@@ -100,7 +117,7 @@ def public_provider_error(value):
         elif key in ('message', 'title'):
             item = _short(item, limit=300 if key == 'message' else 120) if isinstance(item, str) else ''
             if item: public[key] = item
-        elif isinstance(item, str) and _ERROR_FIELD.fullmatch(item):
+        elif isinstance(item, str) and _ERROR_FIELD.fullmatch(item) and not _KEY_IN_FIELD.search(item):
             public[key] = item
     return public
 
@@ -118,6 +135,7 @@ def provider_error_summary(raw, *, secret=None, content_type=''):
         text = raw.decode(declared.group(1) if declared else 'utf-8', errors='replace')
     except (LookupError, ValueError):
         text = raw.decode('utf-8', errors='replace')
+    text = text.removeprefix('\ufeff')  # json.loads rejects a BOM, which would hide a JSON error body
     try:
         payload = json.loads(text)
     except (ValueError, RecursionError):
@@ -130,6 +148,7 @@ def provider_error_summary(raw, *, secret=None, content_type=''):
                 detail = detail[0].get('msg')  # a validation item's input/loc would echo the request
             error = {'message': next((v for v in (error, detail, payload.get('message')) if isinstance(v, str)), None)}
         summary = {key: str(error[key]) if type(error.get(key)) is int else error.get(key) for key in ('type', 'code', 'param')}
+        summary = {key: value for key, value in summary.items() if not (secret and isinstance(value, str) and secret in value)}
         if isinstance(error.get('message'), str):
             summary['message'] = _short(error['message'], secret=secret)
         summary = public_provider_error({**summary, 'kind': 'json_error'})
@@ -192,6 +211,23 @@ def provider_http_error(error, *, secret=None):
         failure = ProviderRequestError('provider request failed' + suffix)
         failure.http_status = status
     failure.raw_error_body, failure.provider_error = raw, summary
+    return failure
+
+
+def provider_page_error(raw, *, status=200, headers=None, secret=None):
+    """A success status whose body is an HTML page (a filter or portal), not provider JSON; else None.
+
+    The body is already private evidence; only its title is named, as for HTTP error pages.
+    """
+    try:
+        content_type = str(headers.get('Content-Type') or '') if headers is not None else ''
+    except Exception:
+        content_type = ''
+    summary = provider_error_summary(raw, secret=secret, content_type=content_type)
+    if summary['kind'] != 'html_page':
+        return None
+    failure = ProviderRequestError(f'provider request failed ({status}): {_error_text(summary)}')
+    failure.http_status, failure.provider_error = status, summary
     return failure
 
 
@@ -348,6 +384,10 @@ response files remain local-only. Production callers may omit a campaign.
                     def __enter__(self):self.response.__enter__();return self
                     def __exit__(self,*args):return self.response.__exit__(*args)
                     def geturl(self):return self.response.geturl()
+                    @property
+                    def headers(self):return getattr(self.response,'headers',None)
+                    @property
+                    def status(self):return getattr(self.response,'status',200)
                     def read(self,*args):
                         value=self.response.read(*args);raw.append(value);return value
                 def open_capture(*args,**kwargs):
@@ -371,8 +411,8 @@ response files remain local-only. Production callers may omit a campaign.
                     if isinstance(cause,urllib.error.HTTPError):
                         facts['http_status']=cause.code
                         # _post already read the stream once; keep that complete private body.
-                        body=getattr(error,'raw_error_body',None)
-                        raw.append(cause.read(262145) if body is None else body)
+                        received=getattr(error,'raw_error_body',None)
+                        raw.append(cause.read(262145) if received is None else received)
                     try:
                         payload=json.loads(raw[0]) if raw else {}
                         usage=payload.get('usage') if isinstance(payload,dict) else None

@@ -345,7 +345,7 @@ class UrllibChatCompletionsTransport:
         if token.is_cancelled:
             raise GenerationCancelledError("generation cancelled before dispatch")
         from .http_identity import json_headers
-        from .reliability import provider_connection_error, provider_http_error
+        from .reliability import provider_connection_error, provider_http_error, provider_page_error
         endpoint = config.endpoint_url()
         request = urllib.request.Request(
             endpoint, data=json.dumps(body, separators=(",", ":")).encode("utf-8"), method="POST",
@@ -356,12 +356,14 @@ class UrllibChatCompletionsTransport:
                 if response.geturl() != endpoint:
                     raise ProviderRequestError("provider redirect was rejected")
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
+                headers, status = getattr(response, "headers", None), getattr(response, "status", 200)
         except urllib.error.HTTPError as error:
             # One bounded body read: a short redacted reason in the message, raw bytes for evidence only.
             raise provider_http_error(error, secret=key) from error
         except (TimeoutError, socket.timeout) as error:
             raise ProviderTimeoutError("provider transport timed out") from error
-        except urllib.error.URLError as error:
+        except (urllib.error.URLError, ConnectionError) as error:
+            # ConnectionError: reset or closed after the request was sent; the outcome stays unknown.
             raise provider_connection_error(error, secret=key) from error
         if token.is_cancelled:
             raise GenerationCancelledError("late or cancelled response was ignored")
@@ -370,6 +372,10 @@ class UrllibChatCompletionsTransport:
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            # A filter or portal page with a success status is named by its title, not repaired as model output.
+            page = provider_page_error(raw, status=status, headers=headers, secret=key)
+            if page is not None:
+                raise page from error
             raise InvalidProviderResponseError("Chat Completions response is not valid JSON") from error
         return parse_chat_completion(payload)
 

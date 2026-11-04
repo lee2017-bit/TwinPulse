@@ -6,6 +6,7 @@
 Supplementary: no live provider, network filter, Windows or Isaac run is involved.
 """
 import email.message
+import http.client
 import io
 import json
 from pathlib import Path
@@ -107,6 +108,41 @@ class PrivateEvidenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("'additionalProperties' is required", saved['response_redacted'])
             self.assertNotIn(KEY, text)
             self.assertNotIn(TOKEN, text)
+
+    async def audited_failure(self, root, opener):
+        provider = NebiusChatCompletionsPipelineProvider(AuditedChatTransport(lambda: KEY, InferenceEvidence(root), opener=opener),
+            observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL, site_plan_version='2.2', max_repairs=1)
+        with self.assertRaises(ProviderError) as caught:
+            await GenerationService(provider, config(timeout_s=10), plan_version='2.2').generate(GenerationRequest('r', 'Bedroom'))
+        return _public_generation_error(caught.exception), [json.loads(p.read_text(encoding='utf-8')) for p in root.glob('*.json')]
+
+    async def test_a_2xx_filter_page_and_a_reset_stay_typed_through_the_audited_pipeline(self):
+        # The charset is only in the HTTP header and the status is a proxy's 203: the audited capture passes both on.
+        page_body = '<html><head><title>외부사이트 차단</title></head><body>user0042</body></html>'.encode('euc-kr')
+        with TemporaryDirectory() as temp:
+            seen = []
+            def page(request, timeout):
+                seen.append(request)
+                response = Response(request.full_url, page_body, 'text/html; charset=euc-kr')
+                response.status = 203
+                return response
+            public, saved = await self.audited_failure(Path(temp) / 'page', page)
+            self.assertEqual(len(seen), 1)  # a filter page is not model output: no repair request is sent
+            self.assertEqual(public['code'], 'provider_request_failed')
+            self.assertTrue(public['message'].endswith("provider request failed (203): HTML page '외부사이트 차단'"))
+            attempt = public['diagnostics']['attempts'][0]
+            self.assertEqual((attempt['status'], attempt['http_status'], attempt['provider_error']),
+                             ('rejected', 203, {'kind': 'html_page', 'title': '외부사이트 차단'}))
+            self.assertEqual([(r['status'], r['http_status'], r['response_byte_count']) for r in saved],
+                             [('rejected', 203, len(page_body))])
+            self.assertNotIn('user0042', json.dumps(public, ensure_ascii=False))  # only the page title is public
+            def reset(request, timeout):
+                raise http.client.RemoteDisconnected('Remote end closed connection without response')
+            public, saved = await self.audited_failure(Path(temp) / 'reset', reset)
+            self.assertEqual(public['code'], 'provider_request_failed')  # was generation_failed without an attempt record
+            self.assertIn('provider connection failed (RemoteDisconnected: ', public['message'])
+            self.assertEqual(public['diagnostics']['attempts'][0]['status'], 'outcome_unknown')
+            self.assertEqual([r['status'] for r in saved], ['outcome_unknown'])  # accounting keeps the unknown outcome
 
     async def test_responses_path_400_is_a_typed_request_failure_with_private_body(self):
         from packages.twinpulse_provider.tests.test_provider import config as responses_config
