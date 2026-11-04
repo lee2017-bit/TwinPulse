@@ -5,6 +5,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import runpy
 import sys
 import traceback
@@ -62,6 +63,49 @@ def startup_failure_text(last_error, log_path):
     return '\n'.join(lines)
 
 
+def entry_failure_text(arguments, error, log_path):
+    """Dialog text when the entry itself raised, worded by what was asked."""
+    if arguments == ['--inspect-package']:
+        first = 'TwinPulse package check failed.'
+    elif arguments[:1] == ['--install']:
+        first = 'TwinPulse could not be installed.'
+    else:
+        first = 'TwinPulse could not start.'
+    return '\n'.join((first, type(error).__name__ + ': ' + str(error)[:600],
+                      'Log: ' + str(log_path) if log_path else 'No log was written.'))
+
+
+def failure_log_role(arguments):
+    """The role main() names its log after, read from the raw arguments without package code.
+
+    An --internal-role value that is not a plain name never goes into a file name."""
+    role = 'launcher'
+    if arguments[:1] == ['--install']:
+        role, arguments = 'install', arguments[1:]
+    if arguments[:1] == ['--internal-role']:
+        name = arguments[1] if len(arguments) > 1 else ''
+        role = name if re.fullmatch(r'[a-z][a-z-]{0,39}', name) else 'internal-role'
+    return role
+
+
+def write_failure_log(role, text, environment):
+    """Write text to a new desktop-logs file for a run that failed before main() opened its log.
+
+    Needs only LOCALAPPDATA, no package code. Returns the file, or None when
+    LOCALAPPDATA is not set or the write failed."""
+    if not environment.get('LOCALAPPDATA'):
+        return None
+    log = (Path(environment['LOCALAPPDATA']) / 'TwinPulse' / 'runtime' / 'desktop-logs'
+           / (role + '-' + str(os.getpid()) + '.log'))
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a', encoding='utf-8', errors='backslashreplace') as stream:
+            stream.write(text)
+    except (OSError, ValueError):
+        return None
+    return log
+
+
 def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
     """First folder with python.bat: the saved setting, then the usual folders.
 
@@ -73,7 +117,9 @@ def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
     return None
 
 
-def main():
+def main(opened=None):
+    """Run the role this EXE was started for. opened, when given, receives this
+    run's log file as opened['log'] once it is open, so run_entry can name it."""
     sys.dont_write_bytecode = True
     frozen = bool(getattr(sys, 'frozen', False))
     root = Path(sys._MEIPASS) / 'resources' if frozen else Path(__file__).resolve().parents[1]
@@ -131,6 +177,8 @@ def main():
         log = state / 'desktop-logs' / (role + '-' + str(os.getpid()) + '.log')
         log.parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = log.open('a', encoding='utf-8', buffering=1)
+        if opened is not None:
+            opened['log'] = log
     if arguments == ['--inspect-package']:
         from twinpulse_app.windows_package import verify_package
         result = verify_package(Path(sys.executable).parent if frozen else root)
@@ -176,18 +224,36 @@ def main():
     return result
 
 
-if __name__ == '__main__':
-    show_error_dialog = should_show_error_dialog(sys.argv[1:])
+def run_entry(arguments):
+    """main() as the EXE runs it; returns the exit code.
+
+    An error goes to this run's open log. When main() had not opened one yet
+    (package check, manifest, capabilities, state folder), the traceback goes
+    to a new desktop-logs file instead, and the dialog, where
+    should_show_error_dialog allows one, names that file or says none was
+    written."""
+    show_error_dialog = should_show_error_dialog(arguments)
+    opened = {}
     try:
-        raise SystemExit(main())
+        return main(opened)
     except SystemExit:
         raise
     except BaseException as error:
-        traceback.print_exc()
+        details = traceback.format_exc()
+        try:
+            # The open log or an inherited stream; a windowed EXE has no stderr before that.
+            traceback.print_exc()
+        except Exception:
+            pass
+        log = opened.get('log')
+        if log is None and getattr(sys, 'frozen', False):
+            log = write_failure_log(failure_log_role(arguments), details, os.environ)
         if show_error_dialog:
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None,
-                'TwinPulse could not start.\n' + type(error).__name__ + ': ' + str(error)[:600]
-                + '\nSee %LOCALAPPDATA%\\TwinPulse\\runtime\\desktop-logs.',
+            ctypes.windll.user32.MessageBoxW(None, entry_failure_text(arguments, error, log),
                 'TwinPulse startup', 0x10)
-        raise SystemExit(1)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(run_entry(sys.argv[1:]))
