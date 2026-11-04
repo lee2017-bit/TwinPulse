@@ -177,7 +177,7 @@ class BridgeClient:
                 self.mission_visual_status=self.adapter.mission_visual_status
             except Exception as exc:
                 import re
-                code=str(exc)
+                code=str(exc).split(':',1)[0].strip()  # 'CODE: detail' keeps only CODE
                 outcome.update(status='ACTIVE_GEOMETRY_RENDER_FAILED',
                     error_code=code if re.fullmatch('[A-Z0-9_]{1,120}',code) else 'ACTIVE_GEOMETRY_PROCESSING_FAILED',
                     error_type=type(exc).__name__[:80])
@@ -195,7 +195,7 @@ class BridgeClient:
                 from twinpulse_core.active_mission_visual import DISPLAY_STATUSES
                 self.mission_visual_status=str(exc) if str(exc) in DISPLAY_STATUSES else 'ACTIVE_VISUAL_RENDER_FAILED'
                 import re
-                code=str(exc)
+                code=str(exc).split(':',1)[0].strip()
                 self.mission_visual_error={'error_code':code if re.fullmatch('[A-Z0-9_]{1,120}',code) else 'ACTIVE_VISUAL_PROCESSING_FAILED',
                     'error_type':type(exc).__name__[:80]}
             with self._lock:

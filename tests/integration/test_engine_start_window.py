@@ -266,7 +266,10 @@ class EngineStartWindowTests(unittest.TestCase):
                                  "/v1/bootstrap": {"session_token": "engine-session"}})
         self.addCleanup(server.close)
         bridge = bridge_module()
-        with patch.dict(os.environ, {"HTTP_PROXY": proxy.url, "http_proxy": proxy.url}):
+        # urlopen caches its proxy table on first use; start from no cached
+        # opener so a return to urlopen is caught whatever ran before.
+        with patch.object(urllib.request, "_opener", None), \
+                patch.dict(os.environ, {"HTTP_PROXY": proxy.url, "http_proxy": proxy.url}):
             for key in ("NO_PROXY", "no_proxy"):
                 os.environ.pop(key, None)
             # Control: a default opener built now really sends loopback to this proxy.
@@ -282,6 +285,47 @@ class EngineStartWindowTests(unittest.TestCase):
             self.assertEqual(client._engine_token, "engine-session")
         self.assertEqual(len(proxy.seen), 1)
         self.assertEqual(server.paths, ["/v1/bootstrap/product/issue", "/v1/bootstrap"])
+
+    def test_bridge_keeps_the_code_of_coded_render_errors(self) -> None:
+        bridge = bridge_module()
+
+        class Adapter:
+            stage_epoch, engine_session_id, mission_visual_status = "stage", "engine", "NOT_STARTED"
+            runtime = SimpleNamespace(state="idle")
+
+            def __init__(self, error: Exception) -> None:
+                self.error = error
+
+            def refresh_stage_epoch(self) -> bool:
+                return False
+
+            def update_control_lease(self, *_args: object) -> None:
+                pass
+
+            def update_mission_geometry(self, _value: object) -> None:
+                raise self.error
+
+            update_mission_visual = update_mission_geometry
+
+            def snapshot(self) -> None:
+                return None
+
+        # Asset checks raise 'CODE: detail'; the code survives, free text never does.
+        for message, geometry_code, visual_code in (
+                ("SIM_BURGER_ASSET_DIGEST_MISMATCH: payloads/geometries.usd (matches neither pin set)",
+                 "SIM_BURGER_ASSET_DIGEST_MISMATCH", "SIM_BURGER_ASSET_DIGEST_MISMATCH"),
+                ("ACTIVE_VISUAL_OUT_OF_ORDER", "ACTIVE_VISUAL_OUT_OF_ORDER", "ACTIVE_VISUAL_OUT_OF_ORDER"),
+                (r"layer missing: C:\Users\x", "ACTIVE_GEOMETRY_PROCESSING_FAILED", "ACTIVE_VISUAL_PROCESSING_FAILED")):
+            with self.subTest(message=message):
+                client = bridge.BridgeClient(Adapter(ValueError(message)), base_url="http://127.0.0.1:1",
+                                             bootstrap_secret="x" * 32, clock=lambda: 10.0)
+                client._lease_valid, client._lease_id, client._mission_received = True, "lease", 10.0
+                client._mission_geometry = {"job_id": "job", "sequence": 1}
+                client.update()
+                self.assertEqual(client._mission_result["error_code"], geometry_code)
+                client._mission_frame, client._mission_available = {"job_id": "job", "sequence": 2}, True
+                client.update()
+                self.assertEqual(client.mission_visual_error["error_code"], visual_code)
 
     # e) progress relay and timeout message
     def test_progress_relay_updates_status_on_phase_change_and_names_last_phase_on_timeout(self) -> None:
