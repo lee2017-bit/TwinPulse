@@ -1314,12 +1314,46 @@ def _validated_loopback_url(value: object) -> str:
     return f"http://127.0.0.1:{parsed.port}"
 
 
-def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
-    """Append loopback to NO_PROXY/no_proxy; existing entries stay unchanged.
+def _environment_proxies(environment: Mapping[str, str]) -> dict[str, str]:
+    """urllib.request.getproxies_environment(), computed for this mapping.
 
-    Windows names are case-insensitive, so a missing spelling starts from the
-    other one and both keys always carry the same entries there.
+    Same rule as the standard library: every non-empty variable whose name ends
+    in _proxy (any case; no_proxy included), a lowercase empty one removing its
+    scheme, and no HTTP_PROXY when REQUEST_METHOD is set.
     """
+    proxies: dict[str, str] = {}
+    found = []
+    for name, value in environment.items():
+        if len(name) > 5 and name[-6] == "_" and name[-5:].lower() == "proxy":
+            found.append((name, value, name[:-6].lower()))
+            if value:
+                proxies[name[:-6].lower()] = value
+    if "REQUEST_METHOD" in environment:
+        proxies.pop("http", None)
+    for name, value, scheme in found:
+        if name[-6:] == "_proxy":
+            if value:
+                proxies[scheme] = value
+            else:
+                proxies.pop(scheme, None)
+    return proxies
+
+
+def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
+    """Add loopback to NO_PROXY/no_proxy only when the environment sets a proxy.
+
+    On Windows urllib reads the Internet Options (registry) proxy only when no
+    proxy variable is set (getproxies_environment() or getproxies_registry()),
+    and NO_PROXY counts as one. An environment without proxy variables is
+    therefore returned unchanged, so provider calls keep the registry proxy.
+    Loopback clients never need this: they use ProxyHandler({}) or http.client.
+
+    Otherwise loopback is appended and existing entries stay unchanged. Windows
+    names are case-insensitive, so a missing spelling starts from the other one
+    and both keys always carry the same entries there.
+    """
+    if not _environment_proxies(environment):
+        return environment
     for key, other in (("NO_PROXY", "no_proxy"), ("no_proxy", "NO_PROXY")):
         value = environment.get(key, environment.get(other, ""))
         present = {item.strip().lower() for item in value.split(",")}

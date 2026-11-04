@@ -157,6 +157,52 @@ def engine_host():
         return runpy.run_path(str(ROOT / "scripts" / "twinpulse_engine_host.py"), run_name="engine_start_window_test")
 
 
+INTERNET_SETTINGS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+
+def fake_winreg(values: dict[str, object]) -> ModuleType:
+    """winreg with one Internet Options key holding values; anything else is not found."""
+    module = ModuleType("winreg")
+    module.HKEY_CURRENT_USER = object()
+
+    class Key:
+        def Close(self) -> None:  # noqa: N802
+            pass
+
+    def open_key(root: object, path: str) -> Key:
+        if root is not module.HKEY_CURRENT_USER or path != INTERNET_SETTINGS:
+            raise FileNotFoundError(path)
+        return Key()
+
+    def query_value(_key: Key, name: str) -> tuple[object, int]:
+        if name not in values:
+            raise FileNotFoundError(name)
+        return values[name], 1
+
+    module.OpenKey, module.QueryValueEx = open_key, query_value
+    return module
+
+
+def windows_urllib() -> ModuleType:
+    """The installed urllib.request compiled with its Windows proxy branch selected.
+
+    Only its two platform tests change, so getproxies() is the Windows rule:
+    the proxy variables when any is set, otherwise the Internet Options registry.
+    """
+    source = Path(urllib.request.__file__).read_text(encoding="utf-8")
+    for marker, selected in (("if sys.platform == 'darwin':", "if False:"), ("elif os.name == 'nt':", "elif True:")):
+        if source.count(marker) != 1:
+            raise AssertionError("urllib.request no longer has exactly one " + marker)
+        source = source.replace(marker, selected)
+    module = ModuleType("_tp_windows_urllib_request")
+    exec(compile(source, urllib.request.__file__, "exec"), module.__dict__)  # noqa: S102
+    return module
+
+
+def without_launcher_variables(environment: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in environment.items() if not key.startswith(("TWINPULSE_", "PYTHON"))}
+
+
 class EngineStartWindowTests(unittest.TestCase):
     def setUp(self) -> None:
         configured = os.environ.get("TWINPULSE_TEST_TMP")
@@ -185,6 +231,30 @@ class EngineStartWindowTests(unittest.TestCase):
         }
         values.update(overrides)
         return TwinPulseProcessManager(**values)  # type: ignore[arg-type]
+
+    def child_environments(self, outer: dict[str, str]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+        """os.environ without proxy variables plus outer, and the backend and engine environments start() builds."""
+        manager = self.manager()
+        spawned: dict[str, dict[str, str]] = {}
+
+        def spawn(command, **kwargs):
+            role = "engine" if any("twinpulse_engine_host.py" in str(part) for part in command) else "backend"
+            spawned[role] = dict(kwargs["env"])
+            if role == "backend":
+                manager.ready_file.write_text(json.dumps({"base_url": "http://127.0.0.1:43123"}), encoding="utf-8")
+                return FakeProcess(201)
+            raise OSError("engine environment captured")
+
+        manager._popen = spawn  # type: ignore[assignment]
+        with patch.dict(os.environ):
+            for key in [key for key in os.environ if key.lower().endswith("_proxy")]:
+                os.environ.pop(key)
+            os.environ.update(outer)
+            given = dict(os.environ)
+            with self.assertRaises(ProcessManagerError) as raised:
+                manager.start(open_browser=False)
+        self.assertEqual(raised.exception.code, "engine_spawn_failed")
+        return given, spawned
 
     # a) start window and bootstrap lifetime
     def test_default_window_is_600_s_with_660_s_one_use_bootstrap_lifetime(self) -> None:
@@ -246,7 +316,6 @@ class EngineStartWindowTests(unittest.TestCase):
 
     def test_no_proxy_appends_loopback_and_never_drops_existing_entries(self) -> None:
         cases = (
-            ({}, "127.0.0.1,localhost", "127.0.0.1,localhost"),
             ({"NO_PROXY": "corp.example"}, "corp.example,127.0.0.1,localhost", "corp.example,127.0.0.1,localhost"),
             ({"NO_PROXY": "a", "no_proxy": "b"}, "a,127.0.0.1,localhost", "b,127.0.0.1,localhost"),
             ({"no_proxy": "corp, "}, "corp,127.0.0.1,localhost", "corp,127.0.0.1,localhost"),
@@ -258,6 +327,72 @@ class EngineStartWindowTests(unittest.TestCase):
             with self.subTest(given=given):
                 result = pm._no_proxy_loopback({**given, "OTHER": "kept"})
                 self.assertEqual((result["NO_PROXY"], result["no_proxy"], result["OTHER"]), (upper, lower, "kept"))
+
+    def test_child_environments_without_a_proxy_variable_are_passed_unchanged(self) -> None:
+        environment = {"PATH": r"C:\Windows", "USERPROFILE": r"C:\Users\kim"}
+        self.assertIs(pm._no_proxy_loopback(environment), environment)
+        self.assertEqual(environment, {"PATH": r"C:\Windows", "USERPROFILE": r"C:\Users\kim"})
+        given, spawned = self.child_environments({})
+        self.assertEqual(sorted(spawned), ["backend", "engine"])
+        for role, child in spawned.items():
+            with self.subTest(role=role):
+                self.assertEqual(without_launcher_variables(child), without_launcher_variables(given))
+                with patch.dict(os.environ, child, clear=True):
+                    self.assertEqual(urllib.request.getproxies_environment(), {})
+
+    def test_proxy_variables_are_counted_as_urllib_counts_them(self) -> None:
+        rows = ({}, {"PATH": "x"}, {"HTTPS_PROXY": "http://p:1"}, {"https_proxy": "http://p:1"}, {"http_proxy": ""},
+                {"NO_PROXY": "corp.example"}, {"ALL_PROXY": "socks5://p:1"}, {"_PROXY": "x"},
+                {"PROXY": "x", "MYPROXY": "x"}, {"REQUEST_METHOD": "GET", "HTTP_PROXY": "http://p:1"},
+                {"REQUEST_METHOD": "GET", "http_proxy": "http://p:1"}, {"HTTPS_PROXY": "http://p:1", "https_proxy": ""})
+        for row in rows:
+            with self.subTest(row=row):
+                with patch.dict(os.environ, row, clear=True):
+                    expected = urllib.request.getproxies_environment()
+                self.assertEqual(pm._environment_proxies(row), expected)
+                # Loopback is added exactly when urllib would use the variables.
+                self.assertEqual(pm._no_proxy_loopback(dict(row)) == row, expected == {})
+
+    def test_with_a_proxy_variable_only_loopback_bypasses_it(self) -> None:
+        environment = {"HTTPS_PROXY": "http://proxy.corp.example:8080", "NO_PROXY": "corp.example"}
+        with patch.dict(os.environ, environment, clear=True):
+            self.assertFalse(urllib.request.proxy_bypass_environment("127.0.0.1"))  # without the change
+        with patch.dict(os.environ, pm._no_proxy_loopback(dict(environment)), clear=True):
+            self.assertEqual(urllib.request.getproxies_environment()["https"], "http://proxy.corp.example:8080")
+            for host, bypassed in (("127.0.0.1", True), ("localhost", True), ("corp.example", True),
+                                   ("api.openai.com", False), ("api.tokenfactory.nebius.com", False)):
+                with self.subTest(host=host):
+                    self.assertEqual(urllib.request.proxy_bypass_environment(host), bypassed)
+
+    def test_without_proxy_variables_windows_provider_calls_keep_the_internet_options_proxy(self) -> None:
+        # A company PC whose only proxy is the Internet Options (registry) one.
+        _given, spawned = self.child_environments({})
+        windows = windows_urllib()
+        registry = fake_winreg({"ProxyEnable": 1, "ProxyServer": "proxy.corp.example:8080", "ProxyOverride": "<local>"})
+
+        def first_hop(environment: dict[str, str]) -> list[tuple[str, int]]:
+            hops: list[tuple[str, int]] = []
+
+            def connect(address, *_args, **_kwargs):
+                hops.append(address)
+                raise ConnectionRefusedError("first hop recorded; nothing is sent")
+
+            with patch.dict(os.environ, environment, clear=True), patch.dict(sys.modules, {"winreg": registry}), \
+                    patch.object(urllib.request, "getproxies", windows.getproxies), \
+                    patch.object(urllib.request, "proxy_bypass", windows.proxy_bypass), \
+                    patch.object(socket, "create_connection", connect):
+                # Built as the provider clients build theirs, with the default proxy handler.
+                with self.assertRaises(urllib.error.URLError):
+                    urllib.request.build_opener().open("https://api.tokenfactory.nebius.com/v1/models", timeout=1)
+            return hops
+
+        for role, environment in spawned.items():
+            with self.subTest(role=role):
+                self.assertEqual(first_hop(environment), [("proxy.corp.example", 8080)])
+        # Control: loopback in NO_PROXY anyway, as before, makes urllib skip the
+        # registry, and the call goes past the company proxy.
+        injected = {**spawned["backend"], "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+        self.assertEqual(first_hop(injected), [("api.tokenfactory.nebius.com", 443)])
 
     def test_loopback_requests_ignore_http_proxy(self) -> None:
         proxy = FakeProxy()
