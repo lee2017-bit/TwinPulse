@@ -292,8 +292,13 @@ def _kernel32():
     return ctypes, wintypes, kernel
 
 
+# OpenProcess ERROR_ACCESS_DENIED: the PID belongs to a program this user may not inspect (a service, another
+# user). TwinPulse runs as this user, so it is never our TwinPulse; the App archives such a launcher.lock.
+ACCESS_DENIED = 'access_denied'
+
+
 def pid_alive(pid):
-    """True/False, or None when unknown. It only queries; it never signals the process."""
+    """True/False, ACCESS_DENIED, or None when unknown. It only queries; it never signals the process."""
     if type(pid) is not int or pid <= 0:
         return False
     if os.name == 'nt':  # os.kill on Windows would terminate the process; never use it here
@@ -302,7 +307,7 @@ def pid_alive(pid):
             handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
             if not handle:
                 error = ctypes.get_last_error()
-                return False if error == 87 else True if error == 5 else None
+                return False if error == 87 else ACCESS_DENIED if error == 5 else None
             try:
                 code = wintypes.DWORD()
                 return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
@@ -314,8 +319,8 @@ def pid_alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
+    except PermissionError:  # another user's process
+        return ACCESS_DENIED
     except OSError:
         return None
     return True
@@ -1110,15 +1115,19 @@ def _lock_part(runtime, alive, identity):
         return [f"launcher.lock: not parsed ({info['error'] or 'unexpected shape'})"], [{'key': 'lock_unknown'}]
     pid = lock.get('owner_pid', lock.get('pid'))
     state = alive(pid) if type(pid) is int else None
+    denied = state == ACCESS_DENIED  # another program this user cannot inspect: never our TwinPulse
     same = None
-    if state and isinstance(lock.get('process_identity'), dict):
+    if state is True and isinstance(lock.get('process_identity'), dict):
         current = identity(pid)
         same = None if current is None else current == lock['process_identity']
-    line = (f"launcher.lock: pid {ident(pid)}, running {'yes' if state else 'no' if state is False else 'unknown'}"
+    running = ('yes' if state is True else 'no' if state is False
+               else 'another program this user cannot inspect (access denied)' if denied else 'unknown')
+    line = (f"launcher.lock: pid {ident(pid)}, running {running}"
             + (f", same process {'yes' if same else 'NO (PID reused)'}" if same is not None else '')
             + f", launch {ident(lock.get('launch_id'))}, started {show_utc(lock.get('started_at_utc')) or '?'}")
-    key = 'lock_stale' if state is False else 'lock_reused' if state and same is False else 'lock_alive' if state else 'lock_unknown'
-    return [line], [{'key': key, 'pid': pid}]
+    key = ('lock_stale' if state is False else 'lock_reused' if denied or (state is True and same is False)
+           else 'lock_alive' if state is True else 'lock_unknown')
+    return [line], [{'key': key, 'pid': pid, **({'access_denied': True} if denied else {})}]
 
 
 def _settings_part(runtime, facts):
@@ -1367,7 +1376,8 @@ def summary_lines(findings):
             elif key == 'lock_stale':
                 text = f"남은 launcher.lock (PID {item['pid']} 종료됨) -> 새 EXE 설치 프로그램이 자동 보관, 오프라인 설치 프로그램은 거부"
             elif key == 'lock_reused':
-                text = f"launcher.lock의 PID {item['pid']}를 다른 프로그램이 사용 중 -> 새 EXE 설치 프로그램이 자동 보관"
+                other = '이 사용자가 확인할 수 없는 다른 프로그램' if item.get('access_denied') else '다른 프로그램'
+                text = f"launcher.lock의 PID {item['pid']}를 {other}이 사용 중 -> 새 EXE 설치 프로그램이 자동 보관"
             elif key == 'launch_desktop_host':
                 text = f"{item['when']} 실행: DESKTOP_HOST_NOT_BUILT -> 오프라인 설치본에는 데스크톱 창이 없음, EXE 설치본에는 포함"
             elif key == 'launch_ready_timeout':

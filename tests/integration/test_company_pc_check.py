@@ -413,6 +413,39 @@ class InstallAndRuntimeTests(unittest.TestCase):
         write(self.runtime / 'desktop-settings.json', {'schema_version': '1.0', 'preferred_port': 80})  # read_settings refuses it
         self.assertEqual(check._settings_part(self.runtime, {})[1], [{'key': 'desktop_settings_invalid'}])
 
+    def test_a_lock_pid_this_user_cannot_inspect_is_never_called_a_running_twinpulse(self):
+        write(self.runtime / 'launcher.lock', {'owner_pid': 4242, 'launch_id': 'e3f951e41ddd49309f20f94359283386',
+                                               'process_identity': {'executable': r'C:\TwinPulse\TwinPulse.exe', 'creation_filetime': 1}})
+        inspected = []
+        part = check.runtime_section(self.local, alive=lambda pid: check.ACCESS_DENIED, identity=inspected.append)
+        self.assertEqual(part['findings'][0], {'key': 'lock_reused', 'pid': 4242, 'access_denied': True})
+        self.assertEqual(inspected, [])  # nothing to compare: Windows refused to open the process
+        self.assertIn('launcher.lock: pid 4242, running another program this user cannot inspect (access denied), launch', part['lines'][1])
+        line = check.summary_lines(part['findings'][:1])[0]
+        self.assertEqual(line, 'launcher.lock의 PID 4242를 이 사용자가 확인할 수 없는 다른 프로그램이 사용 중 -> 새 EXE 설치 프로그램이 자동 보관')
+        self.assertNotIn('TwinPulse 실행 중', line)
+
+    def test_pid_alive_reads_openprocess_errors_as_the_app_does(self):
+        def windows(handle, error=0, exit_code=259):
+            kernel = SimpleNamespace(opened=[])
+
+            def exit_code_of(process, code):
+                code.value = exit_code
+                return True
+            kernel.OpenProcess = lambda access, inherit, pid: kernel.opened.append((access, inherit, pid)) or handle
+            kernel.GetExitCodeProcess, kernel.CloseHandle = exit_code_of, lambda process: True
+            return SimpleNamespace(get_last_error=lambda: error, byref=lambda value: value), SimpleNamespace(DWORD=lambda: SimpleNamespace(value=0)), kernel
+        # ERROR_ACCESS_DENIED: another user's or a service's process, never ours; ERROR_INVALID_PARAMETER: no such process.
+        for handle, error, exit_code, expected in ((0, 5, 0, check.ACCESS_DENIED), (0, 87, 0, False), (0, 6, 0, None),
+                                                   (7, 0, 259, True), (7, 0, 1, False)):
+            with self.subTest(error=error, exit_code=exit_code):
+                fakes = windows(handle, error, exit_code)
+                with patch.object(check, '_kernel32', return_value=fakes), patch.object(check.os, 'name', 'nt'):
+                    self.assertEqual(check.pid_alive(4242), expected)
+                self.assertEqual(fakes[2].opened, [(0x1000, False, 4242)])  # PROCESS_QUERY_LIMITED_INFORMATION only
+        with patch.object(check.os, 'kill', side_effect=PermissionError(1, 'Operation not permitted')):
+            self.assertEqual(check.pid_alive(4242), check.ACCESS_DENIED)
+
     def test_provider_evidence_summary_never_includes_request_redacted(self):
         evidence = self.runtime / 'provider-evidence'
         write(evidence / 'dispatches/1111111111111111111111111111aaaa.json', {'request_redacted': 'PROMPT_SENTINEL dispatch'})
