@@ -18,6 +18,31 @@ def install_package(source: Path, destination: Path, *, reuse_desktop_from: Path
         return _install_package(source, destination, state,reuse_desktop_from=reuse_desktop_from)
 
 
+def _retire_launcher_lock(launcher_lock: Path, state: Path):
+    """Keep a dead or replaced owner's launcher.lock as a record; refuse anything else.
+
+    The launcher applies the same rule (process_manager._owner_replaced).
+    """
+    from .process_manager import _owner_replaced, _pid_alive, _process_identity
+    try:
+        owner = json.loads(launcher_lock.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        owner = None
+    pid = owner.get('owner_pid', owner.get('pid')) if isinstance(owner, dict) else None
+    if type(pid) is not int or pid <= 0:
+        # Not a record this installer can judge, for example an empty file left
+        # by a crash: keep it unchanged rather than guess that it is stale.
+        raise ValueError('INSTALL_LAUNCHER_LOCK_UNREADABLE')
+    if _pid_alive(pid) and not _owner_replaced(owner.get('process_identity'), _process_identity(pid)):
+        # The PID runs and is not proven to be another process now (both
+        # identities with differing int creation times): never take over.
+        raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL')
+    # A proven dead or replaced owner is retained as a diagnostic, never a lock.
+    preserved = state / 'stale-launch-records' / (uuid4().hex + '.json')
+    preserved.parent.mkdir(parents=True, exist_ok=True)
+    launcher_lock.rename(preserved)
+
+
 def _install_package(source: Path, destination: Path, state: Path, *, reuse_desktop_from: Path | None = None):
     source, destination = source.resolve(), destination.resolve()
     checked = verify_package(source)
@@ -27,24 +52,7 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
     # Updating a live release must never replace the files under its supervisor.
     launcher_lock = state / 'launcher.lock'
     if launcher_lock.exists():
-        from .process_manager import _pid_alive, _process_identity
-        try:
-            owner = json.loads(launcher_lock.read_text(encoding='utf-8'))
-            pid = owner.get('owner_pid', owner.get('pid'))
-            if type(pid) is not int or pid <= 0:
-                raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL')
-            if _pid_alive(pid):
-                # A live PID is stale only when Windows proves it is now another
-                # process (PID reuse after a reboot); unknown identity refuses.
-                recorded, current = owner.get('process_identity'), _process_identity(pid)
-                if recorded is None or current is None or recorded == current:
-                    raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL')
-            # A proven dead or replaced owner is retained as a diagnostic, never a lock.
-            preserved = state / 'stale-launch-records' / (uuid4().hex + '.json')
-            preserved.parent.mkdir(parents=True, exist_ok=True)
-            launcher_lock.rename(preserved)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            raise ValueError('EXIT_TWINPULSE_BEFORE_INSTALL') from None
+        _retire_launcher_lock(launcher_lock, state)
     # A legacy package has no support for newly required capabilities. Never
     # attribute the current program's feature support to an older package.
     contract = checked.get('data_contract') or {k:v for k,v in DATA_CONTRACT.items() if k!='read_capabilities'}

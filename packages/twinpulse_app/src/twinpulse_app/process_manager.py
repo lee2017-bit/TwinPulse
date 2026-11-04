@@ -1079,9 +1079,7 @@ class TwinPulseProcessManager:
                     recorded = existing.get('process_identity')
                     if recorded is not None:
                         current = _process_identity(pid)
-                        started = [value.get('creation_filetime') if isinstance(value, Mapping) else None
-                                   for value in (recorded, current)]
-                        if all(type(item) is int for item in started) and started[0] != started[1]:
+                        if _owner_replaced(recorded, current):
                             # Another process now has this PID: the recorded owner is gone.
                             self._archive_stale_lock()
                             continue
@@ -1406,6 +1404,18 @@ def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
             value = ",".join(item for item in (value.rstrip(" ,"), *missing) if item)
         environment[key] = value
     return environment
+
+
+def _owner_replaced(recorded: object, current: object) -> bool:
+    """True only when the launcher.lock owner's PID now belongs to another process.
+
+    Proof needs both identities as mappings whose creation_filetime values are
+    ints that differ. A missing, unreadable or differently spelled identity is
+    never proof of PID reuse. The launcher and the installer share this rule.
+    """
+    started = [value.get("creation_filetime") if isinstance(value, Mapping) else None
+               for value in (recorded, current)]
+    return all(type(item) is int for item in started) and started[0] != started[1]
 
 
 # cmd.exe, which runs a .bat/.cmd program, acts on these outside double quotes.

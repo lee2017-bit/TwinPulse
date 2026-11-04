@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Source: https://github.com/lee2017-bit/TwinPulse
 """Supplementary installation atomicity and old-pointer preservation."""
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +19,7 @@ for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
 from twinpulse_app.windows_install import install_package
 from twinpulse_app.windows_package import verify_package
 from twinpulse_app.release_contract import MaintenanceLock, DATA_CONTRACT, atomic_json, initialize_data_epoch
+from twinpulse_app.process_manager import ProcessManagerError, TwinPulseProcessManager
 
 
 class WindowsInstallTests(unittest.TestCase):
@@ -89,11 +92,31 @@ class WindowsInstallTests(unittest.TestCase):
         self.assertEqual(fallback['verified_desktop_hardlinks'],0)
         verify_package(Path(fallback['exe']).parent)
     def test_live_launch_is_not_overwritten(self):
-        state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True)
-        (state/'launcher.lock').write_text('owned')
-        with self.assertRaisesRegex(ValueError,'EXIT_TWINPULSE_BEFORE_INSTALL'):
-            install_package(self.source,self.installed)
+        state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True);lock=state/'launcher.lock'
+        identity={'executable':'C:\\TwinPulse\\releases\\old\\TwinPulse.exe','creation_filetime':133}
+        lock.write_text(json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':identity}),encoding='utf-8')
+        original=lock.read_bytes()
+        with patch('twinpulse_app.process_manager._pid_alive',return_value=True), \
+                patch('twinpulse_app.process_manager._process_identity',return_value=dict(identity)):
+            with self.assertRaisesRegex(ValueError,'^EXIT_TWINPULSE_BEFORE_INSTALL$'):
+                install_package(self.source,self.installed)
+        self.assertEqual(lock.read_bytes(),original)
         self.assertFalse(self.installed.exists())
+
+    def test_unreadable_lock_or_one_without_a_valid_pid_stops_install_with_its_own_code_and_is_kept(self):
+        state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True);lock=state/'launcher.lock'
+        # An empty file is what a crash between creating and writing the lock leaves.
+        for content in (b'',b'owned',b'{"owner_pid":',b'\xff\xfe{}',b'[4242]',b'"4242"',b'{}',b'{"owner_pid":"4242"}',
+                        b'{"owner_pid":0}',b'{"pid":-7}',b'{"owner_pid":true}',b'{"owner_pid":null,"pid":4242}'):
+            with self.subTest(content=content):
+                lock.write_bytes(content)
+                # Even with no live process, such a lock is never judged stale.
+                with patch('twinpulse_app.process_manager._pid_alive',return_value=False):
+                    with self.assertRaisesRegex(ValueError,'^INSTALL_LAUNCHER_LOCK_UNREADABLE$'):
+                        install_package(self.source,self.installed)
+                self.assertEqual(lock.read_bytes(),content)
+                self.assertFalse((state/'stale-launch-records').exists())
+                self.assertFalse(self.installed.exists())
 
     def test_new_epoch_cannot_be_opened_by_old_program_and_bytes_are_preserved(self):
         state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True)
@@ -162,25 +185,53 @@ class WindowsInstallTests(unittest.TestCase):
             install_package(self.source,self.installed)
         self.assertEqual(next((state/'stale-launch-records').glob('*.json')).read_bytes(),original)
 
-    def test_reused_launcher_pid_is_archived_but_matching_or_unknown_owner_refuses(self):
-        state=self.root/'profile/TwinPulse/runtime';state.mkdir(parents=True);lock=state/'launcher.lock'
+    def test_installer_and_launcher_take_the_same_decision_on_every_launcher_lock(self):
         recorded={'executable':'C:\\TwinPulse\\releases\\old\\TwinPulse.exe','creation_filetime':133}
         other={'executable':'C:\\Windows\\explorer.exe','creation_filetime':134}
-        for stored,current in ((recorded,recorded),(recorded,None),(None,other)):
-            lock.write_text(json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':stored}),encoding='utf-8')
-            with patch('twinpulse_app.process_manager._pid_alive',return_value=True), \
-                    patch('twinpulse_app.process_manager._process_identity',return_value=current):
-                with self.assertRaisesRegex(ValueError,'EXIT_TWINPULSE_BEFORE_INSTALL'):
-                    install_package(self.source,self.installed)
-            self.assertTrue(lock.exists());self.assertFalse(self.installed.exists())
-        # The same live PID now belongs to another process: the record is stale.
-        original=json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':recorded}).encode()
-        lock.write_bytes(original)
-        with patch('twinpulse_app.process_manager._pid_alive',return_value=True), \
-                patch('twinpulse_app.process_manager._process_identity',return_value=other):
-            self.assertEqual(install_package(self.source,self.installed)['build_id'],'build_1')
-        self.assertFalse(lock.exists())
-        self.assertEqual(next((state/'stale-launch-records').glob('*.json')).read_bytes(),original)
+        rows=(  # (owner PID alive, recorded identity, identity of that PID now, decision)
+            (True,recorded,dict(recorded),'refuse'),           # the owner still runs
+            (True,recorded,None,'refuse'),                     # its identity cannot be read now
+            (True,None,other,'refuse'),                        # an older lock without an identity
+            (True,recorded,dict(recorded,executable='\\\\?\\'+recorded['executable']),'refuse'),  # same start, other spelling
+            (True,'malformed',other,'refuse'),
+            (True,{'creation_filetime':True},{'creation_filetime':2},'refuse'),   # a bool is no creation time
+            (True,{'creation_filetime':'133'},other,'refuse'),
+            (True,recorded,{'executable':recorded['executable']},'refuse'),
+            (True,recorded,other,'archive'),                   # Windows proves PID reuse
+            (True,{'creation_filetime':133},{'creation_filetime':134},'archive'),
+            (False,recorded,dict(recorded),'archive'),         # the owner has exited
+            (False,'malformed',None,'archive'),
+        )
+        for number,(alive,stored,current,decision) in enumerate(rows):
+            with self.subTest(alive=alive,stored=stored,current=current):
+                content=json.dumps({'owner_pid':4242,'launch_id':'a'*32,'process_identity':stored}).encode()
+                profile=self.root/('row-%02d'%number)
+                launcher_state=profile/'launcher';install_state=profile/'TwinPulse/runtime'
+                for state in (launcher_state,install_state):
+                    state.mkdir(parents=True);(state/'launcher.lock').write_bytes(content)
+                manager=TwinPulseProcessManager(repo_root=self.root,state_dir=launcher_state,
+                    python_executable=self.root/'python.exe',isaac_python=self.root/'isaac/python.bat')
+                outcome={}
+                with patch('twinpulse_app.process_manager._pid_alive',return_value=alive), \
+                        patch('twinpulse_app.process_manager._process_identity',return_value=current), \
+                        patch.dict(os.environ,{'LOCALAPPDATA':str(profile)}):
+                    try:
+                        with redirect_stdout(io.StringIO()):manager._acquire_launcher_lock()
+                    except ProcessManagerError:outcome['launcher']='refuse'
+                    else:
+                        outcome['launcher']='archive';manager._release_lock()
+                    try:install_package(self.source,profile/'installed')
+                    except ValueError as error:
+                        self.assertEqual(str(error),'EXIT_TWINPULSE_BEFORE_INSTALL');outcome['installer']='refuse'
+                    else:outcome['installer']='archive'
+                self.assertEqual(outcome,{'launcher':decision,'installer':decision})
+                for state in (launcher_state,install_state):
+                    archived=[p.read_bytes() for p in (state/'stale-launch-records').glob('*.json')]
+                    if decision=='refuse':
+                        self.assertEqual((state/'launcher.lock').read_bytes(),content);self.assertEqual(archived,[])
+                    else:
+                        self.assertFalse((state/'launcher.lock').exists());self.assertEqual(archived,[content])
+                self.assertEqual((profile/'installed/active-release.json').exists(),decision=='archive')
 
     def test_file_manager_junk_never_enters_a_release_and_stage_name_is_short(self):
         (self.source/'desktop.ini').write_bytes(b'[.ShellClassInfo]');(self.source/'sub').mkdir()
