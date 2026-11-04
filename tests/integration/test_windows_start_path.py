@@ -111,6 +111,36 @@ class StartPathTests(unittest.TestCase):
             self.assertEqual(find(str(self.root/'locked'),[str(self.root/'locked-d'),str(folders[2])]),str(folders[2]))
             self.assertIsNone(find(None,[str(self.root/'locked-d')]))
 
+    def test_isaac_search_puts_6_0_1_folders_first_and_reads_only_a_small_first_line(self):
+        find=entry['find_isaac_root'];version=entry['isaac_version']
+        folders=[self.root/name for name in ('saved','c','d-601','c-601','d')]
+        for folder in folders:folder.mkdir();(folder/'python.bat').write_text('')
+        candidates=[str(folder) for folder in folders[1:]]
+        (folders[1]/'VERSION').write_text('5.1.0-rc.19+release.27451.a3bc6fd7.gl\n')
+        (folders[2]/'VERSION').write_text('6.0.10\n')
+        (folders[3]/'VERSION').write_bytes(b'\xef\xbb\xbf6.0.1-rc.7+release.42383.32955d8d.gl\r\nbuilt elsewhere\r\n')
+        (folders[4]/'VERSION').write_text('6.0.1\n')
+        # Any 6.0.1 build beats earlier folders; 6.0.10 is another version. The BOM and later lines are ignored.
+        self.assertEqual(version(str(folders[3])),'6.0.1-rc.7+release.42383.32955d8d.gl')
+        self.assertEqual(find(None,candidates),str(folders[3]))
+        # The saved folder still comes first, whatever its version.
+        (folders[0]/'VERSION').write_text('5.1.0\n')
+        self.assertEqual(find(str(folders[0]),candidates),str(folders[0]))
+        # Up to 1 KB is read; a larger, non-UTF-8 or unreadable VERSION is unknown, so the next 6.0.1 folder wins.
+        (folders[3]/'VERSION').write_bytes(b'6.0.1\n'+b'x'*1018)
+        self.assertEqual((version(str(folders[3])),find(None,candidates)),('6.0.1',str(folders[3])))
+        (folders[3]/'VERSION').write_bytes(b'6.0.1\n'+b'x'*1019)
+        self.assertEqual((version(str(folders[3])),find(None,candidates)),(None,str(folders[4])))
+        (folders[3]/'VERSION').write_bytes(b'6.0.1\xff\n')
+        self.assertEqual((version(str(folders[3])),find(None,candidates)),(None,str(folders[4])))
+        (folders[3]/'VERSION').write_text('6.0.1\n')
+        def refused(path,*arguments,**options):raise PermissionError(13,'Access is denied',str(path))
+        with patch.dict(find.__globals__,{'open':refused}):
+            self.assertEqual((version(str(folders[3])),find(None,candidates)),(None,str(folders[1])))
+        # Without any 6.0.1 folder the usual order stays.
+        (folders[3]/'VERSION').unlink();(folders[4]/'VERSION').write_text('6.1.0\n')
+        self.assertEqual(find(None,candidates),str(folders[1]))
+
     def test_installed_start_entries_run_the_active_exe_without_powershell(self):
         installed=self.root/'installed'
         for build_id in ('build_1','build_2'):

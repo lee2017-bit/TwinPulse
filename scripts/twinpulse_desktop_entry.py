@@ -115,15 +115,35 @@ def write_failure_log(role, text, environment):
     return log
 
 
+def isaac_version(folder):
+    """First line of the folder's VERSION file (UTF-8, BOM allowed, at most 1 KB); None when it cannot be read."""
+    path = os.path.join(folder, 'VERSION')
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as stream:
+            data = stream.read(1025)
+        if len(data) > 1024:
+            return None
+        lines = data.decode('utf-8-sig').splitlines()
+    except (OSError, UnicodeError):
+        return None
+    return lines[0].strip() if lines else ''
+
+
 def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
-    """First folder with python.bat: the saved setting, then the usual folders.
+    """The saved folder when it has python.bat, else the first usual folder
+    with python.bat: those whose VERSION says Isaac Sim 6.0.1 first, then the
+    others in their order.
 
     os.path.isfile, not Path.is_file: a locked or offline drive is skipped
-    instead of raising, so the folder dialog stays the fallback."""
-    for candidate in ([configured] if configured else []) + list(candidates):
-        if os.path.isfile(os.path.join(candidate, 'python.bat')):
-            return str(candidate)
-    return None
+    instead of raising, so the folder dialog stays the fallback. A VERSION
+    that cannot be read counts as another version."""
+    if configured and os.path.isfile(os.path.join(configured, 'python.bat')):
+        return str(configured)
+    usable = [str(folder) for folder in candidates if os.path.isfile(os.path.join(folder, 'python.bat'))]
+    release = [folder for folder in usable if re.fullmatch(r'6\.0\.1([-+].*)?', isaac_version(folder) or '')]
+    return (release or usable or [None])[0]
 
 
 def main(opened=None):
@@ -195,9 +215,14 @@ def main(opened=None):
         return 0
     if role == 'launcher' and frozen and '--isaac-root' not in arguments:
         configured = read_settings(state).get('isaac_root')
-        found = find_isaac_root(configured)
-        if found and found != configured:
+        found = find_isaac_root(configured, ISAAC_CANDIDATES)
+        if found and not configured:
             save_settings(state, isaac_root=found)
+        elif found and found != configured:
+            # The saved folder is not usable now (an offline or locked drive?); it is never replaced unasked.
+            print('TWINPULSE_ISAAC_ROOT_FALLBACK saved="' + configured + '" used="' + found + '" (no python.bat in '
+                  'the saved folder now; used for this launch only, the setting is kept)', flush=True)
+            arguments = ['--isaac-root', found, *arguments]
         if not found:
             import tkinter as tk
             from tkinter import filedialog

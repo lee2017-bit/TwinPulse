@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jaewon Lee
 # SPDX-License-Identifier: Apache-2.0
 # Source: https://github.com/lee2017-bit/TwinPulse
-"""The frozen Windows entry driven on Linux: what an error writes and shows.
+"""The frozen Windows entry driven on Linux: what an error writes and shows,
+and which Isaac folder a start uses and saves.
 
 Supplementary. sys.frozen, sys._MEIPASS and ctypes.windll are patched
 (create=True) and a stub file stands in for the bundled launcher, so no EXE,
@@ -25,10 +26,15 @@ for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
     sys.path.insert(0, str(ROOT / 'packages' / name / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from twinpulse_app import ProcessManagerError  # noqa: E402
+from twinpulse_app.desktop_settings import read_settings, save_settings  # noqa: E402
 
 ENTRY = runpy.run_path(str(ROOT / 'scripts/twinpulse_desktop_entry.py'))
 BACKEND = '_internal/resources/scripts/twinpulse_backend.py'
 PID = str(os.getpid())
+# Stands in for the bundled launcher and keeps the arguments the entry gave it.
+RECORDING_LAUNCHER = ('import json\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n'
+                      '    Path(__file__).with_name("argv.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")\n'
+                      '    return 0\n')
 
 
 def write_package(root):
@@ -193,6 +199,69 @@ class FrozenEntryTests(unittest.TestCase):
         box.assert_called_once_with(None, '\n'.join(('TwinPulse could not complete startup.', 'Isaac did not finish starting',
                                     'Code: engine_ready_timeout', 'Log: ' + str(log), 'No other application was stopped.')),
                                     'TwinPulse startup', 0x10)
+
+    def isaac_folder(self, name, version):
+        folder = self.root / name
+        folder.mkdir()
+        (folder / 'python.bat').write_text('')
+        if version is not None:
+            (folder / 'VERSION').write_text(version + '\n', encoding='utf-8')
+        return folder
+
+    def launcher_arguments(self):
+        recorded = self.scripts / 'argv.json'
+        try:
+            return json.loads(recorded.read_text(encoding='utf-8'))
+        finally:
+            recorded.unlink()
+
+    def test_saved_isaac_folder_unreachable_now_keeps_the_setting_and_this_launch_uses_the_fallback(self):
+        (self.scripts / 'twinpulse_launcher.py').write_text(RECORDING_LAUNCHER, encoding='utf-8')
+        state = self.profile / 'TwinPulse' / 'runtime'
+        saved = self.root / 'offline-drive' / 'isaacsim'  # like a D: drive that is not ready at this login
+        fallback = self.isaac_folder('c-isaacsim', '5.1.0-rc.19+release.27451.a3bc6fd7.gl')
+        save_settings(state, isaac_root=str(saved))
+        settings = (state / 'desktop-settings.json').read_bytes()
+        candidates = {'ISAAC_CANDIDATES': (str(self.root / 'missing'), str(fallback))}
+        code, box = self.run_frozen(entry_globals=candidates)
+        self.assertEqual((code, box.call_count), (0, 0))
+        self.assertEqual(self.launcher_arguments(), ['--isaac-root', str(fallback)])
+        self.assertEqual((state / 'desktop-settings.json').read_bytes(), settings)
+        log = self.logs / ('launcher-' + PID + '.log')
+        self.assertEqual([line for line in log.read_text(encoding='utf-8').splitlines() if 'ISAAC' in line],
+                         ['TWINPULSE_ISAAC_ROOT_FALLBACK saved="' + str(saved) + '" used="' + str(fallback) + '" (no python.bat '
+                          'in the saved folder now; used for this launch only, the setting is kept)'])
+        # Once the saved folder is back, the next start uses it again.
+        saved.mkdir(parents=True)
+        (saved / 'python.bat').write_text('')
+        code, box = self.run_frozen(entry_globals=candidates)
+        self.assertEqual((code, self.launcher_arguments()), (0, []))
+        self.assertEqual((state / 'desktop-settings.json').read_bytes(), settings)
+        self.assertEqual(log.read_text(encoding='utf-8').count('TWINPULSE_ISAAC_ROOT_FALLBACK'), 1)
+
+    def test_with_nothing_saved_a_6_0_1_folder_beats_an_earlier_other_version_and_is_saved(self):
+        (self.scripts / 'twinpulse_launcher.py').write_text(RECORDING_LAUNCHER, encoding='utf-8')
+        older = self.isaac_folder('c-isaacsim', '5.1.0-rc.19+release.27451.a3bc6fd7.gl')
+        unknown = self.isaac_folder('c-isaacsim-no-version', None)
+        release = self.isaac_folder('d-isaacsim-601', '6.0.1-rc.7+release.42383.32955d8d.gl')
+        code, box = self.run_frozen(entry_globals={'ISAAC_CANDIDATES': (str(older), str(unknown), str(release))})
+        self.assertEqual((code, box.call_count), (0, 0))
+        self.assertEqual(read_settings(self.profile / 'TwinPulse' / 'runtime').get('isaac_root'), str(release))
+        self.assertEqual(self.launcher_arguments(), [])
+        self.assertNotIn('TWINPULSE_ISAAC_ROOT_FALLBACK', (self.logs / ('launcher-' + PID + '.log')).read_text(encoding='utf-8'))
+
+    def test_a_folder_picked_in_the_dialog_is_saved_even_over_an_unreachable_saved_one(self):
+        (self.scripts / 'twinpulse_launcher.py').write_text(RECORDING_LAUNCHER, encoding='utf-8')
+        state = self.profile / 'TwinPulse' / 'runtime'
+        save_settings(state, isaac_root=str(self.root / 'offline-drive' / 'isaacsim'))
+        picked = self.isaac_folder('picked', None)
+        tkinter = MagicMock()
+        tkinter.filedialog.askdirectory.return_value = str(picked)
+        with patch.dict(sys.modules, {'tkinter': tkinter, 'tkinter.filedialog': tkinter.filedialog}):
+            code, box = self.run_frozen(entry_globals={'ISAAC_CANDIDATES': (str(self.root / 'missing'),)})
+        self.assertEqual((code, box.call_count, tkinter.filedialog.askdirectory.call_count), (0, 0, 1))
+        self.assertEqual(read_settings(state)['isaac_root'], str(picked.resolve()))
+        self.assertEqual(self.launcher_arguments(), [])
 
 
 if __name__ == '__main__':
