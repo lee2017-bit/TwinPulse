@@ -112,7 +112,10 @@ def redact(text, *, long_tokens=True):
 
 def short(value, limit=300):
     """One redacted line of at most `limit` characters (redacted before it is cut)."""
-    text = ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', str(value)).split())[:limit * 16]
+    flat = ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', str(value)).split())
+    text = flat[:limit * 16]
+    if len(text) < len(flat):  # drop the word this bound split: half a key may no longer match a pattern
+        text = text[:max(text.rfind(mark) for mark in ' "\'<>,;&') + 1]
     text = redact(text)
     return text if len(text) <= limit else text[:limit - 3] + '...'
 
@@ -519,7 +522,7 @@ def _size(path):
 # ---- 3. TwinPulse install ------------------------------------------------------------------
 
 def classify_burger(inventory):
-    """Compare {relative name: sha256} with both reviewed pin sets, file by file."""
+    """Compare {relative name: sha256} with both reviewed pin sets, file by file, and name the App's refusal."""
     files = {}
     for name in PUBLIC_BURGER_MANIFEST:
         digest = inventory.get(name)
@@ -529,7 +532,10 @@ def classify_burger(inventory):
     overall = ('missing' if states == {'missing'} else 'closure_changed' if extra or 'missing' in states
                else 'public' if states == {'public'} else 'original' if states == {'original'}
                else 'mismatch' if 'neither' in states else 'mixed')
-    return {'overall': overall, 'files': files, 'extra': extra}
+    # The order of simulation_assets._inventory: main file, then the file set, then the digests.
+    code = (None if overall in ('public', 'original') else 'SIM_BURGER_ASSET_MISSING' if files['turtlebot3_burger.usda'] == 'missing'
+            else 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED' if overall == 'closure_changed' else 'SIM_BURGER_ASSET_DIGEST_MISMATCH')
+    return {'overall': overall, 'files': files, 'extra': extra, 'code': code}
 
 
 def burger_check(resource_root, manifest_hashes=None, prefix=''):
@@ -598,7 +604,9 @@ def compare_manifest(root, entries, *, manifest_name, kind, hash_files=True, max
         for name in files:
             path = name if relative == '.' else relative + '/' + name
             if path != manifest_name and path.casefold() not in listed:
-                extra[_extra_kind(path)].append(path)
+                group = _extra_kind(path)
+                # The EXE start check refuses every unlisted file but Explorer metadata, bytecode included.
+                extra['other' if kind == 'exe' and group == 'bytecode' else group].append(path)
     return {'listed': len(listed), 'invalid_entries': invalid, 'missing': sorted(missing), 'changed': sorted(changed),
             'unreadable': sorted(unreadable), 'extra': {key: sorted(value) for key, value in extra.items()}, 'venv': venv}
 
@@ -642,7 +650,8 @@ def _release_lines(report, active):
              + (', files listed ' + str(report['listed']) if report.get('listed') is not None else ''), '  ' + ' '.join(details)]
     compare = report.get('compare')
     if compare is None:
-        lines.append('  Files vs manifest: not checked (only the active and newest releases are hashed)')
+        lines.append('  Files vs manifest: not checked (' + ('the manifest has no readable file list)' if report.get('listed') is None
+                                                         else 'only the active and newest releases are hashed)'))
     else:
         extra = compare['extra']
         lines.append(f"  Files vs manifest: {len(compare['changed'])} changed, {len(compare['missing'])} missing, "
@@ -661,6 +670,7 @@ def _release_lines(report, active):
         used = ' (used at run time)' if entry['folder'] == burger['used'] else ' (not used: the folder above wins)'
         lines.append(f"  Burger asset {entry['folder']}{used}: {entry['overall']}"
                      + (f" (all {len(entry['files'])} files)" if entry['overall'] in ('public', 'original') else '')
+                     + (f" -> {entry['code']}" if entry['code'] and entry['folder'] == burger['used'] else '')
                      + (f"; manifest-recorded hashes: {entry['recorded']}" if entry.get('recorded') else ''))
         for name, state in entry['files'].items() if entry['overall'] not in ('public', 'original') else ():
             digest = entry['inventory'].get(name)
@@ -730,12 +740,15 @@ def _release_findings(folder, active, verify, lines, findings, facts):
         facts['product_version'] = report['product_version']
     if active and report['kind'] == 'offline':
         findings.append({'key': 'offline_active', 'release': folder.name})
+    if verify and report['kind'] != 'unknown' and report.get('listed') is None:
+        findings.append({'key': 'release_manifest_unreadable', 'release': folder.name})
     compare = report.get('compare')
     if compare:
         other, backup = compare['extra']['other'], compare['extra']['backup']
-        if compare['changed'] or compare['missing'] or other:
-            findings.append({'key': 'release_modified', 'release': folder.name, 'changed': compare['changed'],
-                             'missing': compare['missing'], 'extra': other})
+        refused = other + backup if report['kind'] == 'exe' else other  # the EXE start check refuses a backup copy too
+        if compare['changed'] or compare['missing'] or refused:
+            findings.append({'key': 'release_modified', 'release': folder.name, 'kind': report['kind'], 'changed': compare['changed'],
+                             'missing': compare['missing'], 'extra': refused})
         if compare['unreadable']:
             findings.append({'key': 'release_unreadable', 'release': folder.name, 'files': compare['unreadable']})
         if backup:
@@ -748,7 +761,8 @@ def _release_findings(folder, active, verify, lines, findings, facts):
         state = used['overall'] if used else 'missing'
         if state not in ('public', 'original'):
             odd = [name for name, value in used['files'].items() if value not in ('public', 'original')] if used else []
-            findings.append({'key': 'burger_' + state, 'release': folder.name, 'files': odd})
+            findings.append({'key': 'burger_' + state, 'release': folder.name, 'files': odd,
+                             'code': used['code'] if used else 'SIM_BURGER_ASSET_MISSING'})
 
 
 # ---- 4. runtime state ----------------------------------------------------------------------
@@ -952,8 +966,10 @@ def _evidence_findings(reports):
     findings, seen = [], set()
     for item in reports:
         body, status = item.get('body') or {}, item.get('http_status')
-        failed = (type(status) is int and status >= 400) or item.get('status') == 'rejected'
-        if not failed or body.get('kind') not in ('json', 'html'):
+        if body.get('kind') not in ('json', 'html'):
+            continue
+        # A rejected 2xx JSON answer without error facts is the model's own output, not a provider error body.
+        if not (type(status) is int and status >= 400 or item.get('status') == 'rejected' and (body['kind'] == 'html' or len(body) > 1)):
             continue
         signature = (status, body.get('kind'), body.get('type'), body.get('code'), body.get('param'), body.get('title'))
         if signature in seen:
@@ -996,8 +1012,9 @@ def _settings_part(runtime, facts):
             f"BOM {'YES' if info['bom'] else 'no'}" + (f", unknown keys: {names(unknown)}" if unknown else ''))
     if root:
         facts['settings_isaac_root'] = root
-    if unknown or settings.get('schema_version') != '1.0' or type(settings.get('preferred_port')) is not int:
-        findings.append({'key': 'desktop_settings_invalid'})
+    port = settings.get('preferred_port')
+    if unknown or settings.get('schema_version') != '1.0' or type(port) is not int or not 1024 <= port <= 65535:
+        findings.append({'key': 'desktop_settings_invalid'})  # the same rules as desktop_settings.read_settings
     if info['bom']:
         findings.append({'key': 'desktop_settings_bom'})
     return [line], findings
@@ -1104,17 +1121,18 @@ def probe(url, user_agent=None, *, timeout=10.0, opener=None):
 def _probe_kind(facts):
     if 'error' in facts:
         text = (facts['error'] + ' ' + facts.get('detail', '')).lower()
-        return 'tls' if 'certificate' in text or 'ssl' in text else 'error'
+        return 'tls' if 'certificate' in text else 'error'  # an SSL EOF or reset is a dropped connection, not a certificate
     if facts['body']['kind'] == 'html' or 300 <= facts['status'] < 400:
         return 'page'
-    return 'api' if facts['body']['kind'] == 'json' else 'other'
+    # Without a key the API answers 401 JSON; a JSON 403 or 5xx is not proof that the product can use it.
+    return 'api' if facts['body']['kind'] == 'json' and facts['status'] == 401 else 'other'
 
 
 def classify_pair(default, product):
     kinds = (_probe_kind(default), _probe_kind(product))
     if 'tls' in kinds:
         return 'tls'
-    if 'error' in kinds:
+    if kinds == ('error', 'error'):  # one answered request means the host is reachable: 'unclear' below
         return 'unreachable'
     return {('page', 'api'): 'python_ua_blocked', ('api', 'api'): 'reachable', ('page', 'page'): 'both_blocked',
             ('api', 'page'): 'product_ua_blocked'}.get(kinds, 'unclear')
@@ -1157,13 +1175,13 @@ def summary_lines(findings):
         text = {
             'profile_non_ascii': '사용자 폴더 경로에 한글 등 비ASCII 문자 있음 -> Isaac/Kit에서 문제될 수 있음(미검증), 문제가 나면 이 줄을 전달',
             'profile_special_chars': '사용자 경로에 & | < > ^ % 문자 있음 -> 일부 작업(RoomPlan 가져오기 등)이 거부될 수 있음',
-            'long_paths_disabled': '긴 경로(LongPathsEnabled) 꺼짐 -> 새 설치 프로그램이 경로 길이를 검사함, 실패하면 IT에 긴 경로 허용 요청',
+            'long_paths_disabled': '긴 경로(LongPathsEnabled) 꺼짐 -> 설치 경로가 259자를 넘는 파일은 설치/시작에 실패할 수 있음, 그때 IT에 긴 경로 허용 요청',
             'proxy_configured': '프록시 설정 있음 -> 아래 네트워크 결과는 이 프록시를 거친 결과',
             'ps_policy_restricted': '그룹 정책이 PowerShell 스크립트를 제한함 -> 새 EXE 설치본의 Start-TwinPulse.cmd는 PowerShell 없이 실행',
             'isaac_missing': 'Isaac Sim 폴더(python.bat)를 찾지 못함 -> 설치 후 첫 실행에서 Isaac 폴더를 직접 선택',
             'not_installed': 'TwinPulse 설치 폴더 없음 -> 새 EXE ZIP을 풀고 Install-TwinPulse.cmd 실행',
             'pointer_bom': 'active-release.json에 BOM 있음 -> 새 설치 프로그램이 자동 처리 (구버전 EXE 설치는 여기서 멈출 수 있음)',
-            'desktop_settings_invalid': 'desktop-settings.json 형식이 예상과 다름 -> 이전 버전은 DESKTOP_SETTINGS_INVALID로 멈출 수 있음, 파일은 보관',
+            'desktop_settings_invalid': 'desktop-settings.json 형식이 예상과 다름 -> 현재/새 버전 모두 시작하지 않음(DESKTOP_SETTINGS_INVALID 등), 지우지 말고 이름을 바꿔 보관',
             'desktop_settings_bom': 'desktop-settings.json에 BOM 있음 -> 새 버전은 자동 처리',
             'lock_unknown': 'launcher.lock 상태를 확인하지 못함 -> TwinPulse 창과 콘솔을 모두 닫은 뒤 설치',
             'launch_unresponsive': f"{item.get('when')} 실행: 엔진 응답 없음(heartbeat stale) -> 장시간 실행 중 절전/잠금 여부 확인",
@@ -1188,7 +1206,9 @@ def summary_lines(findings):
             elif key == 'release_modified':
                 count = len(item['changed']) + len(item['missing']) + len(item['extra'])
                 sample = names([path.rsplit('/', 1)[-1] for path in item['changed'] + item['missing'] + item['extra']], 3)
-                text = f'release {release} 파일 {count}개가 manifest와 다름 ({sample}) -> 수동 패치 흔적, 새 설치본에는 반영되지 않음'
+                text = f'release {release} 파일 {count}개가 manifest와 다름 ({sample}) -> ' + (
+                    'EXE 시작 검사에서 멈출 수 있음(WINDOWS_PACKAGE_FILE_MISMATCH/UNMANIFESTED_FILE), 파일은 그대로 두고 이 줄을 개발자에게 전달'
+                    if item.get('kind') == 'exe' else '수동 패치 흔적, 새 설치본에는 반영되지 않음')
             elif key == 'release_unreadable':
                 sample = names([path.rsplit('/', 1)[-1] for path in item['files']], 3)
                 text = (f"release {release} 파일 {len(item['files'])}개를 읽지 못함 ({sample}) "
@@ -1197,12 +1217,14 @@ def summary_lines(findings):
                 text = f"release {release}에 백업 파일 {len(item['files'])}개 -> 설치 파일을 직접 고친 흔적 (상세 목록 참고)"
             elif key == 'release_clean':
                 text = f'release {release} 파일이 manifest와 일치'
+            elif key == 'release_manifest_unreadable':
+                text = f'release {release}의 manifest 파일 목록을 읽지 못함 -> 파일 비교 불가, manifest는 지우지 말고 보관'
             elif key in ('burger_mismatch', 'burger_mixed', 'burger_closure_changed'):
                 reason = {'burger_mismatch': '공개/원본 기준 모두와 다른 파일 ' + str(len(item['files'])) + '개',
                           'burger_mixed': '공개/원본 파일이 섞임', 'burger_closure_changed': '파일 구성이 다름'}[key]
-                text = f'release {release}의 Burger 에셋: {reason} -> SIM_BURGER_ASSET_DIGEST_MISMATCH 원인, 새 EXE 설치본은 검증된 공개 에셋 포함'
+                text = f"release {release}의 Burger 에셋: {reason} -> {item['code']} 원인, 새 EXE 설치본은 검증된 공개 에셋 포함"
             elif key == 'burger_missing':
-                text = f'release {release}에 Burger 에셋 폴더 없음 -> SIM Burger 기능 불가, 새 EXE 설치본 사용'
+                text = f'release {release}에 Burger 에셋 파일 없음 -> SIM_BURGER_ASSET_MISSING, SIM Burger 기능 불가, 새 EXE 설치본 사용'
             elif key == 'lock_alive':
                 text = f"TwinPulse 실행 중 (launcher.lock PID {item['pid']}) -> 설치 전에 TwinPulse를 정상 종료"
             elif key == 'lock_stale':

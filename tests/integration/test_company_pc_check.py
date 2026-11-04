@@ -101,12 +101,15 @@ class FakeWinreg:
 
 
 class FakeFilter(BaseHTTPRequestHandler):
-    """A network filter that answers Python-urllib (or everyone) with an HTML block page."""
-    seen, block_all = [], False
+    """A network filter that answers Python-urllib (or everyone) with an HTML block page, or drops it."""
+    seen, block_all, drop_python = [], False, False
 
     def do_GET(self):
         agent = self.headers.get('User-Agent', '')
         FakeFilter.seen.append({'agent': agent, 'authorization': self.headers.get('Authorization'), 'path': self.path})
+        if agent.startswith('Python-urllib') and FakeFilter.drop_python:
+            self.close_connection = True  # closed without any HTTP response
+            return
         if self.path == '/redirect':
             self.send_response(302)
             self.send_header('Location', 'http://blockpage.invalid/denied')
@@ -146,6 +149,9 @@ class TextSafetyTests(unittest.TestCase):
         long = check.short('x' * 50 + ' ' + SECRET + ' y' * 400, 120)
         self.assertLessEqual(len(long), 120)
         self.assertNotIn('SECRETSECRET', check.short(('a' * 4790) + SECRET, 300))
+        # The length bound before redaction may split a key after text that redaction shrinks to a few characters.
+        token = 'v1.' + 'CmQKHHN0YXRpY2tleS1' + 'lMDB4eHh4' * 8
+        self.assertNotIn('CmQKHHN0', check.short('QmFzZTY0' * 595 + 'QmFzZ ' + token, 300))
 
     def test_html_title_uses_the_declared_charset_and_entities(self):
         page = '<html><head><meta charset="UTF-8"/><title> 외부사이트 &amp; 차단 </title></head></html>'.encode('utf-8')
@@ -247,6 +253,10 @@ class BurgerTests(unittest.TestCase):
         self.assertEqual(check.classify_burger({})['overall'], 'missing')
         extra = {**check.PUBLIC_BURGER_MANIFEST, 'payloads/extra.usda': 'f' * 64}
         self.assertEqual(check.classify_burger(extra)['overall'], 'closure_changed')
+        # The App's own refusal code, in the order simulation_assets._inventory checks.
+        no_main = {name: digest for name, digest in check.PUBLIC_BURGER_MANIFEST.items() if name != 'turtlebot3_burger.usda'}
+        self.assertEqual([check.classify_burger(value)['code'] for value in (extra, no_main, mixed, check.BURGER_MANIFEST)],
+                         ['SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED', 'SIM_BURGER_ASSET_MISSING', 'SIM_BURGER_ASSET_DIGEST_MISMATCH', None])
 
 
 class InstallAndRuntimeTests(unittest.TestCase):
@@ -275,6 +285,10 @@ class InstallAndRuntimeTests(unittest.TestCase):
         self.assertIn('release tp-550821745917 파일 1개가 manifest와 다름 (nebius_pipeline.py) -> 수동 패치 흔적', text)
         self.assertIn('SIM_BURGER_ASSET_DIGEST_MISMATCH', text)
         self.assertIn('manifest-recorded hashes: mismatch', '\n'.join(part['lines']))
+        write(release / 'release-manifest.json', '{"files": [')  # a damaged manifest: nothing can be compared
+        broken = check.install_section(self.local)
+        self.assertIn('release_manifest_unreadable', [item['key'] for item in broken['findings']])
+        self.assertIn('not checked (the manifest has no readable file list)', '\n'.join(broken['lines']))
 
     def test_exe_release_supplies_the_user_agent_version_and_is_clean(self):
         release = exe_release(self.installed / 'releases')
@@ -287,6 +301,14 @@ class InstallAndRuntimeTests(unittest.TestCase):
         self.assertEqual(check.product_user_agent(part['facts']['product_version']), 'TwinPulse/0.1.0a1')
         self.assertEqual(check.product_user_agent('bad version!'), 'TwinPulse/dev')
         self.assertIn('Burger asset assets/simulation/turtlebot3_burger/usd (used at run time): public', '\n'.join(part['lines']))
+        # The EXE start check refuses any unlisted file but Explorer metadata: bytecode from a diagnostic run, a backup copy.
+        pyc = '_internal/resources/scripts/__pycache__/twinpulse_launcher.cpython-312.pyc'
+        write(release / pyc, b'\0')
+        write(release / 'TwinPulse.exe.bak', b'MZ')
+        modified = check.install_section(self.local)['findings']
+        self.assertEqual([(item['key'], item.get('extra') or item.get('files')) for item in modified],
+                         [('release_modified', [pyc, 'TwinPulse.exe.bak']), ('release_backups', ['TwinPulse.exe.bak'])])
+        self.assertIn('WINDOWS_PACKAGE_FILE_MISMATCH/UNMANIFESTED_FILE', check.summary_lines(modified)[0])
 
     def test_runtime_lock_settings_launches_and_provider_names_only(self):
         write(self.runtime / 'launcher.lock', {'owner_pid': 4242, 'launch_id': 'e3f951e41ddd49309f20f94359283386',
@@ -336,6 +358,8 @@ class InstallAndRuntimeTests(unittest.TestCase):
         dead = check.runtime_section(self.local, alive=lambda pid: False, identity=lambda pid: None)
         self.assertEqual(dead['findings'][0], {'key': 'lock_stale', 'pid': 4242})
         self.assertIn('남은 launcher.lock (PID 4242 종료됨)', check.summary_lines(dead['findings'])[0])
+        write(self.runtime / 'desktop-settings.json', {'schema_version': '1.0', 'preferred_port': 80})  # read_settings refuses it
+        self.assertEqual(check._settings_part(self.runtime, {})[1], [{'key': 'desktop_settings_invalid'}])
 
     def test_provider_evidence_summary_never_includes_request_redacted(self):
         evidence = self.runtime / 'provider-evidence'
@@ -370,11 +394,15 @@ class InstallAndRuntimeTests(unittest.TestCase):
         newest = check.evidence_report(evidence, 1)[0]
         self.assertEqual((newest['body']['kind'], newest['body']['title']), ('html', 'Blocked [REDACTED]'))
         self.assertNotIn('PROMPT_SENTINEL', json.dumps(newest))
+        # A rejected 2xx JSON answer is the model's own output, not a provider error body; a 2xx block page still is one.
+        rejected = [{'http_status': 200, 'status': 'rejected', 'modified': 0, 'body': {'kind': kind, **extra}}
+                    for kind, extra in (('json', {}), ('html', {'title': 'Blocked'}))]
+        self.assertEqual([item['key'] for item in check._evidence_findings(rejected)], ['evidence_html'])
 
 
 class NetworkTests(unittest.TestCase):
     def setUp(self):
-        FakeFilter.seen, FakeFilter.block_all = [], False
+        FakeFilter.seen, FakeFilter.block_all, FakeFilter.drop_python = [], False, False
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), FakeFilter)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -417,6 +445,17 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(check.classify_pair(result, result), 'unreachable')
         tls = {'agent': 'x', 'error': 'SSLCertVerificationError', 'detail': 'certificate verify failed'}
         self.assertEqual(check.classify_pair(tls, reachable), 'tls')
+
+    def test_one_answered_request_is_not_called_unreachable(self):
+        FakeFilter.drop_python = True  # a filter that drops Python-urllib instead of serving a page
+        finding = check.network_section('0.1.0a1', targets=(('Nebius', self.url),), opener=self.opener, timeout=5)['findings'][0]
+        self.assertEqual((finding['key'], 'error' in finding['default'], finding['product']['status']), ('net_unclear', True, 401))
+        self.assertIn('판정 어려움', check.summary_lines([finding])[0])
+        # Only 401 JSON is the expected answer without a key; a JSON 403 (for example a region refusal) is not "reachable".
+        refused = {'agent': 'x', 'status': 403, 'body': {'kind': 'json', 'code': 'unsupported_country_region_territory'}}
+        self.assertEqual(check.classify_pair(refused, refused), 'unclear')
+        eof = {'agent': 'x', 'error': 'SSLEOFError', 'detail': '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'}
+        self.assertEqual(check.classify_pair(eof, eof), 'unreachable')  # a dropped TLS connection, not a certificate problem
 
 
 class ReportAndSystemTests(unittest.TestCase):
@@ -503,6 +542,10 @@ class ReportAndSystemTests(unittest.TestCase):
         output = self.root / 'out'
         output.mkdir()
         printed = io.StringIO()
+
+        def files():
+            return {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in self.root.rglob('*') if path.is_file()}
+        before = files()
         with patch.object(check, 'probe', side_effect=AssertionError('network used')), \
                 patch('urllib.request.getproxies', return_value={}):
             code = check.main(['--no-network', '--output-dir', str(output), '--no-pause'],
@@ -519,7 +562,9 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertIn('active-release.json에 BOM 있음', printed.getvalue())
         for hidden in ('PROMPT_SENTINEL', SECRET):
             self.assertNotIn(hidden, text + printed.getvalue())
-        self.assertEqual(sorted(p.name for p in (local / 'TwinPulse').rglob('*') if p.name.startswith('TwinPulse-PC-Check')), [])
+        after = files()  # read-only: the report is the only new or changed file in the whole tree
+        self.assertEqual([path for path in after if after[path] != before.get(path)], [reports[0]])
+        self.assertTrue(set(before) <= set(after))
 
     def test_script_imports_only_the_standard_library(self):
         tree = ast.parse((ROOT / 'scripts/twinpulse_company_pc_check.py').read_text(encoding='utf-8'))
