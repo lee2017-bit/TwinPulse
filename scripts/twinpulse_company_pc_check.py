@@ -9,7 +9,7 @@ Run it on the company PC with any Python 3.10+ (system CPython 3.12 or Isaac's p
     py -3.12 twinpulse_company_pc_check.py --no-network
 
 It reads Windows, Isaac Sim and TwinPulse state and writes ONE UTF-8 text report to the Desktop
-(else the current folder), then prints that path. Nothing else is changed: no installs, settings,
+(else the current folder, else the user folder; never inside a TwinPulse package folder), then prints that path. Nothing else is changed: no installs, settings,
 deletes or moves, and Windows Credential Manager is never read. API keys, tokens, Authorization
 values and long secrets are redacted, saved prompts (request_redacted) are never read out, and
 nothing is uploaded. The network check is an unauthenticated GET of two public model lists, once
@@ -44,6 +44,8 @@ MAX_JSON_BYTES = 8 * 1024 * 1024
 REVIEWED_ISAAC_VERSION = '6.0.1-rc.7+release.42383.32955d8d.gl'
 ISAAC_CANDIDATES = (r'C:\isaacsim', r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64',
                     r'C:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64', r'D:\isaacsim')
+# Any Isaac Sim 6.0.1 build, as startup_checks and the EXE entry read a VERSION line (6.0.10 or 6.1 is not).
+ISAAC_RELEASE = re.compile(r'6\.0\.1([-+].*)?')
 NETWORK_TARGETS = (('Nebius', 'https://api.tokenfactory.nebius.com/v1/models'),
                    ('OpenAI', 'https://api.openai.com/v1/models'))
 OS_JUNK = frozenset({'thumbs.db', 'desktop.ini', '.ds_store'})
@@ -493,6 +495,34 @@ def _version_text(path):
         return None
 
 
+# Copies of isaac_version and find_isaac_root in scripts/twinpulse_desktop_entry.py (a test keeps them
+# equal), so the check reports and probes the folder the EXE will use.
+def isaac_version(folder):
+    """First line of the folder's VERSION file (UTF-8, BOM allowed, at most 1 KB); None when it cannot be read."""
+    path = os.path.join(folder, 'VERSION')
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as stream:
+            data = stream.read(1025)
+        if len(data) > 1024:
+            return None
+        lines = data.decode('utf-8-sig').splitlines()
+    except (OSError, UnicodeError):
+        return None
+    return lines[0].strip() if lines else ''
+
+
+def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
+    """The saved folder when it has python.bat, else the first usual folder with python.bat: those whose
+    VERSION says Isaac Sim 6.0.1 first, then the others in their order."""
+    if configured and os.path.isfile(os.path.join(configured, 'python.bat')):
+        return str(configured)
+    usable = [str(folder) for folder in candidates if os.path.isfile(os.path.join(folder, 'python.bat'))]
+    release = [folder for folder in usable if ISAAC_RELEASE.fullmatch(isaac_version(folder) or '')]
+    return (release or usable or [None])[0]
+
+
 def kit_matches(path, limit=80):
     """First and last limit/2 matching lines (redacted), the match count and registry-sync hits."""
     head, tail, total, registry = [], deque(maxlen=limit // 2), 0, 0
@@ -629,7 +659,12 @@ def _probe_part(results):
     return lines, findings
 
 
+SETTINGS_LABEL = 'desktop-settings'  # the roots entry that holds the EXE's saved isaac_root
+
+
 def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, popen=None):
+    """Every known Isaac folder; then the one the EXE will use (find_isaac_root over the saved
+    desktop-settings folder and the usual folders), whose version is judged and whose python.bat is probed."""
     lines, findings, seen, valid = [], [], set(), []
     for label, root in [*roots, *(('default list', item) for item in candidates)]:
         key = os.path.normcase(os.path.normpath(str(root))).rstrip('\\/')
@@ -645,17 +680,24 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
                      f'VERSION {version or "(none)"}' + (' (reviewed build)' if version == REVIEWED_ISAAC_VERSION else ''))
         if python_bat:
             valid.append((path, version))
-    if not valid:
-        findings.append({'key': 'isaac_missing'})
+    saved = next((str(root) for label, root in roots if label == SETTINGS_LABEL and root), None)
+    used = find_isaac_root(saved, candidates)
+    if used is None:
+        # The EXE then asks once with a folder picker; a folder it does not search may still be known here.
+        findings.append({'key': 'isaac_pick', 'root': str(valid[0][0])} if valid else {'key': 'isaac_missing'})
+        lines.append('The EXE finds no Isaac folder on its own and asks for one with a folder picker at the first start')
     else:
-        findings.append({'key': 'isaac_found', 'root': str(valid[0][0]), 'version': valid[0][1]})
-        for root, version in valid:
-            if version and not re.match(r'6\.0\.1(?![0-9])', version):
-                findings.append({'key': 'isaac_version_other', 'root': str(root), 'version': version})
+        version = _version_text(Path(used) / 'VERSION')
+        lines.append(f'The EXE uses: {used}' + (' (saved setting)' if used == saved else ''))
+        findings.append({'key': 'isaac_found', 'root': used, 'version': version})
+        if saved and used != saved:
+            findings.append({'key': 'isaac_saved_unusable', 'saved': saved, 'root': used})
+        if version and not ISAAC_RELEASE.fullmatch(version):
+            findings.append({'key': 'isaac_version_other', 'root': used, 'version': version})
         for name in ('PYTHONHOME', 'PYTHONPATH'):
             if env.get(name):
                 lines.append(f'env {name} is set ({short(env[name], 120)}); TwinPulse removes it for Isaac')
-        probe_lines, probe_findings = _probe_part(isaac_python_probe(valid[0][0], env, popen=popen))
+        probe_lines, probe_findings = _probe_part(isaac_python_probe(Path(used), env, popen=popen))
         lines += probe_lines
         findings += probe_findings
     logs = [log for root, _ in valid for log in _kit_logs(root / 'kit' / 'logs' / 'Kit')]
@@ -717,17 +759,18 @@ def _linked(path, inside):
 
 def burger_folder(folder):
     """One usd folder through the steps of simulation_assets._inventory, in its order and with its codes:
-    main file, links (symlinks, junctions), file set, size, digests. Explorer/Finder metadata (OS_JUNK
-    names) is ignored at every step, as the App ignores it. No file behind a link and no file over the
-    size limit is hashed: the App reads neither."""
+    main file, links (symlinks, junctions), file set, size, digests. As in the App, a link is refused
+    whatever its name, and Explorer/Finder metadata files (an OS_JUNK basename) are left out of the file
+    set, the size check and the digests. No file behind a link and no file over the size limit is
+    hashed: the App reads neither."""
     folder = Path(folder)
     every = sorted(folder.rglob('*'))
-    ignored = [path.relative_to(folder).as_posix() for path in every if path.name.casefold() in OS_JUNK]
-    paths = [path for path in every if path.name.casefold() not in OS_JUNK]
     inside, folder_linked = folder.resolve(), folder.is_symlink()
-    linked = (['(this folder)'] if folder_linked else []) + [
-        path.relative_to(folder).as_posix() for path in paths if _linked(path, inside)]
-    files = {path.relative_to(folder).as_posix(): path for path in paths if path.is_file()}
+    behind = {path for path in every if _linked(path, inside)}
+    linked = (['(this folder)'] if folder_linked else []) + [path.relative_to(folder).as_posix() for path in every if path in behind]
+    junk = [path for path in every if path.name.casefold() in OS_JUNK]
+    ignored = [path.relative_to(folder).as_posix() for path in junk if path not in behind and path.is_file()]
+    files = {path.relative_to(folder).as_posix(): path for path in every if path.is_file() and path.name.casefold() not in OS_JUNK}
     behind_link = set(files) if folder_linked else set(linked)
     oversized = [name for name, path in files.items() if name not in behind_link and path.stat().st_size > BURGER_SIZE_LIMIT]
     inventory = {name: sha256_file(path) for name, path in files.items() if name not in behind_link and name not in oversized}
@@ -1208,26 +1251,44 @@ def _evidence_findings(reports):
     return findings[:3]
 
 
+def owner_replaced(recorded, current):
+    """Copy of process_manager._owner_replaced (a test keeps them in agreement): True only when both
+    identities are mappings whose creation_filetime values are ints (not bools) that differ. A missing,
+    unreadable or differently spelled identity is never proof that the PID now belongs to another process."""
+    started = [value.get('creation_filetime') if isinstance(value, dict) else None for value in (recorded, current)]
+    return all(type(item) is int for item in started) and started[0] != started[1]
+
+
 def _lock_part(runtime, alive, identity):
+    """launcher.lock judged as the EXE installer judges it (windows_install._retire_launcher_lock): a file it
+    cannot read as a record with a positive owner PID stops the install and is kept; a running PID not proven
+    to be another process stops it; the lock of an ended or replaced owner is archived."""
     lock, info = read_json(runtime / 'launcher.lock', 1024 * 1024)
     if not info['exists']:
         return ['launcher.lock: none'], []
-    if not isinstance(lock, dict):
-        return [f"launcher.lock: not parsed ({info['error'] or 'unexpected shape'})"], [{'key': 'lock_unknown'}]
-    pid = lock.get('owner_pid', lock.get('pid'))
-    state = alive(pid) if type(pid) is int else None
+    if info['error'] and not info['error'].startswith(('JSONDecodeError', 'UnicodeDecodeError')):
+        return [f"launcher.lock: not read ({info['error']})"], [{'key': 'lock_unknown'}]
+    pid = lock.get('owner_pid', lock.get('pid')) if isinstance(lock, dict) else None
+    if info['error'] or info['bom'] or not isinstance(lock, dict) or type(pid) is not int or pid <= 0:
+        # TwinPulse reads launcher.lock as plain UTF-8 JSON, so a BOM alone makes it unreadable there.
+        reason = (info['error'] or ('a UTF-8 BOM' if info['bom'] else None)
+                  or ('not a JSON object' if not isinstance(lock, dict) else 'no positive owner PID'))
+        return [f'launcher.lock: not a lock TwinPulse can read ({reason})'], [{'key': 'lock_unreadable'}]
+    state = alive(pid)
     denied = state == ACCESS_DENIED  # another program this user cannot inspect: never our TwinPulse
-    same = None
-    if state is True and isinstance(lock.get('process_identity'), dict):
-        current = identity(pid)
-        same = None if current is None else current == lock['process_identity']
+    recorded = lock.get('process_identity')
+    current = identity(pid) if state is True and isinstance(recorded, dict) else None
+    replaced = state is True and owner_replaced(recorded, current)
+    starts = [value.get('creation_filetime') if isinstance(value, dict) else None for value in (recorded, current)]
+    same = all(type(item) is int for item in starts) and starts[0] == starts[1]
     running = ('yes' if state is True else 'no' if state is False
                else 'another program this user cannot inspect (access denied)' if denied else 'unknown')
-    line = (f"launcher.lock: pid {ident(pid)}, running {running}"
-            + (f", same process {'yes' if same else 'NO (PID reused)'}" if same is not None else '')
-            + f", launch {ident(lock.get('launch_id'))}, started {show_utc(lock.get('started_at_utc')) or '?'}")
-    key = ('lock_stale' if state is False else 'lock_reused' if denied or (state is True and same is False)
-           else 'lock_alive' if state is True else 'lock_unknown')
+    owner = ('' if state is not True else ', PID reused (a process started at another time)' if replaced
+             else ', same process (same start time)' if same else ', not proven to be the same process')
+    line = (f"launcher.lock: pid {ident(pid)}, running {running}{owner}"
+            f", launch {ident(lock.get('launch_id'))}, started {show_utc(lock.get('started_at_utc')) or '?'}")
+    key = ('lock_stale' if state is False else 'lock_reused' if denied or replaced
+           else ('lock_alive' if same else 'lock_unproven') if state is True else 'lock_unknown')
     return [line], [{'key': key, 'pid': pid, **({'access_denied': True} if denied else {})}]
 
 
@@ -1387,10 +1448,11 @@ def _probe_line(name, facts):
             + (f", redirect to {facts['redirect_host']}" if facts.get('redirect_host') else ''))
 
 
-def network_section(version, *, targets=NETWORK_TARGETS, opener=None, timeout=10.0):
+def network_section(version, *, source=None, targets=NETWORK_TARGETS, opener=None, timeout=10.0):
     agent = product_user_agent(version)
     lines = [f'Unauthenticated GET, no Authorization header, {timeout:g} s timeout, redirects not followed.',
              f'Compared: urllib default User-Agent vs "{agent}" (TwinPulse\'s own, honest User-Agent; no browser User-Agent).',
+             *([f'TwinPulse version in that User-Agent: from {source}'] if source else []),
              'Reading: 401 JSON = the API answered (expected without a key); a 503/403 HTML page = a filter answered.']
     findings = []
     for name, url in targets:
@@ -1425,6 +1487,8 @@ def summary_lines(findings):
             'desktop_settings_invalid': 'desktop-settings.json 형식이 예상과 다름 -> 현재/새 버전 모두 시작하지 않음(DESKTOP_SETTINGS_INVALID 등), 지우지 말고 이름을 바꿔 보관',
             'desktop_settings_bom': 'desktop-settings.json에 BOM 있음 -> 새 버전은 자동 처리',
             'lock_unknown': 'launcher.lock 상태를 확인하지 못함 -> TwinPulse 창과 콘솔을 모두 닫은 뒤 설치',
+            'lock_unreadable': ('launcher.lock을 TwinPulse 잠금 기록으로 읽을 수 없음 -> 새 EXE 설치가 INSTALL_LAUNCHER_LOCK_UNREADABLE로 멈춤, '
+                                'TwinPulse.exe가 실행 중이 아니면 이 파일을 runtime\\stale-launch-records로 옮긴 뒤(지우지 말 것) 설치'),
             'launch_unresponsive': f"{item.get('when')} 실행: 엔진 응답 없음(heartbeat stale) -> 장시간 실행 중 절전/잠금 여부 확인",
             'evidence_present': 'provider-evidence 폴더에는 프롬프트가 저장될 수 있음 -> 이 보고서에는 넣지 않음, 원본 파일은 공유 전에 확인',
             'net_skipped': '네트워크 검사 생략(--no-network)',
@@ -1441,6 +1505,11 @@ def summary_lines(findings):
                         'http 프록시만 설정됨 -> 아래 HTTPS 네트워크 요청(TwinPulse 공급자 요청도)은 프록시 없이 직접 연결한 결과')
             elif key == 'isaac_found':
                 text = f"Isaac 폴더 확인: {item['root']} (VERSION {item.get('version') or '없음'})"
+            elif key == 'isaac_pick':
+                text = f"EXE가 기본 위치에서 Isaac 폴더를 찾지 못함 -> 첫 실행의 폴더 선택 창에서 {item['root']} 선택 (python.bat이 있는 폴더)"
+            elif key == 'isaac_saved_unusable':
+                text = (f"저장된 Isaac 폴더 {item['saved']}에 지금 python.bat 없음 -> EXE는 이번 실행에 {item['root']} 사용"
+                        "(설정은 그대로 유지), 드라이브 연결 확인")
             elif key == 'isaac_version_other':
                 text = f"Isaac 버전이 6.0.1이 아님 ({item['version']}) -> 경고만 표시되지만 검증되지 않은 버전"
             elif key == 'isaac_user_site_shadow':
@@ -1486,6 +1555,10 @@ def summary_lines(findings):
                 text = f'release {release}에 Burger 에셋 파일 없음 -> SIM_BURGER_ASSET_MISSING, SIM Burger 기능 불가, 새 EXE 설치본 사용'
             elif key == 'lock_alive':
                 text = f"TwinPulse 실행 중 (launcher.lock PID {item['pid']}) -> 설치 전에 TwinPulse를 정상 종료"
+            elif key == 'lock_unproven':
+                text = (f"launcher.lock의 PID {item['pid']}가 실행 중이지만 TwinPulse인지 확인되지 않음 -> 새 EXE 설치가 "
+                        "EXIT_TWINPULSE_BEFORE_INSTALL로 멈춤, TwinPulse를 정상 종료하고 작업 관리자에 TwinPulse.exe가 없으면 "
+                        "Windows 재시작 후 설치, 그래도 멈추면 launcher.lock을 runtime\\stale-launch-records로 옮김(지우지 말 것)")
             elif key == 'lock_stale':
                 text = f"남은 launcher.lock (PID {item['pid']} 종료됨) -> 새 EXE 설치 프로그램이 자동 보관, 오프라인 설치 프로그램은 거부"
             elif key == 'lock_reused':
@@ -1548,9 +1621,43 @@ def render_report(started, summary, sections, *, network):
     return '\n'.join(lines) + '\n'
 
 
+PACKAGE_MANIFEST = 'windows-release-manifest.json'
+
+
+def inside_package(folder):
+    """True at or below a folder that holds a TwinPulse EXE package manifest (an extracted ZIP or an installed
+    release): a report saved there would stop the next install or start (WINDOWS_PACKAGE_UNMANIFESTED_FILE)."""
+    try:
+        folder = Path(folder).resolve()
+        return any((parent / PACKAGE_MANIFEST).is_file() for parent in (folder, *folder.parents))
+    except (OSError, RuntimeError):
+        return True  # cannot tell: never risk writing into a package
+
+
+def report_folder(env, cwd, output_dir=None, *, winreg=None):
+    """--output-dir, else the Desktop, else the current folder, else the user folder: never inside a package."""
+    if output_dir:
+        if inside_package(output_dir):
+            raise ValueError(f'{output_dir} is inside a TwinPulse package folder; choose a folder outside it')
+        return Path(output_dir)
+    profile = Path(env['USERPROFILE']) if env.get('USERPROFILE') else None
+    for folder in (desktop_folder(env, winreg), Path(cwd), profile):
+        if folder is not None and folder.is_dir() and not inside_package(folder):
+            return folder
+    raise FileNotFoundError('no Desktop, current or user folder outside the TwinPulse package folders')
+
+
+def package_product_version(folder):
+    """product_version of the EXE package this check ships in (its manifest sits beside it), else None."""
+    manifest, _ = read_json(Path(folder) / PACKAGE_MANIFEST)
+    if isinstance(manifest, dict) and manifest.get('schema') == 'twinpulse-windows-exe-1.0':
+        return manifest.get('product_version') if isinstance(manifest.get('product_version'), str) else None
+    return None
+
+
 def write_report(text, env, cwd, output_dir=None, *, now=None, winreg=None):
-    """The only file this check writes: Desktop if it exists, else the current folder."""
-    folder = Path(output_dir) if output_dir else (desktop_folder(env, winreg) or Path(cwd))
+    """The only file this check writes, in report_folder()."""
+    folder = report_folder(env, cwd, output_dir, winreg=winreg)
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now))
     for attempt in range(100):
         path = folder / (f'TwinPulse-PC-Check-{stamp}' + (f'-{attempt}' if attempt else '') + '.txt')
@@ -1573,7 +1680,8 @@ def _guard(title, function, *args, **kwargs):
 def main(argv=None, *, env=None, cwd=None, out=None):
     parser = argparse.ArgumentParser(description='Read-only TwinPulse company-PC check. Writes one report file only.')
     parser.add_argument('--no-network', action='store_true', help='skip the unauthenticated HTTPS checks')
-    parser.add_argument('--output-dir', type=Path, help='folder for the report (default: Desktop, else the current folder)')
+    parser.add_argument('--output-dir', type=Path, help='folder for the report (default: Desktop, else the current folder, '
+                        'else the user folder; never inside a TwinPulse package folder)')
     parser.add_argument('--no-pause', action='store_true', help='do not wait for Enter at the end')
     args = parser.parse_args(argv)
     env = dict(os.environ if env is None else env)
@@ -1598,7 +1706,7 @@ def main(argv=None, *, env=None, cwd=None, out=None):
     say('[3/5] System')
     system = _guard('System', system_section, env)
     say('[4/5] Isaac Sim (imports numpy/PIL in Isaac Python twice, read-only)')
-    roots = [('desktop-settings', runtime['facts'].get('settings_isaac_root')),
+    roots = [(SETTINGS_LABEL, runtime['facts'].get('settings_isaac_root')),
              ('active-release.json', install['facts'].get('pointer_isaac_root'))]
     isaac = _guard('Isaac', isaac_section, env, [(label, root) for label, root in roots if root])
     if args.no_network:
@@ -1606,15 +1714,19 @@ def main(argv=None, *, env=None, cwd=None, out=None):
         network = section(['Skipped (--no-network).'], [{'key': 'net_skipped'}])
     else:
         say('[5/5] Network (4 requests, up to 10 s each)')
-        network = _guard('Network', network_section, install['facts'].get('product_version'))
+        here = package_product_version(Path(__file__).resolve().parent)  # the ZIP this check ships in
+        installed = install['facts'].get('product_version')
+        network = _guard('Network', network_section, here or installed,
+                         source='the package beside this check' if here else 'the installed EXE release' if installed
+                         else 'no EXE package or release found')
     sections = [('1. System', system), ('2. Isaac Sim', isaac), ('3. TwinPulse install', install),
                 ('4. Runtime state', runtime), ('5. Network', network)]
     summary = summary_lines([item for _, part in sections for item in part['findings']])
     text = render_report(started, summary, sections, network=not args.no_network)
     try:
         path = write_report(text, env, cwd or os.getcwd(), args.output_dir)
-    except OSError as error:
-        say(f'Report could not be written ({type(error).__name__}); the summary follows.')
+    except (OSError, ValueError) as error:
+        say(f'Report could not be written ({type(error).__name__}: {short(error, 200)}); the summary follows.')
         path = None
     say('')
     say('== 요약 ==')

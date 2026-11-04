@@ -350,6 +350,8 @@ class BurgerTests(unittest.TestCase):
         row = next(row for row in rows if row['id'] == 'isaac_version')
         self.assertEqual(row['state'], 'ready')
         self.assertIn('Matches the reviewed local runtime.', row['detail'])
+        from twinpulse_app import startup_checks
+        self.assertEqual(check.REVIEWED_ISAAC_VERSION, startup_checks.REVIEWED_ISAAC_VERSION)
 
     def test_public_copy_matches_and_a_changed_file_is_named(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -422,7 +424,15 @@ class BurgerTests(unittest.TestCase):
                 ('over the limit, extra file', [size('payloads/geometries.usd', limit + 1), put('extra.usda')],
                  'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
                 ('over the limit, wrong bytes', [size('payloads/geometries.usd', limit + 1), put('payloads/base.usda')],
-                 'SIM_BURGER_ASSET_SIZE_LIMIT')]
+                 'SIM_BURGER_ASSET_SIZE_LIMIT'),
+                ('metadata in every folder', [put('desktop.ini', b'[.ShellClassInfo]'), put('payloads/Thumbs.db', b'x'),
+                                              put('payloads/Physics/.DS_Store', b'x'), put('payloads/DESKTOP.INI', b'x')], None),
+                ('oversized metadata', [put('payloads/thumbs.db', b'x'), size('payloads/thumbs.db', limit + 1)], None),
+                ('a metadata name with a suffix', [put('desktop.ini.bak')], 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
+                ('a file inside a folder with a metadata name', [put('payloads/Thumbs.db/base.usda')],
+                 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
+                ('metadata only, main file missing', [unlink('turtlebot3_burger.usda'), put('desktop.ini')],
+                 'SIM_BURGER_ASSET_MISSING')]
         links = [('file linked outside', [link('payloads/base.usda', 'outside')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
                  ('file linked inside', [link('payloads/base.usda', 'payloads/base-copy.usda')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
                  ('main file linked', [link('turtlebot3_burger.usda', 'outside')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
@@ -432,6 +442,12 @@ class BurgerTests(unittest.TestCase):
                  ('link and extra file', [put('payloads/extra.usda'), link('payloads/base.usda', 'outside')],
                   'SIM_ASSET_DEPENDENCY_UNSAFE'),
                  ('link and over the limit', [size('payloads/robot.usda', limit + 1), link('payloads/base.usda', 'outside')],
+                  'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('a link under a metadata name',  # refused whatever its name, as the App refuses it
+                  [lambda folder, outside: (folder / 'desktop.ini').symlink_to(folder / 'turtlebot3_burger.usda')],
+                  'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('a dangling link under a metadata name',
+                  [lambda folder, outside: (folder / 'payloads/Thumbs.db').symlink_to(outside / 'nothing')],
                   'SIM_ASSET_DEPENDENCY_UNSAFE')]
         with tempfile.TemporaryDirectory() as temp:
             symlinks = can_symlink(temp)
@@ -449,13 +465,14 @@ class BurgerTests(unittest.TestCase):
             self.skipTest('this system cannot create symlinks: link rows not run')
 
     def test_explorer_and_finder_metadata_in_the_burger_folder_is_ignored(self):
-        # The App side (simulation_assets._inventory ignoring these names) lands separately: check only.
+        # The App's simulation_assets._inventory skips the same names (rows of the test above).
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             folder = root / check.BURGER_FOLDERS[0]
             shutil.copytree(PUBLIC_USD, folder)
             for name in ('desktop.ini', 'payloads/Thumbs.db', 'payloads/Physics/.DS_Store', 'payloads/DESKTOP.INI'):
                 write(folder / name, b'[.ShellClassInfo]')
+            self.assertIsNone(app_burger_code(folder))
             burger = check.burger_check(root)
             entry = burger['folders'][0]
             self.assertEqual((entry['overall'], entry['code'], entry['extra']), ('public', None, []))
@@ -607,6 +624,75 @@ class InstallAndRuntimeTests(unittest.TestCase):
         line = check.summary_lines(part['findings'][:1])[0]
         self.assertEqual(line, 'launcher.lock의 PID 4242를 이 사용자가 확인할 수 없는 다른 프로그램이 사용 중 -> 새 EXE 설치 프로그램이 자동 보관')
         self.assertNotIn('TwinPulse 실행 중', line)
+
+    def test_lock_verdict_is_the_one_the_exe_installer_takes(self):
+        """Each launcher.lock through the check and through the real windows_install._retire_launcher_lock."""
+        from twinpulse_app import process_manager, windows_install
+        recorded = {'executable': 'C:\\TwinPulse\\releases\\old\\TwinPulse.exe', 'creation_filetime': 133}
+        other = {'executable': 'C:\\Windows\\explorer.exe', 'creation_filetime': 134}
+
+        def lock(stored, **fields):
+            return json.dumps({'owner_pid': 4242, 'launch_id': 'a' * 32, 'process_identity': stored, **fields}).encode()
+
+        def plain(value):
+            return json.dumps(value).encode()
+        # (lock bytes, PID alive as the check sees it, as the App sees it, identity of that PID now, verdict);
+        # 'running' is a refusal where the same start time shows the owner itself still runs.
+        rows = [
+            (lock(recorded), True, True, dict(recorded), 'running'),           # the owner still runs
+            (lock(recorded), True, True, None, 'refuse'),                      # its identity cannot be read now
+            (lock(None), True, True, other, 'refuse'),                         # an older lock without an identity
+            (lock(recorded), True, True, dict(recorded, executable='\\\\?\\' + recorded['executable']), 'running'),  # same start
+            (lock('malformed'), True, True, other, 'refuse'),
+            (lock({'creation_filetime': True}), True, True, {'creation_filetime': 2}, 'refuse'),  # a bool is no start time
+            (lock({'creation_filetime': '133'}), True, True, other, 'refuse'),
+            (lock(recorded), True, True, {'executable': recorded['executable']}, 'refuse'),
+            (lock(recorded), True, True, other, 'archive'),                    # Windows proves PID reuse
+            (lock({'creation_filetime': 133}), True, True, {'creation_filetime': 134}, 'archive'),
+            (lock(recorded), False, False, dict(recorded), 'archive'),         # the owner has exited
+            (lock('malformed'), False, False, None, 'archive'),
+            (lock(recorded), check.ACCESS_DENIED, False, None, 'archive'),     # the App cannot open it either
+            (plain({'pid': 4242, 'process_identity': recorded}), True, True, other, 'archive'),  # the older key name
+            (b'', True, True, other, 'unreadable'),                            # an empty file left by a crash
+            (b'{"owner_pid": 4242', True, True, other, 'unreadable'),
+            (b'\xff\xfe{}', True, True, other, 'unreadable'),
+            (b'\xef\xbb\xbf' + lock(recorded), True, True, other, 'unreadable'),  # TwinPulse reads it without a BOM
+            (b'[]', True, True, other, 'unreadable'),
+            (b'"lock"', True, True, other, 'unreadable'),
+            (b'{}', True, True, other, 'unreadable'),
+            (plain({'owner_pid': '4242'}), True, True, other, 'unreadable'),
+            (plain({'owner_pid': 0}), True, True, other, 'unreadable'),
+            (plain({'owner_pid': -7}), True, True, other, 'unreadable'),
+            (plain({'owner_pid': True}), True, True, other, 'unreadable'),
+            (plain({'owner_pid': None, 'pid': 4242}), True, True, other, 'unreadable'),
+        ]
+        verdicts = {'lock_stale': 'archive', 'lock_reused': 'archive', 'lock_alive': 'running', 'lock_unproven': 'refuse',
+                    'lock_unreadable': 'unreadable'}
+        codes = {'EXIT_TWINPULSE_BEFORE_INSTALL': 'refuse', 'INSTALL_LAUNCHER_LOCK_UNREADABLE': 'unreadable'}
+        for number, (content, seen, app_alive, current, expected) in enumerate(rows):
+            with self.subTest(number=number, content=content[:70]):
+                runtime = Path(self.temp.name) / f'row-{number:02d}'
+                runtime.mkdir()
+                (runtime / 'launcher.lock').write_bytes(content)
+                lines, findings = check._lock_part(runtime, lambda pid: seen, lambda pid: current)
+                self.assertEqual((runtime / 'launcher.lock').read_bytes(), content)  # the check only reads it
+                with patch.object(process_manager, '_pid_alive', return_value=app_alive), \
+                        patch.object(process_manager, '_process_identity', return_value=current):
+                    try:
+                        windows_install._retire_launcher_lock(runtime / 'launcher.lock', runtime)
+                    except ValueError as error:
+                        installer = codes[str(error)]
+                    else:
+                        installer = 'archive'
+                self.assertEqual((verdicts[findings[0]['key']], installer), (expected, 'refuse' if expected == 'running' else expected))
+                summary = check.summary_lines(findings)[0]
+                code = {'lock_unreadable': 'INSTALL_LAUNCHER_LOCK_UNREADABLE', 'lock_unproven': 'EXIT_TWINPULSE_BEFORE_INSTALL',
+                        'lock_alive': 'TwinPulse 실행 중'}
+                if findings[0]['key'] in code:
+                    self.assertIn(code[findings[0]['key']], summary)
+                if expected != 'unreadable' and seen is True:
+                    stored = json.loads(content).get('process_identity')
+                    self.assertEqual(check.owner_replaced(stored, current), process_manager._owner_replaced(stored, current))
 
     def test_pid_alive_reads_openprocess_errors_as_the_app_does(self):
         def windows(handle, error=0, exit_code=259):
@@ -804,6 +890,54 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual(check.desktop_folder({'USERPROFILE': str(profile)}, shell), profile / 'OneDrive/Desktop')
         self.assertEqual(check.desktop_folder({'USERPROFILE': str(profile)}, FakeWinreg({})), profile / 'Desktop')
 
+    def test_report_is_never_written_inside_a_twinpulse_package(self):
+        profile, package = self.root / 'profile', self.root / 'TP' / 'TwinPulse'
+        profile.mkdir()
+        write(package / 'windows-release-manifest.json', {'schema': 'twinpulse-windows-exe-1.0', 'product_version': '0.1.0a1'})
+        (package / '_internal').mkdir()
+        before = sorted(package.rglob('*'))
+        env = {'USERPROFILE': str(profile)}  # and no Desktop folder
+        self.assertEqual(check.write_report('x\n', env, package).parent, profile)  # started by a double-click there
+        self.assertEqual(check.write_report('x\n', env, package / '_internal').parent, profile)
+        with self.assertRaises(ValueError):
+            check.write_report('x\n', env, self.root, package / '_internal')  # an explicit --output-dir inside it
+        with self.assertRaises(FileNotFoundError):
+            check.write_report('x\n', {}, package)  # nowhere else to go
+        self.assertEqual(sorted(package.rglob('*')), before)
+        self.assertTrue(check.inside_package(package / 'not' / 'created'))
+        self.assertFalse(check.inside_package(self.root / 'TP'))
+        printed = io.StringIO()
+        with patch.object(check, 'probe', side_effect=AssertionError('network used')), \
+                patch('urllib.request.getproxies', return_value={}):
+            code = check.main(['--no-network', '--no-pause', '--output-dir', str(package)],
+                              env={'USERPROFILE': str(profile), 'LOCALAPPDATA': str(profile / 'AppData/Local')}, cwd=self.root, out=printed)
+        self.assertEqual(code, 1)
+        self.assertIn('Report could not be written (ValueError: ', printed.getvalue())
+        self.assertEqual(sorted(package.rglob('*')), before)
+
+    def test_check_run_from_the_zip_sends_that_package_version(self):
+        package, profile = self.root / 'TP' / 'TwinPulse', self.root / 'profile'
+        write(package / 'windows-release-manifest.json', {'schema': 'twinpulse-windows-exe-1.0', 'product_version': '0.1.0a1', 'files': []})
+        shutil.copyfile(ROOT / 'scripts/twinpulse_company_pc_check.py', package / 'twinpulse_company_pc_check.py')
+        (profile / 'Desktop').mkdir(parents=True)
+        with patch.object(sys, 'dont_write_bytecode', True):
+            spec = importlib.util.spec_from_file_location('pc_check_in_zip', package / 'twinpulse_company_pc_check.py')
+            shipped = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(shipped)
+        before = sorted(package.rglob('*'))
+        sent = []
+        with patch.object(shipped, 'network_section', lambda version, **options: sent.append((version, options)) or
+                          shipped.section([], [])), patch('urllib.request.getproxies', return_value={}):
+            code = shipped.main(['--no-pause'], env={'USERPROFILE': str(profile), 'LOCALAPPDATA': str(profile / 'AppData/Local')},
+                                cwd=package, out=io.StringIO())
+        self.assertEqual((code, sent), (0, [('0.1.0a1', {'source': 'the package beside this check'})]))
+        self.assertEqual(shipped.product_user_agent(sent[0][0]), 'TwinPulse/0.1.0a1')
+        self.assertEqual(sorted(package.rglob('*')), before)  # the report went to the Desktop, nothing into the package
+        self.assertEqual(len(list((profile / 'Desktop').iterdir())), 1)
+        self.assertIsNone(check.package_product_version(ROOT / 'scripts'))  # a source checkout sends TwinPulse/dev
+        lines = check.network_section('0.1.0a1', source='the package beside this check', targets=())['lines']
+        self.assertIn('TwinPulse version in that User-Agent: from the package beside this check', lines)
+
     def test_system_section_with_fake_registry_and_powershell(self):
         internet = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
         winreg = FakeWinreg({
@@ -909,6 +1043,80 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual([item['key'] for item in part['findings']], ['isaac_found', 'kit_registry_sync'])
         missing = check.isaac_section({}, [], candidates=(str(self.root / 'none'),))
         self.assertEqual(missing['findings'], [{'key': 'isaac_missing'}])
+
+    def test_isaac_folder_and_version_rules_are_the_exe_entrys(self):
+        entry = runpy.run_path(str(ROOT / 'scripts/twinpulse_desktop_entry.py'))  # not run as __main__: nothing starts
+        texts = {'reviewed': check.REVIEWED_ISAAC_VERSION, 'plain': '6.0.1', 'build': '6.0.1+local.7', 'bom': '\ufeff6.0.1\n',
+                 'later-lines': '6.0.1\nsecond line\n', 'blank-first-line': '\n6.0.1', 'spaces': '  6.0.1  \n',
+                 'four-parts': '6.0.1.2', 'ten': '6.0.10', 'minor': '6.1.0', 'older': '5.1.0', 'empty': '',
+                 'at-limit': '6.0.1' + ' ' * 1019, 'over-limit': '6.0.1' + ' ' * 1020, 'latin1': b'6.0.1 \xe9'}
+        folders = {}
+        for name, text in texts.items():
+            folders[name] = str(self.root / name)
+            write(self.root / name / 'VERSION', text)
+            write(self.root / name / 'python.bat', '@echo off')
+        (self.root / 'version-folder/VERSION').mkdir(parents=True)
+        write(self.root / 'version-folder/python.bat', '@echo off')
+        write(self.root / 'no-bat/VERSION', '6.0.1')
+        for name in [*folders, 'version-folder', 'no-bat', 'nothing-here']:
+            with self.subTest(version=name):
+                self.assertEqual(check.isaac_version(str(self.root / name)), entry['isaac_version'](str(self.root / name)))
+        order = [folders[name] for name in ('older', 'empty', 'four-parts', 'ten', 'build', 'reviewed')]
+        odd = [folders[name] for name in ('latin1', 'over-limit', 'blank-first-line')] + [str(self.root / 'version-folder')]
+        rows = [(None, order), (None, order[:4]), (None, []), (None, odd), (None, odd + [folders['at-limit']]),
+                (str(self.root / 'no-bat'), order), (folders['older'], order), (str(self.root / 'nothing-here'), order[:2]),
+                ('', order), (folders['minor'], [])]
+        for saved, candidates in rows:
+            with self.subTest(saved=saved, candidates=candidates):
+                self.assertEqual(check.find_isaac_root(saved, candidates), entry['find_isaac_root'](saved, candidates))
+
+    def test_isaac_section_names_and_probes_the_folder_the_exe_will_use(self):
+        def isaac(name, version=None, bat=True):
+            if bat:
+                write(self.root / name / 'python.bat', '@echo off')
+            if version is not None:
+                write(self.root / name / 'VERSION', version)
+            return str(self.root / name)
+        older, unversioned, release = isaac('older', '5.1.0'), isaac('unversioned'), isaac('release', '6.0.1-rc.7+local')
+        offline, known = isaac('offline-drive', '6.0.1', bat=False), isaac('known', '6.0.1')
+        entry = runpy.run_path(str(ROOT / 'scripts/twinpulse_desktop_entry.py'))
+
+        def run(roots, candidates=(older, unversioned, release)):
+            calls = []
+            part = check.isaac_section({}, roots, candidates=candidates, popen=lambda args, **options: calls.append(args[0]) or
+                                       SimpleNamespace(pid=1, returncode=1, communicate=lambda timeout=None: ('', None)))
+            return calls, {item['key']: item for item in part['findings']}, check.summary_lines(part['findings'])
+        calls, found, summary = run([])  # nothing saved yet: a 6.0.1 folder beats the earlier ones
+        self.assertEqual((found['isaac_found']['root'], calls), (release, [str(Path(release) / 'python.bat')] * 2))
+        self.assertEqual(release, entry['find_isaac_root'](None, (older, unversioned, release)))
+        self.assertNotIn('isaac_version_other', found)
+        calls, found, summary = run([('desktop-settings', older), ('active-release.json', known)])  # the saved folder wins
+        self.assertEqual((found['isaac_found']['root'], calls), (older, [str(Path(older) / 'python.bat')] * 2))
+        self.assertEqual(found['isaac_version_other'], {'key': 'isaac_version_other', 'root': older, 'version': '5.1.0'})
+        calls, found, summary = run([('desktop-settings', offline)])  # saved drive not ready: this start only
+        self.assertEqual((found['isaac_found']['root'], found['isaac_saved_unusable']),
+                         (release, {'key': 'isaac_saved_unusable', 'saved': offline, 'root': release}))
+        self.assertIn(f'저장된 Isaac 폴더 {offline}에 지금 python.bat 없음 -> EXE는 이번 실행에 {release} 사용(설정은 그대로 유지)',
+                      '\n'.join(summary))
+        calls, found, summary = run([('active-release.json', known)], candidates=())  # the EXE would ask with a picker
+        self.assertEqual((calls, list(found)), ([], ['isaac_pick']))
+        self.assertIn(f'폴더 선택 창에서 {known} 선택', summary[0])
+        calls, found, summary = run([], candidates=())
+        self.assertEqual((calls, list(found)), ([], ['isaac_missing']))
+
+    def test_isaac_version_warning_follows_the_apps_startup_check(self):
+        from twinpulse_app.startup_checks import file_checklist
+        for version in (check.REVIEWED_ISAAC_VERSION, '6.0.1', '6.0.1+local', '6.0.1-rc.1', '6.0.1.2', '6.0.10', '6.1.0', '5.1.0'):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp) / 'isaac'
+                write(folder / 'VERSION', version + '\n')
+                write(folder / 'python.bat', '@echo off')
+                rows = file_checklist({}, state_dir=Path(temp), isaac_python=folder / 'python.bat')
+                app = next(row for row in rows if row['id'] == 'isaac_version')['state']
+                part = check.isaac_section({}, [('desktop-settings', str(folder))], candidates=(), popen=lambda args, **options:
+                                           SimpleNamespace(pid=1, returncode=1, communicate=lambda timeout=None: ('', None)))
+                warned = any(item['key'] == 'isaac_version_other' for item in part['findings'])
+                self.assertEqual((warned, app), (True, 'needs_action') if app != 'ready' else (False, 'ready'))
 
     def test_isaac_python_probe_flags_user_site_packages(self):
         user = r'C:\Users\user0042\AppData\Roaming\Python\Python311\site-packages'
