@@ -110,6 +110,11 @@ class DesktopUiHost:
             environment = dict(os.environ)
             environment.pop('ELECTRON_RUN_AS_NODE', None)
             environment.pop('TWINPULSE_UI_TEST_CDP_PORT', None)
+            # Tests > Run basic checks attaches to this window over loopback
+            # CDP from Node (Playwright), which follows proxy variables with no
+            # loopback bypass. Same rule as the backend and the engine.
+            from .process_manager import _no_proxy_loopback
+            _no_proxy_loopback(environment)
             environment['TWINPULSE_UI_HOST'] = 'electron'
             environment['ELECTRON_NO_ATTACH_CONSOLE'] = '1'
             # GUI Electron on Windows may detach/close inherited stdio. Use

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import time
@@ -175,6 +176,38 @@ class HostAvailabilityTests(unittest.TestCase):
         host._read_requests=lambda current,stream:self.fail('no connection')
         host._accept_host(SimpleNamespace(accept=accept,close=lambda:None),'exact-nonce',child)
         self.assertEqual(calls,[1])
+    def spawned_environment(self,proxies):
+        for name in [name for name in os.environ if name.lower().endswith('_proxy')]:os.environ.pop(name)
+        os.environ.update(proxies);seen={}
+        def popen(command,**kwargs):
+            seen.update(kwargs['env']);return SimpleNamespace(poll=lambda:1,stdout=None,stdin=None,stderr=None)
+        with self.assertRaises(ProcessManagerError):self.host(True,popen=popen).open(self.manager,'http://127.0.0.1:8765/')
+        return seen
+    def test_the_window_bypasses_a_proxy_variable_for_loopback_and_keeps_the_system_proxy_otherwise(self):
+        # Tests > Run basic checks attaches over http://127.0.0.1:<port> from Node
+        # (Playwright connectOverCDP), which follows proxy variables with no loopback bypass.
+        for proxies,expected in (({'HTTP_PROXY':'http://proxy.example:8080'},'127.0.0.1,localhost'),
+                ({'HTTPS_PROXY':'http://proxy.example:8080','NO_PROXY':'corp.example'},'corp.example,127.0.0.1,localhost'),
+                ({},None)):
+            with self.subTest(proxies=proxies):
+                seen=self.spawned_environment(proxies)
+                self.assertEqual((seen.get('NO_PROXY'),seen.get('no_proxy')),(expected,expected))
+                self.assertEqual({key:value for key,value in seen.items() if key in proxies and key!='NO_PROXY'},
+                    {key:value for key,value in proxies.items() if key!='NO_PROXY'})
+    def test_the_basic_check_attach_does_not_go_to_the_proxy(self):
+        # Playwright's own proxy choice for the runner's CDP lookup, where a Playwright is installed.
+        try:
+            core=json.loads(subprocess.check_output(['node','-e',
+                "const p=require.resolve('playwright/package.json',{paths:[require.resolve('@playwright/test')]});"
+                "console.log(JSON.stringify(require.resolve('playwright-core/lib/utilsBundle.js',{paths:[p]})))"],
+                cwd=ROOT/'apps/twinpulse-web',text=True,stderr=subprocess.DEVNULL))
+        except (OSError,subprocess.CalledProcessError):self.skipTest('Node.js with the web app Playwright is not installed')
+        seen=self.spawned_environment({'HTTP_PROXY':'http://proxy.example:8080'})
+        lookup=("const {getProxyForUrl}=require(process.argv[1]);"
+            "process.stdout.write(JSON.stringify(getProxyForUrl('http://127.0.0.1:9333/json/version/')))")
+        self.assertEqual(json.loads(subprocess.check_output(['node','-e',lookup,core],env=seen,text=True)),'')
+        seen.pop('NO_PROXY');seen.pop('no_proxy')
+        self.assertEqual(json.loads(subprocess.check_output(['node','-e',lookup,core],env=seen,text=True)),'http://proxy.example:8080')
     def test_exited_host_ends_the_handshake_wait_early(self):
         child=SimpleNamespace(poll=lambda:1,stdout=None,stdin=None,stderr=None)
         host=self.host(True,popen=lambda *a,**k:child);started=time.monotonic()

@@ -1388,7 +1388,10 @@ def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
     proxy variable is set (getproxies_environment() or getproxies_registry()),
     and NO_PROXY counts as one. An environment without proxy variables is
     therefore returned unchanged, so provider calls keep the registry proxy.
-    Loopback clients never need this: they use ProxyHandler({}) or http.client.
+    TwinPulse's Python loopback clients never need this: they use
+    ProxyHandler({}) or http.client. The desktop window's basic-check worker
+    (Node, Playwright CDP attach) follows the variables, so the desktop window
+    gets this too.
 
     Otherwise loopback is appended and existing entries stay unchanged. Windows
     names are case-insensitive, so a missing spelling starts from the other one
