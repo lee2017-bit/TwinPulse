@@ -246,6 +246,14 @@ class TextSafetyTests(unittest.TestCase):
         self.assertEqual(check._proxy_text('user0042:pa;ss@proxy:8080', listed=True), '[credentials removed]@proxy:8080')
         self.assertEqual(check._proxy_text('http=user0042:pa;ss@a:80;https=b:443', listed=True),
                          'http=[credentials removed]@a:80;https=b:443')
+        # Digits before the separator look like host:port; the entry with '@' then starts no 'scheme=' entry.
+        self.assertEqual(check._proxy_text('user0042:12;34@a:80', listed=True), '[credentials removed]@a:80')
+        self.assertEqual(check._proxy_text('http=user0042:12 34@a:80;https=b:443', listed=True),
+                         'http=[credentials removed]@a:80;https=b:443')
+        self.assertEqual(check._proxy_text('http=a:80;https=user0042:Pw3@b:443', listed=True),
+                         'http=a:80;https=[credentials removed]@b:443')  # a later 'scheme=' entry is its own address
+        self.assertEqual(check._proxy_text('http=user0042:pa;https=ss@b:443', listed=True),  # password 'pa;https=ss'
+                         'http=[credentials removed]@b:443')
         self.assertEqual(check._proxy_text(None), '(not set)')
 
     def test_html_title_uses_the_declared_charset_and_entities(self):

@@ -371,6 +371,8 @@ CREDENTIALS_REMOVED = '[credentials removed]'
 _PROXY_ENTRY_START = re.compile(r'(?i)(?:(?:https?|ftp|socks|gopher)=)?(?:[a-z][a-z0-9+.-]{0,20}://)?')
 # A host[:port][/path] address with no user name or password in it.
 _PROXY_HOST = re.compile(r'(?:\[[0-9A-Fa-f:.]*\]|[^\s:@/]*)(?::[0-9]*)?(?:/[^\s@]*)?')
+# How each entry of a WinINET ProxyServer list after the first starts ('https=host:port').
+_PROXY_SCHEME_ENTRY = re.compile(r'(?i)(?:https?|ftp|socks|gopher)=')
 
 
 def _without_userinfo(entry):
@@ -386,17 +388,20 @@ def _proxy_text(value, limit=200, *, listed=False):
 
     A listed setting (WinINET ProxyServer or ProxyOverride, NO_PROXY) is cleaned entry by entry (';', ',' and
     spaces separate entries); any other setting is one address, so a separator inside a password cannot split
-    it. If a listed entry before an '@' is no plain host[:port], a password held a separator: then the whole
-    setting is cleaned as one address."""
+    it. A password held a separator when a later entry with an '@' starts no new 'scheme=' entry, or when an
+    entry before an '@' is no plain host[:port] ('user:12;34@host' passes the second test, not the first):
+    then the whole setting is cleaned as one address."""
     if not value:
         return '(not set)'
     text = str(value)
     if listed:
         parts = re.split(r'([;,\s]+)', text)
         entries = parts[0::2]
-        last = max((index for index, entry in enumerate(entries) if '@' in entry), default=-1)
-        if not any('@' not in entry and not _PROXY_HOST.fullmatch(entry[_PROXY_ENTRY_START.match(entry).end():])
-                   for entry in entries[:last]):
+        held = [index for index, entry in enumerate(entries) if '@' in entry]
+        one_address = any(index and not _PROXY_SCHEME_ENTRY.match(entries[index]) for index in held) or any(
+            '@' not in entry and not _PROXY_HOST.fullmatch(entry[_PROXY_ENTRY_START.match(entry).end():])
+            for entry in entries[:max(held, default=-1)])
+        if not one_address:
             return short(''.join(_without_userinfo(part) if index % 2 == 0 else part for index, part in enumerate(parts)), limit)
     return short(_without_userinfo(text), limit)
 
