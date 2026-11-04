@@ -42,6 +42,21 @@ SCHEMA_400 = json.dumps({'error': {'message': "Invalid schema for response_forma
     'param': 'response_format', 'code': None}}).encode()
 BLOCK_PAGE = ('<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8"/>\n<title>외부사이트 차단</title>\n<style>p{}</style>\n'
               '</head>\n<body><p>Blocked for user user0042 at 10.1.2.3</p></body>\n</html>\n').encode('utf-8')
+# Synthetic credentials (never real keys) that no generic pattern ('sk-', 'Bearer ...') matches: a
+# Nebius-style 'v1.' + base64url key and a JWT. Only the exact key each transport passes as secret=
+# keeps them out of what the App shows when a provider or a filter page repeats them back.
+NEBIUS_STYLE_KEY = 'v1.c3ludGhldGljIHR3aW5wdWxzZSB0ZXN0IGNyZWRlbnRpYWwsIG5ldmVyIGlzc3VlZCBieSBhbnkgcHJvdmlkZXI'
+JWT_STYLE_KEY = ('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzeW50aGV0aWMtdHdpbnB1bHNlLXRlc3QiLCJpc3MiOiJub25lIn0.'
+                 'c3ludGhldGljIHNpZ25hdHVyZSwgbmV2ZXIgdmFsaWQu')
+
+
+def echoed_json(key):
+    return json.dumps({'error': {'message': f'Invalid API key: {key}', 'type': 'invalid_request_error',
+                                 'code': 'invalid_api_key'}}).encode()
+
+
+def echoed_page(key):
+    return f'<html><head><title>Access denied for {key}</title></head><body>{key}</body></html>'.encode()
 
 
 def http_error(status, body=b'', content_type='application/json'):
@@ -58,8 +73,8 @@ def raising(error_factory, seen=None):
 
 
 class StagedProviderErrorTests(unittest.IsolatedAsyncioTestCase):
-    async def public_failure(self, opener):
-        provider = NebiusChatCompletionsPipelineProvider(UrllibChatCompletionsTransport(lambda: KEY, opener=opener),
+    async def public_failure(self, opener, key=KEY):
+        provider = NebiusChatCompletionsPipelineProvider(UrllibChatCompletionsTransport(lambda: key, opener=opener),
             observer_model_id=OBSERVER_MODEL, planner_model_id=PLANNER_MODEL, site_plan_version='2.2')
         with self.assertRaises(ProviderError) as caught:
             await GenerationService(provider, config(timeout_s=10), plan_version='2.2').generate(GenerationRequest('r', 'Bedroom'))
@@ -91,6 +106,22 @@ class StagedProviderErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public['code'], 'provider_request_failed')  # not provider_authentication_failed
         self.assertEqual(public['diagnostics']['attempts'][0]['http_status'], 403)
         self.assertIn("provider request failed (403): HTML page '외부사이트 차단'", public['message'])
+
+    async def test_a_key_without_the_sk_prefix_echoed_back_never_reaches_the_public_error(self):
+        from packages.twinpulse_provider.tests.test_provider import config as responses_config
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for status, body, kind, shown in (
+                    (401, echoed_json(key), 'application/json', 'invalid_api_key: Invalid API key: [REDACTED]'),
+                    (503, echoed_page(key), 'text/html; charset=UTF-8', "HTML page 'Access denied for [REDACTED]'")):
+                with self.subTest(key=key[:3], status=status):
+                    chat = await self.public_failure(raising(lambda: http_error(status, body, kind)), key=key)
+                    with patch('urllib.request.urlopen', side_effect=raising(lambda: http_error(status, body, kind))), \
+                            self.assertRaises(ProviderError) as caught:
+                        await OpenAIResponsesProvider(lambda: key).generate(
+                            GenerationRequest('request-1', 'Scene'), CancellationToken(), responses_config())
+                    for public in (chat, _public_generation_error(caught.exception)):
+                        self.assertIn(shown, public['message'])  # still named, with the key replaced
+                        self.assertNotIn(key[:16], json.dumps(public, ensure_ascii=False))  # message and diagnostics
 
 
 class PrivateEvidenceTests(unittest.IsolatedAsyncioTestCase):
@@ -248,6 +279,18 @@ class OnboardingHttpTests(unittest.TestCase):
         with self.opener(Response(MODELS, b'not json')), self.assertRaises(ValueError):  # unchanged generic path
             metadata(MODELS, SimpleNamespace(load=lambda: KEY))
 
+    def test_a_key_without_the_sk_prefix_echoed_back_is_never_in_the_onboarding_error(self):
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for outcome, shown in ((http_error(503, echoed_page(key), 'text/html; charset=UTF-8'),
+                                    "(HTTP 503, 'Access denied for [REDACTED]')"),
+                                   (Response(MODELS, echoed_page(key), 'text/html'), "(HTTP 200, 'Access denied for [REDACTED]')"),
+                                   (http_error(401, echoed_json(key)), '(HTTP 401). 키를 확인하세요.')):  # status only
+                with self.subTest(key=key[:3], shown=shown):
+                    with self.opener(outcome), self.assertRaises(KeyRegistryError) as caught:
+                        metadata(MODELS, SimpleNamespace(load=lambda: key))
+                    self.assertIn(shown, str(caught.exception))
+                    self.assertNotIn(key[:16], str(caught.exception))
+
     def test_api_onboarding_paths_show_the_specific_code_and_message(self):
         server = LocalApiServer(CommandBroker(), product_bootstrap_secret='p' * 40, engine_bootstrap_secret='e' * 40,
             provider_settings_store=self.registry.settings, credential_store=Credential(DEFAULT_CREDENTIAL_TARGET),
@@ -265,6 +308,18 @@ class OnboardingHttpTests(unittest.TestCase):
             server._provider_keys({'action': 'refresh_catalog', 'key_id': value['entries'][-1]['id']})
         self.assertEqual((caught.exception.code, caught.exception.status), ('provider_unreachable', 503))
         self.assertIn('ConnectionResetError', str(caught.exception))  # not the generic key_settings_unavailable text
+
+    def test_api_onboarding_message_names_a_page_that_echoes_the_key_without_the_key(self):
+        server = LocalApiServer(CommandBroker(), product_bootstrap_secret='p' * 40, engine_bootstrap_secret='e' * 40,
+            provider_settings_store=self.registry.settings, credential_store=Credential(DEFAULT_CREDENTIAL_TARGET),
+            key_registry=self.registry)
+        self.addCleanup(server._httpd.server_close)
+        with self.opener(http_error(503, echoed_page(NEBIUS_STYLE_KEY), 'text/html; charset=UTF-8')):
+            value = server._provider_keys({'action': 'register', 'name': 'Nebius', 'provider_profile': 'nebius_token_factory',
+                'model_id': provider_settings_preset('nebius_token_factory').model_id, 'api_key': NEBIUS_STYLE_KEY})
+        self.assertEqual(value['default_setup']['code'], 'provider_blocked_page')
+        self.assertIn("(HTTP 503, 'Access denied for [REDACTED]')", value['default_setup']['message'])
+        self.assertNotIn(NEBIUS_STYLE_KEY[:16], json.dumps(value, ensure_ascii=False))
 
 
 if __name__ == '__main__':

@@ -38,10 +38,11 @@ from twinpulse_provider import (  # noqa: E402
     StructuredJsonHttpProvider,
     UrllibChatCompletionsTransport,
 )
+from twinpulse_provider.errors import ProviderError  # noqa: E402
 from twinpulse_provider.http_identity import json_headers, user_agent  # noqa: E402
 from twinpulse_provider.reliability import (  # noqa: E402
-    InferenceEvidence, provider_connection_error, provider_error_summary, provider_http_error, public_provider_error,
-    safe_text)
+    AuditedChatTransport, InferenceEvidence, provider_connection_error, provider_error_summary, provider_http_error,
+    public_provider_error, safe_text)
 
 
 KEY = "sk-proj-" + "Q7" * 20  # synthetic credential shape, never a real key
@@ -49,6 +50,12 @@ TOKEN = "tok_live_" + "Z9" * 12
 BLOCK_PAGE = ("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"/>\n<title>외부사이트 차단</title>\n"
               "<style>body{color:red}</style>\n</head>\n<body><p>Blocked for user user0042 at 10.1.2.3</p>"
               "<script>var policy='internal';</script></body>\n</html>\n").encode("utf-8")
+# Synthetic credentials (never real keys) in two shapes that no generic pattern ('sk-', 'Bearer ...')
+# matches: a Nebius-style 'v1.' + base64url key and a JWT. Only the exact key a transport passes as
+# secret= removes them from what a provider echoes back.
+NEBIUS_STYLE_KEY = "v1.c3ludGhldGljIHR3aW5wdWxzZSB0ZXN0IGNyZWRlbnRpYWwsIG5ldmVyIGlzc3VlZCBieSBhbnkgcHJvdmlkZXI"
+JWT_STYLE_KEY = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzeW50aGV0aWMtdHdpbnB1bHNlLXRlc3QiLCJpc3MiOiJub25lIn0."
+                 "c3ludGhldGljIHNpZ25hdHVyZSwgbmV2ZXIgdmFsaWQu")
 
 
 def http_error(status, body=b"", content_type="application/json"):
@@ -327,6 +334,76 @@ class SuccessPageAndResetTests(unittest.TestCase):
                                ("data:data:x;base64,AA", "[IMAGE_REMOVED]"),
                                ("data:image/svg+xml,%3Csvg%3E", "data:image/svg+xml,%3Csvg%3E")):
             self.assertEqual(safe_text(text), expected)
+
+
+def key_echoes(key):
+    """(case, outcome for one request URL, text shown where the key stood); a fresh outcome per attempt."""
+    page = f"<html><head><title>Access denied for {key}</title></head><body>{key}</body></html>".encode()
+    return (
+        ("json 401", lambda url: http_error(401, openai_error(f"Invalid API key: {key}", code="invalid_api_key")),
+         "invalid_request_error/invalid_api_key: Invalid API key: [REDACTED]"),
+        ("html 503", lambda url: http_error(503, page, "text/html; charset=UTF-8"),
+         "provider unavailable (503): HTML page 'Access denied for [REDACTED]'"),
+        ("html 200", lambda url: Page(url, page),
+         "provider request failed (200): HTML page 'Access denied for [REDACTED]'"),
+        ("connection", lambda url: urllib.error.URLError(OSError(f"proxy refused the request for {key}")),
+         "provider connection failed (OSError: proxy refused the request for [REDACTED])"),
+    )
+
+
+def answer(outcome):
+    """An opener (or urlopen) that returns the outcome, or raises it."""
+    def send(request, timeout):
+        value = outcome(request.full_url)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+    return send
+
+
+class EchoedKeyWithoutSkPrefixTests(unittest.TestCase):
+    """A provider, filter page or proxy repeats the key back: each transport passes the key to its error mapping."""
+
+    def assert_replaced(self, key, error, shown):
+        text = str(error)
+        self.assertIn(shown, text)  # the echo is still named, with the key replaced where it stood
+        for value in (text, json.dumps(getattr(error, "provider_error", None), ensure_ascii=False)):
+            self.assertNotIn(key[:16], value)  # the head too: a capped title or reason keeps only part of a key
+
+    def assert_private_evidence(self, key, root, case):
+        saved = "".join(path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.json")))
+        self.assertNotIn(key[:16], saved)
+        if case != "connection":  # a connection failure has no response body to keep
+            self.assertIn("Invalid API key: [REDACTED]" if case == "json 401" else "Access denied for [REDACTED]", saved)
+
+    def test_chat_completions_transport_and_its_audited_evidence(self):
+        import asyncio
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for case, outcome, shown in key_echoes(key):
+                with self.subTest(key=key[:3], case=case), TemporaryDirectory() as temp:
+                    with self.assertRaises(ProviderError) as caught:
+                        UrllibChatCompletionsTransport(lambda: key, opener=answer(outcome))._post(
+                            {"model": "fixture-model"}, CancellationToken(), config(), key)
+                    self.assert_replaced(key, caught.exception, shown)
+                    audited = AuditedChatTransport(lambda: key, InferenceEvidence(Path(temp)), opener=answer(outcome))
+                    with self.assertRaises(ProviderError) as caught:
+                        asyncio.run(audited.complete(dict(model="fixture-model", max_tokens=100, response_format={}),
+                                                     CancellationToken(), config()))
+                    self.assert_replaced(key, caught.exception, shown)
+                    self.assert_private_evidence(key, Path(temp), case)
+
+    def test_openai_responses_provider_and_its_evidence(self):
+        import asyncio
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for case, outcome, shown in key_echoes(key):
+                with self.subTest(key=key[:3], case=case), TemporaryDirectory() as temp:
+                    provider = OpenAIResponsesProvider(lambda: key, evidence=InferenceEvidence(Path(temp)))
+                    with patch("twinpulse_provider.providers.urllib.request.urlopen", side_effect=answer(outcome)), \
+                            self.assertRaises(ProviderError) as caught:
+                        asyncio.run(provider.generate(GenerationRequest("r4", "Scene"), CancellationToken(),
+                                                      config("responses")))
+                    self.assert_replaced(key, caught.exception, shown)
+                    self.assert_private_evidence(key, Path(temp), case)
 
 
 if __name__ == "__main__":
