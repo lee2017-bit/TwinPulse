@@ -556,8 +556,8 @@ def kill_tree(process, *, windows=None, run=None):
 
 
 def _run_bounded(command, *, popen, kill, timeout, **options):
-    """(exit code, stdout) of one run, which never waits longer than timeout plus PROBE_KILL_WAIT:
-    on timeout the whole process tree is ended and TimeoutExpired is raised."""
+    """(exit code, stdout) of one run. On timeout kill ends the whole process tree (kill_tree gives taskkill at
+    most 30 s), the output is awaited at most PROBE_KILL_WAIT more seconds, and TimeoutExpired is raised."""
     process = popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                     text=True, errors='replace', **options)
     try:
@@ -718,8 +718,8 @@ def _linked(path, inside):
 def burger_folder(folder):
     """One usd folder through the steps of simulation_assets._inventory, in its order and with its codes:
     main file, links (symlinks, junctions), file set, size, digests. Explorer/Finder metadata (OS_JUNK
-    names) is ignored at every step, as the App ignores it. A link is never followed and a file over
-    the size limit is never hashed; neither is ever read by the App."""
+    names) is ignored at every step, as the App ignores it. No file behind a link and no file over the
+    size limit is hashed: the App reads neither."""
     folder = Path(folder)
     every = sorted(folder.rglob('*'))
     ignored = [path.relative_to(folder).as_posix() for path in every if path.name.casefold() in OS_JUNK]
