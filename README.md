@@ -150,7 +150,7 @@ On a company PC, use the Windows EXE ZIP instead of a clone: extract it to a sho
 1. Clone this repository and double-click **`Install-TwinPulse.cmd`**. It asks for your Isaac Sim folder, installs locked dependencies into `.venv`, builds the UI and starts the app with Isaac Sim.
 2. In the app, open **API keys**, add your Token Factory key, and under **Model routing** set the planner to `nvidia/nemotron-3-super-120b-a12b` and the photo observer to `nvidia/Nemotron-3.5-Super-VL`.
 3. **Try it without a robot:** import your own RoomPlan USD (the demo room is a private scan and is not in the repo), add a SIM TurtleBot3 under Manage, place it on the twin, and type "Survey the room and come back". A 9-minute SIM recording on a public factory photo (earlier build, Oct 26; the photo observer was a non-NVIDIA model then) shows the same loop without a robot: proximity stop, re-plan around a test box and LiDAR objects added to the twin, in the [sim-factory-demo-2026-10-26 release](https://github.com/lee2017-bit/TwinPulse/releases/tag/sim-factory-demo-2026-10-26).
-4. **With the real robot:** run `Prepare-Robot.cmd` once, start `Start-TwinPulse.cmd` (development channel), then Connect → Prepare → Arm → Bootstrap stop before running a route. Details: [docs/QUICKSTART.md](docs/QUICKSTART.md#physical-turtlebot3-supervised-only).
+4. **With the real robot:** run `Prepare-Robot.cmd` once, start `Start-TwinPulse-Development.cmd` (it runs the source), then Connect → Prepare → Arm → Bootstrap stop before running a route. Details: [docs/QUICKSTART.md](docs/QUICKSTART.md#physical-turtlebot3-supervised-only).
 
 Later starts: `Start-TwinPulse.cmd`. Stop with Ctrl+C in the launcher window. Developers: `Start-TwinPulse-Development.cmd` runs from source.
 
