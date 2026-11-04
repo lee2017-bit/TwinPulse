@@ -63,6 +63,15 @@ def startup_failure_text(last_error, log_path):
     return '\n'.join(lines)
 
 
+def launcher_failure_text(launcher_globals, log_path):
+    """Dialog text after the launcher's main() failed.
+
+    launcher_globals is what runpy.run_path returned for the launcher: a copy
+    of its globals that shares the LAST_LAUNCH_ERROR dict the launcher updates
+    in place."""
+    return startup_failure_text(launcher_globals.get('LAST_LAUNCH_ERROR') or {}, log_path)
+
+
 def entry_failure_text(arguments, error, log_path):
     """Dialog text when the entry itself raised, worded by what was asked."""
     if arguments == ['--inspect-package']:
@@ -218,9 +227,7 @@ def main(opened=None):
     result = module['main']()
     if result and frozen and role == 'launcher':
         import ctypes
-        # The launcher keeps its last reported error in this shared dict.
-        ctypes.windll.user32.MessageBoxW(None, startup_failure_text(module.get('LAST_LAUNCH_ERROR') or {}, log),
-            'TwinPulse startup', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, launcher_failure_text(module, log), 'TwinPulse startup', 0x10)
     return result
 
 

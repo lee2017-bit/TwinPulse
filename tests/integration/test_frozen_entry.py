@@ -7,8 +7,10 @@ Supplementary. sys.frozen, sys._MEIPASS and ctypes.windll are patched
 (create=True) and a stub file stands in for the bundled launcher, so no EXE,
 Windows, Isaac or real launch is involved. The package check is the real one,
 run on a small package folder."""
+from contextlib import redirect_stderr, redirect_stdout
 import ctypes
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
     sys.path.insert(0, str(ROOT / 'packages' / name / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
+from twinpulse_app import ProcessManagerError  # noqa: E402
+
 ENTRY = runpy.run_path(str(ROOT / 'scripts/twinpulse_desktop_entry.py'))
 BACKEND = '_internal/resources/scripts/twinpulse_backend.py'
 PID = str(os.getpid())
@@ -149,6 +153,45 @@ class FrozenEntryTests(unittest.TestCase):
         self.assertEqual(text.count('Traceback (most recent call last):'), 1)
         self.assertTrue(text.endswith('\nRuntimeError: stub launcher stopped\n'), text)
         box.assert_called_once_with(None, 'TwinPulse could not start.\nRuntimeError: stub launcher stopped\nLog: ' + str(log),
+                                    'TwinPulse startup', 0x10)
+
+    def test_launcher_failure_text_reads_the_real_launcher_globals_after_a_failed_main(self):
+        # The same access as main(): runpy returns a copy of the launcher's globals.
+        launcher = runpy.run_path(str(ROOT / 'scripts/twinpulse_launcher.py'))
+        main = launcher['main']
+        message = 'Isaac did not finish starting within 600 s (last phase: extension_enable, last reported at 412 s)'
+
+        def refuse(**_options):
+            raise ProcessManagerError('engine_ready_timeout', message)
+        argv = ['twinpulse_launcher.py', '--no-browser', '--state-dir', str(self.root / 'state'),
+                '--isaac-root', str(self.root / 'isaac')]
+        with patch.dict(main.__globals__, {'TwinPulseProcessManager': refuse, '_browser': lambda configured: None}), \
+                patch.object(sys, 'argv', argv), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(), 1)
+        self.assertTrue(err.getvalue().startswith('TWINPULSE_LAUNCH_ERROR code=engine_ready_timeout message='))
+        log = self.logs / 'launcher-42.log'
+        self.assertEqual(ENTRY['launcher_failure_text'](launcher, log).splitlines(),
+                         ['TwinPulse could not complete startup.', message, 'Code: engine_ready_timeout',
+                          'Log: ' + str(log), 'No other application was stopped.'])
+
+    def test_failed_launcher_dialog_gets_the_launcher_globals_and_this_runs_log(self):
+        launcher_file = self.scripts / 'twinpulse_launcher.py'
+        launcher_file.write_text('LAST_LAUNCH_ERROR = {}\n\n\ndef main():\n    LAST_LAUNCH_ERROR.update('
+                                 'code="engine_ready_timeout", message="Isaac did not finish starting")\n    return 1\n',
+                                 encoding='utf-8')
+        real, calls = ENTRY['launcher_failure_text'], []
+
+        def spy(launcher_globals, log_path):
+            calls.append((launcher_globals, log_path))
+            return real(launcher_globals, log_path)
+        code, box = self.run_frozen('--isaac-root', str(self.root / 'isaac'), entry_globals={'launcher_failure_text': spy})
+        log = self.logs / ('launcher-' + PID + '.log')
+        self.assertEqual((code, len(calls)), (1, 1))
+        launcher_globals, log_path = calls[0]
+        self.assertEqual((launcher_globals['__file__'], launcher_globals['LAST_LAUNCH_ERROR'], log_path),
+                         (str(launcher_file), {'code': 'engine_ready_timeout', 'message': 'Isaac did not finish starting'}, log))
+        box.assert_called_once_with(None, '\n'.join(('TwinPulse could not complete startup.', 'Isaac did not finish starting',
+                                    'Code: engine_ready_timeout', 'Log: ' + str(log), 'No other application was stopped.')),
                                     'TwinPulse startup', 0x10)
 
 
