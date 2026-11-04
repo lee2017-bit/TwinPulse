@@ -463,6 +463,8 @@ class EngineStartWindowTests(unittest.TestCase):
                 {"PROXY": "x", "MYPROXY": "x"}, {"REQUEST_METHOD": "GET", "HTTP_PROXY": "http://p:1"},
                 {"REQUEST_METHOD": "GET", "http_proxy": "http://p:1"}, {"HTTPS_PROXY": "http://p:1", "https_proxy": ""})
         for row in rows:
+            # The launcher passes os.environ.copy(); on Windows its names are upper case.
+            row = {name.upper(): value for name, value in row.items()} if os.name == "nt" else row
             with self.subTest(row=row):
                 with patch.dict(os.environ, row, clear=True):
                     expected = urllib.request.getproxies_environment()

@@ -16,6 +16,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
+from twinpulse_app import windows_install
 from twinpulse_app.windows_install import MAX_PATH_CHARS, install_package
 from twinpulse_app.windows_package import verify_package
 from twinpulse_app.release_contract import (MaintenanceLock, DATA_CONTRACT, REPLACE_ATTEMPTS, atomic_json,
@@ -256,8 +257,12 @@ class WindowsInstallTests(unittest.TestCase):
                 self.assertEqual(list((installed(name)/'releases').iterdir()),[])  # nothing was copied
                 self.assertFalse((installed(name)/'active-release.json').exists())
                 self.assertFalse((installed(name)/'update-journals').exists())
-        result=install_package(self.source,installed('d'),read_long_paths=lambda:1)
-        self.assertTrue((Path(result['exe']).parent/relative).is_file())
+        if os.name!='nt' or windows_install._registry_long_paths()==1:
+            result=install_package(self.source,installed('d'),read_long_paths=lambda:1)
+            self.assertTrue((Path(result['exe']).parent/relative).is_file())
+        else:  # this Windows cannot create a 260-character path; the check itself lets it through
+            stage=installed('d').resolve()/'releases'/('.stage-'+'0'*12)
+            windows_install._check_install_paths([relative],(stage,stage.parent/'build_1'),lambda:1)
         if os.name!='nt':  # elsewhere no registry is read and the check is skipped
             self.assertEqual(install_package(self.source,installed('e'))['build_id'],'build_1')
 
