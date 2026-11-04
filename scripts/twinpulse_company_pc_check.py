@@ -434,6 +434,22 @@ def batch_command_line(command):
     return ' '.join('"' + re.sub(r'(\\+)$', r'\1\1', part) + '"' for part in parts)
 
 
+def app_resolved(path):
+    """A path as the App judges and starts it: Path.resolve(), which follows junctions, symlinks and SUBST
+    drives (ProcessManager resolves the Isaac python.bat and its own folders). The text as written when it
+    names nothing that exists or cannot be resolved."""
+    if not path or not os.path.exists(path):
+        return path
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
+def _same_path(one, other):
+    return os.path.normcase(os.path.normpath(one)) == os.path.normcase(os.path.normpath(other))
+
+
 def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
     run, getproxies, which = run or subprocess.run, getproxies or urllib.request.getproxies, which or shutil.which
     lines, findings = [], []
@@ -450,13 +466,16 @@ def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
                      + (' (Windows 11 build)' if eleven else ''))
     for name in ('USERPROFILE', 'LOCALAPPDATA'):
         value = env.get(name) or ''
-        lines.append(f'{name}: {value or "(not set)"} - ASCII only: {"yes" if value.isascii() else "NO"}')
+        real = app_resolved(value)
+        lines.append(f'{name}: {value or "(not set)"} - ASCII only: {"yes" if value.isascii() else "NO"}'
+                     + ('' if _same_path(real or '.', value or '.') else f'; TwinPulse resolves it to {real}'))
         if value and not value.isascii() and not any(f['key'] == 'profile_non_ascii' for f in findings):
             findings.append({'key': 'profile_non_ascii'})
     # The App quotes the Isaac engine command for & | < > ^ ( ) and refuses % and " (engine_path_unsupported).
     # Its other python.bat workers, which run from LOCALAPPDATA, refuse WORKER_REFUSED_CHARS outright.
-    profile = (env.get('USERPROFILE') or '') + (env.get('LOCALAPPDATA') or '')
-    local = env.get('LOCALAPPDATA') or (env.get('USERPROFILE') or '') + r'\AppData\Local'
+    # Both judge the folders resolved, as the App resolves them.
+    profile = app_resolved(env.get('USERPROFILE') or '') + app_resolved(env.get('LOCALAPPDATA') or '')
+    local = app_resolved(env.get('LOCALAPPDATA') or (env.get('USERPROFILE') or '') + r'\AppData\Local')
     unsupported, special = [c for c in CMD_UNSUPPORTED_CHARS if c in profile], [c for c in CMD_METACHARACTERS if c in profile]
     if unsupported:
         findings.append({'key': 'profile_unsupported_chars', 'chars': unsupported})
@@ -732,15 +751,19 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
         lines.append('The EXE finds no Isaac folder on its own and asks for one with a folder picker at the first start')
     else:
         version = _version_text(Path(used) / 'VERSION')
+        # The App starts python.bat resolved (ProcessManager: isaac_python.resolve()) and its workers get that folder,
+        # so the characters are judged, and python.bat is probed, there.
+        real = str(Path(app_resolved(str(Path(used) / 'python.bat'))).parent)
         lines.append(f'The EXE uses' + (' (once desktop-settings.json is renamed)' if saved_refused else '')
-                     + f': {used}' + (' (saved setting)' if used == saved else ''))
+                     + f': {used}' + (' (saved setting)' if used == saved else '')
+                     + ('' if _same_path(real, used) else f'; TwinPulse resolves it to {real}'))
         findings.append({'key': 'isaac_found', 'root': used, 'version': version})
-        unsupported = [c for c in CMD_UNSUPPORTED_CHARS if c in used]
-        refused = [c for c in WORKER_REFUSED_CHARS if c in used]
+        unsupported = [c for c in CMD_UNSUPPORTED_CHARS if c in real]
+        refused = [c for c in WORKER_REFUSED_CHARS if c in real]
         if unsupported:
-            findings.append({'key': 'isaac_path_unsupported', 'root': used, 'chars': unsupported})
+            findings.append({'key': 'isaac_path_unsupported', 'root': real, 'chars': unsupported})
         elif refused:
-            findings.append({'key': 'isaac_path_import_refused', 'root': used, 'chars': refused})
+            findings.append({'key': 'isaac_path_import_refused', 'root': real, 'chars': refused})
         if saved and used != saved:
             findings.append({'key': 'isaac_saved_unusable', 'saved': saved, 'root': used})
         if version and not ISAAC_RELEASE.fullmatch(version):
@@ -748,7 +771,7 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
         for name in ('PYTHONHOME', 'PYTHONPATH'):
             if env.get(name):
                 lines.append(f'env {name} is set ({short(env[name], 120)}); TwinPulse removes it for Isaac')
-        probe_lines, probe_findings = _probe_part(isaac_python_probe(Path(used), env, popen=popen))
+        probe_lines, probe_findings = _probe_part(isaac_python_probe(Path(real), env, popen=popen))
         lines += probe_lines
         findings += probe_findings
     logs = [log for root, _ in valid for log in _kit_logs(root / 'kit' / 'logs' / 'Kit')]
@@ -1469,6 +1492,7 @@ def default_opener():
 
 # The probe URLs are fixed, so a ValueError or http.client.InvalidURL comes from the proxy setting, and its text
 # quotes that setting (urllib: "proxy URL with no authority: '<all of it>'"; http.client: "nonnumeric port: '<a piece>'").
+# An OSError that is also a ValueError, such as ssl.SSLCertVerificationError, is a connection result, not the setting.
 PROXY_SETTING_UNUSABLE = 'the proxy setting could not be used (see the proxy lines in 1. System)'
 _USERINFO_PIECE = re.compile(r'''[^\s'"<>()\[\]]*@''')
 
@@ -1497,7 +1521,7 @@ def probe(url, user_agent=None, *, timeout=10.0, opener=None):
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
         reason = getattr(error, 'reason', error)
         name = type(reason).__name__ if isinstance(reason, BaseException) else type(error).__name__
-        if isinstance(reason, (ValueError, http.client.InvalidURL)):
+        if isinstance(reason, (ValueError, http.client.InvalidURL)) and not isinstance(reason, OSError):
             return {'agent': agent, 'error': name, 'detail': PROXY_SETTING_UNUSABLE}
         return {'agent': agent, 'error': name, 'detail': error_detail(reason)}
 
@@ -1770,15 +1794,18 @@ def write_report(text, env, cwd, output_dir=None, *, now=None, winreg=None):
         try:
             for attempt in range(100):
                 path = folder / (f'TwinPulse-PC-Check-{stamp}' + (f'-{attempt}' if attempt else '') + '.txt')
-                try:
-                    stream = open(path, 'x', encoding='utf-8-sig', newline='\r\n')
+                try:  # backslashreplace: a lone surrogate (an undecodable Windows name) is written as \\udXXX
+                    stream = open(path, 'x', encoding='utf-8-sig', errors='backslashreplace', newline='\r\n')
                 except FileExistsError:
                     continue
                 try:
                     with stream:
                         stream.write(text)
-                except OSError:
-                    path.unlink(missing_ok=True)  # only the file this attempt created: no half report stays behind
+                except BaseException:
+                    try:
+                        path.unlink(missing_ok=True)  # only the file this attempt created: no half report stays behind
+                    except OSError:
+                        pass
                     raise
                 return path
             raise FileExistsError(str(folder))

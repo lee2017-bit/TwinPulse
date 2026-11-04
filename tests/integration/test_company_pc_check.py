@@ -25,6 +25,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -162,6 +163,18 @@ def can_symlink(folder):
         return False
     (Path(folder) / 'link-probe').unlink()
     return True
+
+
+def link_folder(link, target):
+    """A folder link as IT may set one up: a symlink, or on Windows without the symlink right a junction.
+    Path.resolve() follows both."""
+    try:
+        Path(link).symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        if os.name != 'nt':
+            raise
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
 
 
 class FakeFilter(BaseHTTPRequestHandler):
@@ -923,6 +936,30 @@ class NetworkTests(unittest.TestCase):
                                   capture_output=True, text=True, timeout=60)
             self.assertEqual(int(done.stdout), int(context.verify_flags))
 
+    def test_a_certificate_failure_is_named_as_one_and_not_as_the_proxy_setting(self):
+        # ssl.SSLCertVerificationError is an OSError and a ValueError; only a plain ValueError is the proxy setting.
+        reason = ssl.SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: '
+                                                 'unable to get local issuer certificate (_ssl.c:1032)')
+
+        class Inspected:  # a TLS-inspecting company proxy whose root certificate Python does not trust
+            addheaders = [('User-agent', 'Python-urllib/3.12')]
+
+            def open(self, request, timeout=None):
+                raise urllib.error.URLError(reason)
+        part = check.network_section('0.1.0a1', targets=(('OpenAI', 'https://api.openai.com/v1/models'),),
+                                     opener=Inspected(), timeout=5)
+        finding = part['findings'][0]
+        self.assertEqual((finding['key'], finding['default']['error'], finding['product']['error']),
+                         ('net_tls', 'SSLCertVerificationError', 'SSLCertVerificationError'))
+        for facts in (finding['default'], finding['product']):
+            self.assertIn('unable to get local issuer certificate', facts['detail'])
+        self.assertIn('unable to get local issuer certificate', '\n'.join(part['lines']))
+
+    def test_probes_without_an_opener_use_the_exe_tls_opener(self):
+        with patch.object(check, 'default_opener', return_value=self.opener) as made:
+            part = check.network_section('0.1.0a1', targets=(('Nebius', self.url),), timeout=5)
+        self.assertEqual((made.call_count, part['findings'][0]['key']), (2, 'net_python_ua_blocked'))
+
 
 class ReportAndSystemTests(unittest.TestCase):
     def setUp(self):
@@ -977,6 +1014,26 @@ class ReportAndSystemTests(unittest.TestCase):
         with patch.object(check, 'open', full_disk, create=True):
             self.assertEqual(check.write_report('x\n', {'USERPROFILE': str(profile)}, current).parent, current)
         self.assertEqual(list((profile / 'Desktop').iterdir()), [])  # no half report stays behind
+
+    def test_any_character_reaches_the_report_and_a_failed_write_leaves_no_file(self):
+        profile, current = self.root / 'profile', self.root / 'current'
+        (profile / 'Desktop').mkdir(parents=True)
+        current.mkdir()
+        # A lone surrogate, as Python reads a Windows file name that is not valid UTF-16.
+        path = check.write_report('folder \ud83d cut\n', {'USERPROFILE': str(profile)}, current)
+        self.assertEqual((path.parent, path.read_text(encoding='utf-8-sig')), (profile / 'Desktop', 'folder \\ud83d cut\n'))
+        real_open = open
+
+        class Broken(io.StringIO):
+            def write(self, text):
+                raise RuntimeError('cut off')
+
+        def broken(name, *args, **kwargs):  # the file is created, then writing it fails with something other than OSError
+            real_open(name, *args, **kwargs).close()
+            return Broken()
+        with patch.object(check, 'open', broken, create=True), self.assertRaises(RuntimeError):
+            check.write_report('x\n', {'USERPROFILE': str(profile)}, current)
+        self.assertEqual(list((profile / 'Desktop').iterdir()), [path])
 
     def test_report_is_never_written_inside_a_twinpulse_package(self):
         profile, package = self.root / 'profile', self.root / 'TP' / 'TwinPulse'
@@ -1328,6 +1385,44 @@ class ReportAndSystemTests(unittest.TestCase):
                     self.assertIn('engine_path_unsupported' if key == 'isaac_path_unsupported'
                                   else 'ENVIRONMENT_WORKER_PATH_INVALID, LIBRARY_WORKER_PATH_UNSAFE', line)
 
+    def test_isaac_and_user_folders_are_judged_as_the_app_resolves_them(self):
+        from twinpulse_app import process_manager
+        code = "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"
+        answer = {'python': '3.11.9', 'user_site': False, 'user_site_path': 'x', 'modules': {}}
+        real = self.root / 'R&D' / 'isaacsim'
+        write(real / 'python.bat', '@echo off')
+        tidy = self.root / 'isaacsim'
+        link_folder(tidy, real)  # the App starts python.bat resolved (ProcessManager: isaac_python.resolve())
+        calls = []
+        part = check.isaac_section({}, [('desktop-settings', str(tidy))], candidates=(),
+                                   popen=fake_python_bat({'default': answer, 'twinpulse': answer}, calls))
+        found = {item['key']: item for item in part['findings']}
+        resolved = str((tidy / 'python.bat').resolve().parent)
+        self.assertNotIn('&', str(tidy))
+        self.assertEqual((found['isaac_found']['root'], found['isaac_path_import_refused']),
+                         (str(tidy), {'key': 'isaac_path_import_refused', 'root': resolved, 'chars': ['&']}))
+        self.assertIn(f'The EXE uses: {tidy} (saved setting); TwinPulse resolves it to {resolved}', part['lines'])
+        self.assertEqual([args for args, _, _ in calls],
+                         [process_manager._batch_command_line([str(Path(resolved) / 'python.bat'), '-B', '-c', code])] * 2)
+        plain = self.root / 'plain' / 'isaacsim'
+        write(plain / 'python.bat', '@echo off')
+        fancy = self.root / 'a&b'
+        link_folder(fancy, plain)  # only the resolved folder counts, so a link's own '&' does not
+        part = check.isaac_section({}, [('desktop-settings', str(fancy))], candidates=(),
+                                   popen=fake_python_bat({'default': answer, 'twinpulse': answer}, []))
+        self.assertEqual([item['key'] for item in part['findings'] if item['key'].startswith('isaac_path_')], [])
+        local = self.root / 'kim&lee' / 'AppData' / 'Local'
+        local.mkdir(parents=True)
+        (self.root / 'user').mkdir()
+        link_folder(self.root / 'Local', local)
+        env = {'USERPROFILE': str(self.root / 'user'), 'LOCALAPPDATA': str(self.root / 'Local')}
+        part = check.system_section(env, winreg=FakeWinreg({}), getproxies=dict, which=lambda name: None)
+        self.assertEqual([(item['key'], item['chars']) for item in part['findings'] if item['key'].startswith('profile_')],
+                         [('profile_import_refused_chars', ['&'])])
+        line = next(line for line in part['lines'] if line.startswith('LOCALAPPDATA: '))
+        self.assertTrue(line.startswith(f'LOCALAPPDATA: {self.root / "Local"} - ASCII only: '), line)
+        self.assertTrue(line.endswith(f'; TwinPulse resolves it to {local.resolve()}'), line)
+
     def test_a_probe_that_hangs_is_ended_with_its_children_and_the_next_still_runs(self):
         answer = {'python': '3.11.9', 'user_site': False, 'user_site_path': 'x', 'modules': {}}
         calls, ended = [], []
@@ -1411,6 +1506,26 @@ class ReportAndSystemTests(unittest.TestCase):
         after = files()  # read-only: the report is the only new or changed file in the whole tree
         self.assertEqual([path for path in after if after[path] != before.get(path)], [reports[0]])
         self.assertTrue(set(before) <= set(after))
+
+    def test_main_gives_the_isaac_section_a_refused_settings_folder_as_refused(self):
+        profile = self.root / 'profile'
+        local = profile / 'AppData/Local'
+        known = self.root / 'known'
+        write(known / 'python.bat', '@echo off')
+        write(local / 'TwinPulse/runtime/desktop-settings.json',  # an unknown key: read_settings refuses the file
+              {'schema_version': '1.0', 'preferred_port': 8765, 'isaac_root': str(known), 'ready_timeout_s': 600})
+        output = self.root / 'out'
+        output.mkdir()
+        seen = []
+
+        def isaac(env, roots=(), **options):
+            seen.append((list(roots), options))
+            return check.section(['isaac'], [])
+        with patch.object(check, 'isaac_section', isaac), patch.object(check, 'probe', side_effect=AssertionError('network used')), \
+                patch('urllib.request.getproxies', return_value={}):
+            code = check.main(['--no-network', '--output-dir', str(output), '--no-pause'],
+                              env={'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile)}, cwd=self.root, out=io.StringIO())
+        self.assertEqual((code, seen), (0, [([('refused desktop-settings.json', str(known))], {'saved_refused': True})]))
 
     def test_script_imports_only_the_standard_library(self):
         tree = ast.parse((ROOT / 'scripts/twinpulse_company_pc_check.py').read_text(encoding='utf-8'))
