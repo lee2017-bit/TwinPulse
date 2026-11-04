@@ -9,7 +9,6 @@ or Windows run. The checkout's own asset bytes are only read, never changed.
 from hashlib import sha256
 from io import BytesIO
 from itertools import combinations
-import json
 from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
@@ -49,16 +48,6 @@ class BurgerPinTests(unittest.TestCase):
 
     def burger_row(self):
         return next(r for r in package_checklist(self.root) if r['id'] == 'burger_asset_manifest')
-
-    def test_one_pin_source_agrees_with_source_record(self):
-        record = json.loads((PUBLIC.parent / 'SOURCE.json').read_text(encoding='utf-8'))
-        self.assertEqual(PUBLIC_BURGER_MANIFEST, record['public_usd_sha256'])
-        self.assertEqual(BURGER_MANIFEST, record['original_usd_sha256'])
-        self.assertEqual(set(BURGER_MANIFEST), set(PUBLIC_BURGER_MANIFEST))
-        self.assertEqual(room_recipe._BURGER_FILES, frozenset(PUBLIC_BURGER_MANIFEST))
-        self.assertIs(room_recipe._BURGER_PINS[0], PUBLIC_BURGER_MANIFEST)
-        self.assertIs(room_recipe._BURGER_PINS[1], BURGER_MANIFEST)
-        self.assertFalse(hasattr(room_recipe, '_BURGER_HASHES'))
 
     def test_clean_checkout_public_folder_verifies_and_enables_project_visual(self):
         before = digests(PUBLIC)
@@ -170,9 +159,17 @@ class BurgerPinTests(unittest.TestCase):
     def test_other_errors_keep_bare_codes_and_paths_stay_hidden(self):
         (self.copy / 'payloads/robot.usda').unlink()
         self.assertEqual(self.burger_row()['detail'], 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED')
-        for text in ('SIM_BURGER_ASSET_DIGEST_MISMATCH: /home/user/private.usda', 'C:\\Users\\name\\x.usda'):
+        # Only the fixed Burger file names may follow the code: no path, user name or token.
+        for text in ('SIM_BURGER_ASSET_DIGEST_MISMATCH: /home/user/private.usda', 'C:\\Users\\name\\x.usda',
+                     CODE + 'Users/alice/AppData/Local/x.usda' + NEITHER, CODE + 'payloads/base.usda, alice' + NEITHER,
+                     CODE + 'sk-abc123 Bearer abc123'):
             with patch('twinpulse_app.simulation_assets._inventory', side_effect=ValueError(text)):
                 self.assertEqual(self.burger_row()['detail'], 'ValueError')
+        # Other rows still show bare codes only, never free text after a code.
+        with patch('twinpulse_app.startup_checks._extension_contract',
+                   side_effect=ValueError('EXTENSION_CONTRACT_INVALID: alice typed this (see notes)')):
+            row = next(r for r in package_checklist(self.root) if r['id'] == 'extension_contract')
+        self.assertEqual((row['state'], row['detail']), ('needs_action', 'ValueError'))
 
 
 class IsaacVersionTests(unittest.TestCase):

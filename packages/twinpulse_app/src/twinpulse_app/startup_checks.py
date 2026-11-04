@@ -89,7 +89,7 @@ def _web_manifest(web: Path):
 
 def package_checklist(repo_root: Path, *, python_executable: Path | None = None):
     """Read reviewed static contracts, not provider secrets or Isaac imports."""
-    from .simulation_assets import _inventory, asset_root
+    from .simulation_assets import PUBLIC_BURGER_MANIFEST, _inventory, asset_root
     rows=[]
     checks = [
         ('web_dependencies', lambda: f'{_web_manifest(repo_root/"apps/twinpulse-web/dist")} built Web files match their build manifest.',
@@ -104,9 +104,12 @@ def package_checklist(repo_root: Path, *, python_executable: Path | None = None)
     for name, check, action in checks:
         try: rows.append(_row(name, 'ready', check()+' Static check only; not runtime qualification.'))
         except (OSError, ValueError, UnicodeError, PackageNotFoundError) as error:
-            # A code, optionally with fixed relative file names (Burger row), never a path.
-            code = str(error) if type(error) is ValueError and re.fullmatch(r'[A-Z0-9_]{1,80}(: [A-Za-z0-9_][A-Za-z0-9_./, ()-]{0,150})?', str(error)) else type(error).__name__
-            rows.append(_row(name, 'needs_action', code, action))
+            # A bare code, or the Burger digest code naming only its own fixed files; never a path or free text.
+            text = str(error) if type(error) is ValueError else ''
+            burger = re.fullmatch(r'SIM_BURGER_ASSET_DIGEST_MISMATCH: (.+?)(?: and [1-7] more)? '
+                                  r'\((?:match(?:es)? neither the public nor the original|mixes public and original) pins\)', text)
+            shown = re.fullmatch(r'[A-Z0-9_]{1,80}', text) or burger and set(burger[1].split(', ')) <= set(PUBLIC_BURGER_MANIFEST)
+            rows.append(_row(name, 'needs_action', text if shown else type(error).__name__, action))
     return rows
 
 
