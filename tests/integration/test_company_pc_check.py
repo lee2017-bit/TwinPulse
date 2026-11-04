@@ -13,8 +13,10 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -238,9 +240,23 @@ class TextSafetyTests(unittest.TestCase):
                       'ProxyServer: http=[credentials removed]@a.corp.example:80;https=b.corp.example:443;',
                       'ProxyOverride: <local>;*.corp.example;',
                       'AutoConfigURL: http://[credentials removed]@pac.corp.example/proxy.pac',
-                      'Python urllib uses: http=http://[credentials removed]@proxy.corp.example:8080, '
-                      'https=[credentials removed]@proxy.corp.example:8080, no=localhost,127.0.0.1,.corp.example'):
+                      'Python urllib proxy entries: http, https; bypass list: set; addresses: see the proxy settings above'):
             self.assertIn(shown, text)
+        # What CPython's own urllib derives from a WinINET ProxyServer whose password holds '=' or ';': pieces of the
+        # user name and password in the values and the names. The report names known entries only.
+        for server, entries in (('user0042:Pa7=Ss9@proxy.corp.example:8080', 'none (direct), 1 other entry (name not shown)'),
+                                ('http=user0042:Kz1;Wq2@a.corp.example:80;https=b.corp.example:443', 'http;'),
+                                ('socks=user0042:Mv3;Ty4@s.corp.example:1080', 'socks;'),
+                                ('https=user0042:Hn5;Rb6@b.corp.example:443', 'https;')):
+            with self.subTest(server=server):
+                registry = FakeWinreg({('HKCU', internet, 'ProxyEnable'): 1, ('HKCU', internet, 'ProxyServer'): server})
+                derived = windows_getproxies(registry, {})
+                self.assertTrue(any('user0042' in key + value for key, value in derived().items()))  # the leak this guards
+                part = check.system_section({}, winreg=registry, getproxies=derived, which=lambda name: None)
+                text = '\n'.join(part['lines'])
+                for secret in ('user0042', 'Pa7', 'Ss9', 'Kz1', 'Wq2', 'Mv3', 'Ty4', 'Hn5', 'Rb6'):
+                    self.assertNotIn(secret, text)
+                self.assertIn('Python urllib proxy entries: ' + entries, text + ';')
         # A WinINET list without credentials stays as it is; one whose password holds a separator is cut as one address.
         self.assertEqual(check._proxy_text('http=a:80;https=b:443', listed=True), 'http=a:80;https=b:443')
         self.assertEqual(check._proxy_text('user0042:pa;ss@proxy:8080', listed=True), '[credentials removed]@proxy:8080')
@@ -596,7 +612,8 @@ class InstallAndRuntimeTests(unittest.TestCase):
         self.assertEqual(keys[:3], ['lock_reused', 'desktop_settings_invalid', 'desktop_settings_bom'])
         self.assertEqual(keys[3:], ['launch_ready_timeout', 'launch_engine_ran', 'launch_engine_log_empty', 'launch_desktop_host',
                                     'launch_unresponsive'])
-        self.assertEqual(part['facts'], {'settings_isaac_root': r'D:\isaacsim'})
+        # read_settings refuses this file (unknown key), so the EXE uses no saved folder from it.
+        self.assertEqual(part['facts'], {'settings_refused': True, 'refused_settings_isaac_root': r'D:\isaacsim'})
         text = '\n'.join(part['lines'])
         self.assertIn('provider_settings.json: profile openai, host api.openai.com, models vendor/planner-model-1', text)
         self.assertIn('stage observer: Nebius-JW2 (nebius_token_factory), model vendor/observer-model-2', text)
@@ -766,8 +783,12 @@ class InstallAndRuntimeTests(unittest.TestCase):
                     refused = True
                 else:
                     refused = False
-                flagged = any(item['key'] == 'desktop_settings_invalid' for item in check._settings_part(runtime, {})[1])
+                facts = {}
+                flagged = any(item['key'] == 'desktop_settings_invalid' for item in check._settings_part(runtime, facts)[1])
                 self.assertEqual((refused, flagged), (expected, expected))
+                # The saved folder the check names is the one read_settings gives the EXE, and none from a refused file.
+                saved = None if refused else read_settings(runtime).get('isaac_root') or None
+                self.assertEqual((facts.get('settings_isaac_root'), bool(facts.get('settings_refused'))), (saved, refused))
 
     def test_provider_evidence_summary_never_includes_request_redacted(self):
         evidence = self.runtime / 'provider-evidence'
@@ -865,6 +886,43 @@ class NetworkTests(unittest.TestCase):
         eof = {'agent': 'x', 'error': 'SSLEOFError', 'detail': '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'}
         self.assertEqual(check.classify_pair(eof, eof), 'unreachable')  # a dropped TLS connection, not a certificate problem
 
+    def test_a_proxy_setting_urllib_cannot_use_is_named_without_its_credentials(self):
+        url = 'https://api.openai.com/v1/models'  # never reached: each setting below fails before any connection
+        for setting in ('http:/user0042:Secr3t@proxy.corp.example:8080', 'user0042:/Secr3t@proxy.corp.example:8080'):
+            with self.subTest(setting=setting), patch.dict(os.environ, {'HTTPS_PROXY': setting}, clear=True):
+                default, product = (check.probe(url, agent, timeout=2) for agent in (None, 'TwinPulse/0.1.0a1'))
+                text = check._probe_line('OpenAI', default) + '\n' + check._probe_line('OpenAI', product)
+                self.assertEqual((default['error'], product['detail']), ('ValueError', check.PROXY_SETTING_UNUSABLE))
+                self.assertEqual(check.classify_pair(default, product), 'proxy_unusable')
+                summary = check.summary_lines([{'key': 'net_proxy_unusable', 'name': 'OpenAI', 'host': 'api.openai.com',
+                                                'default': default, 'product': product}])[0]
+                for secret in ('user0042', 'Secr3t'):
+                    self.assertNotIn(secret, text + summary)
+                self.assertIn('프록시 설정 값을 Python이 쓸 수 없음', summary)
+        # What urllib derives from a WinINET ProxyServer whose password holds ';' (see the system test): http.client
+        # then says "nonnumeric port: '<a piece of the password>'".
+        derived = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://user0042:Wq5'}), check._NoRedirect)
+        facts = check.probe(url, None, opener=derived, timeout=2)
+        self.assertEqual((facts['error'], facts['detail']), ('InvalidURL', check.PROXY_SETTING_UNUSABLE))
+        self.assertNotIn('Wq5', check._probe_line('OpenAI', facts))
+        # Any other error text loses a 'user:password@' piece too; plain text and an e-mail address stay.
+        self.assertEqual(check.error_detail(OSError('Tunnel connection failed: 407 Proxy Authentication Required')),
+                         'Tunnel connection failed: 407 Proxy Authentication Required')
+        self.assertEqual(check.error_detail("via 'http:/user0042:Se@cr3t@proxy:8080' failed"), "via '[credentials removed]@proxy:8080' failed")
+        self.assertEqual(check.error_detail('mail admin@corp.example'), 'mail admin@corp.example')
+
+    def test_certificates_are_checked_as_the_exe_python_checks_them(self):
+        loose = getattr(ssl, 'VERIFY_X509_STRICT', 0) | getattr(ssl, 'VERIFY_X509_PARTIAL_CHAIN', 0)  # added by Python 3.13+
+        context = check.app_tls_context()
+        self.assertEqual((context.verify_mode, context.check_hostname, context.verify_flags & loose), (ssl.CERT_REQUIRED, True, 0))
+        handlers = [handler for handler in check.default_opener().handlers if isinstance(handler, urllib.request.HTTPSHandler)]
+        self.assertEqual([handler._context.verify_flags & loose for handler in handlers], [0])
+        exe_python = shutil.which('python3.12')  # the EXE embeds CPython 3.12
+        if exe_python:
+            done = subprocess.run([exe_python, '-I', '-c', 'import ssl; print(int(ssl.create_default_context().verify_flags))'],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(int(done.stdout), int(context.verify_flags))
+
 
 class ReportAndSystemTests(unittest.TestCase):
     def setUp(self):
@@ -889,6 +947,36 @@ class ReportAndSystemTests(unittest.TestCase):
         (profile / 'OneDrive/Desktop').mkdir(parents=True)
         self.assertEqual(check.desktop_folder({'USERPROFILE': str(profile)}, shell), profile / 'OneDrive/Desktop')
         self.assertEqual(check.desktop_folder({'USERPROFILE': str(profile)}, FakeWinreg({})), profile / 'Desktop')
+
+    def test_a_desktop_that_refuses_the_report_leaves_it_to_the_next_folder(self):
+        profile, current = self.root / 'profile', self.root / 'current'
+        (profile / 'Desktop').mkdir(parents=True)
+        current.mkdir()
+        real_open = open
+
+        def guarded(path, *args, **kwargs):  # Controlled Folder Access: the Desktop exists but refuses new files
+            if Path(path).parent == profile / 'Desktop':
+                raise PermissionError(13, 'Access is denied', str(path))
+            return real_open(path, *args, **kwargs)
+        with patch.object(check, 'open', guarded, create=True):
+            self.assertEqual(check.write_report('x\n', {'USERPROFILE': str(profile)}, current).parent, current)
+            self.assertEqual(check.write_report('x\n', {'USERPROFILE': str(profile)}, profile / 'Desktop').parent, profile)
+            with self.assertRaisesRegex(OSError, 'no folder took the report'):  # --output-dir stays the only folder
+                check.write_report('x\n', {'USERPROFILE': str(profile)}, current, profile / 'Desktop')
+        self.assertEqual(list((profile / 'Desktop').iterdir()), [])
+
+        class Full(io.StringIO):
+            def write(self, text):
+                raise OSError(28, 'No space left on device')
+
+        def full_disk(path, *args, **kwargs):  # the file is created, then writing it fails
+            if Path(path).parent == profile / 'Desktop':
+                real_open(path, *args, **kwargs).close()
+                return Full()
+            return real_open(path, *args, **kwargs)
+        with patch.object(check, 'open', full_disk, create=True):
+            self.assertEqual(check.write_report('x\n', {'USERPROFILE': str(profile)}, current).parent, current)
+        self.assertEqual(list((profile / 'Desktop').iterdir()), [])  # no half report stays behind
 
     def test_report_is_never_written_inside_a_twinpulse_package(self):
         profile, package = self.root / 'profile', self.root / 'TP' / 'TwinPulse'
@@ -1000,9 +1088,15 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual([item for item in broken['findings'] if item['key'].startswith('proxy_')], [])  # unknown: no claim
 
     def test_profile_characters_the_app_quotes_or_refuses(self):
+        keys = ('profile_special_chars', 'profile_import_refused_chars', 'profile_unsupported_chars')
+        said = {'profile_special_chars': '따옴표로 감싸 시작하므로 지원됨',
+                'profile_import_refused_chars': 'ENVIRONMENT_WORKER_PATH_INVALID, LIBRARY_WORKER_PATH_UNSAFE',
+                'profile_unsupported_chars': 'Isaac 엔진을 시작하지 않음(engine_path_unsupported)'}
         for profile, local, expected in (
-                (r'C:\Users\kim&lee', None, ('profile_special_chars', ['&'])),
-                (r'C:\Users\a(b)^c', None, ('profile_special_chars', ['^', '(', ')'])),
+                (r'C:\Users\kim&lee', None, ('profile_import_refused_chars', ['&'])),
+                (r'C:\Users\a(b)^c', None, ('profile_import_refused_chars', ['^', '(', ')'])),
+                (r'C:\Users\a(b)', None, ('profile_special_chars', ['(', ')'])),
+                (r'C:\Users\kim&lee', r'D:\Local', ('profile_special_chars', ['&'])),  # the workers run from D:\Local
                 (r'C:\Users\Kim Lee', None, None),
                 (r'C:\Users\100%user', None, ('profile_unsupported_chars', ['%'])),
                 (r'C:\Users\user0042', r'D:\Data"\AppData\Local', ('profile_unsupported_chars', ['"'])),
@@ -1010,13 +1104,53 @@ class ReportAndSystemTests(unittest.TestCase):
             with self.subTest(profile=profile, local=local):
                 env = {'USERPROFILE': profile, 'LOCALAPPDATA': local or profile + r'\AppData\Local'}
                 part = check.system_section(env, winreg=FakeWinreg({}), getproxies=dict, which=lambda name: None)
-                found = [item for item in part['findings'] if item['key'] in ('profile_special_chars', 'profile_unsupported_chars')]
+                found = [item for item in part['findings'] if item['key'] in keys]
                 self.assertEqual([(item['key'], item['chars']) for item in found], [expected] if expected else [])
                 for line in check.summary_lines(found)[:-1]:
                     self.assertIn(' '.join(expected[1]) + ' 문자 있음', line)
-                    self.assertIn('따옴표로 감싸 시작하므로 지원됨' if expected[0] == 'profile_special_chars'
-                                  else 'Isaac 엔진을 시작하지 않음(engine_path_unsupported)', line)
-                    self.assertNotIn('RoomPlan', line)
+                    self.assertIn(said[expected[0]], line)
+
+    def test_path_characters_are_the_apps_own_rules(self):
+        from twinpulse_app import environment_workspace, process_manager
+        app = ROOT / 'packages/twinpulse_app/src/twinpulse_app'
+        for module, code in (('environment_workspace.py', 'ENVIRONMENT_WORKER_PATH_INVALID'), ('library_workspace.py', 'LIBRARY_WORKER_PATH_UNSAFE')):
+            refused = re.findall(r"for c in '([^']*)'\) for \w+ in command\):raise ValueError\('" + code + r"'\)",
+                                 (app / module).read_text(encoding='utf-8'))
+            self.assertEqual([set(item.replace('\\n', '').replace('\\r', '')) for item in refused], [set(check.WORKER_REFUSED_CHARS)], module)
+        self.assertEqual(set(process_manager._CMD_METACHARACTERS), set(check.CMD_METACHARACTERS))
+        self.assertEqual(set(process_manager._CMD_UNSUPPORTED) - {'\r', '\n'}, set(check.CMD_UNSUPPORTED_CHARS))
+        for command in ([r'C:\isaacsim\python.bat', '-B'], [r'D:\R&D\isaacsim\python.bat', '-B'], [r'C:\Users\a(b)\x\python.bat', 'C:\\dir\\'],
+                        [r'C:\isaacsim\python.bat', r'C:\Users\a^b\script.py'], [r'C:\Users\a b\python.exe', 'x&y'],
+                        [r'C:\Users\100%\python.bat'], [r'C:\isaacsim\python.bat', 'say "hi"'], [r'C:\isaacsim\python.bat', 'a\nb'], []):
+            with self.subTest(command=command):
+                try:
+                    app_form = process_manager._batch_command_line(command)
+                except process_manager.ProcessManagerError as error:
+                    self.assertEqual(error.code, 'engine_path_unsupported')
+                    with self.assertRaisesRegex(ValueError, '^engine_path_unsupported$'):
+                        check.batch_command_line(command)
+                else:
+                    self.assertEqual(check.batch_command_line(command), app_form)
+        # The App's own environment import, run from each user folder: refused exactly where the check says so.
+        for user in ('kim&lee', 'a^b', 'a(b)', 'Kim Lee'):
+            with self.subTest(user=user), tempfile.TemporaryDirectory() as temp:
+                local = Path(temp) / 'Users' / user / 'AppData' / 'Local'
+                isaac = Path(temp) / 'isaacsim'
+                write(isaac / 'python.bat', '@echo off')
+                folder = local / 'TwinPulse' / 'runtime' / 'environment-imports' / 'job1'
+                write(folder / 'room.usda', '#usda 1.0')
+                job, ran = {'status': 'inspecting', 'error': None, 'source_sha256': ''}, []
+                with patch.dict(os.environ, {'LOCALAPPDATA': str(local), 'TWINPULSE_ISAAC_ROOT': str(isaac)}), \
+                        patch.object(environment_workspace, 'run_finite', lambda *args, **kwargs: ran.append(args)), \
+                        patch.object(environment_workspace, 'resource_root',
+                                     lambda: local / 'TwinPulse' / 'installed' / 'releases' / 'r1' / '_internal' / 'resources'):
+                    environment_workspace.EnvironmentWorkspace._inspect(SimpleNamespace(lock=threading.RLock()), folder, folder / 'room.usda',
+                                                                         None, job, None, SimpleNamespace(finish=lambda *a, **k: None))
+                refused_by_app = 'ENVIRONMENT_WORKER_PATH_INVALID' in str(job.get('error')) and not ran
+                part = check.system_section({'USERPROFILE': str(local.parents[1]), 'LOCALAPPDATA': str(local)}, winreg=FakeWinreg({}),
+                                            getproxies=dict, which=lambda name: None)
+                said_refused = any(item['key'] == 'profile_import_refused_chars' for item in part['findings'])
+                self.assertEqual((refused_by_app, said_refused), (user in ('kim&lee', 'a^b'),) * 2)
 
     def test_isaac_section_reads_version_and_redacts_kit_lines(self):
         isaac = self.root / 'isaacsim'
@@ -1103,6 +1237,13 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertIn(f'폴더 선택 창에서 {known} 선택', summary[0])
         calls, found, summary = run([], candidates=())
         self.assertEqual((calls, list(found)), ([], ['isaac_missing']))
+        # A refused desktop-settings.json: its folder is listed, the EXE uses what it finds once the file is renamed.
+        part = check.isaac_section({}, [('refused desktop-settings.json', known)], candidates=(older, unversioned, release),
+                                   saved_refused=True, popen=lambda args, **options: SimpleNamespace(
+                                       pid=1, returncode=1, communicate=lambda timeout=None: ('', None)))
+        self.assertIn(f'The EXE uses (once desktop-settings.json is renamed): {release}', part['lines'])
+        self.assertEqual([item['root'] for item in part['findings'] if item['key'] == 'isaac_found'], [release])
+        self.assertTrue(any(line.startswith(f'{known} (refused desktop-settings.json): python.bat yes') for line in part['lines']))
 
     def test_isaac_version_warning_follows_the_apps_startup_check(self):
         from twinpulse_app.startup_checks import file_checklist
@@ -1152,6 +1293,40 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertIn('Isaac Python probe, as TwinPulse starts it (PYTHONNOUSERSITE=1): not run (TimeoutExpired)', lines)
         summary = check.summary_lines([{'key': 'isaac_needs_user_site', 'modules': ['PIL']}])
         self.assertIn('PIL', summary[0])
+
+    def test_isaac_python_probe_starts_python_bat_as_the_app_starts_it(self):
+        from twinpulse_app import process_manager
+        code = "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"
+        answer = {'python': '3.11.9', 'user_site': False, 'user_site_path': 'x', 'modules': {}}
+        for root, quoted in ((r'D:\isaacsim', False), (r'D:\R&D\isaacsim', True), (r'C:\Users\a^b\isaacsim', True),
+                             (r'D:\tools (x86)\isaacsim', True), (r'D:\Isaac Sim\6.0.1', False)):
+            with self.subTest(root=root):
+                calls = []
+                check.isaac_python_probe(root, {}, popen=fake_python_bat({'default': answer, 'twinpulse': answer}, calls))
+                program = str(Path(root) / 'python.bat')
+                if quoted:  # one line, every argument quoted: exactly the App's rule for this command
+                    expected = process_manager._batch_command_line([program, '-B', '-c', code])
+                    self.assertIsInstance(expected, str)
+                else:  # a list; subprocess puts the code, which holds spaces, inside quotes
+                    expected = [program, '-B', '-c', code]
+                    self.assertTrue(subprocess.list2cmdline(expected).endswith(' "' + code + '"'))
+                self.assertEqual([args for args, _, _ in calls], [expected] * 2)
+        calls = []
+        results = check.isaac_python_probe(r'D:\100%\isaacsim', {}, popen=fake_python_bat({}, calls))
+        self.assertEqual(calls, [])  # the App refuses such a folder; the check does not start it either
+        self.assertIn('engine_path_unsupported', results['default']['failed'])
+        # The folder the EXE uses: '&' or '^' lets the engine start but stops USD imports; '%' stops the engine.
+        for name, key in (('R&D', 'isaac_path_import_refused'), ('a^b', 'isaac_path_import_refused'), ('100%', 'isaac_path_unsupported'),
+                          ('tools (x86)', None)):
+            with self.subTest(folder=name):
+                write(self.root / name / 'isaacsim' / 'python.bat', '@echo off')
+                part = check.isaac_section({}, [], candidates=(str(self.root / name / 'isaacsim'),),
+                                           popen=fake_python_bat({'default': answer, 'twinpulse': answer}, []))
+                found = [item for item in part['findings'] if item['key'].startswith('isaac_path_')]
+                self.assertEqual([item['key'] for item in found], [key] if key else [])
+                for line in check.summary_lines(found)[:-1]:
+                    self.assertIn('engine_path_unsupported' if key == 'isaac_path_unsupported'
+                                  else 'ENVIRONMENT_WORKER_PATH_INVALID, LIBRARY_WORKER_PATH_UNSAFE', line)
 
     def test_a_probe_that_hangs_is_ended_with_its_children_and_the_next_still_runs(self):
         answer = {'python': '3.11.9', 'user_site': False, 'user_site_path': 'x', 'modules': {}}
@@ -1244,6 +1419,14 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual(sorted(name for name in modules if name not in sys.stdlib_module_names), [])
         self.assertFalse(any(name.startswith('twinpulse') for name in modules))
         ast.parse((ROOT / 'scripts/twinpulse_company_pc_check.py').read_text(encoding='utf-8'), feature_version=(3, 10))
+        # feature_version does not reject 3.12-only f-strings on 3.12+, so compile with a real older Python where one is found
+        # (Isaac's python.bat is 3.11). Nothing is written: no .pyc.
+        older = [path for path in map(shutil.which, ('python3.10', 'python3.11')) if path]
+        for python in older:
+            with self.subTest(python=python):
+                done = subprocess.run([python, '-I', '-c', 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")',
+                                       str(ROOT / 'scripts/twinpulse_company_pc_check.py')], capture_output=True, text=True, timeout=120)
+                self.assertEqual((done.returncode, done.stderr), (0, ''))
 
 
 if __name__ == '__main__':

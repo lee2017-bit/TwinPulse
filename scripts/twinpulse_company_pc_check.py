@@ -27,10 +27,11 @@ import html
 import http.client
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import platform
 import re
 import shutil
+import ssl
 import struct
 import subprocess
 import sys
@@ -369,6 +370,8 @@ def desktop_folder(env, winreg=None):
 # ---- 1. system -----------------------------------------------------------------------------
 
 CREDENTIALS_REMOVED = '[credentials removed]'
+# Proxy entry names printed for urllib.request.getproxies(); others are only counted (see system_section).
+URLLIB_PROXY_KINDS = ('http', 'https', 'ftp', 'socks', 'all')
 # Where a proxy entry's address starts: after a WinINET 'https=' and a 'scheme://', both optional.
 _PROXY_ENTRY_START = re.compile(r'(?i)(?:(?:https?|ftp|socks|gopher)=)?(?:[a-z][a-z0-9+.-]{0,20}://)?')
 # A host[:port][/path] address with no user name or password in it.
@@ -408,6 +411,29 @@ def _proxy_text(value, limit=200, *, listed=False):
     return short(_without_userinfo(text), limit)
 
 
+# python.bat command rules of the App. process_manager._batch_command_line quotes every argument of the engine
+# command when one holds a CMD_METACHARACTERS character and refuses CMD_UNSUPPORTED_CHARS (engine_path_unsupported).
+# Its USD environment and library import workers refuse WORKER_REFUSED_CHARS in any path of their command
+# (ENVIRONMENT_WORKER_PATH_INVALID, LIBRARY_WORKER_PATH_UNSAFE); those paths lie under LOCALAPPDATA and the Isaac folder.
+CMD_METACHARACTERS = '&|<>^()'
+CMD_UNSUPPORTED_CHARS = '%"'
+WORKER_REFUSED_CHARS = '&|<>^%'
+
+
+def batch_command_line(command):
+    """The App's Windows form of a python.bat command (process_manager._batch_command_line): the list as it is,
+    or, when an argument holds one of & | < > ^ ( ), one line with every argument double-quoted (backslashes
+    before a closing quote doubled), because cmd.exe re-reads the line. " % and line breaks: ValueError."""
+    parts = [str(part) for part in command]
+    if not parts or PureWindowsPath(parts[0]).suffix.lower() not in {'.bat', '.cmd'}:
+        return parts
+    if any(set(CMD_UNSUPPORTED_CHARS + '\r\n').intersection(part) for part in parts):
+        raise ValueError('engine_path_unsupported')
+    if not any(set(CMD_METACHARACTERS).intersection(part) for part in parts):
+        return parts
+    return ' '.join('"' + re.sub(r'(\\+)$', r'\1\1', part) + '"' for part in parts)
+
+
 def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
     run, getproxies, which = run or subprocess.run, getproxies or urllib.request.getproxies, which or shutil.which
     lines, findings = [], []
@@ -428,10 +454,14 @@ def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
         if value and not value.isascii() and not any(f['key'] == 'profile_non_ascii' for f in findings):
             findings.append({'key': 'profile_non_ascii'})
     # The App quotes the Isaac engine command for & | < > ^ ( ) and refuses % and " (engine_path_unsupported).
+    # Its other python.bat workers, which run from LOCALAPPDATA, refuse WORKER_REFUSED_CHARS outright.
     profile = (env.get('USERPROFILE') or '') + (env.get('LOCALAPPDATA') or '')
-    unsupported, special = [c for c in '%"' if c in profile], [c for c in '&|<>^()' if c in profile]
+    local = env.get('LOCALAPPDATA') or (env.get('USERPROFILE') or '') + r'\AppData\Local'
+    unsupported, special = [c for c in CMD_UNSUPPORTED_CHARS if c in profile], [c for c in CMD_METACHARACTERS if c in profile]
     if unsupported:
         findings.append({'key': 'profile_unsupported_chars', 'chars': unsupported})
+    elif any(c in local for c in WORKER_REFUSED_CHARS):
+        findings.append({'key': 'profile_import_refused_chars', 'chars': special})
     elif special:
         findings.append({'key': 'profile_special_chars', 'chars': special})
     if winreg is not None:
@@ -452,8 +482,14 @@ def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
                      f'AutoConfigURL: {_proxy_text(pac)}')
     try:
         used = getproxies()
-        lines.append('Python urllib uses: ' + (', '.join(f'{k}={_proxy_text(v, 120, listed=k == "no")}'
-                                                         for k, v in sorted(used.items())) or 'no proxy'))
+        # Entry names only, never values: urllib splits a WinINET ProxyServer at ';' and '=', so a password
+        # holding either leaves pieces of the user name and password in what it derives, even in the names.
+        kinds = [kind for kind in URLLIB_PROXY_KINDS if used.get(kind)]
+        others = len([kind for kind in used if kind not in URLLIB_PROXY_KINDS and kind != 'no'])
+        lines.append('Python urllib proxy entries: ' + (', '.join(kinds) or 'none (direct)')
+                     + (f", {others} other entr{'y' if others == 1 else 'ies'} (name not shown)" if others else '')
+                     + ('; bypass list: set' if used.get('no') else '')
+                     + ('; addresses: see the proxy settings above' if kinds else ''))
     except Exception as error:
         used = None
         lines.append(f'Python urllib proxies: unknown ({type(error).__name__})')
@@ -607,13 +643,21 @@ def isaac_python_probe(root, env, *, popen=None, kill=None, timeout=90):
     TwinPulse starts the engine (PYTHONNOUSERSITE=1, no PYTHONHOME/PYTHONPATH). Read-only (-B).
     stdin is empty, and a run that hangs is ended with all its children after timeout seconds."""
     popen, kill = popen or subprocess.Popen, kill or kill_tree
+    # python.bat is started as the App starts it from this folder (batch_command_line decides on the folder;
+    # the -c code below always travels inside quotes, so its parentheses are not counted).
+    code_argument = "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"
+    try:
+        start = batch_command_line([str(Path(root) / 'python.bat'), '-B'])
+    except ValueError:
+        failed = {'failed': 'not started: the Isaac folder path holds % or ", which the App refuses (engine_path_unsupported)'}
+        return {'default': dict(failed), 'twinpulse': dict(failed)}
+    command = start + ['-c', code_argument] if isinstance(start, list) else start + ' "-c" "' + code_argument + '"'
     results = {}
     for mode, extra in (('default', {}), ('twinpulse', {'PYTHONNOUSERSITE': '1'})):
         child = {key: value for key, value in env.items() if key.upper() not in {'PYTHONHOME', 'PYTHONPATH', 'PYTHONNOUSERSITE'}}
         child.update(extra, TWINPULSE_PROBE_CODE=ISAAC_PYTHON_PROBE)
         try:
-            code, stdout = _run_bounded([str(Path(root) / 'python.bat'), '-B', '-c', "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"],
-                                        popen=popen, kill=kill, timeout=timeout, env=child, cwd=str(root))
+            code, stdout = _run_bounded(command, popen=popen, kill=kill, timeout=timeout, env=child, cwd=str(root))
             found = [line[len('TWINPULSE_PROBE='):] for line in (stdout or '').splitlines() if line.startswith('TWINPULSE_PROBE=')]
             value = json.loads(found[-1]) if found else None
             results[mode] = value if isinstance(value, dict) else {'failed': f'exit {code}, no probe line'}
@@ -662,7 +706,7 @@ def _probe_part(results):
 SETTINGS_LABEL = 'desktop-settings'  # the roots entry that holds the EXE's saved isaac_root
 
 
-def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, popen=None):
+def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, popen=None, saved_refused=False):
     """Every known Isaac folder; then the one the EXE will use (find_isaac_root over the saved
     desktop-settings folder and the usual folders), whose version is judged and whose python.bat is probed."""
     lines, findings, seen, valid = [], [], set(), []
@@ -688,8 +732,15 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
         lines.append('The EXE finds no Isaac folder on its own and asks for one with a folder picker at the first start')
     else:
         version = _version_text(Path(used) / 'VERSION')
-        lines.append(f'The EXE uses: {used}' + (' (saved setting)' if used == saved else ''))
+        lines.append(f'The EXE uses' + (' (once desktop-settings.json is renamed)' if saved_refused else '')
+                     + f': {used}' + (' (saved setting)' if used == saved else ''))
         findings.append({'key': 'isaac_found', 'root': used, 'version': version})
+        unsupported = [c for c in CMD_UNSUPPORTED_CHARS if c in used]
+        refused = [c for c in WORKER_REFUSED_CHARS if c in used]
+        if unsupported:
+            findings.append({'key': 'isaac_path_unsupported', 'root': used, 'chars': unsupported})
+        elif refused:
+            findings.append({'key': 'isaac_path_import_refused', 'root': used, 'chars': refused})
         if saved and used != saved:
             findings.append({'key': 'isaac_saved_unusable', 'saved': saved, 'root': used})
         if version and not ISAAC_RELEASE.fullmatch(version):
@@ -1301,9 +1352,11 @@ def _settings_part(runtime, facts):
     if not path.exists():  # a link to nothing is no file to read_settings either: it uses the defaults
         return ['desktop-settings.json: none (defaults: port 8765, Isaac C:\\isaacsim)'], []
     if path.is_symlink() or not path.is_file():
+        facts['settings_refused'] = True
         return [f"desktop-settings.json: {'a link' if path.is_symlink() else 'not a file'}, refused"], [{'key': 'desktop_settings_invalid'}]
     settings, info = read_json(path, SETTINGS_MAX_BYTES)
     if not isinstance(settings, dict):
+        facts['settings_refused'] = True
         return [f"desktop-settings.json: not parsed ({info['error'] or 'unexpected shape'})"], [{'key': 'desktop_settings_invalid'}]
     findings = []
     unknown = sorted(str(key) for key in settings if key not in ('schema_version', 'preferred_port', 'isaac_root'))
@@ -1311,12 +1364,15 @@ def _settings_part(runtime, facts):
     line = (f"desktop-settings.json: port {ident(settings.get('preferred_port'))}, "
             f"isaac_root {(root or '-') if isinstance(root, str) else '(not text)' if 'isaac_root' in settings else '-'}, "
             f"BOM {'YES' if info['bom'] else 'no'}" + (f", unknown keys: {names(unknown)}" if unknown else ''))
-    if isinstance(root, str) and root:
-        facts['settings_isaac_root'] = root
     port = settings.get('preferred_port')
     if (unknown or settings.get('schema_version') != '1.0' or type(port) is not int or not 1024 <= port <= 65535
             or ('isaac_root' in settings and not isinstance(root, str))):
         findings.append({'key': 'desktop_settings_invalid'})  # the same rules as desktop_settings.read_settings
+        facts['settings_refused'] = True
+        if isinstance(root, str) and root:  # listed, but the EXE does not use it: it does not read this file
+            facts['refused_settings_isaac_root'] = root
+    elif isinstance(root, str) and root:
+        facts['settings_isaac_root'] = root
     if info['bom']:
         findings.append({'key': 'desktop_settings_bom'})
     return [line], findings
@@ -1399,9 +1455,33 @@ def _facts(status, headers, body, agent):
     return facts
 
 
+def app_tls_context():
+    """Certificate checks as the EXE's CPython 3.12 makes them: the default context without VERIFY_X509_STRICT and
+    VERIFY_X509_PARTIAL_CHAIN, which Python 3.13+ adds. The chain and the host name are still verified."""
+    context = ssl.create_default_context()
+    context.verify_flags &= ~(getattr(ssl, 'VERIFY_X509_STRICT', 0) | getattr(ssl, 'VERIFY_X509_PARTIAL_CHAIN', 0))
+    return context
+
+
+def default_opener():
+    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=app_tls_context()))
+
+
+# The probe URLs are fixed, so a ValueError or http.client.InvalidURL comes from the proxy setting, and its text
+# quotes that setting (urllib: "proxy URL with no authority: '<all of it>'"; http.client: "nonnumeric port: '<a piece>'").
+PROXY_SETTING_UNUSABLE = 'the proxy setting could not be used (see the proxy lines in 1. System)'
+_USERINFO_PIECE = re.compile(r'''[^\s'"<>()\[\]]*@''')
+
+
+def error_detail(reason):
+    """An error text for the report with every 'user:password@' piece removed, with or without a scheme."""
+    return short(_USERINFO_PIECE.sub(lambda match: CREDENTIALS_REMOVED + '@' if ':' in match.group(0) else match.group(0),
+                                     str(reason)), 160)
+
+
 def probe(url, user_agent=None, *, timeout=10.0, opener=None):
     """One GET without Authorization. user_agent None keeps urllib's own default User-Agent."""
-    opener = opener or urllib.request.build_opener(_NoRedirect)
+    opener = opener or default_opener()
     headers = {} if user_agent is None else {'User-Agent': user_agent, 'Accept': 'application/json'}
     agent = user_agent or dict(getattr(opener, 'addheaders', [])).get('User-agent', 'Python-urllib (default)')
     request = urllib.request.Request(url, headers=headers, method='GET')
@@ -1417,11 +1497,15 @@ def probe(url, user_agent=None, *, timeout=10.0, opener=None):
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
         reason = getattr(error, 'reason', error)
         name = type(reason).__name__ if isinstance(reason, BaseException) else type(error).__name__
-        return {'agent': agent, 'error': name, 'detail': short(reason, 160)}
+        if isinstance(reason, (ValueError, http.client.InvalidURL)):
+            return {'agent': agent, 'error': name, 'detail': PROXY_SETTING_UNUSABLE}
+        return {'agent': agent, 'error': name, 'detail': error_detail(reason)}
 
 
 def _probe_kind(facts):
     if 'error' in facts:
+        if facts.get('detail') == PROXY_SETTING_UNUSABLE:
+            return 'proxy'
         text = (facts['error'] + ' ' + facts.get('detail', '')).lower()
         return 'tls' if 'certificate' in text else 'error'  # an SSL EOF or reset is a dropped connection, not a certificate
     if facts['body']['kind'] == 'html' or 300 <= facts['status'] < 400:
@@ -1432,6 +1516,8 @@ def _probe_kind(facts):
 
 def classify_pair(default, product):
     kinds = (_probe_kind(default), _probe_kind(product))
+    if 'proxy' in kinds:
+        return 'proxy_unusable'
     if 'tls' in kinds:
         return 'tls'
     if kinds == ('error', 'error'):  # one answered request means the host is reachable: 'unclear' below
@@ -1453,6 +1539,8 @@ def network_section(version, *, source=None, targets=NETWORK_TARGETS, opener=Non
     lines = [f'Unauthenticated GET, no Authorization header, {timeout:g} s timeout, redirects not followed.',
              f'Compared: urllib default User-Agent vs "{agent}" (TwinPulse\'s own, honest User-Agent; no browser User-Agent).',
              *([f'TwinPulse version in that User-Agent: from {source}'] if source else []),
+             f'TLS: certificates checked as the EXE checks them (CPython 3.12 rules) with Python {platform.python_version()}, '
+             f'{ssl.OPENSSL_VERSION}.',
              'Reading: 401 JSON = the API answered (expected without a key); a 503/403 HTML page = a filter answered.']
     findings = []
     for name, url in targets:
@@ -1497,6 +1585,17 @@ def summary_lines(findings):
             if key == 'profile_special_chars':
                 text = (f"사용자 경로에 {' '.join(item['chars'])} 문자 있음 -> 새 버전은 Isaac 엔진 명령을 따옴표로 감싸 시작하므로 지원됨"
                         "(이전 버전은 엔진 시작 실패 가능), 문제가 나면 이 줄을 전달")
+            elif key == 'profile_import_refused_chars':
+                text = (f"사용자 경로에 {' '.join(item['chars'])} 문자 있음 -> Isaac 엔진은 시작되지만(새 버전은 따옴표로 감쌈) "
+                        "USD 환경 가져오기와 라이브러리 USD 가져오기는 거부됨(ENVIRONMENT_WORKER_PATH_INVALID, "
+                        "LIBRARY_WORKER_PATH_UNSAFE), 이 문자가 없는 Windows 계정(사용자 폴더)에서 실행 권장")
+            elif key == 'isaac_path_unsupported':
+                text = (f"Isaac 폴더 경로({item['root']})에 {' '.join(item['chars'])} 문자 있음 -> TwinPulse가 Isaac 엔진을 "
+                        "시작하지 않음(engine_path_unsupported), 이 문자가 없는 폴더에 Isaac 설치")
+            elif key == 'isaac_path_import_refused':
+                text = (f"Isaac 폴더 경로({item['root']})에 {' '.join(item['chars'])} 문자 있음 -> 엔진은 시작되지만 USD 환경 "
+                        "가져오기와 라이브러리 USD 가져오기는 거부됨(ENVIRONMENT_WORKER_PATH_INVALID, LIBRARY_WORKER_PATH_UNSAFE), "
+                        "이 문자가 없는 폴더에 Isaac 설치 권장")
             elif key == 'profile_unsupported_chars':
                 text = (f"사용자 경로에 {' '.join(item['chars'])} 문자 있음 -> TwinPulse가 Isaac 엔진을 시작하지 않음"
                         "(engine_path_unsupported), 이 문자가 없는 Windows 계정(사용자 폴더)에서 실행")
@@ -1597,7 +1696,11 @@ def summary_lines(findings):
             elif key == 'net_reachable':
                 text = f"{item['name']}: 접속 정상 (키 없이 {_status_of(item['product'])} JSON = 정상)"
             elif key == 'net_tls':
-                text = f"{item['name']}: TLS 인증서 검증 실패 -> 회사 보안 장비 인증서 문제 가능, IT 확인 (검증을 끄지 말 것)"
+                text = (f"{item['name']}: TLS 인증서 검증 실패 (EXE와 같은 규칙, 이 검사는 Python {platform.python_version()}) "
+                        "-> 회사 보안 장비 인증서 문제 가능, IT 확인 (검증을 끄지 말 것)")
+            elif key == 'net_proxy_unusable':
+                text = (f"{item['name']}: 프록시 설정 값을 Python이 쓸 수 없음 -> TwinPulse도 같은 이유로 연결하지 못함, "
+                        "1. System의 프록시 줄(사용자 이름·비밀번호는 표시 안 함)을 IT와 확인")
             elif key == 'net_unreachable':
                 text = (f"{item['name']}: 연결 실패 ({_status_of(item['default'])} / {_status_of(item['product'])}) "
                         f"-> 네트워크/방화벽/프록시 확인")
@@ -1634,17 +1737,20 @@ def inside_package(folder):
         return True  # cannot tell: never risk writing into a package
 
 
-def report_folder(env, cwd, output_dir=None, *, winreg=None):
-    """--output-dir, else the Desktop, else the current folder, else the user folder: never inside a package."""
+def report_folders(env, cwd, output_dir=None, *, winreg=None):
+    """--output-dir alone, else the Desktop, the current folder and the user folder in that order: never inside a package."""
     if output_dir:
         if inside_package(output_dir):
             raise ValueError(f'{output_dir} is inside a TwinPulse package folder; choose a folder outside it')
-        return Path(output_dir)
+        return [Path(output_dir)]
     profile = Path(env['USERPROFILE']) if env.get('USERPROFILE') else None
+    folders = []
     for folder in (desktop_folder(env, winreg), Path(cwd), profile):
-        if folder is not None and folder.is_dir() and not inside_package(folder):
-            return folder
-    raise FileNotFoundError('no Desktop, current or user folder outside the TwinPulse package folders')
+        if folder is not None and folder.is_dir() and not inside_package(folder) and folder not in folders:
+            folders.append(folder)
+    if not folders:
+        raise FileNotFoundError('no Desktop, current or user folder outside the TwinPulse package folders')
+    return folders
 
 
 def package_product_version(folder):
@@ -1656,18 +1762,29 @@ def package_product_version(folder):
 
 
 def write_report(text, env, cwd, output_dir=None, *, now=None, winreg=None):
-    """The only file this check writes, in report_folder()."""
-    folder = report_folder(env, cwd, output_dir, winreg=winreg)
+    """The only file this check writes: in the first of report_folders() that takes it (a Desktop that refuses the
+    file, for example under Controlled Folder Access, leaves it to the next folder). Never overwrites a file."""
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now))
-    for attempt in range(100):
-        path = folder / (f'TwinPulse-PC-Check-{stamp}' + (f'-{attempt}' if attempt else '') + '.txt')
+    refused = []
+    for folder in report_folders(env, cwd, output_dir, winreg=winreg):
         try:
-            with open(path, 'x', encoding='utf-8-sig', newline='\r\n') as stream:
-                stream.write(text)
-            return path
-        except FileExistsError:
-            continue
-    raise FileExistsError(str(folder))
+            for attempt in range(100):
+                path = folder / (f'TwinPulse-PC-Check-{stamp}' + (f'-{attempt}' if attempt else '') + '.txt')
+                try:
+                    stream = open(path, 'x', encoding='utf-8-sig', newline='\r\n')
+                except FileExistsError:
+                    continue
+                try:
+                    with stream:
+                        stream.write(text)
+                except OSError:
+                    path.unlink(missing_ok=True)  # only the file this attempt created: no half report stays behind
+                    raise
+                return path
+            raise FileExistsError(str(folder))
+        except OSError as error:
+            refused.append(f'{folder}: {type(error).__name__}')
+    raise OSError('no folder took the report (' + '; '.join(refused) + ')')
 
 
 def _guard(title, function, *args, **kwargs):
@@ -1707,8 +1824,10 @@ def main(argv=None, *, env=None, cwd=None, out=None):
     system = _guard('System', system_section, env)
     say('[4/5] Isaac Sim (imports numpy/PIL in Isaac Python twice, read-only)')
     roots = [(SETTINGS_LABEL, runtime['facts'].get('settings_isaac_root')),
+             ('refused desktop-settings.json', runtime['facts'].get('refused_settings_isaac_root')),
              ('active-release.json', install['facts'].get('pointer_isaac_root'))]
-    isaac = _guard('Isaac', isaac_section, env, [(label, root) for label, root in roots if root])
+    isaac = _guard('Isaac', isaac_section, env, [(label, root) for label, root in roots if root],
+                   saved_refused=bool(runtime['facts'].get('settings_refused')))
     if args.no_network:
         say('[5/5] Network: skipped')
         network = section(['Skipped (--no-network).'], [{'key': 'net_skipped'}])
