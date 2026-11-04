@@ -91,7 +91,8 @@ _SECRETS = (
     (re.compile(r'\bsk-[A-Za-z0-9_-]{8,}'), '[REDACTED]'),
     (re.compile(r'(?i)((?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|token)'
                 r'["\']?\s*[:=]\s*["\']?)[^\s"\'<>,;&]+'), r'\1[REDACTED]'),
-    (re.compile(r'(?i)\b([a-z][a-z0-9+.-]{1,20}://)[^/\s@:]+(?::[^/\s@]*)?@'), r'\1[REDACTED]@'),
+    # A URL's user name and password, up to its LAST '@': a password may hold '@' itself.
+    (re.compile(r'(?i)\b([a-z][a-z0-9+.-]{1,20}://)[^/\s]+@'), r'\1[REDACTED]@'),
 )
 # Long base64/hex runs (session ids, bootstrap secrets, keys); paths and versions stay readable.
 _STANDARD_BASE64 = re.compile(r'(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{30,}={1,2}|(?=[A-Za-z0-9/]*\+)[A-Za-z0-9+/]{32,})')
@@ -360,8 +361,39 @@ def desktop_folder(env, winreg=None):
 
 # ---- 1. system -----------------------------------------------------------------------------
 
-def _proxy_text(value):
-    return short(value, 200) if value else '(not set)'
+CREDENTIALS_REMOVED = '[credentials removed]'
+# Where a proxy entry's address starts: after a WinINET 'https=' and a 'scheme://', both optional.
+_PROXY_ENTRY_START = re.compile(r'(?i)(?:(?:https?|ftp|socks|gopher)=)?(?:[a-z][a-z0-9+.-]{0,20}://)?')
+# A host[:port][/path] address with no user name or password in it.
+_PROXY_HOST = re.compile(r'(?:\[[0-9A-Fa-f:.]*\]|[^\s:@/]*)(?::[0-9]*)?(?:/[^\s@]*)?')
+
+
+def _without_userinfo(entry):
+    """One proxy entry without its user name and password: everything from the address start to its LAST '@'
+    goes, with or without a scheme (urllib accepts 'user:password@host:port'; a password may hold '@')."""
+    if '@' not in entry:
+        return entry
+    return entry[:_PROXY_ENTRY_START.match(entry).end()] + CREDENTIALS_REMOVED + entry[entry.rindex('@'):]
+
+
+def _proxy_text(value, limit=200, *, listed=False):
+    """A proxy setting for the report, never its credentials.
+
+    A listed setting (WinINET ProxyServer or ProxyOverride, NO_PROXY) is cleaned entry by entry (';', ',' and
+    spaces separate entries); any other setting is one address, so a separator inside a password cannot split
+    it. If a listed entry before an '@' is no plain host[:port], a password held a separator: then the whole
+    setting is cleaned as one address."""
+    if not value:
+        return '(not set)'
+    text = str(value)
+    if listed:
+        parts = re.split(r'([;,\s]+)', text)
+        entries = parts[0::2]
+        last = max((index for index, entry in enumerate(entries) if '@' in entry), default=-1)
+        if not any('@' not in entry and not _PROXY_HOST.fullmatch(entry[_PROXY_ENTRY_START.match(entry).end():])
+                   for entry in entries[:last]):
+            return short(''.join(_without_userinfo(part) if index % 2 == 0 else part for index, part in enumerate(parts)), limit)
+    return short(_without_userinfo(text), limit)
 
 
 def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
@@ -390,26 +422,32 @@ def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
         lines.append(f'LongPathsEnabled: {long_paths if long_paths is not None else "(not set)"}')
         if long_paths != 1:
             findings.append({'key': 'long_paths_disabled'})
-    proxied = False
     upper = {key.upper(): value for key, value in env.items()}
     for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
-        value = upper.get(name)
-        lines.append(f'env {name}: {_proxy_text(value)}')
-        proxied = proxied or bool(value and name != 'NO_PROXY')
+        lines.append(f'env {name}: {_proxy_text(upper.get(name), listed=name == "NO_PROXY")}')
+    pac = None
     if winreg is not None:
         internet = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
         enable, server, override, pac = (reg_value('HKEY_CURRENT_USER', internet, name, winreg)
                                          for name in ('ProxyEnable', 'ProxyServer', 'ProxyOverride', 'AutoConfigURL'))
-        lines.append(f'WinINET ProxyEnable: {enable if enable is not None else "(not set)"}; ProxyServer: {_proxy_text(server)}; '
-                     f'ProxyOverride: {_proxy_text(override)}; AutoConfigURL: {_proxy_text(pac)}')
-        proxied = proxied or enable == 1 or bool(pac)
+        lines.append(f'WinINET ProxyEnable: {enable if enable is not None else "(not set)"}; '
+                     f'ProxyServer: {_proxy_text(server, listed=True)}; ProxyOverride: {_proxy_text(override, listed=True)}; '
+                     f'AutoConfigURL: {_proxy_text(pac)}')
     try:
         used = getproxies()
-        lines.append('Python urllib uses: ' + (', '.join(f'{k}={short(v, 120)}' for k, v in sorted(used.items())) or 'no proxy'))
+        lines.append('Python urllib uses: ' + (', '.join(f'{k}={_proxy_text(v, 120, listed=k == "no")}'
+                                                         for k, v in sorted(used.items())) or 'no proxy'))
     except Exception as error:
+        used = None
         lines.append(f'Python urllib proxies: unknown ({type(error).__name__})')
-    if proxied:
-        findings.append({'key': 'proxy_configured'})
+    if used is not None:
+        # Only what urllib really uses counts: Python (so TwinPulse too) reads no PAC file (AutoConfigURL)
+        # and no WPAD, and sends an https request through a proxy only for an 'https' entry.
+        routed = [scheme for scheme in ('http', 'https') if used.get(scheme)]
+        if routed:
+            findings.append({'key': 'proxy_configured', 'schemes': routed})
+        elif pac:
+            findings.append({'key': 'proxy_pac_only'})
     powershell = which('powershell') or which('powershell.exe')
     if not powershell:
         lines.append('PowerShell execution policy: powershell not found')
@@ -1255,7 +1293,8 @@ def summary_lines(findings):
             'profile_non_ascii': '사용자 폴더 경로에 한글 등 비ASCII 문자 있음 -> Isaac/Kit에서 문제될 수 있음(미검증), 문제가 나면 이 줄을 전달',
             'profile_special_chars': '사용자 경로에 & | < > ^ % 문자 있음 -> 일부 작업(RoomPlan 가져오기 등)이 거부될 수 있음',
             'long_paths_disabled': '긴 경로(LongPathsEnabled) 꺼짐 -> 설치 경로가 259자를 넘는 파일은 설치/시작에 실패할 수 있음, 그때 IT에 긴 경로 허용 요청',
-            'proxy_configured': '프록시 설정 있음 -> 아래 네트워크 결과는 이 프록시를 거친 결과',
+            'proxy_pac_only': ('프록시 자동 구성(PAC, AutoConfigURL)만 설정됨 -> Python과 TwinPulse는 PAC 파일을 읽지 않으므로 '
+                               '아래 네트워크 요청은 프록시 없이 직접 연결한 결과'),
             'ps_policy_restricted': '그룹 정책이 PowerShell 스크립트를 제한함 -> 새 EXE 설치본의 Start-TwinPulse.cmd는 PowerShell 없이 실행',
             'isaac_missing': 'Isaac Sim 폴더(python.bat)를 찾지 못함 -> 설치 후 첫 실행에서 Isaac 폴더를 직접 선택',
             'not_installed': 'TwinPulse 설치 폴더 없음 -> 새 EXE ZIP을 풀고 Install-TwinPulse.cmd 실행',
@@ -1268,7 +1307,10 @@ def summary_lines(findings):
             'net_skipped': '네트워크 검사 생략(--no-network)',
         }.get(key)
         if text is None:
-            if key == 'isaac_found':
+            if key == 'proxy_configured':
+                text = ('프록시 설정 있음 -> 아래 네트워크 결과는 이 프록시를 거친 결과' if 'https' in item['schemes'] else
+                        'http 프록시만 설정됨 -> 아래 HTTPS 네트워크 요청(TwinPulse 공급자 요청도)은 프록시 없이 직접 연결한 결과')
+            elif key == 'isaac_found':
                 text = f"Isaac 폴더 확인: {item['root']} (VERSION {item.get('version') or '없음'})"
             elif key == 'isaac_version_other':
                 text = f"Isaac 버전이 6.0.1이 아님 ({item['version']}) -> 경고만 표시되지만 검증되지 않은 버전"

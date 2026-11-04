@@ -83,14 +83,18 @@ class FakeKey:
     def __exit__(self, *args):
         return False
 
+    def Close(self):
+        pass
+
 
 class FakeWinreg:
+    """Registry values by (hive, key, name), for the check and for CPython's own Windows urllib code."""
     HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, KEY_READ = 'HKLM', 'HKCU', 1
 
     def __init__(self, values):
         self.values = values
 
-    def OpenKey(self, hive, key, reserved, access):
+    def OpenKey(self, hive, key, reserved=0, access=1):
         if not any(h == hive and k == key for h, k, _ in self.values):
             raise OSError('no key')
         return FakeKey(hive, key)
@@ -99,6 +103,20 @@ class FakeWinreg:
         if (handle.hive, handle.key, name) not in self.values:
             raise OSError('no value')
         return self.values[(handle.hive, handle.key, name)], 1
+
+
+def windows_getproxies(winreg, environ):
+    """getproxies() of CPython's own urllib.request as it is on Windows (the *_proxy environment variables
+    if any is set, else the WinINET registry values), reading environ and the fake winreg."""
+    with patch.dict(sys.modules, {'winreg': winreg}), patch.object(os, 'name', 'nt'):
+        spec = importlib.util.spec_from_file_location('urllib_request_on_windows', urllib.request.__file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+    def getproxies():
+        with patch.dict(sys.modules, {'winreg': winreg}), patch.dict(os.environ, environ, clear=True):
+            return module.getproxies()
+    return getproxies
 
 
 class FakeFilter(BaseHTTPRequestHandler):
@@ -139,12 +157,13 @@ class TextSafetyTests(unittest.TestCase):
                             'session 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 '
                             'ticket Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A= '
                             'url https://user:pw@proxy.example:8080 jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.c2lnbmF0dXJl '
+                            'login http://joe:pa@ss@intranet.example:8443/x '
                             r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64 omni.kit.pip_archive-0.0.0+f9bf0dda.wx64.cp312 외부사이트 차단')
         for secret in (SECRET, 'abc.def-123', 'plain-value', 'hunter2', '9f86d081884c7d659a2feaa0c55ad015',
-                       'Zm9vYmFyYmF6cXV4', 'user:pw', 'eyJhbGciOiJIUzI1NiJ9', 'c2lnbmF0dXJl'):
+                       'Zm9vYmFyYmF6cXV4', 'user:pw', 'eyJhbGciOiJIUzI1NiJ9', 'c2lnbmF0dXJl', 'joe', 'pa@ss', 'ss@'):
             self.assertNotIn(secret, text)
         for kept in (r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64', 'omni.kit.pip_archive-0.0.0+f9bf0dda.wx64.cp312',
-                     'proxy.example:8080', '외부사이트 차단'):
+                     'proxy.example:8080', 'http://[REDACTED]@intranet.example:8443/x', '외부사이트 차단'):
             self.assertIn(kept, text)
         self.assertEqual(check.redact('test_robot_evidence_recovery_with_long_names'), 'test_robot_evidence_recovery_with_long_names')
         long = check.short('x' * 50 + ' ' + SECRET + ' y' * 400, 120)
@@ -153,6 +172,38 @@ class TextSafetyTests(unittest.TestCase):
         # The length bound before redaction may split a key after text that redaction shrinks to a few characters.
         token = 'v1.' + 'CmQKHHN0YXRpY2tleS1' + 'lMDB4eHh4' * 8
         self.assertNotIn('CmQKHHN0', check.short('QmFzZTY0' * 595 + 'QmFzZ ' + token, 300))
+
+    def test_proxy_settings_never_show_user_names_or_passwords(self):
+        internet = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        winreg = FakeWinreg({('HKCU', internet, 'ProxyEnable'): 1,
+                             ('HKCU', internet, 'ProxyServer'): 'http=user0042:Pw1x@a.corp.example:80;https=b.corp.example:443',
+                             ('HKCU', internet, 'ProxyOverride'): '<local>;*.corp.example',
+                             ('HKCU', internet, 'AutoConfigURL'): 'http://user0042:PacPw2@pac.corp.example/proxy.pac'})
+        env = {'HTTPS_PROXY': 'user0042:Secr3t-Pw@proxy.corp.example:8080',  # no scheme: urllib uses it all the same
+               'HTTP_PROXY': 'http://user0042:Se@cr3t@proxy.corp.example:8080',  # '@' inside the password
+               'ALL_PROXY': 'socks5://user0042:pa;ss,w rd@proxy.corp.example:1080',  # separators inside the password
+               'NO_PROXY': 'localhost,127.0.0.1,.corp.example'}
+        used = {'https': env['HTTPS_PROXY'], 'http': env['HTTP_PROXY'], 'no': env['NO_PROXY']}
+        part = check.system_section(env, winreg=winreg, getproxies=lambda: used, which=lambda name: None)
+        text = '\n'.join(part['lines'])
+        for secret in ('user0042', 'Secr3t', 'cr3t', 'Pw1x', 'PacPw2', 'pa;ss', 'w rd'):
+            self.assertNotIn(secret, text)
+        for shown in ('env HTTPS_PROXY: [credentials removed]@proxy.corp.example:8080',
+                      'env HTTP_PROXY: http://[credentials removed]@proxy.corp.example:8080',
+                      'env ALL_PROXY: socks5://[credentials removed]@proxy.corp.example:1080',
+                      'env NO_PROXY: localhost,127.0.0.1,.corp.example',
+                      'ProxyServer: http=[credentials removed]@a.corp.example:80;https=b.corp.example:443;',
+                      'ProxyOverride: <local>;*.corp.example;',
+                      'AutoConfigURL: http://[credentials removed]@pac.corp.example/proxy.pac',
+                      'Python urllib uses: http=http://[credentials removed]@proxy.corp.example:8080, '
+                      'https=[credentials removed]@proxy.corp.example:8080, no=localhost,127.0.0.1,.corp.example'):
+            self.assertIn(shown, text)
+        # A WinINET list without credentials stays as it is; one whose password holds a separator is cut as one address.
+        self.assertEqual(check._proxy_text('http=a:80;https=b:443', listed=True), 'http=a:80;https=b:443')
+        self.assertEqual(check._proxy_text('user0042:pa;ss@proxy:8080', listed=True), '[credentials removed]@proxy:8080')
+        self.assertEqual(check._proxy_text('http=user0042:pa;ss@a:80;https=b:443', listed=True),
+                         'http=[credentials removed]@a:80;https=b:443')
+        self.assertEqual(check._proxy_text(None), '(not set)')
 
     def test_html_title_uses_the_declared_charset_and_entities(self):
         page = '<html><head><meta charset="UTF-8"/><title> 외부사이트 &amp; 차단 </title></head></html>'.encode('utf-8')
@@ -505,11 +556,44 @@ class ReportAndSystemTests(unittest.TestCase):
         text = '\n'.join(part['lines'])
         self.assertIn('Windows: ? build 22631.4317 (Windows 11 build)', text)  # ProductName missing: "?", never "None"
         self.assertIn('LongPathsEnabled: 0', text)
-        self.assertIn('ProxyServer: http://[REDACTED]@proxy.corp:8080', text)
+        self.assertIn('ProxyServer: http://[credentials removed]@proxy.corp:8080', text)
         for hidden in ('user:pass', 'u:p@'):
             self.assertNotIn(hidden, text)
         lines = check.summary_lines(part['findings'])
         self.assertTrue(any('PowerShell 없이' in line for line in lines))
+
+    def test_proxy_finding_follows_what_python_urllib_really_uses(self):
+        """CPython's own Windows getproxies (environment first, else the registry) decides, not the settings alone."""
+        internet = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        pac, server = 'http://pac.corp.example/proxy.pac', 'proxy.corp.example:8080'
+        through, direct = '아래 네트워크 결과는 이 프록시를 거친 결과', '프록시 없이 직접 연결한 결과'
+        for name, values, environ, keys, said in (
+                ('PAC file only', {'ProxyEnable': 0, 'AutoConfigURL': pac}, {}, ['proxy_pac_only'], 'PAC 파일을 읽지 않으므로'),
+                ('WinINET proxy', {'ProxyEnable': 1, 'ProxyServer': server}, {}, ['proxy_configured'], through),
+                ('WinINET proxy and a PAC file', {'ProxyEnable': 1, 'ProxyServer': server, 'AutoConfigURL': pac}, {},
+                 ['proxy_configured'], through),
+                # Any *_proxy variable, NO_PROXY too, makes urllib skip the registry: these requests go direct.
+                ('WinINET proxy and NO_PROXY', {'ProxyEnable': 1, 'ProxyServer': server}, {'NO_PROXY': 'localhost'}, [], None),
+                ('PAC file and NO_PROXY', {'ProxyEnable': 0, 'AutoConfigURL': pac}, {'NO_PROXY': 'localhost'}, ['proxy_pac_only'],
+                 'PAC 파일을 읽지 않으므로'),
+                ('HTTPS_PROXY', {}, {'HTTPS_PROXY': 'http://proxy.corp.example:3128'}, ['proxy_configured'], through),
+                ('HTTP_PROXY only', {}, {'HTTP_PROXY': 'http://proxy.corp.example:3128'}, ['proxy_configured'], direct),
+                ('nothing', {'ProxyEnable': 0}, {}, [], None)):
+            with self.subTest(name):
+                winreg = FakeWinreg({('HKCU', internet, key): value for key, value in values.items()})
+                part = check.system_section(environ, winreg=winreg, getproxies=windows_getproxies(winreg, environ),
+                                            which=lambda name: None)
+                found = [item for item in part['findings'] if item['key'].startswith('proxy_')]
+                self.assertEqual([item['key'] for item in found], keys)
+                summary = check.summary_lines(found)[:-1]  # the last line is the fixed keep-the-evidence reminder
+                self.assertEqual(len(summary), len(keys))
+                if said:
+                    self.assertIn(said, summary[0])
+                    self.assertEqual(through in summary[0], said == through)
+        broken = check.system_section({}, winreg=FakeWinreg({('HKCU', internet, 'AutoConfigURL'): pac}),
+                                      getproxies=lambda: 1 / 0, which=lambda name: None)
+        self.assertIn('Python urllib proxies: unknown (ZeroDivisionError)', broken['lines'])
+        self.assertEqual([item for item in broken['findings'] if item['key'].startswith('proxy_')], [])  # unknown: no claim
 
     def test_isaac_section_reads_version_and_redacts_kit_lines(self):
         isaac = self.root / 'isaacsim'
