@@ -138,11 +138,14 @@ TwinPulse was developed in a **develop → operate → observe → diagnose → 
 ## Requirements
 
 - Windows 10/11 x64 with an NVIDIA RTX GPU (developed on an RTX 2070-class 8 GB laptop GPU)
-- [NVIDIA Isaac Sim 6.0.1](https://docs.isaacsim.omniverse.nvidia.com/) standalone, CPython 3.12, Node.js 20.19+ / 22.12+ / 24+, Git
+- [NVIDIA Isaac Sim 6.0.1](https://docs.isaacsim.omniverse.nvidia.com/) standalone
+- From source: CPython 3.12, Node.js 22.12+, Git. The Windows EXE ZIP used on company PCs needs none of these; Python, the UI, the desktop window and the robot assets are inside it
 - A Nebius Token Factory API key
 - Optional, for the physical run: TurtleBot3 Burger (ROS 2) with its LDS LiDAR on the same network, and a RoomPlan USD scan of the room
 
 ## Quick start
+
+On a company PC, use the Windows EXE ZIP instead of a clone: extract it to a short folder such as `C:\TP`, run `TwinPulse\Install-TwinPulse.cmd`, then start `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd`. Steps: [docs/WINDOWS_EXE_QUICKSTART.md](docs/WINDOWS_EXE_QUICKSTART.md).
 
 1. Clone this repository and double-click **`Install-TwinPulse.cmd`**. It asks for your Isaac Sim folder, installs locked dependencies into `.venv`, builds the UI and starts the app with Isaac Sim.
 2. In the app, open **API keys**, add your Token Factory key, and under **Model routing** set the planner to `nvidia/nemotron-3-super-120b-a12b` and the photo observer to `nvidia/Nemotron-3.5-Super-VL`.
