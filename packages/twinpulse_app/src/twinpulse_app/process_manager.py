@@ -24,6 +24,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 from .credentials import DEFAULT_CREDENTIAL_TARGET
+from .desktop_ui_host import HANDSHAKE_TIMEOUT_S
 
 
 REQUIRED_ENGINE_CAPABILITIES = frozenset({"simulation", "build", "telemetry", "watchdog"})
@@ -173,6 +174,36 @@ PROJECT_SWITCH_REQUESTED = 76
 # desktop window handshake (desktop_ui_host.HANDSHAKE_TIMEOUT_S, 45 s), which a
 # reopen needs when the user had closed the window.
 REOPEN_ACK_TIMEOUT_S = 60.0
+# The owned engine start window (ready_timeout_s) is at most this long.
+MAX_READY_TIMEOUT_S = 600.0
+# The backend must publish readiness within this, never longer than the window.
+BACKEND_READY_BUDGET_S = 90.0
+# One loopback request that mints a product ticket when a window opens.
+BOOTSTRAP_TICKET_TIMEOUT_S = 5.0
+# Left over after the engine window, for status writes and process starts.
+ENGINE_CREDENTIAL_MARGIN_S = 60.0
+# Product tickets never live shorter than this, even for a short test window.
+MIN_BOOTSTRAP_TTL_S = 180.0
+
+
+def bootstrap_ttl_s(ready_timeout_s: float) -> int:
+    """Lifetime in seconds of the one-use engine credential and of product tickets.
+
+    The backend starts the engine credential's clock when it builds its API
+    server, before it publishes readiness. The engine window starts later:
+    after the launcher has seen that readiness (BACKEND_READY_BUDGET_S at most)
+    and opened the UI (desktop handshake HANDSHAKE_TIMEOUT_S plus one product
+    ticket at most). The credential covers those steps, the whole engine window
+    and ENGINE_CREDENTIAL_MARGIN_S. It stays one-use and loopback-only.
+    """
+    window = float(ready_timeout_s)
+    budget = (min(window, BACKEND_READY_BUDGET_S) + HANDSHAKE_TIMEOUT_S + BOOTSTRAP_TICKET_TIMEOUT_S
+              + window + ENGINE_CREDENTIAL_MARGIN_S)
+    return math.ceil(max(MIN_BOOTSTRAP_TTL_S, budget))
+
+
+# The longest lifetime a launcher asks for; the backend refuses a longer one.
+MAX_BOOTSTRAP_TTL_S = bootstrap_ttl_s(MAX_READY_TIMEOUT_S)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,8 +261,9 @@ class TwinPulseProcessManager:
         self.port = read_settings(self.state_dir)['preferred_port'] if port is None else int(port)
         self.headless = bool(headless)
         self.ready_timeout_s = float(ready_timeout_s)
-        if not math.isfinite(self.ready_timeout_s) or not 0 < self.ready_timeout_s <= 600:
-            raise ProcessManagerError('ready_timeout_invalid','Owned startup timeout must be finite and within 0..600 seconds')
+        if not math.isfinite(self.ready_timeout_s) or not 0 < self.ready_timeout_s <= MAX_READY_TIMEOUT_S:
+            raise ProcessManagerError('ready_timeout_invalid',
+                f'Owned startup timeout must be finite and within 0..{MAX_READY_TIMEOUT_S:g} seconds')
         self.credential_target = str(credential_target).strip()
         self.fixture_mode = bool(fixture_mode)
         self.offline_mode = bool(offline_mode)
@@ -722,7 +754,7 @@ class TwinPulseProcessManager:
         )
         try:
             # Loopback only: never send the owner secret to a configured proxy.
-            with build_opener(ProxyHandler({})).open(request, timeout=5.0) as response:
+            with build_opener(ProxyHandler({})).open(request, timeout=BOOTSTRAP_TICKET_TIMEOUT_S) as response:
                 value = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ProcessManagerError(
@@ -751,11 +783,11 @@ class TwinPulseProcessManager:
             "--project-id", self.project_id,
             "--session-history-root", str(self.session_history_root),
             "--retry-remaining", str(self.retry_remaining),
-            # The one-use engine credential is issued before Kit initializes.
-            # Keep it valid for the bounded owned startup window, not forever.
-            # The default 600 s window gives 660 s for the engine credential and
-            # product tickets; both stay one-use and loopback-only.
-            "--bootstrap-ttl-s", str(math.ceil(max(180.,self.ready_timeout_s+60.))),
+            # The engine credential's lifetime starts when the backend builds its
+            # API server; the engine window starts only after the backend
+            # readiness wait and the UI open. bootstrap_ttl_s covers both and
+            # the whole window: 800 s for the default 600 s window.
+            "--bootstrap-ttl-s", str(bootstrap_ttl_s(self.ready_timeout_s)),
             '--launcher-shutdown-file', str(self.launcher_shutdown_file),
             '--backend-stop-file', str(self.backend_stop_file),
             '--port-candidates', '10' if self._preferred_port else '1',
@@ -840,7 +872,7 @@ class TwinPulseProcessManager:
 
     def _wait_backend_ready(self, process: subprocess.Popen[bytes]) -> dict[str, object]:
         # A first start under antivirus scanning can take well over 30 s.
-        deadline = self._clock() + min(self.ready_timeout_s, 90.0)
+        deadline = self._clock() + min(self.ready_timeout_s, BACKEND_READY_BUDGET_S)
         while self._clock() < deadline:
             code = process.poll()
             if code is not None:

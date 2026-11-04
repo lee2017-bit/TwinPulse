@@ -222,7 +222,9 @@ class R6ProcessManagerTests(unittest.TestCase):
         return TwinPulseProcessManager(**values)  # type: ignore[arg-type]
 
     def test_owned_bootstrap_lifetime_covers_bounded_startup(self) -> None:
-        for timeout,expected in ((120,180),(300,360),(600,660),(.5,180)):
+        # Backend readiness (at most 90 s), the desktop handshake (45 s) and one
+        # product ticket (5 s) come before the window; 60 s margin after it.
+        for timeout,expected in ((120,320),(300,500),(600,800),(40,190),(.5,180)):
             manager=self.manager(ready_timeout_s=timeout)
             command=manager._backend_command()
             self.assertEqual(command[command.index('--bootstrap-ttl-s')+1],str(expected))

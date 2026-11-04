@@ -8,6 +8,7 @@ Supplementary unit tests only: no Windows, Isaac, Kit or provider is used.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -257,13 +258,129 @@ class EngineStartWindowTests(unittest.TestCase):
         return given, spawned
 
     # a) start window and bootstrap lifetime
-    def test_default_window_is_600_s_with_660_s_one_use_bootstrap_lifetime(self) -> None:
+    def test_default_window_is_600_s_with_800_s_one_use_bootstrap_lifetime(self) -> None:
         manager = self.manager()
         self.assertEqual(manager.ready_timeout_s, 600.0)
         command = manager._backend_command()
-        self.assertEqual(command[command.index("--bootstrap-ttl-s") + 1], "660")
+        self.assertEqual(command[command.index("--bootstrap-ttl-s") + 1], "800")
+        self.assertEqual(pm.MAX_BOOTSTRAP_TTL_S, 800)
         with self.assertRaisesRegex(ProcessManagerError, "0..600"):
             self.manager(ready_timeout_s=601)
+
+    def test_engine_credential_outlives_the_longest_ui_open_and_a_599_s_engine_start(self) -> None:
+        from twinpulse_app import CommandBroker, LocalApiServer
+        from twinpulse_app.desktop_ui_host import HANDSHAKE_TIMEOUT_S
+        clock, bridge = Clock(), bridge_module()
+        at: dict[str, float] = {}
+        servers: list[LocalApiServer] = []
+        owned: dict[str, FakeProcess] = {}
+        engine_secret: list[str] = []
+        bootstraps: list[object] = []
+
+        def engine_bootstrap() -> None:
+            # The real extension client, as the engine runs it once Kit is up.
+            client = bridge.BridgeClient(SimpleNamespace(engine_session_id="engine-1", stage_epoch="stage-1"),
+                                         base_url=servers[0].base_url, bootstrap_secret=engine_secret[0])
+            try:
+                client._bootstrap()
+            except bridge.BridgeProtocolError as error:
+                bootstraps.append(str(error))
+                owned["engine"].code = 1  # an engine without a session exits
+                return
+            bootstraps.append("accepted")
+            pm._write_json_atomic(manager.engine_status_file, {
+                "engine_connected": True, "stage_epoch": "stage-1",
+                "snapshot": {"stage_epoch": "stage-1", "capabilities": sorted(pm.REQUIRED_ENGINE_CAPABILITIES),
+                             "permitted_commands": ["get_state"], "runtime_state": "idle"}})
+
+        def sleep(seconds: float) -> None:
+            clock.value += seconds
+            if "backend_spawn" in at and "ready" not in at and clock.value - at["backend_spawn"] >= 89.9:
+                # Readiness arrives at the end of the backend budget.
+                at["ready"] = clock.value
+                pm._write_json_atomic(manager.ready_file, {"base_url": servers[0].base_url})
+            if "engine_spawn" in at and "bootstrap" not in at and clock.value - at["engine_spawn"] >= 599.0 - 1e-6:
+                at["bootstrap"] = clock.value
+                engine_bootstrap()
+
+        def spawn(command, **kwargs):
+            environment = kwargs["env"]
+            if any("twinpulse_backend.py" in str(part) for part in command):
+                # The backend's API server starts the credential's clock; the
+                # earliest it can is at once.
+                at["backend_spawn"] = clock.value
+                server = LocalApiServer(CommandBroker(clock=clock), clock=clock,
+                                        product_bootstrap_secret=environment["TWINPULSE_PRODUCT_BOOTSTRAP"],
+                                        engine_bootstrap_secret=environment["TWINPULSE_ENGINE_BOOTSTRAP"],
+                                        bootstrap_ttl_s=float(command[command.index("--bootstrap-ttl-s") + 1]))
+                server.start()
+                servers.append(server)
+                owned["backend"] = FakeProcess(301)
+                return owned["backend"]
+            at["engine_spawn"] = clock.value
+            engine_secret.append(environment["TWINPULSE_ENGINE_BOOTSTRAP"])
+            owned["engine"] = FakeProcess(302)
+            return owned["engine"]
+
+        class SlowestWindow:
+            """Confirms at the end of the handshake window; its ticket takes the whole request timeout."""
+
+            def open(self, owner: TwinPulseProcessManager, ui_url: str) -> None:
+                at["ui_open"] = clock.value
+                clock.value += HANDSHAKE_TIMEOUT_S
+                owner._issue_product_bootstrap(ui_url.rstrip("/"))
+                clock.value += pm.BOOTSTRAP_TICKET_TIMEOUT_S
+                at["ui_opened"] = clock.value
+
+        manager = self.manager(clock=clock, sleep=sleep, popen_factory=spawn)
+        manager.ui_host = SlowestWindow()
+        try:
+            result = manager.start(open_browser=True)
+            # Still one-use after the longer lifetime.
+            again = bridge.BridgeClient(SimpleNamespace(engine_session_id="engine-1", stage_epoch="stage-1"),
+                                        base_url=servers[0].base_url, bootstrap_secret=engine_secret[0])
+            with self.assertRaisesRegex(bridge.BridgeProtocolError, "bootstrap_rejected"):
+                again._bootstrap()
+        finally:
+            manager.stop()
+            for server in servers:
+                server.stop()
+        self.assertEqual(bootstraps, ["accepted"])
+        self.assertEqual((result.backend_pid, result.engine_pid, result.stage_epoch), (301, 302, "stage-1"))
+        self.assertAlmostEqual(at["ready"] - at["backend_spawn"], 89.9, delta=0.06)
+        self.assertAlmostEqual(at["ui_open"], at["ready"], delta=1e-6)
+        self.assertAlmostEqual(at["engine_spawn"] - at["ui_open"], HANDSHAKE_TIMEOUT_S + pm.BOOTSTRAP_TICKET_TIMEOUT_S,
+                               delta=1e-6)
+        self.assertAlmostEqual(at["bootstrap"] - at["engine_spawn"], 599.0, delta=0.06)
+
+    def test_backend_accepts_the_launcher_lifetime_and_refuses_an_unbounded_one(self) -> None:
+        from twinpulse_app import CommandBroker, LocalApiServer
+        ready = self.root / "unused-ready.json"
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"TWINPULSE_PRODUCT_BOOTSTRAP", "TWINPULSE_ENGINE_BOOTSTRAP"}}
+
+        def run(value: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "twinpulse_backend.py"),
+                                   "--ready-file", str(ready), "--bootstrap-ttl-s", value],
+                                  cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False)
+
+        longest = str(pm.MAX_BOOTSTRAP_TTL_S)
+        values = (longest, "nan", "inf", "0", str(pm.MAX_BOOTSTRAP_TTL_S + 1))
+        with ThreadPoolExecutor(len(values)) as pool:
+            results = dict(zip(values, pool.map(run, values)))
+        accepted = results.pop(longest)
+        # Past argument parsing: only the missing bootstrap environment stops it.
+        self.assertEqual((accepted.returncode, accepted.stderr.strip().splitlines()[-1]),
+                         (1, "Bootstrap environment is missing"), accepted.stderr)
+        for value, refused in results.items():
+            with self.subTest(value=value):
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("argument --bootstrap-ttl-s: must be finite and within 0..800 seconds", refused.stderr)
+        self.assertFalse(ready.exists())
+        for unbounded in (float("nan"), float("inf")):
+            with self.subTest(unbounded=unbounded), self.assertRaisesRegex(ValueError, "lifetimes must be positive"):
+                LocalApiServer(CommandBroker(), product_bootstrap_secret="p" * 43, engine_bootstrap_secret="e" * 43,
+                               bootstrap_ttl_s=unbounded)
 
     # b) backend readiness budget
     def test_backend_readiness_budget_is_90_s_and_never_longer_than_the_window(self) -> None:
