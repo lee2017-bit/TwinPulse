@@ -20,6 +20,7 @@ INSTALLER = ROOT / 'scripts/install_twinpulse.ps1'
 WEB = ROOT / 'apps/twinpulse-web'
 DESKTOP = ROOT / 'apps/twinpulse-desktop'
 # What `pnpm build` runs (package.json "build": "tsc -b && vite build"), with what they load.
+# vite build also runs vite.config.ts, so every package that file loads belongs here (tested).
 WEB_BUILD_TOOLS = ('typescript', 'vite', '@vitejs/plugin-react')
 # pnpm's own minimum is in neither lock. pnpm 11.19.0 declares engines.node ">=22.13", and its
 # bin/pnpm.mjs exits with an error below 22.13 (Node 20 gets only a warning, which the electron
@@ -29,6 +30,17 @@ DOCS = ('README.md', 'docs/QUICKSTART.md', 'docs/COMPANY_PC_INSTALL.md', 'docs/W
 # "Node.js 22.13+", "Node.js 22.13 or later", "Node.js 22.13 이상": a stated minimum.
 DOC_MINIMUM = re.compile(r'Node(?:\.js)?\s+\**(\d+\.\d+(?:\.\d+)?)(?:\+|\s+or later|\s*이상)')
 COMPARATOR = re.compile(r'\s*(>=|<=|>|<|=|\^|~)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*')
+# A JavaScript string literal on one line, or a template literal.
+JS_STRING = r'''('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)'''
+# Comments go (a /// <reference types> among them); string literals are kept whole.
+JS_COMMENT = re.compile(r'(//[^\n]*|/\*.*?\*/)|' + JS_STRING, re.S)
+# What makes a module load another when it runs: import ... from, a bare import, export ... from,
+# and import() or require() of a string. An import, a require() call or a `from '...'` it cannot read,
+# and any createRequire (a require under another name), is `other`.
+JS_LOAD = re.compile(JS_STRING + r'''
+    |(?<![\w$.])(?:import|export)\b\s*(?P<type>type\s+)?(?:[\w$*{},\s]+?\s*\bfrom\s*)?(?P<q>['"])(?P<static>[^'"\n]*)(?P=q)
+    |(?<![\w$.])(?:import|require)\s*\(\s*(?P<cq>['"])(?P<call>[^'"\n]*)(?P=cq)\s*[,)]
+    |(?<![\w$.])(?P<other>import\b(?!\s*\.)|require\s*\(|createRequire\b|from\s*['"])''', re.X)
 
 
 def _bounds(op, major, minor, patch):
@@ -163,6 +175,21 @@ def web_ranges(tools=WEB_BUILD_TOOLS):
     return ranges
 
 
+def runtime_packages(source):
+    """The packages a module's text loads when it runs, a subpath counting as its package
+    ('vite/x': vite, '@scope/name/x': @scope/name). Relative files and node: built-ins are no
+    package, and types alone (`import type`, `export type`, a /// <reference>) load nothing."""
+    code, packages = JS_COMMENT.sub(lambda match: match.group(2) or ' ', source), set()
+    for match in JS_LOAD.finditer(code):
+        if match.group('other'):
+            raise ValueError('cannot tell what this loads: ' + code[match.start():].split('\n', 1)[0])
+        spec = match.group('static') if match.group('static') is not None else match.group('call')
+        if spec is None or match.group('type') or spec.startswith(('.', '/', 'node:')):
+            continue
+        packages.add('/'.join(spec.split('/')[:2 if spec.startswith('@') else 1]))
+    return packages
+
+
 def pnpm_range(test):
     pinned = json.loads((WEB / 'package.json').read_text(encoding='utf-8'))['packageManager']
     test.assertTrue(pinned.startswith('pnpm@'), pinned)
@@ -262,6 +289,33 @@ class SourceInstallNodeGateTests(unittest.TestCase):
                  if satisfies(version, stated[0]) != all(satisfies(version, spec) for spec in ranges)]
         self.assertEqual(wrong[:10], [], 'the stated range and the locked engines disagree on %d versions' % len(wrong))
         self.assertTrue(any(satisfies(version, stated[0]) for version in versions))
+
+    def test_load_reader_names_the_packages_a_module_loads_when_it_runs(self):
+        rows = (("import { a } from 'vite';\nimport b, * as c from \"@scope/name/sub/x.js\";", {'vite', '@scope/name'}),
+                ("import 'bare/style.css';\nexport * from 'again';\nimport{d}from'tight'", {'bare', 'again', 'tight'}),
+                ("const e = await import('lazy/x'); require( \"cjs\" ); import('attrs', { with: {} });",
+                 {'lazy', 'cjs', 'attrs'}),
+                ("import {\n  f, // one\n  g /* two */,\n} from 'spread';\nimport type from 'named-type';",
+                 {'spread', 'named-type'}),
+                ('/// <reference types="vitest/config" />\nimport type { T } from "vitest";\n'
+                 'export type { U } from "vitest";', set()),
+                ("// import h from 'gone'\n/* require('gone') */\nconst s = \"import('gone')\" + `require('gone')`;", set()),
+                ("import i from './local';\nimport fs from 'node:fs';\nconst url = import.meta.url;", set()),
+                ("export default defineConfig({ test: { include: ['src/**/*.test.ts'] } });", set()))
+        for source, expected in rows:
+            self.assertEqual(runtime_packages(source), expected, source)
+        for source in ('const j = await import(name);', 'require(path)', 'import(`lazy/${name}`)',
+                       "import { createRequire } from 'node:module'; createRequire(import.meta.url)('x')",
+                       'export { "a" as b } from "x";', 'import { "a" as b } from "x";'):
+            with self.assertRaises(ValueError, msg=source):
+                runtime_packages(source)
+
+    def test_web_build_tools_hold_every_package_vite_config_loads(self):
+        # vite build import()s the bundled vite.config.ts, so what it loads runs on the gated Node.js too.
+        loaded = runtime_packages((WEB / 'vite.config.ts').read_text(encoding='utf-8'))
+        self.assertTrue(loaded, 'the reader found what vite.config.ts imports')
+        self.assertEqual(sorted(loaded - set(WEB_BUILD_TOOLS)), [], 'vite build loads these through vite.config.ts: '
+                         'add them to WEB_BUILD_TOOLS, or take only their types (/// <reference types>, import type)')
 
 
 if __name__ == '__main__':
