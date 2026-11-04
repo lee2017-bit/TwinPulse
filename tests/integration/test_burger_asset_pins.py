@@ -176,6 +176,21 @@ class BurgerPinTests(unittest.TestCase):
         self.assertEqual((row['state'], row['detail']), ('needs_action', 'ValueError'))
 
 
+def extension_bedroom_preview():
+    """The extension's bedroom_preview as Isaac loads it, with a stand-in pxr whose Usd opens no stage."""
+    import importlib.util
+    from types import ModuleType, SimpleNamespace
+    pxr = ModuleType('pxr')
+    pxr.Gf = pxr.UsdGeom = pxr.UsdPhysics = SimpleNamespace()
+    pxr.Usd = SimpleNamespace(Stage=SimpleNamespace(Open=lambda path: None))
+    with patch.dict(sys.modules, {'pxr': pxr}):
+        spec = importlib.util.spec_from_file_location(
+            'bedroom_preview_without_isaac', ROOT / 'extensions/twinpulse.extension/twinpulse/extension/bedroom_preview.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
 class FileManagerMetadataTests(unittest.TestCase):
     """desktop.ini, Thumbs.db and .DS_Store are ignored in the Burger folder; nothing else is."""
     def setUp(self):
@@ -256,9 +271,16 @@ class FileManagerMetadataTests(unittest.TestCase):
         # Explorer may write its metadata into the project's copy later: skipped too. Any other file is not.
         (assets / 'payloads/desktop.ini').write_bytes(b'[.ShellClassInfo]\r\n')
         self.assertEqual(room_recipe.load_project_room_visual(state, 'with_burger', draft), (manifest, assets))
+        # Isaac's side takes the same view of that pinned copy: past its manifest check, it stops only at the
+        # stand-in USD stage (no Isaac here).
+        preview = extension_bedroom_preview()
+        with self.assertRaisesRegex(ValueError, r'\ABurger default prim missing\Z'):
+            preview.compose_bedroom_preview(None, draft, manifest, assets, pinned_project_visual=True)
         (assets / 'payloads/notes.txt').write_bytes(b'x')
         with self.assertRaisesRegex(ValueError, 'missing, extra or linked'):
             room_recipe.load_project_room_visual(state, 'with_burger', draft)
+        with self.assertRaisesRegex(ValueError, r'\AProject room/Burger manifest differs from current source bytes\Z'):
+            preview.compose_bedroom_preview(None, draft, manifest, assets, pinned_project_visual=True)
 
 
 class IsaacVersionTests(unittest.TestCase):

@@ -119,6 +119,11 @@ def compose_bedroom_preview(compiler, draft, manifest, asset_root, *, pinned_pro
     paths = sorted(path for path in asset_root.rglob("*") if path.is_file())
     if not paths or any(not path.resolve().is_relative_to(asset_root) for path in paths):
         raise ValueError("Local Burger asset directory is invalid")
+    if pinned_project_visual:
+        # A project's pinned copy is judged as the App judges it (room_recipe._checked_burger_files):
+        # Explorer/Finder metadata files are skipped, never hashed.
+        from twinpulse_app.simulation_assets import is_os_junk
+        paths = [path for path in paths if not is_os_junk(path)]
     hashes = {p.relative_to(asset_root).as_posix(): sha256(p.read_bytes()).hexdigest() for p in paths}
     if pinned_project_visual:
         body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
