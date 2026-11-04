@@ -197,11 +197,14 @@ class HostAvailabilityTests(unittest.TestCase):
     def test_the_basic_check_attach_does_not_go_to_the_proxy(self):
         # Playwright's own proxy choice for the runner's CDP lookup, where a Playwright is installed.
         try:
-            core=json.loads(subprocess.check_output(['node','-e',
-                "const p=require.resolve('playwright/package.json',{paths:[require.resolve('@playwright/test')]});"
-                "console.log(JSON.stringify(require.resolve('playwright-core/lib/utilsBundle.js',{paths:[p]})))"],
+            playwright=json.loads(subprocess.check_output(['node','-e',
+                "console.log(JSON.stringify(require.resolve('playwright/package.json',{paths:[require.resolve('@playwright/test')]})))"],
                 cwd=ROOT/'apps/twinpulse-web',text=True,stderr=subprocess.DEVNULL))
         except (OSError,subprocess.CalledProcessError):self.skipTest('Node.js with the web app Playwright is not installed')
+        # From here a failure fails the test. playwright-core exports this subpath without '.js'.
+        core=json.loads(subprocess.check_output(['node','-e',
+            "console.log(JSON.stringify(require.resolve('playwright-core/lib/utilsBundle',{paths:[process.argv[1]]})))",playwright],
+            cwd=ROOT/'apps/twinpulse-web',text=True))
         seen=self.spawned_environment({'HTTP_PROXY':'http://proxy.example:8080'})
         lookup=("const {getProxyForUrl}=require(process.argv[1]);"
             "process.stdout.write(JSON.stringify(getProxyForUrl('http://127.0.0.1:9333/json/version/')))")

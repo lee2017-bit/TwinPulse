@@ -166,7 +166,9 @@ class BuildHandOverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);resources=root/'staging/resources';package=root/'dist/TwinPulse'
             for relative in build['EXTRA_FILES']:build['stage'](relative,resources,{})
-            deep=package/('d'*100)/('d'*100)/'f.txt';deep.parent.mkdir(parents=True);deep.write_bytes(b'x')
+            # One long name in a short folder: 172 characters relative is past MAX_PATH once installed
+            # (93-character prefix), yet the file can be made in %TEMP% on Windows without long paths.
+            deep=package/'d'/('f'*170);deep.parent.mkdir(parents=True);deep.write_bytes(b'x')
             manifest={'schema':'twinpulse-windows-exe-1.0','build_id':'test','source_manifest_sha256':'a'*64,'files':None}
             with redirect_stdout(io.StringIO()),self.assertRaisesRegex(ValueError,'^BUILD_INSTALL_PATH_TOO_LONG: '):
                 build['finish_package'](resources,package,manifest,root/'out.zip')
