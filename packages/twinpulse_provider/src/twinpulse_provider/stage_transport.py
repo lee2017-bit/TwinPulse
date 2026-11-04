@@ -17,6 +17,10 @@ OPENAI_UNSUPPORTED_KEYWORDS = ('allOf', 'not', 'if', 'then', 'else', 'dependentR
 OPEN_MAP_MAX_ROWS = 32
 _OPEN_MAP_WORDS = {'type', 'additionalProperties', 'properties', 'required', 'maxProperties', 'minProperties',
                    'description', 'title'}
+# Wire-only wrappers: a root that is not a plain object travels as {"value": root},
+# and an optional property that itself accepts null travels as {"set": value}.
+_ROOT_KEY = 'value'
+_BOX_KEY = 'set'
 
 
 def _map_schema_children(node, visit):
@@ -293,6 +297,96 @@ def openai_map_rows(schema):
     return visit(deepcopy(schema))
 
 
+def _accepts_null(node, root, refs=frozenset()):
+    """False only when this schema certainly rejects null; anything unclear counts as accepting it."""
+    if isinstance(node,dict) and isinstance(node.get('$ref'),str):
+        target=_deref(node,root)
+        if target is node or node['$ref'] in refs:return True
+        return _accepts_null(target,root,refs|{node['$ref']})
+    if not isinstance(node,dict):return node is not False
+    kinds=node.get('type')
+    if (('const' in node and node['const'] is not None) or (isinstance(node.get('enum'),list) and None not in node['enum'])
+            or (isinstance(kinds,str) and kinds!='null') or (isinstance(kinds,list) and 'null' not in kinds)):
+        return False
+    if any(isinstance(node.get(word),list) and not any(_accepts_null(branch,root,refs) for branch in node[word])
+           for word in ('anyOf','oneOf')):return False
+    return not (isinstance(node.get('allOf'),list) and not all(_accepts_null(part,root,refs) for part in node['allOf']))
+
+
+def _optional_properties(node, root):
+    """{name: boxed} for each optional property of a closed object, in property order.
+
+    The OpenAI wire requires all of them; null there means "left out", so a
+    property that itself accepts null is boxed as {"set": value}. A node that
+    also carries anyOf/oneOf is not rewritten: the strict check rejects it.
+    Rows keep every closed object and the null acceptance of every schema, so
+    this gives the same answer for the host schema and its map-rows spelling.
+    """
+    if (not isinstance(node,dict) or node.get('additionalProperties') is not False
+            or not isinstance(node.get('properties'),dict) or 'anyOf' in node or 'oneOf' in node):
+        return {}
+    required=node.get('required') or ()
+    return {key:_accepts_null(child,root) for key,child in node['properties'].items() if key not in required}
+
+
+def _optional_fields(schema):
+    """Every optional property of a closed object becomes required: nullable, or boxed (see _optional_properties)."""
+    def visit(node):
+        if not isinstance(node,dict):return node
+        optional=_optional_properties(node,schema)  # decided on the unchanged input
+        for word,key,_,child in list(_subschemas(node,'$')):
+            if key is None:node[word]=visit(child)
+            else:node[word][key]=visit(child)
+        for key,boxed in optional.items():
+            field=node['properties'][key]
+            if boxed:
+                field={'type':'object','additionalProperties':False,'required':[_BOX_KEY],'properties':{_BOX_KEY:field},
+                       'description':'Wraps a value that may itself be null; plain null leaves the field out.'}
+            node['properties'][key]={'anyOf':[{'type':'null'},field]}
+        if optional:node['required']=[*(node.get('required') or ()),*optional]
+        return node
+    return visit(deepcopy(schema))
+
+
+def _wraps_root(schema):
+    """Whether the OpenAI wire root is {"value": host root}: strict mode needs a plain object root."""
+    return isinstance(schema,dict) and (schema.get('type')!='object' or 'anyOf' in schema or 'oneOf' in schema
+                                        or _open_map(schema))
+
+
+def _object_root(schema):
+    """{"value": schema}. Root definitions move up and other local refs gain the /properties/value
+    prefix, so every $ref still names the same subschema."""
+    def rebase(node):
+        if not isinstance(node,dict):return node
+        for word,key,_,child in list(_subschemas(node,'$')):
+            if key is None:node[word]=rebase(child)
+            else:node[word][key]=rebase(child)
+        ref=node.get('$ref')
+        if isinstance(ref,str) and (ref=='#' or ref.startswith('#/')) and not ref.startswith(('#/$defs/','#/definitions/')):
+            node['$ref']='#/properties/'+_ROOT_KEY+ref[1:]
+        return node
+    inner=rebase(deepcopy(schema))
+    root={'type':'object','additionalProperties':False,'required':[_ROOT_KEY],'properties':{_ROOT_KEY:inner}}
+    for word in ('$defs','definitions'):
+        if word in inner:root[word]=inner.pop(word)
+    return root
+
+
+def openai_wire_schema(schema):
+    """The OpenAI strict spelling of a host schema, decided by the host schema alone.
+
+    In order: open maps become rows (openai_map_rows); every optional property
+    of a closed object becomes required, null meaning "left out" and a
+    property that itself accepts null boxed as {"set": value}; a root that is
+    not a plain object becomes {"value": root}. restore_openai_wire is the
+    exact inverse. Anything else stays as written, so openai_strict_violations
+    still rejects it locally.
+    """
+    wire=_optional_fields(openai_map_rows(schema))
+    return _object_root(wire) if _wraps_root(schema) else wire
+
+
 class _RepeatedNames(list):
     """Rows whose names repeat; written back as repeated JSON keys, never merged."""
 
@@ -313,8 +407,12 @@ def _item_schema(node, index):
     return prefix if isinstance(prefix,dict) else None
 
 
+def _boxed(value):
+    return isinstance(value,dict) and set(value)=={_BOX_KEY}
+
+
 def _fits(value, node, root):
-    """Structural match of the rows view of a host schema; only chooses anyOf/oneOf branches."""
+    """Structural match of the OpenAI wire view of a host schema; only chooses anyOf/oneOf branches."""
     node=_deref(node,root)
     if not isinstance(node,dict):return node is not False
     if 'const' in node and not _same(value,node['const']):return False
@@ -332,16 +430,28 @@ def _fits(value, node, root):
     if isinstance(value,dict):
         properties=node.get('properties') if isinstance(node.get('properties'),dict) else {}
         if node.get('additionalProperties') is False and not set(value)<=set(properties):return False
-        return set(node.get('required') or ())<=set(value) and all(
-            _fits(item,properties[key],root) for key,item in value.items() if key in properties)
+        optional=_optional_properties(node,root)  # all of them are required on the wire
+        return (set(node.get('required') or ())|set(optional))<=set(value) and all(
+            _fits_field(item,properties[key],optional.get(key),root) for key,item in value.items() if key in properties)
     if isinstance(value,list):
         schemas=[_item_schema(node,index) for index in range(len(value))]
         return all(schema is None or _fits(item,schema,root) for item,schema in zip(value,schemas))
     return True
 
 
+def _fits_field(value, node, boxed, root):
+    """One property in its wire view; boxed is None when the host requires the property too."""
+    if boxed is None:return _fits(value,node,root)
+    if value is None:return True  # left out
+    if boxed:return _boxed(value) and _fits(value[_BOX_KEY],node,root)
+    return _fits(value,node,root)
+
+
 def _restored(value, node, root):
-    """(value, changed): rows back to the host map, walked with the host's own schema."""
+    """(value, changed): the host value of a wire value, walked with the host's own schema.
+
+    Rows become the map, a null optional property is left out and a box is opened.
+    """
     node=_deref(node,root)
     if not isinstance(node,dict):return value,False
     if _open_map(node):
@@ -351,13 +461,20 @@ def _restored(value, node, root):
     changed=False
     for word in ('anyOf','oneOf'):
         if isinstance(node.get(word),list):
-            # Only an unambiguous branch converts; otherwise host validation sees the rows.
+            # Only an unambiguous branch converts; otherwise host validation sees the wire spelling.
             options=[_restored(value,branch,root) for branch in node[word] if _fits(value,branch,root)]
             if any(moved for _,moved in options) and all(item==options[0][0] for item,_ in options):
                 value,changed=options[0][0],True
     if isinstance(value,dict) and isinstance(node.get('properties'),dict):
+        optional=_optional_properties(node,root)
         result={}
         for key,item in value.items():
+            boxed=optional.get(key)
+            if boxed is not None and item is None:
+                changed=True;continue  # the host leaves this property out
+            if boxed and not _boxed(item):
+                result[key]=item;continue  # not a box: left as sent for host validation
+            if boxed:item,changed=item[_BOX_KEY],True
             if key in node['properties']:
                 item,moved=_restored(item,node['properties'][key],root);changed|=moved
             result[key]=item
@@ -384,30 +501,41 @@ def _json_text(value):
     return text
 
 
-def restore_open_maps(completion, schema):
-    """Give the host its original map shape for an OpenAI rows completion.
+def restore_openai_wire(completion, schema):
+    """Give the host its own JSON shape back for a completion of openai_wire_schema(schema).
 
-    Unparseable, unmatched or duplicate-key content is returned unchanged:
-    host validation stays the authority. Repeated row names become repeated
-    JSON keys, which the host parser rejects as PROVIDER_JSON_DUPLICATE_KEY.
+    The exact inverse, walked with the host schema: a wrapped root is
+    unwrapped, rows become maps, a null optional property is left out and a
+    {"set": v} box becomes v. Unparseable, unmatched, ambiguous or duplicate-key
+    content is returned unchanged: host validation stays the authority.
+    Repeated row names become repeated JSON keys, which the host parser
+    rejects as PROVIDER_JSON_DUPLICATE_KEY. Only for OpenAI wire completions:
+    a host-shaped (Nebius) reply is not a wire spelling.
     """
     content=getattr(completion,'content',None)
-    if not isinstance(content,str) or not open_map_paths(schema):return completion
+    if not isinstance(content,str) or not isinstance(schema,dict) or openai_wire_schema(schema)==schema:
+        return completion
     def unique(pairs):
         if len({key for key,_ in pairs})!=len(pairs):raise ValueError('repeated JSON key')
         return dict(pairs)
     try:
-        value,changed=_restored(json.loads(content,object_pairs_hook=unique),schema,schema)
-        text=_json_text(value) if changed else None
+        value=json.loads(content,object_pairs_hook=unique)
+        wrapped=_wraps_root(schema)
+        if wrapped:
+            if not (isinstance(value,dict) and set(value)=={_ROOT_KEY}):return completion
+            value=value[_ROOT_KEY]
+        value,changed=_restored(value,schema,schema)
+        text=_json_text(value) if changed or wrapped else None
     except (ValueError,RecursionError):return completion
-    return replace(completion,content=text) if changed else completion
+    return completion if text is None else replace(completion,content=text)
 
 
 def openai_observer_body(original, *, reasoning_effort='low'):
     """Equivalent stage contract; only OpenAI wire compatibility changes.
 
-    Open maps travel as rows (restore_open_maps rebuilds them). A strict schema
-    that OpenAI would still reject fails here, before any paid dispatch.
+    The schema travels in its OpenAI strict spelling (openai_wire_schema);
+    restore_openai_wire gives a completion back its host shape. A strict
+    schema that OpenAI would still reject fails here, before any paid dispatch.
     """
     body = deepcopy(original)
     if 'chat_template_kwargs' in body:
@@ -418,7 +546,7 @@ def openai_observer_body(original, *, reasoning_effort='low'):
     body['response_format'] = normalize_json_schema(body['response_format'])
     envelope=body['response_format'].get('json_schema')
     if envelope:
-        envelope['schema']=compact_repeated_enum_schemas(openai_map_rows(envelope['schema']))
+        envelope['schema']=compact_repeated_enum_schemas(openai_wire_schema(envelope['schema']))
         problems=openai_strict_violations(envelope['schema']) if envelope.get('strict') is True else []
         if problems:
             error=ProviderConfigurationError('OpenAI strict schema invalid before dispatch: '+', '.join(
@@ -457,7 +585,7 @@ class StageRoutingTransport:
     async def complete(self, body, token, _pipeline_config):
         schema = body.get('response_format', {}).get('json_schema', {}).get('name')
         if schema == 'twinpulse_image_observation' and body.get('model') == self.observer_config.model_id:
-            return restore_open_maps(await self.observer.complete(openai_observer_body(body,
+            return restore_openai_wire(await self.observer.complete(openai_observer_body(body,
                 reasoning_effort=self.reasoning_effort), token, self.observer_config),
                 body['response_format']['json_schema'].get('schema'))
         if (schema in {'twinpulse_site_tool_plan_v2', 'twinpulse_compact_photo_layout'}
@@ -465,7 +593,7 @@ class StageRoutingTransport:
             if not self.openai_planner:
                 return await self.planner.complete(body, token, self.planner_config)
             wire = openai_observer_body(body, reasoning_effort=self.reasoning_effort)
-            return restore_open_maps(await self.planner.complete(wire, token, self.planner_config),
+            return restore_openai_wire(await self.planner.complete(wire, token, self.planner_config),
                 body['response_format']['json_schema'].get('schema'))
         raise ProviderConfigurationError('Unknown stage/model or image leakage to planner; no dispatch')
 
@@ -546,8 +674,8 @@ class ConfiguredStageTransport:
         wire = explicit_json_contract(body)
         if self.providers[stage] != 'openai':
             return await self.transports[stage].complete(wire, token, config)
-        # OpenAI receives open maps as rows; the host validates its original shape.
+        # OpenAI receives the strict spelling of the schema; the host validates its original shape.
         schema = wire['response_format']['json_schema']['schema']
         result = await self.transports[stage].complete(openai_observer_body(wire,
             reasoning_effort=self.reasoning[stage]), token, config)
-        return restore_open_maps(result, schema)
+        return restore_openai_wire(result, schema)

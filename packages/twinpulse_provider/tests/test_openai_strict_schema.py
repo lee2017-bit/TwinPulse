@@ -29,7 +29,7 @@ from twinpulse_provider.nebius_pipeline import ChatCompletion,NebiusChatCompleti
 from twinpulse_provider.scene_contract import PROPOSAL_REVISION
 from twinpulse_provider.stage_transport import (ConfiguredStageTransport,StageRoutingTransport,OPENAI_MINI_SNAPSHOT,
     explicit_json_contract,normalize_json_schema,open_map_paths,openai_map_rows,openai_observer_body,
-    openai_schema_depth,openai_strict_violations,restore_open_maps)
+    openai_schema_depth,openai_strict_violations,openai_wire_schema,restore_openai_wire)
 
 LUNA='gpt-6-luna'
 OPENAI='https://api.openai.com/v1/'
@@ -155,6 +155,65 @@ class StrictRuleTests(unittest.TestCase):
         self.assertEqual(openai_strict_violations(openai_observer_body(body|{'response_format':{'type':'json_schema',
             'json_schema':{'name':'maps','strict':True,'schema':schema}}})['response_format']['json_schema']['schema']),[])
 
+    def test_optional_fields_become_required_and_only_a_null_accepting_one_is_boxed(self):
+        from twinpulse_provider.repair_scope import delta_schema
+        draft,diagnosis,_=saved_factory()
+        schema=normalize_json_schema(delta_schema(draft,diagnosis));before=deepcopy(schema)
+        wire=openai_wire_schema(schema)
+        self.assertEqual(schema,before)
+        host=schema['properties']['changes']['properties']['rack_1']['anyOf'][1]
+        sent=wire['properties']['changes']['properties']['rack_1']['anyOf'][1]
+        self.assertNotIn('required',host)  # the model returns only changed fields
+        self.assertEqual(sent['required'],list(host['properties']))
+        # recipe_parameters accepts only null, so a plain null cannot also mean "left out".
+        self.assertEqual(host['properties']['recipe_parameters'],{'type':'null'})
+        for key,field in host['properties'].items():
+            with self.subTest(key=key):
+                kept=sent['properties'][key]['anyOf'][1]
+                if key=='recipe_parameters':
+                    self.assertEqual({k:kept[k] for k in ('type','additionalProperties','required','properties')},
+                        {'type':'object','additionalProperties':False,'required':['set'],'properties':{'set':field}})
+                else:self.assertEqual(kept,field)
+                self.assertEqual(sent['properties'][key]['anyOf'][0],{'type':'null'})
+        self.assertEqual(openai_strict_violations(wire),[])
+
+    def test_a_non_object_root_travels_as_value_and_every_reference_still_resolves(self):
+        from twinpulse_provider.model_recipe_planning import definition_schema
+        def wire_of(schema):
+            body={'model':LUNA,'max_tokens':100,'messages':[],'response_format':{'type':'json_schema',
+                'json_schema':{'name':'root','strict':True,'schema':schema}}}
+            return openai_observer_body(body,reasoning_effort='none')['response_format']['json_schema']['schema']
+        def refs(node):
+            if isinstance(node,dict):
+                yield from ([node['$ref']] if isinstance(node.get('$ref'),str) else [])
+                for child in node.values():yield from refs(child)
+            elif isinstance(node,list):
+                for child in node:yield from refs(child)
+        def target(ref,root):  # a plain JSON pointer walk, independent of the code under test
+            for part in (ref[2:].split('/') if ref!='#' else ()):root=root[int(part) if isinstance(root,list) else part]
+            return root
+        wire=wire_of(normalize_json_schema(definition_schema('storage',[])))
+        self.assertEqual({k:wire[k] for k in ('type','additionalProperties','required')},
+            {'type':'object','additionalProperties':False,'required':['value']})
+        self.assertEqual(list(wire['properties']),['value'])
+        self.assertEqual(len(wire['properties']['value']['anyOf']),2)
+        found=set(refs(wire))
+        self.assertTrue(found)  # repeated enums are shared from the wrapper's own $defs
+        for ref in found:
+            with self.subTest(ref=ref):self.assertIsInstance(target(ref,wire),dict)
+        # Root definitions move up beside the shared enums; a reference to the old root follows it below.
+        letter={'type':'string','enum':['l','r']}
+        recursive={'anyOf':[letter,{'$ref':'#/$defs/node'}],'$defs':{'node':{'type':'object','additionalProperties':False,
+            'required':['side','next'],'properties':{'side':letter,'next':{'$ref':'#'}}}}}
+        wrapped=wire_of(recursive)
+        self.assertEqual(openai_strict_violations(wrapped),[])
+        self.assertEqual(wrapped['$defs']['node']['properties']['next'],{'$ref':'#/properties/value'})
+        self.assertEqual(target('#/properties/value',wrapped)['anyOf'][1],{'$ref':'#/$defs/node'})
+        shared=[name for name in wrapped['$defs'] if name!='node']
+        self.assertEqual([target('#/$defs/'+name,wrapped) for name in shared],[letter])
+        for ref in set(refs(wrapped)):
+            with self.subTest(ref=ref):self.assertIsInstance(target(ref,wrapped),dict)
+
 
 class RestoreTests(unittest.TestCase):
     def schema(self):
@@ -170,14 +229,14 @@ class RestoreTests(unittest.TestCase):
     def test_rows_return_to_maps_only_in_the_discriminated_branch(self):
         value=dict(calls=[dict(kind='map',p=rows(w=1.5,d=2)),dict(kind='list',p=rows(w=3))],
             nested=[dict(name='a',value=rows(x=1)),dict(name='b',value=[])])
-        restored=restore_open_maps(completion(value),self.schema())
+        restored=restore_openai_wire(completion(value),self.schema())
         self.assertEqual(json.loads(restored.content),dict(calls=[dict(kind='map',p={'w':1.5,'d':2}),
             dict(kind='list',p=rows(w=3))],nested={'a':{'x':1},'b':{}}))
         self.assertEqual(restored.response_id,'fixture')
 
     def test_rewritten_text_keeps_every_value_and_stays_utf8(self):
         content='{"calls":[{"kind":"map","p":[{"name":"\\ud800","value":1e-07}]}],"nested":{"\\u00e9":{"x":-0}}}'
-        restored=restore_open_maps(completion(content),self.schema())
+        restored=restore_openai_wire(completion(content),self.schema())
         restored.content.encode('utf-8')
         self.assertIn('"é"',restored.content)
         self.assertEqual(json.loads(restored.content),dict(calls=[dict(kind='map',p={'\ud800':1e-07})],nested={'é':{'x':0}}))
@@ -186,15 +245,15 @@ class RestoreTests(unittest.TestCase):
         schema=self.schema()
         ambiguous=deepcopy(schema);ambiguous['properties']['calls']['items']['anyOf'][1]['properties']['kind']={'enum':['map'],'type':'string'}
         original=completion(dict(calls=[dict(kind='map',p=rows(w=1))],nested={}))
-        self.assertIs(restore_open_maps(original,ambiguous),original)
+        self.assertIs(restore_openai_wire(original,ambiguous),original)
         for content in ('{"calls":[],"nested":{"a":{"x":1}}}','{"calls":[],"nested":[{"name":"a"}]}',
                         '{"calls":[],"nested":[{"name":"a","value":[],"extra":1}]}','{"calls":[],"calls":[],"nested":[]}',
                         '{"calls":[', 'null'):
             original=completion(content)
-            self.assertIs(restore_open_maps(original,schema),original)
-        for result in (None,'routed'):self.assertIs(restore_open_maps(result,schema),result)
+            self.assertIs(restore_openai_wire(original,schema),original)
+        for result in (None,'routed'):self.assertIs(restore_openai_wire(result,schema),result)
         plain=completion('{"a":[{"name":"x","value":1}]}')
-        self.assertIs(restore_open_maps(plain,{'type':'object','additionalProperties':False,'required':['a'],'properties':{
+        self.assertIs(restore_openai_wire(plain,{'type':'object','additionalProperties':False,'required':['a'],'properties':{
             'a':{'type':'array','items':{'type':'object'}}}}),plain)
 
     def test_repeated_names_are_never_merged_and_fail_the_host_json_parser(self):
@@ -206,7 +265,7 @@ class RestoreTests(unittest.TestCase):
                                    '{"calls":[{"kind":"map","p":{"w":1,"w":2}}],"nested":{}}'),
                                   (nullable,dict(p=repeated),'{"p":{"w":1,"w":2}}')):
             with self.subTest(text=text):
-                restored=restore_open_maps(completion(value),schema)
+                restored=restore_openai_wire(completion(value),schema)
                 self.assertEqual(restored.content,text)
                 with self.assertRaises(InvalidProviderResponseError) as caught:_json_content(restored,'planner')
                 self.assertEqual(caught.exception.code,'PROVIDER_JSON_DUPLICATE_KEY')
@@ -280,15 +339,15 @@ class SitePlanRoundTripTests(unittest.TestCase):
         self.assertEqual(result.content,json.dumps(reply))
 
 
-class EveryOpenAIStageSchemaTests(unittest.TestCase):
-    """Actual builders through ConfiguredStageTransport to the OpenAI wire.
+def saved_factory():
+    """The saved 2026-10-26 factory checkpoint: local recipes beside builtin selections."""
+    folder=Path(__file__).resolve().parent/'fixtures'/'repair_stall_2026-10-26'
+    load=lambda name:json.loads((folder/name).read_text(encoding='utf-8'))
+    return load('draft.json'),load('compile_diagnosis.json'),load
 
-    Two host contracts are not expressible in OpenAI strict mode. They fail
-    locally (no dispatch) until their owners change them; see KNOWN_LOCAL.
-    """
-    KNOWN_LOCAL={'twinpulse_model_recipe/no_children':[('$','root_not_object')],
-        'twinpulse_semantic_patch':[('$.changes.bed.anyOf[1]','required_not_all_properties'),
-                                    ('$.changes.cover.anyOf[1]','required_not_all_properties')]}
+
+class EveryOpenAIStageSchemaTests(unittest.TestCase):
+    """Actual builders through ConfiguredStageTransport to the OpenAI wire; every one is strict."""
 
     def direct_bodies(self,planner):
         import test_budgeted_generation as fixtures
@@ -297,7 +356,7 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
         from test_model_recipe_planning import plinth_recipe
         from twinpulse_core.robot_task_plan import plan_schema
         from twinpulse_provider.generation_preview import room_seed_schema
-        from twinpulse_provider.layout_experiment import response_schema
+        from twinpulse_provider.layout_experiment import objective,response_schema
         from twinpulse_provider.model_capability_repair import capability_schema
         from twinpulse_provider.model_recipe_authoring import proportional_schema
         from twinpulse_provider.model_recipe_planning import definition_schema,selection_schema
@@ -325,6 +384,7 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
         support={'issues':[dict(code='PHOTO_SUPPORT_PLACEMENT_UNAVAILABLE',target_ids=['cover'],
             actual=dict(reason='SURFACE_CAPACITY_EXCEEDED'),expected=dict(parent_id='plinth',part='body'))]}
         patch_draft,plan,diagnosis=layout_fixtures.sample()
+        factory,factory_diagnosis,_=saved_factory()
         review_request,port,observation,_,_,review_draft=review_fixtures.case()
         review_plan,_=compile_scene(review_draft,observation,review_request)
         capture=asyncio.run(port.capture(review_plan,revision(review_draft),None,300));capture['plan']=review_plan
@@ -346,7 +406,14 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
             'twinpulse_semantic_batch/builtin':body('twinpulse_semantic_batch',batch_schema(fixtures.draft()['inventory'],['bed']),'B',{}),
             'twinpulse_semantic_batch/recipe':body('twinpulse_semantic_batch',batch_schema(draft['inventory'],['plinth'],
                 recipes={model:recipe},selections={'plinth':model}),'B',{}),
+            # A builtin selection beside local recipes has an optional, null-only recipe_parameters.
+            'twinpulse_semantic_batch/saved_factory':body('twinpulse_semantic_batch',batch_schema(factory['inventory'],
+                ['rack_1','bollard_1'],recipes=factory['model_recipes'],selections=factory['model_selections']),'B',{}),
             'twinpulse_semantic_patch':body('twinpulse_semantic_patch',response_schema(delta_schema(patch_draft,diagnosis),None),'P',{}),
+            'twinpulse_semantic_patch/focus':body('twinpulse_semantic_patch',response_schema(delta_schema(patch_draft,diagnosis),
+                objective(patch_draft,diagnosis,plan,[])),'P',{}),
+            'twinpulse_semantic_patch/saved_factory':body('twinpulse_semantic_patch',
+                response_schema(delta_schema(factory,factory_diagnosis),None),'P',{}),
             # Product feedback is Nebius-only (generate_feedback); the transport itself can still route it.
             'twinpulse_scene_feedback':body('twinpulse_scene_feedback',feedback_proposal_json_schema(),'F',{}),
             'twinpulse_library_recipe':body('twinpulse_library_recipe',proportional_schema(),'L',{}),
@@ -380,23 +447,15 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
                 inference_scope=Scope()),token(),config()),
         }
 
-    def test_every_configured_openai_schema_is_strict_or_fails_locally(self):
-        wires={}
+    def test_every_configured_openai_schema_is_strict(self):
+        wires={};rewritten=set()
         inner=Recorder();planner=pipeline(openai_transport(inner))
         for label,body in self.direct_bodies(planner).items():
             inner.bodies.clear()
-            stage=config()
             with self.subTest(label=label):
                 raw=explicit_json_contract(body)['response_format']['json_schema']['schema']
-                if label in self.KNOWN_LOCAL:
-                    with self.assertRaises(ProviderConfigurationError) as caught:
-                        asyncio.run(planner._transport.complete(body,CancellationToken(),stage))
-                    self.assertEqual(caught.exception.code,'OPENAI_STRICT_SCHEMA_INVALID')
-                    self.assertEqual(openai_strict_violations(openai_map_rows(raw)),self.KNOWN_LOCAL[label])
-                    self.assertEqual(inner.bodies,[])
-                    wires[label]=None
-                    continue
-                asyncio.run(planner._transport.complete(body,CancellationToken(),stage))
+                if openai_wire_schema(raw)!=raw:rewritten.add(label)
+                asyncio.run(planner._transport.complete(body,CancellationToken(),config()))
                 wires[label]=inner.bodies[0]
         halting=Recorder(halt=True);planner=pipeline(openai_transport(halting))
         for label,start in self.first_dispatches(planner).items():
@@ -405,7 +464,6 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
                 with self.assertRaises(Captured):asyncio.run(start())
                 wires[label]=halting.bodies[0]
         for label,wire in wires.items():
-            if wire is None:continue
             with self.subTest(label=label):
                 envelope=wire['response_format']['json_schema']
                 self.assertEqual(envelope['name'],label.split('/')[0])
@@ -413,10 +471,19 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
                 self.assertNotIn('max_tokens',wire)
                 self.assertEqual(openai_strict_violations(envelope['schema']),[])
         self.assertEqual({label.split('/')[0] for label in wires},configured_schema_names())
-        # The same counts as the launch audit; OpenAI's own depth rule stays unverified.
-        depth={label:openai_schema_depth(wire['response_format']['json_schema']['schema'])
-               for label,wire in wires.items() if wire is not None}
-        self.assertEqual((depth['twinpulse_site_tool_plan_v2/text'],depth['twinpulse_scene_feedback']),(9,11))
+        # Host contracts with an OpenAI spelling of their own; restore_openai_wire undoes each.
+        self.assertEqual(rewritten,{'twinpulse_site_tool_plan_v2/text','twinpulse_site_tool_plan_v2/photo',
+            'twinpulse_model_resolution/capability','twinpulse_scene_feedback',  # open maps as rows
+            'twinpulse_model_recipe/no_children',  # root anyOf wrapped as {value}
+            'twinpulse_semantic_batch/saved_factory','twinpulse_semantic_patch','twinpulse_semantic_patch/focus',
+            'twinpulse_semantic_patch/saved_factory'})  # optional fields required on the wire
+        # The same counts as the launch audit; OpenAI's own depth rule stays unverified. The
+        # {value} root adds one level (host 6), like the children variant's {recipe} wrapper.
+        depth={label:openai_schema_depth(wire['response_format']['json_schema']['schema']) for label,wire in wires.items()}
+        self.assertEqual({label:depth[label] for label in ('twinpulse_site_tool_plan_v2/text','twinpulse_scene_feedback',
+            'twinpulse_model_recipe/no_children','twinpulse_model_recipe/children','twinpulse_semantic_patch/saved_factory')},
+            {'twinpulse_site_tool_plan_v2/text':9,'twinpulse_scene_feedback':11,'twinpulse_model_recipe/no_children':7,
+             'twinpulse_model_recipe/children':7,'twinpulse_semantic_patch/saved_factory':3})
 
     def test_capability_rows_choose_the_recipe_branch_and_pass_checked_capability(self):
         from test_recipe_authoring import table
@@ -455,6 +522,128 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
                 variant='standard',finish='catalog_default',placement=dict(relation='surface',parent_id='plinth',
                     part='body',anchor='centre',elevation_m=None))
         return candidate
+
+
+class OptionalFieldAndRootRoundTripTests(unittest.TestCase):
+    """Wire-shaped completions through the real OpenAI transport, back into the unchanged host checkers."""
+
+    def dispatch(self,name,schema,reply):
+        inner=Recorder(reply);transport=openai_transport(inner)
+        body=pipeline(transport).body(name,schema,'Fixture',{})
+        restored=asyncio.run(transport.complete(body,CancellationToken(),config()))
+        wire=inner.bodies[0]['response_format']['json_schema']['schema']
+        self.assertEqual(openai_strict_violations(wire),[])
+        return restored,wire
+
+    def patch_contract(self):
+        from twinpulse_provider.layout_experiment import patch_payload,response_schema
+        from twinpulse_provider.repair_scope import delta_schema,normalize_delta
+        draft,diagnosis,load=saved_factory();base=delta_schema(draft,diagnosis)
+        fields=list(base['properties']['changes']['properties']['rack_1']['anyOf'][1]['properties'])
+        def sent(saved,rack):
+            """The saved delta as the strict wire carries it: every rack_1 field present, null if unchanged."""
+            value=deepcopy(saved);value['changes']['rack_1']={key:rack.get(key) for key in fields};return value
+        def checked(raw):return normalize_delta(draft,patch_payload(raw,base,None),diagnosis)
+        return response_schema(base,None),load,sent,checked
+
+    def test_saved_factory_patches_come_back_exactly_and_pass_normalize_delta(self):
+        from twinpulse_provider.scene_contract import SceneContractError
+        schema,load,sent,checked=self.patch_contract()
+        # repair3: only the height changed, five whole-null objects and a null room; repair2: a full rack and a room.
+        for name in ('repair3_delta.json','repair2_delta.json'):
+            with self.subTest(name=name):
+                saved=load(name);wire_value=sent(saved,saved['changes']['rack_1'])
+                if name=='repair3_delta.json':  # unrestored, the host rejects the wire's nulls
+                    with self.assertRaises(SceneContractError):checked(wire_value)
+                else:  # or reads its one null as "set recipe_parameters to null"
+                    self.assertNotEqual(checked(wire_value),checked(saved))
+                restored,wire=self.dispatch('twinpulse_semantic_patch',schema,wire_value)
+                rack=wire['properties']['changes']['properties']['rack_1']['anyOf'][1]
+                self.assertEqual(rack['required'],list(wire_value['changes']['rack_1']))
+                raw=_json_content(restored,'planner')
+                self.assertEqual(raw,saved)
+                self.assertEqual(checked(raw),checked(saved))
+
+    def test_a_null_accepting_field_is_left_out_by_null_and_sent_by_its_box(self):
+        schema,load,sent,checked=self.patch_contract()
+        saved=load('repair3_delta.json');height={'dimensions_m':[1.,1.,3.96]}
+        for box,expected in ((None,height),({'set':None},dict(height,recipe_parameters=None))):
+            with self.subTest(box=box):
+                restored,_=self.dispatch('twinpulse_semantic_patch',schema,sent(saved,dict(height,recipe_parameters=box)))
+                raw=_json_content(restored,'planner')
+                self.assertEqual(raw['changes']['rack_1'],expected)
+                update=checked(raw)['operations'][-1]
+                self.assertEqual((update['id'],update['value']['dimensions_m']),('rack_1',[1.,1.,3.96]))
+                self.assertEqual('recipe_parameters' in update['value'],box is not None)
+
+    def test_a_wrong_type_or_a_broken_box_stays_as_sent_for_the_host_to_reject(self):
+        from twinpulse_provider.scene_contract import SceneContractError
+        schema,load,sent,checked=self.patch_contract()
+        saved=load('repair3_delta.json')
+        for rack in ({'dimensions_m':[1.,1.,'3.96']},{'dimensions_m':[1.,1.,3.96],'recipe_parameters':{'set':None,'x':1}}):
+            with self.subTest(rack=rack):
+                wire_value=sent(saved,rack)
+                restored,_=self.dispatch('twinpulse_semantic_patch',schema,wire_value)
+                self.assertEqual(restored.content,json.dumps(wire_value))
+                with self.assertRaises(SceneContractError) as caught:checked(_json_content(restored,'planner'))
+                self.assertEqual([(i['code'],i['path']) for i in caught.exception.contract_report['issues']],
+                    [('SEMANTIC_VARIANT_INVALID','$.changes.rack_1')])
+
+    def test_saved_factory_batch_leaves_out_a_null_recipe_parameters(self):
+        from twinpulse_provider.semantic_scene import batch_schema,checked_batch
+        draft,_,_=saved_factory();targets=['rack_1','bollard_1']
+        objects={identity:deepcopy(draft['objects'][identity]) for identity in targets}
+        self.assertNotIn('recipe_parameters',objects['rack_1'])  # a stored builtin object drops it
+        wire_value=deepcopy(objects);wire_value['rack_1']['recipe_parameters']=None
+        restored,_=self.dispatch('twinpulse_semantic_batch',batch_schema(draft['inventory'],targets,
+            recipes=draft['model_recipes'],selections=draft['model_selections']),wire_value)
+        raw=_json_content(restored,'planner')
+        self.assertEqual(raw,objects)
+        self.assertEqual(checked_batch(raw,draft,targets)['objects'],draft['objects'])
+
+    def test_wrapped_recipe_root_is_unwrapped_for_checked_definition(self):
+        from test_model_recipe_planning import plinth_recipe
+        from test_recipe_authoring import table
+        from twinpulse_provider.model_recipe_planning import checked_definition,definition_schema
+        from twinpulse_provider.scene_contract import SceneContractError
+        schema=definition_schema('storage',[])
+        for recipe in (table(),plinth_recipe()):  # the proportional and the legacy branch
+            with self.subTest(title=recipe['title']):
+                with self.assertRaises(SceneContractError):checked_definition({'value':recipe},'storage','plinth',[])
+                restored,wire=self.dispatch('twinpulse_model_recipe',schema,{'value':recipe})
+                self.assertEqual(wire['required'],['value'])
+                raw=_json_content(restored,'planner')
+                self.assertEqual(raw,recipe)
+                self.assertEqual(checked_definition(raw,'storage','plinth',[]),checked_definition(recipe,'storage','plinth',[]))
+        # Only the exact wrapper is opened; what it holds is still the host's to judge.
+        for wire_value,unwrapped in (({'value':plinth_recipe(),'note':'x'},False),({'value':dict(plinth_recipe(),parts='none')},True)):
+            with self.subTest(unwrapped=unwrapped):
+                restored,_=self.dispatch('twinpulse_model_recipe',schema,wire_value)
+                self.assertEqual(json.loads(restored.content),wire_value['value'] if unwrapped else wire_value)
+                with self.assertRaises(SceneContractError):
+                    checked_definition(_json_content(restored,'planner'),'storage','plinth',[])
+
+    def test_nebius_sends_and_returns_the_host_spelling(self):
+        from test_model_recipe_planning import plinth_recipe
+        from twinpulse_provider.model_recipe_planning import definition_schema
+        from twinpulse_provider.semantic_scene import batch_schema
+        nano='nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';gemma='google/gemma-3-27b-it'
+        draft,_,_=saved_factory();schema,load,_,_=self.patch_contract()
+        rack=dict(draft['objects']['rack_1'],recipe_parameters=None)  # host-valid: an explicit null
+        batch=batch_schema(draft['inventory'],['rack_1'],recipes=draft['model_recipes'],selections=draft['model_selections'])
+        for name,host,reply in (('twinpulse_semantic_patch',schema,load('repair3_delta.json')),
+                                ('twinpulse_model_recipe',definition_schema('storage',[]),plinth_recipe()),
+                                ('twinpulse_semantic_batch',batch,{'rack_1':rack})):
+            with self.subTest(name=name):
+                inner=Recorder(reply);configs={'observer':config(NEBIUS,gemma),'planner':config(NEBIUS,nano)}
+                transport=ConfiguredStageTransport({'observer':inner,'planner':inner},configs,
+                    {'observer':'nebius','planner':'nebius'},{'observer':'low','planner':'low'})
+                body=BudgetedPipeline(transport,policy=GenerationPolicy(),observer_model_id=gemma,planner_model_id=nano,
+                    site_plan_version='2.2').body(name,host,'Fixture',{})
+                result=asyncio.run(transport.complete(body,CancellationToken(),configs['planner']))
+                self.assertEqual(json.dumps(inner.bodies[0]),json.dumps(explicit_json_contract(body)))
+                self.assertEqual(inner.bodies[0]['response_format']['json_schema']['schema'],normalize_json_schema(host))
+                self.assertEqual(result.content,json.dumps(reply))
 
 
 class ResponsesPathFindingTests(unittest.TestCase):
