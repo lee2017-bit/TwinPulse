@@ -11,12 +11,17 @@ from io import BytesIO
 from itertools import combinations
 from pathlib import Path
 import shutil
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
 from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[2]
+for package in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
+    sys.path.insert(0, str(ROOT / 'packages' / package / 'src'))
 
 from twinpulse_app import room_recipe
 from twinpulse_app.api import _sanitize_supervisor_status
@@ -27,7 +32,6 @@ from twinpulse_app.simulation_assets import (
     digest_mismatch_detail, verify_public_burger_assets)
 from twinpulse_app.startup_checks import file_checklist, package_checklist
 
-ROOT = Path(__file__).resolve().parents[2]
 PUBLIC = ROOT / PUBLIC_ASSET_RELATIVE
 CODE = 'SIM_BURGER_ASSET_DIGEST_MISMATCH: '
 NEITHER = ' (matches neither the public nor the original pins)'
