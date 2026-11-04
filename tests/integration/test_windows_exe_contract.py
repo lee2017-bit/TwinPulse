@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
@@ -117,6 +118,42 @@ class DesktopContractTests(unittest.TestCase):
             (root/'_internal/injected.dll').write_bytes(b'x')
             for check in (verify_package,standalone):
                 with self.assertRaisesRegex(ValueError,r'^WINDOWS_PACKAGE_UNMANIFESTED_FILE: _internal/injected\.dll$'): check(root)
+
+
+class BuildHandOverTests(unittest.TestCase):
+    """The ZIP and its SHA256SUMS.txt are the whole hand-over to a company PC."""
+
+    def test_zip_carries_the_pc_check_beside_the_installer_listed_in_the_manifest(self):
+        build=runpy.run_path(str(ROOT/'scripts/build_windows_exe.py'))
+        integrity=runpy.run_path(str(ROOT/'scripts/twinpulse_bootstrap_integrity.py'))
+        name='twinpulse_company_pc_check.py';original=(ROOT/'scripts'/name).read_bytes()
+        digest=hashlib.sha256(original).hexdigest()
+        # main() runs PyInstaller and node, so it is not run here: it must stage EXTRA_FILES
+        # and assemble, list and zip the package with the helpers exercised below.
+        self.assertLessEqual({'EXTRA_FILES','add_top_level_files','package_files','write_zip'},
+                             set(build['main'].__code__.co_names))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);resources=root/'staging/resources';package=root/'dist/TwinPulse';sources={}
+            for relative in build['EXTRA_FILES']:
+                build['stage'](relative,resources,sources)
+            # source-manifest.json binds the shipped check to its repository bytes.
+            self.assertEqual(sources['scripts/'+name],digest)
+            package.mkdir(parents=True);(package/'TwinPulse.exe').write_bytes(b'owned-test-placeholder')
+            build['add_top_level_files'](resources,package)
+            files=build['package_files'](package)
+            self.assertIn({'path':name,'bytes':len(original),'sha256':digest},files)
+            (package/'windows-release-manifest.json').write_text(json.dumps({'schema':'twinpulse-windows-exe-1.0',
+                'build_id':'test','source_manifest_sha256':'a'*64,'files':files}),encoding='utf-8')
+            archive=root/'TwinPulse-Windows-x64-test.zip';build['write_zip'](package,archive)
+            with zipfile.ZipFile(archive) as stream:stream.extractall(root/'extracted')
+            extracted=root/'extracted/TwinPulse'
+            # Top level of the extracted folder, next to Install-TwinPulse.cmd, byte for byte.
+            self.assertTrue((extracted/'Install-TwinPulse.cmd').is_file())
+            self.assertEqual((extracted/name).read_bytes(),original)
+            # Install (full hash) and start (size) checks accept it: it is a listed file, not an extra one.
+            self.assertEqual(verify_package(extracted)['status'],'verified')
+            self.assertEqual(integrity['verify_before_import'](extracted,full=True)['build_id'],'test')
+            self.assertEqual(integrity['verify_before_import'](extracted)['build_id'],'test')
 
 
 if __name__ == '__main__': unittest.main()
