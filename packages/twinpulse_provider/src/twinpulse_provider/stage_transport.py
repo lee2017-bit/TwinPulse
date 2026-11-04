@@ -506,11 +506,12 @@ def restore_openai_wire(completion, schema):
 
     The exact inverse, walked with the host schema: a wrapped root is
     unwrapped, rows become maps, a null optional property is left out and a
-    {"set": v} box becomes v. Unparseable, unmatched, ambiguous or duplicate-key
-    content is returned unchanged: host validation stays the authority.
-    Repeated row names become repeated JSON keys, which the host parser
-    rejects as PROVIDER_JSON_DUPLICATE_KEY. Only for OpenAI wire completions:
-    a host-shaped (Nebius) reply is not a wire spelling.
+    {"set": v} box becomes v. A part that is unmatched or ambiguous keeps its
+    wire spelling; unparseable or duplicate-key content, or a wrapped root that
+    is not exactly {"value": ...}, is returned unchanged. Host validation stays
+    the authority. Repeated row names become repeated JSON keys, which the host
+    parser rejects as PROVIDER_JSON_DUPLICATE_KEY. Only for OpenAI wire
+    completions: a host-shaped (Nebius) reply is not a wire spelling.
     """
     content=getattr(completion,'content',None)
     if not isinstance(content,str) or not isinstance(schema,dict) or openai_wire_schema(schema)==schema:
