@@ -179,7 +179,7 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
         with temporary.open('x', encoding='utf-8') as stream:
             json.dump(value, stream, sort_keys=True); stream.flush(); os.fsync(stream.fileno())
         replace_retrying(temporary, active)
-        # From here the journal lists every entry that still names another release.
+        # From here the journal lists every entry not yet replaced for this release.
         pending = [filename for filename, _stage, _path in staged]
         transaction.update(phase='active_pointer_committed', entries_pending=list(pending))
         atomic_json(journal, transaction)
