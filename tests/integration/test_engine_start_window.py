@@ -361,14 +361,15 @@ class EngineStartWindowTests(unittest.TestCase):
                 manager._wait_engine_ready(FakeProcess(21), FakeProcess(22))
         self.assertEqual(raised.exception.code, "engine_ready_timeout")
         self.assertEqual(str(raised.exception),
-                         "Isaac did not finish starting within 600 s (last phase: simulation_app_init, 2 s)")
-        self.assertEqual(writes, [("starting", "engine_start", "Starting Isaac 3D engine: isaac_import (0 s)"),
-                                  ("starting", "engine_start", "Starting Isaac 3D engine: simulation_app_init (2 s)")])
+                         "Isaac did not finish starting within 600 s (last phase: simulation_app_init, last reported at 2 s)")
+        self.assertEqual(writes, [("starting", "engine_start", "Starting Isaac 3D engine: isaac_import (phase started at 0 s)"),
+                                  ("starting", "engine_start",
+                                   "Starting Isaac 3D engine: simulation_app_init (phase started at 2 s)")])
         status = json.loads(manager.supervisor_status_file.read_text(encoding="utf-8"))
         self.assertEqual(status["ready_timeout_s"], 600.0)
         from twinpulse_app.api import _sanitize_supervisor_status
         self.assertEqual(_sanitize_supervisor_status(status)["message"],
-                         "Starting Isaac 3D engine: simulation_app_init (2 s)")
+                         "Starting Isaac 3D engine: simulation_app_init (phase started at 2 s)")
         reads = sum(1 for call in read.call_args_list if call.args[0] == manager.engine_progress_file)
         # About once per second (ten 0.1 s polls may sum to just under 1 s),
         # never on each of the 6000 polls.
@@ -378,7 +379,7 @@ class EngineStartWindowTests(unittest.TestCase):
         for progress, expected in (
                 (None, "Isaac did not finish starting within 0.5 s (no startup phase was reported)"),
                 ({"schema_version": "1.0", "phase": "bridge_wait", "elapsed_s": 512.4, "http_status": 503},
-                 "Isaac did not finish starting within 0.5 s (last phase: bridge_wait, 512 s, HTTP 503)")):
+                 "Isaac did not finish starting within 0.5 s (last phase: bridge_wait, last reported at 512 s, HTTP 503)")):
             with self.subTest(progress=progress):
                 clock = Clock()
                 manager = self.manager(ready_timeout_s=0.5, clock=clock,
@@ -407,7 +408,7 @@ class EngineStartWindowTests(unittest.TestCase):
         with self.assertRaises(ProcessManagerError) as raised:
             manager._wait_engine_ready(FakeProcess(41), FakeProcess(42))
         self.assertEqual(str(raised.exception),
-                         "Isaac did not finish starting within 3 s (last phase: stage_ready, 40 s)")
+                         "Isaac did not finish starting within 3 s (last phase: stage_ready, last reported at 40 s)")
         self.assertGreaterEqual(len(attempts), 2)  # retried on later reads, not given up
 
     def test_progress_record_is_allowlisted(self) -> None:
@@ -622,6 +623,63 @@ class EngineStartWindowTests(unittest.TestCase):
         self.assertIn("TWINPULSE_STALE_LAUNCHER_LOCK_ARCHIVED record=" + archived[0].name, printed.getvalue())
         self.assertEqual(archived[0].read_bytes(), original)
         self.assertFalse(manager.lock_file.exists())  # this launch released its own lock on failure
+
+    def test_lock_of_an_exited_owner_is_archived_not_deleted(self) -> None:
+        original = self.lock({"executable": r"C:\TwinPulse\TwinPulse.exe", "creation_filetime": 1})
+        manager = self.manager()
+        printed = io.StringIO()
+        with patch.object(pm, "_pid_alive", return_value=False), redirect_stdout(printed):
+            manager._acquire_lock()
+        self.assertTrue(manager._lock_owned)
+        archived = list((self.state / "stale-launch-records").glob("*.json"))
+        self.assertEqual([item.read_bytes() for item in archived], [original])
+        self.assertIn("TWINPULSE_STALE_LAUNCHER_LOCK_ARCHIVED record=" + archived[0].name, printed.getvalue())
+        self.assertEqual(json.loads((self.state / "launcher.lock").read_text(encoding="utf-8"))["launch_id"],
+                         manager._launch_id)
+
+    # i) a second Start asks the running App to reopen
+    def reopen_fixture(self, clock: Clock, answer_at: float | None) -> tuple[TwinPulseProcessManager, dict]:
+        launch_id, owner = "b" * 32, os.getpid()
+        existing = {"schema_version": "1.0", "launch_id": launch_id, "owner_pid": owner, "pid": owner,
+                    "repo_root": str(self.root), "reopen_protocol": "1.0"}
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "launcher.lock").write_text(json.dumps(existing), encoding="utf-8")
+        launch = self.state / "launches" / launch_id
+        launch.mkdir(parents=True)
+        (launch / "supervisor-status.json").write_text(json.dumps(
+            {"status": "starting", "launch": {"instance_id": launch_id, "owner_pid": owner}}), encoding="utf-8")
+        start = clock.value
+
+        def sleep(seconds: float) -> None:
+            clock.value += seconds
+            # The owner answers late, as after re-creating a closed desktop window.
+            if answer_at is not None and clock.value - start >= answer_at:
+                for request in (launch / "open-requests").glob("*.request.json"):
+                    request_id = request.name.removesuffix(".request.json")
+                    pm._write_json_atomic(request.with_name(request_id + ".reply.json"), {
+                        "request_id": request_id, "launch_id": launch_id, "owner_pid": owner, "status": "opened",
+                        "base_url": "http://127.0.0.1:8765", "backend_pid": 10, "engine_pid": 11, "phase": "engine_start"})
+        return self.manager(clock=clock, sleep=sleep), existing
+
+    def test_reopen_waits_longer_than_a_desktop_window_handshake(self) -> None:
+        from twinpulse_app.desktop_ui_host import HANDSHAKE_TIMEOUT_S
+        self.assertGreater(pm.REOPEN_ACK_TIMEOUT_S, HANDSHAKE_TIMEOUT_S)
+        clock = Clock()
+        manager, existing = self.reopen_fixture(clock, answer_at=HANDSHAKE_TIMEOUT_S + 2)
+        result = manager._reopen_existing(existing, open_browser=True)
+        self.assertEqual((result.reused, result.ui_url, result.phase), (True, "http://127.0.0.1:8765/", "engine_start"))
+        self.assertEqual(list((self.state / "launches" / existing["launch_id"] / "open-requests").iterdir()), [])
+
+    def test_reopen_without_an_answer_stops_after_the_window_and_starts_nothing(self) -> None:
+        clock = Clock()
+        manager, existing = self.reopen_fixture(clock, answer_at=None)
+        start = clock.value
+        with self.assertRaises(ProcessManagerError) as raised:
+            manager._reopen_existing(existing, open_browser=True)
+        self.assertEqual(raised.exception.code, "launcher_reopen_timeout")
+        self.assertIn("within 60 seconds", str(raised.exception))
+        self.assertTrue(60.0 <= clock.value - start < 61.0, clock.value - start)
+        self.assertEqual(json.loads((self.state / "launcher.lock").read_text(encoding="utf-8")), existing)
 
     def test_live_owner_with_matching_identity_still_refuses(self) -> None:
         identity = {"executable": r"C:\TwinPulse\TwinPulse.exe", "creation_filetime": 1}

@@ -180,7 +180,7 @@ class LauncherUiFallbackTests(unittest.TestCase):
 
     def test_last_error_reaches_the_windows_entry_and_a_new_attempt_clears_it(self) -> None:
         from twinpulse_app import ProcessManagerError
-        message = "Isaac did not finish starting within 600 s (last phase: extensions, started at 412 s)"
+        message = "Isaac did not finish starting within 600 s (last phase: extension_enable, last reported at 412 s)"
         code, _out, _err = self.launch("--no-browser", error=ProcessManagerError("engine_ready_timeout", message))
         self.assertEqual(code, 1)
         self.assertEqual(self.module["LAST_LAUNCH_ERROR"], {"code": "engine_ready_timeout", "message": message})

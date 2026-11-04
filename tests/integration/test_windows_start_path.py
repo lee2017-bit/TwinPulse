@@ -83,7 +83,7 @@ class StartPathTests(unittest.TestCase):
 
     def test_startup_failure_dialog_names_the_launcher_error_and_its_log(self):
         text=entry['startup_failure_text'];log=self.root/'profile/TwinPulse/runtime/desktop-logs/launcher-42.log'
-        message='Isaac did not finish starting within 600 s (last phase: extensions, started at 412 s)'
+        message='Isaac did not finish starting within 600 s (last phase: extension_enable, last reported at 412 s)'
         self.assertEqual(text({'code':'engine_ready_timeout','message':message},log).splitlines(),
             ['TwinPulse could not complete startup.',message,'Code: engine_ready_timeout','Log: '+str(log),
              'No other application was stopped.'])

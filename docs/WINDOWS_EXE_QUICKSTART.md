@@ -15,7 +15,7 @@ Use the `Install-TwinPulse.cmd` inside the extracted `TwinPulse` folder. A sourc
 
 **Isaac Sim** is found automatically in `C:\isaacsim`, `D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64`, `C:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64` or `D:\isaacsim`. Otherwise a folder picker asks once: choose the folder that contains `python.bat`. The folder is saved for later starts.
 
-**The first start can take up to 10 minutes** while Isaac initializes. The App window opens first and shows the current Isaac phase with elapsed seconds; later starts are usually faster. If Isaac is not ready after 600 s, the message names the last phase.
+**The first start can take up to 10 minutes** while Isaac initializes. The App window opens first and shows the current Isaac phase and the second it started; later starts are usually faster. If Isaac is not ready after 600 s, the message names the last phase.
 
 ## Use
 
@@ -48,7 +48,7 @@ Install uses no network, but AI generation does; `Start-TwinPulse.cmd --offline`
 - **Isaac is not ready after 600 s:** the message names the last phase. Keep `engine.log` from `%LOCALAPPDATA%\TwinPulse\runtime\launches\<launch>`; it keeps its output even when the engine is stopped. If the TwinPulse extension does not start, the error lists the declared Isaac extensions that are not enabled. TwinPulse starts Isaac without the Windows user-site Python folder; do not copy NumPy or SciPy folders into Isaac.
 - **A provider error shows a web page title:** a company filter answered; see Network. Provider errors show the HTTP status and a short reason. OpenAI planner requests are checked against OpenAI's strict schema rules before they are sent.
 - **Check this PC:** copy `scripts/twinpulse_company_pc_check.py` from the TwinPulse source (or ask whoever gave you the ZIP) and run `py -3 twinpulse_company_pc_check.py` with any Python 3.10+, or `<Isaac folder>\python.bat twinpulse_company_pc_check.py`. It is read-only, writes a report to your Desktop and never prints keys or prompts. By default it sends unauthenticated test requests to `api.tokenfactory.nebius.com` and `api.openai.com` with the Python default and the TwinPulse User-Agent; `--no-network` skips them. Review the report before sharing it.
-- **Anything else:** open Diagnostics in the App, or read `%LOCALAPPDATA%\TwinPulse\runtime\desktop-logs`.
+- **Anything else:** the startup message shows the error, its code and the log file; also open Diagnostics in the App, or read `%LOCALAPPDATA%\TwinPulse\runtime\desktop-logs`.
 
 ## Moving from an old offline install
 

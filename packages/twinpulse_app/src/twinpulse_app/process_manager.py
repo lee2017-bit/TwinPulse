@@ -169,6 +169,10 @@ class ProcessManagerError(RuntimeError):
 
 RESTART_REQUESTED = 75
 PROJECT_SWITCH_REQUESTED = 76
+# A second Start waits this long for the running App to answer. Longer than a
+# desktop window handshake (desktop_ui_host.HANDSHAKE_TIMEOUT_S, 45 s), which a
+# reopen needs when the user had closed the window.
+REOPEN_ACK_TIMEOUT_S = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -870,7 +874,7 @@ class TwinPulseProcessManager:
                 if current is not None and (progress is None or current["phase"] != progress["phase"]):
                     try:
                         self._write_status("starting", "engine_start",
-                            f"Starting Isaac 3D engine: {current['phase']} ({current['elapsed_s']:.0f} s)")
+                            f"Starting Isaac 3D engine: {current['phase']} (phase started at {current['elapsed_s']:.0f} s)")
                     except OSError:
                         current = progress  # Informational only; retry on the next read.
                 progress = current or progress
@@ -882,7 +886,7 @@ class TwinPulseProcessManager:
         if progress is None:
             detail = "no startup phase was reported"
         else:
-            detail = f"last phase: {progress['phase']}, {progress['elapsed_s']:.0f} s"
+            detail = f"last phase: {progress['phase']}, last reported at {progress['elapsed_s']:.0f} s"
             if progress["http_status"] is not None:
                 detail += f", HTTP {progress['http_status']}"
         raise ProcessManagerError(
@@ -1051,15 +1055,8 @@ class TwinPulseProcessManager:
                         "launcher_lock_invalid",
                         "Existing launcher lock has no valid owner PID; it was preserved",
                     )
-                try:
-                    self.lock_file.unlink()
-                except FileNotFoundError:
-                    continue
-                except PermissionError as error:
-                    raise ProcessManagerError(
-                        "launcher_lock_access_denied",
-                        "Existing stale launcher lock could not be removed",
-                    ) from error
+                # The owner process has exited: keep its record as evidence.
+                self._archive_stale_lock()
             except PermissionError as error:
                 raise ProcessManagerError(
                     "launcher_lock_access_denied", "Launcher lock could not be created or opened",
@@ -1125,7 +1122,7 @@ class TwinPulseProcessManager:
         _write_json_atomic(request, dict(schema_version='1.0', action='open', request_id=request_id,
             launch_id=launch_id, owner_pid=owner, requested_at_utc=_utc_now(), open_browser=bool(open_browser)))
         try:
-            deadline = self._clock() + 30.0
+            deadline = self._clock() + REOPEN_ACK_TIMEOUT_S
             while self._clock() < deadline:
                 if _read_json(self.lock_file) != dict(existing) or not _pid_alive(owner):
                     raise ProcessManagerError('launcher_reopen_changed',
@@ -1142,7 +1139,8 @@ class TwinPulseProcessManager:
                         int(result.get('engine_pid', 0)), '', (), reused=True, phase=str(result.get('phase', 'starting')))
                 self._sleep(.05)
             raise ProcessManagerError('launcher_reopen_timeout',
-                'Existing TwinPulse did not acknowledge reopening within 30 seconds; no duplicate App was started')
+                f'Existing TwinPulse did not acknowledge reopening within {REOPEN_ACK_TIMEOUT_S:g} seconds; '
+                'no duplicate App was started')
         finally:
             request.unlink(missing_ok=True)
             reply.unlink(missing_ok=True)
@@ -1176,7 +1174,7 @@ class TwinPulseProcessManager:
             if (value.get('schema_version') != '1.0' or value.get('action') != 'open'
                     or value.get('request_id') != request_id or value.get('launch_id') != self._launch_id
                     or value.get('owner_pid') != self._owner_pid or type(value.get('open_browser')) is not bool
-                    or not -2 <= age <= 30):
+                    or not -2 <= age <= REOPEN_ACK_TIMEOUT_S):
                 continue
             trace = self._lifecycle_trace('launcher_reopen')
             payload = dict(request_id=request_id, launch_id=self._launch_id, owner_pid=self._owner_pid,

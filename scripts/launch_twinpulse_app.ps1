@@ -16,7 +16,7 @@ $webRoot = Join-Path $repoRoot "apps\twinpulse-web"
 $savedIsaacRoot = Join-Path $repoRoot ".runtime\isaac-root.txt"
 if (-not $IsaacRoot) {
     if (Test-Path -LiteralPath $savedIsaacRoot) {
-        $IsaacRoot = (Get-Content -LiteralPath $savedIsaacRoot -Raw).Trim()
+        $IsaacRoot = (Get-Content -LiteralPath $savedIsaacRoot -Raw -Encoding UTF8).Trim()
     } else {
         $IsaacRoot = "C:\isaacsim"
     }

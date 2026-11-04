@@ -121,7 +121,7 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
         ('Start-TwinPulse.cmd', '@echo off\r\nstart "" ' + program + ' %*\r\n'),
         ('Start-TwinPulse-Test.cmd', '@echo off\r\nstart "" ' + program + ' --automation-test %*\r\n'),
         ('start-installed.ps1', 'param([switch]$AutomationTest)\n$ErrorActionPreference="Stop"\n'
-            '$pointer=Get-Content -LiteralPath (Join-Path $PSScriptRoot "active-release.json") -Raw | ConvertFrom-Json\n'
+            '$pointer=Get-Content -LiteralPath (Join-Path $PSScriptRoot "active-release.json") -Raw -Encoding UTF8 | ConvertFrom-Json\n'
             'if ($pointer.schema -ne "twinpulse-windows-install-1.0" -or $pointer.release_id -notmatch "^[A-Za-z0-9_-]{1,80}$" '
             '-or $pointer.exe -ne ("releases/"+$pointer.release_id+"/TwinPulse.exe")) { throw "Invalid installed release" }\n'
             'if ($AutomationTest) { & (Join-Path $PSScriptRoot $pointer.exe) --automation-test } else { & (Join-Path $PSScriptRoot $pointer.exe) }\n')):
