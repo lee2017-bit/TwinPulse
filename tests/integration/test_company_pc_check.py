@@ -142,6 +142,16 @@ def fake_python_bat(outputs, calls):
     return popen
 
 
+def app_burger_code(folder):
+    """The code the App's own simulation_assets._inventory gives the folder (None: accepted)."""
+    from twinpulse_app import simulation_assets
+    try:
+        simulation_assets._inventory(Path(folder))
+    except ValueError as error:
+        return str(error).split(':', 1)[0]
+    return None
+
+
 def can_symlink(folder):
     try:
         (Path(folder) / 'link-probe').symlink_to(Path(folder))
@@ -337,10 +347,125 @@ class BurgerTests(unittest.TestCase):
         self.assertEqual(check.classify_burger({})['overall'], 'missing')
         extra = {**check.PUBLIC_BURGER_MANIFEST, 'payloads/extra.usda': 'f' * 64}
         self.assertEqual(check.classify_burger(extra)['overall'], 'closure_changed')
-        # The App's own refusal code, in the order simulation_assets._inventory checks.
-        no_main = {name: digest for name, digest in check.PUBLIC_BURGER_MANIFEST.items() if name != 'turtlebot3_burger.usda'}
-        self.assertEqual([check.classify_burger(value)['code'] for value in (extra, no_main, mixed, check.BURGER_MANIFEST)],
-                         ['SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED', 'SIM_BURGER_ASSET_MISSING', 'SIM_BURGER_ASSET_DIGEST_MISMATCH', None])
+
+    def test_refusal_code_is_the_one_the_apps_own_inventory_gives(self):
+        """Real folder states through the App's simulation_assets._inventory and the check: the same code."""
+        def unlink(name):
+            return lambda folder, outside: (folder / name).unlink()
+
+        def put(name, data=b'#usda 1.0\n'):
+            return lambda folder, outside: write(folder / name, data)
+
+        def size(name, value):
+            def change(folder, outside):
+                with open(folder / name, 'r+b') as stream:
+                    stream.truncate(value)  # sparse: no 32 MB is written
+            return change
+
+        def link(name, target):  # target 'outside' or a name inside the folder
+            def change(folder, outside):
+                source = outside / name if target == 'outside' else folder / target
+                if target == 'outside':
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(folder / name), str(source))
+                else:
+                    shutil.copyfile(folder / name, source)
+                    (folder / name).unlink()
+                (folder / name).symlink_to(source, target_is_directory=source.is_dir())
+            return change
+
+        def folder_link(folder, outside):
+            shutil.move(str(folder), str(outside / 'usd'))
+            folder.symlink_to(outside / 'usd', target_is_directory=True)
+
+        def dangling_main(folder, outside):
+            (folder / 'turtlebot3_burger.usda').unlink()
+            (folder / 'turtlebot3_burger.usda').symlink_to(outside / 'nothing.usda')
+
+        limit = check.BURGER_SIZE_LIMIT
+        rows = [('unchanged', [], None),
+                ('folder missing', [lambda folder, outside: shutil.rmtree(folder)], 'SIM_BURGER_ASSET_MISSING'),
+                ('main file missing', [unlink('turtlebot3_burger.usda')], 'SIM_BURGER_ASSET_MISSING'),
+                ('main file missing, extra file', [unlink('turtlebot3_burger.usda'), put('payloads/extra.usda')], 'SIM_BURGER_ASSET_MISSING'),
+                ('other file missing', [unlink('payloads/robot.usda')], 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
+                ('extra file', [put('payloads/extra.usda')], 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
+                ('extra empty folder', [lambda folder, outside: (folder / 'payloads/old').mkdir()], None),
+                ('wrong bytes', [put('payloads/base.usda')], 'SIM_BURGER_ASSET_DIGEST_MISMATCH'),
+                ('over the size limit', [size('payloads/geometries.usd', limit + 1)], 'SIM_BURGER_ASSET_SIZE_LIMIT'),
+                ('exactly the size limit', [size('payloads/geometries.usd', limit)], 'SIM_BURGER_ASSET_DIGEST_MISMATCH'),
+                ('over the limit, extra file', [size('payloads/geometries.usd', limit + 1), put('extra.usda')],
+                 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'),
+                ('over the limit, wrong bytes', [size('payloads/geometries.usd', limit + 1), put('payloads/base.usda')],
+                 'SIM_BURGER_ASSET_SIZE_LIMIT')]
+        links = [('file linked outside', [link('payloads/base.usda', 'outside')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('file linked inside', [link('payloads/base.usda', 'payloads/base-copy.usda')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('main file linked', [link('turtlebot3_burger.usda', 'outside')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('main file a dangling link', [dangling_main], 'SIM_BURGER_ASSET_MISSING'),
+                 ('folder linked outside', [link('payloads/Physics', 'outside')], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('the usd folder is a link', [folder_link], 'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('link and extra file', [put('payloads/extra.usda'), link('payloads/base.usda', 'outside')],
+                  'SIM_ASSET_DEPENDENCY_UNSAFE'),
+                 ('link and over the limit', [size('payloads/robot.usda', limit + 1), link('payloads/base.usda', 'outside')],
+                  'SIM_ASSET_DEPENDENCY_UNSAFE')]
+        with tempfile.TemporaryDirectory() as temp:
+            symlinks = can_symlink(temp)
+        for name, changes, expected in rows + (links if symlinks else []):
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                root, outside = Path(temp) / 'resources', Path(temp) / 'outside'
+                folder = root / check.BURGER_FOLDERS[0]
+                shutil.copytree(PUBLIC_USD, folder)
+                outside.mkdir()
+                for change in changes:
+                    change(folder, outside)
+                state, code, files = check.burger_verdict(check.burger_check(root))
+                self.assertEqual((app_burger_code(folder), code), (expected, expected))
+        if not symlinks:
+            self.skipTest('this system cannot create symlinks: link rows not run')
+
+    def test_explorer_and_finder_metadata_in_the_burger_folder_is_ignored(self):
+        # The App side (simulation_assets._inventory ignoring these names) lands separately: check only.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / check.BURGER_FOLDERS[0]
+            shutil.copytree(PUBLIC_USD, folder)
+            for name in ('desktop.ini', 'payloads/Thumbs.db', 'payloads/Physics/.DS_Store', 'payloads/DESKTOP.INI'):
+                write(folder / name, b'[.ShellClassInfo]')
+            burger = check.burger_check(root)
+            entry = burger['folders'][0]
+            self.assertEqual((entry['overall'], entry['code'], entry['extra']), ('public', None, []))
+            self.assertEqual(entry['ignored'], ['desktop.ini', 'payloads/DESKTOP.INI', 'payloads/Physics/.DS_Store', 'payloads/Thumbs.db'])
+            self.assertEqual(check.burger_verdict(burger), ('public', None, []))
+            write(folder / 'payloads/thumbs.db.bak', b'x')  # only the exact names are metadata
+            self.assertEqual(check.burger_verdict(check.burger_check(root))[1], 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED')
+
+    def test_linked_and_oversized_files_are_named_and_never_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, outside = Path(temp) / 'resources', Path(temp) / 'outside'
+            folder = root / check.BURGER_FOLDERS[0]
+            shutil.copytree(PUBLIC_USD, folder)
+            outside.mkdir()
+            with open(folder / 'payloads/geometries.usd', 'r+b') as stream:
+                stream.truncate(check.BURGER_SIZE_LIMIT + 1)
+            read = []
+            real = check.sha256_file
+            with patch.object(check, 'sha256_file', lambda path: read.append(Path(path).name) or real(path)):
+                state, code, files = check.burger_verdict(check.burger_check(root))
+            self.assertEqual((state, code, files), ('oversized', 'SIM_BURGER_ASSET_SIZE_LIMIT', ['payloads/geometries.usd']))
+            self.assertNotIn('geometries.usd', read)
+            self.assertEqual(len(read), 8)
+            line = check.summary_lines([{'key': 'burger_' + state, 'release': 'r1', 'files': files, 'code': code}])[0]
+            self.assertIn('32MB를 넘는 파일 1개 (geometries.usd) -> SIM_BURGER_ASSET_SIZE_LIMIT 원인', line)
+            if not can_symlink(temp):
+                self.skipTest('this system cannot create symlinks')
+            shutil.move(str(folder / 'payloads/base.usda'), str(outside / 'base.usda'))
+            (folder / 'payloads/base.usda').symlink_to(outside / 'base.usda')
+            read.clear()
+            with patch.object(check, 'sha256_file', lambda path: read.append(Path(path).name) or real(path)):
+                state, code, files = check.burger_verdict(check.burger_check(root))
+            self.assertEqual((state, code, files), ('linked', 'SIM_ASSET_DEPENDENCY_UNSAFE', ['payloads/base.usda']))
+            self.assertNotIn('base.usda', read)
+            line = check.summary_lines([{'key': 'burger_' + state, 'release': 'r1', 'files': files, 'code': code}])[0]
+            self.assertIn('링크(심볼릭 링크/정션) 1개 (base.usda) -> SIM_ASSET_DEPENDENCY_UNSAFE 원인', line)
 
 
 class InstallAndRuntimeTests(unittest.TestCase):

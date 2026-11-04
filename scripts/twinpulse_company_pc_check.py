@@ -687,7 +687,7 @@ def _size(path):
 # ---- 3. TwinPulse install ------------------------------------------------------------------
 
 def classify_burger(inventory):
-    """Compare {relative name: sha256} with both reviewed pin sets, file by file, and name the App's refusal."""
+    """Compare {relative name: sha256} with both reviewed pin sets, file by file (file set and digests only)."""
     files = {}
     for name in PUBLIC_BURGER_MANIFEST:
         digest = inventory.get(name)
@@ -697,10 +697,58 @@ def classify_burger(inventory):
     overall = ('missing' if states == {'missing'} else 'closure_changed' if extra or 'missing' in states
                else 'public' if states == {'public'} else 'original' if states == {'original'}
                else 'mismatch' if 'neither' in states else 'mixed')
-    # The order of simulation_assets._inventory: main file, then the file set, then the digests.
-    code = (None if overall in ('public', 'original') else 'SIM_BURGER_ASSET_MISSING' if files['turtlebot3_burger.usda'] == 'missing'
-            else 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED' if overall == 'closure_changed' else 'SIM_BURGER_ASSET_DIGEST_MISMATCH')
-    return {'overall': overall, 'files': files, 'extra': extra, 'code': code}
+    return {'overall': overall, 'files': files, 'extra': extra}
+
+
+BURGER_SIZE_LIMIT = 32 * 1024 * 1024  # simulation_assets._inventory refuses a larger file
+
+
+def _linked(path, inside):
+    try:
+        return path.is_symlink() or not path.resolve().is_relative_to(inside)
+    except (OSError, RuntimeError):  # a link loop or an unreadable reparse point
+        return True
+
+
+def burger_folder(folder):
+    """One usd folder through the steps of simulation_assets._inventory, in its order and with its codes:
+    main file, links (symlinks, junctions), file set, size, digests. Explorer/Finder metadata (OS_JUNK
+    names) is ignored at every step, as the App ignores it. A link is never followed and a file over
+    the size limit is never hashed; neither is ever read by the App."""
+    folder = Path(folder)
+    every = sorted(folder.rglob('*'))
+    ignored = [path.relative_to(folder).as_posix() for path in every if path.name.casefold() in OS_JUNK]
+    paths = [path for path in every if path.name.casefold() not in OS_JUNK]
+    inside, folder_linked = folder.resolve(), folder.is_symlink()
+    linked = (['(this folder)'] if folder_linked else []) + [
+        path.relative_to(folder).as_posix() for path in paths if _linked(path, inside)]
+    files = {path.relative_to(folder).as_posix(): path for path in paths if path.is_file()}
+    behind_link = set(files) if folder_linked else set(linked)
+    oversized = [name for name, path in files.items() if name not in behind_link and path.stat().st_size > BURGER_SIZE_LIMIT]
+    inventory = {name: sha256_file(path) for name, path in files.items() if name not in behind_link and name not in oversized}
+    entry = {'inventory': inventory, **classify_burger(inventory), 'linked': linked, 'oversized': oversized, 'ignored': ignored}
+    entry['extra'] = sorted(set(files) - set(PUBLIC_BURGER_MANIFEST))
+    entry['files'].update({name: 'linked' for name in behind_link if name in entry['files']})
+    entry['files'].update({name: 'oversized' for name in oversized if name in entry['files']})
+    if not (folder / 'turtlebot3_burger.usda').is_file():
+        code = 'SIM_BURGER_ASSET_MISSING'
+    elif linked:
+        code = 'SIM_ASSET_DEPENDENCY_UNSAFE'
+    elif set(files) != set(PUBLIC_BURGER_MANIFEST):
+        code = 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'
+    elif oversized:
+        code = 'SIM_BURGER_ASSET_SIZE_LIMIT'
+    elif inventory not in (BURGER_MANIFEST, PUBLIC_BURGER_MANIFEST):
+        code = 'SIM_BURGER_ASSET_DIGEST_MISMATCH'
+    else:
+        code = None
+    states = set(entry['files'].values())
+    entry['overall'] = {'SIM_BURGER_ASSET_MISSING': 'missing' if states == {'missing'} else 'closure_changed',
+                        'SIM_ASSET_DEPENDENCY_UNSAFE': 'linked', 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED': 'closure_changed',
+                        'SIM_BURGER_ASSET_SIZE_LIMIT': 'oversized',
+                        'SIM_BURGER_ASSET_DIGEST_MISMATCH': 'mismatch' if 'neither' in states else 'mixed'}.get(code, entry['overall'])
+    entry['code'] = code
+    return entry
 
 
 def burger_check(resource_root, manifest_hashes=None, prefix=''):
@@ -710,8 +758,7 @@ def burger_check(resource_root, manifest_hashes=None, prefix=''):
         folder = Path(resource_root) / relative
         if not folder.is_dir():
             continue
-        inventory = {path.relative_to(folder).as_posix(): sha256_file(path) for path in sorted(folder.rglob('*')) if path.is_file()}
-        entry = {'folder': relative, 'inventory': inventory, **classify_burger(inventory)}
+        entry = {'folder': relative, **burger_folder(folder)}
         if manifest_hashes is not None:
             recorded = {}
             for name in PUBLIC_BURGER_MANIFEST:
@@ -840,8 +887,11 @@ def _release_lines(report, active):
         for name, state in entry['files'].items() if entry['overall'] not in ('public', 'original') else ():
             digest = entry['inventory'].get(name)
             lines.append(f'    {name}: {state}' + (f' sha256={digest}' if state == 'neither' else ''))
-        if entry['extra']:
-            lines.append(f"    extra files: {names(entry['extra'])}")
+        for label, items in (('extra files', entry['extra']), ('links (never followed)', entry['linked']),
+                             (f'over {BURGER_SIZE_LIMIT // (1024 * 1024)} MB (not hashed)', entry['oversized']),
+                             ('ignored Explorer/Finder metadata', entry['ignored'])):
+            if items:
+                lines.append(f'    {label}: {names(items)}')
     return lines
 
 
@@ -921,13 +971,21 @@ def _release_findings(folder, active, verify, lines, findings, facts):
         if not (compare['changed'] or compare['missing'] or compare['unreadable'] or other or backup):
             findings.append({'key': 'release_clean', 'release': folder.name})
     if verify and report['kind'] != 'unknown':
-        burger = report['burger']
-        used = next((entry for entry in burger['folders'] if entry['folder'] == burger['used']), None)
-        state = used['overall'] if used else 'missing'
-        if state not in ('public', 'original'):
-            odd = [name for name, value in used['files'].items() if value not in ('public', 'original')] if used else []
-            findings.append({'key': 'burger_' + state, 'release': folder.name, 'files': odd,
-                             'code': used['code'] if used else 'SIM_BURGER_ASSET_MISSING'})
+        state, code, files = burger_verdict(report['burger'])
+        if code:
+            findings.append({'key': 'burger_' + state, 'release': folder.name, 'files': files, 'code': code})
+
+
+def burger_verdict(burger):
+    """(state, the App's refusal code or None, files to name) for the Burger folder TwinPulse uses at run time.
+    With no folder at all, simulation_assets._inventory finds no main file either."""
+    used = next((entry for entry in burger['folders'] if entry['folder'] == burger['used']), None)
+    if used is None:
+        return 'missing', 'SIM_BURGER_ASSET_MISSING', []
+    state = used['overall']
+    files = {'linked': used['linked'], 'oversized': used['oversized']}.get(
+        state, [name for name, value in used['files'].items() if value not in ('public', 'original')])
+    return state, used['code'], files
 
 
 # ---- 4. runtime state ----------------------------------------------------------------------
@@ -1412,9 +1470,12 @@ def summary_lines(findings):
                 text = f'release {release} 파일이 manifest와 일치'
             elif key == 'release_manifest_unreadable':
                 text = f'release {release}의 manifest 파일 목록을 읽지 못함 -> 파일 비교 불가, manifest는 지우지 말고 보관'
-            elif key in ('burger_mismatch', 'burger_mixed', 'burger_closure_changed'):
+            elif key in ('burger_mismatch', 'burger_mixed', 'burger_closure_changed', 'burger_linked', 'burger_oversized'):
+                sample = names([path.rsplit('/', 1)[-1] for path in item['files']], 3)
                 reason = {'burger_mismatch': '공개/원본 기준 모두와 다른 파일 ' + str(len(item['files'])) + '개',
-                          'burger_mixed': '공개/원본 파일이 섞임', 'burger_closure_changed': '파일 구성이 다름'}[key]
+                          'burger_mixed': '공개/원본 파일이 섞임', 'burger_closure_changed': '파일 구성이 다름',
+                          'burger_linked': f"링크(심볼릭 링크/정션) {len(item['files'])}개 ({sample})",
+                          'burger_oversized': f"{BURGER_SIZE_LIMIT // (1024 * 1024)}MB를 넘는 파일 {len(item['files'])}개 ({sample})"}[key]
                 text = f"release {release}의 Burger 에셋: {reason} -> {item['code']} 원인, 새 EXE 설치본은 검증된 공개 에셋 포함"
             elif key == 'burger_missing':
                 text = f'release {release}에 Burger 에셋 파일 없음 -> SIM_BURGER_ASSET_MISSING, SIM Burger 기능 불가, 새 EXE 설치본 사용'
