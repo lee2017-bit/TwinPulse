@@ -128,8 +128,9 @@ def _split(key):
     return key[:at], key[at + 1:]
 
 
-def web_build_ranges():
-    """engines.node of the web build tools and everything they depend on, on Windows x64."""
+def web_ranges(tools=WEB_BUILD_TOOLS):
+    """engines.node of the named web packages (None: all the web package's own) and everything
+    they depend on, on Windows x64."""
     sections = _lock_sections((WEB / 'pnpm-lock.yaml').read_text(encoding='utf-8'))
     packages, snapshots, versions, group = sections['packages'], sections['snapshots'], {}, None
     for line in sections['importers']['.']:
@@ -137,7 +138,7 @@ def web_build_ranges():
             group = line.strip().rstrip(':').strip("'")
         elif line.startswith('        version: '):
             versions[group] = line.split(': ', 1)[1].strip().strip("'")
-    pending, seen, ranges = [name + '@' + versions[name] for name in WEB_BUILD_TOOLS], set(), {}
+    pending, seen, ranges = [name + '@' + versions[name] for name in tools or versions], set(), {}
     while pending:
         key = pending.pop()
         if key in seen:
@@ -184,7 +185,7 @@ def grid(ranges):
 
 
 def required_ranges(test):
-    ranges = [*desktop_ranges().values(), *web_build_ranges().values(), pnpm_range(test)]
+    ranges = [*desktop_ranges().values(), *web_ranges().values(), pnpm_range(test)]
     test.assertGreater(len(ranges), 20)  # both locks were read, not an empty walk
     return ranges
 
@@ -248,6 +249,19 @@ class SourceInstallNodeGateTests(unittest.TestCase):
             stated = DOC_MINIMUM.findall((ROOT / name).read_text(encoding='utf-8'))
             self.assertTrue(stated, name + ' states the Node.js minimum')
             self.assertEqual(set(stated), {text}, name)
+
+    def test_build_page_names_the_node_versions_the_build_pc_runs_with(self):
+        # A build needs a Verify-Sprint PASS, whose web step runs `pnpm test` (vitest with jsdom),
+        # so the build PC runs every web package, the desktop packages and pnpm.
+        ranges = [*desktop_ranges().values(), *web_ranges(None).values(), pnpm_range(self)]
+        stated = re.findall(r'the build PC needs a Node\.js in `([^`]+)`',
+                            (ROOT / 'docs/WINDOWS_EXE_BUILD.md').read_text(encoding='utf-8'))
+        self.assertEqual(len(stated), 1, 'docs/WINDOWS_EXE_BUILD.md names the build PC range once')
+        versions = grid([*ranges, stated[0]])
+        wrong = [version for version in versions
+                 if satisfies(version, stated[0]) != all(satisfies(version, spec) for spec in ranges)]
+        self.assertEqual(wrong[:10], [], 'the stated range and the locked engines disagree on %d versions' % len(wrong))
+        self.assertTrue(any(satisfies(version, stated[0]) for version in versions))
 
 
 if __name__ == '__main__':
