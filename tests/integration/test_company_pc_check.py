@@ -119,6 +119,29 @@ def windows_getproxies(winreg, environ):
     return getproxies
 
 
+def fake_python_bat(outputs, calls):
+    """A fake subprocess.Popen for python.bat that answers per mode (PYTHONNOUSERSITE in the child environment).
+    'hang' never answers until the run was ended (process.ended); an exception is raised by communicate()."""
+    def popen(args, **options):
+        mode = 'twinpulse' if options['env'].get('PYTHONNOUSERSITE') == '1' else 'default'
+        process = SimpleNamespace(pid=4000 + len(calls), returncode=0, waits=[], ended=False)
+
+        def communicate(timeout=None):
+            process.waits.append(timeout)
+            value = outputs[mode]
+            if isinstance(value, BaseException):
+                raise value
+            if value == 'hang':
+                if not process.ended:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                return '', None
+            return 'Isaac env ready\nTWINPULSE_PROBE=' + json.dumps(value) + '\n', None
+        process.communicate = communicate
+        calls.append((args, options, process))
+        return process
+    return popen
+
+
 class FakeFilter(BaseHTTPRequestHandler):
     """A network filter that answers Python-urllib (or everyone) with an HTML block page, or drops it."""
     seen, block_all, drop_python = [], False, False
@@ -660,7 +683,8 @@ class ReportAndSystemTests(unittest.TestCase):
             os.utime(logs / f'kit_2026110{index}_000000.log', (1000 + index, 1000 + index))
         calls = []
         part = check.isaac_section({'USERPROFILE': str(self.root / 'nobody')}, [('desktop-settings', str(isaac))], candidates=(),
-                                   run=lambda args, **options: calls.append(args) or SimpleNamespace(stdout='', returncode=1))
+                                   popen=lambda args, **options: calls.append(args) or SimpleNamespace(
+                                       pid=1, returncode=1, communicate=lambda timeout=None: ('', None)))
         self.assertEqual([args[0] for args in calls], [str(isaac / 'python.bat')] * 2)
         text = '\n'.join(part['lines'])
         self.assertIn('VERSION 6.0.1-rc.7+release.42383.32955d8d.gl (reviewed build)', text)
@@ -671,17 +695,6 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual([item['key'] for item in part['findings']], ['isaac_found', 'kit_registry_sync'])
         missing = check.isaac_section({}, [], candidates=(str(self.root / 'none'),))
         self.assertEqual(missing['findings'], [{'key': 'isaac_missing'}])
-
-    def probe_run(self, outputs, calls):
-        """Fake python.bat: answers per mode, keyed by PYTHONNOUSERSITE in the child environment."""
-        def run(args, **options):
-            calls.append((args, options))
-            mode = 'twinpulse' if options['env'].get('PYTHONNOUSERSITE') == '1' else 'default'
-            value = outputs[mode]
-            if isinstance(value, BaseException):
-                raise value
-            return SimpleNamespace(stdout='Isaac env ready\nTWINPULSE_PROBE=' + json.dumps(value) + '\n', returncode=0)
-        return run
 
     def test_isaac_python_probe_flags_user_site_packages(self):
         user = r'C:\Users\user0042\AppData\Roaming\Python\Python311\site-packages'
@@ -697,15 +710,19 @@ class ReportAndSystemTests(unittest.TestCase):
                 ({'default': answer(missing, missing), 'twinpulse': answer(numpy_bundled, missing, False)},
                  [{'key': 'isaac_user_site_shadow', 'modules': ['numpy']}]),
                 ({'default': answer(numpy_bundled, missing), 'twinpulse': answer(numpy_bundled, missing, False)}, []),
-                ({'default': answer(numpy_user, missing), 'twinpulse': subprocess.TimeoutExpired('python.bat', 90)}, [])):
+                ({'default': answer(numpy_user, missing), 'twinpulse': 'hang'}, [])):
             with self.subTest(outputs=outputs):
-                calls = []
-                lines, findings = check._probe_part(check.isaac_python_probe(r'D:\isaacsim', env, run=self.probe_run(outputs, calls)))
+                calls, ended = [], []
+                lines, findings = check._probe_part(check.isaac_python_probe(
+                    r'D:\isaacsim', env, popen=fake_python_bat(outputs, calls),
+                    kill=lambda process: ended.append(process.pid) or setattr(process, 'ended', True)))
                 self.assertEqual(findings, keys)
                 self.assertEqual(len(lines), 2)
-                self.assertEqual([args for args, _ in calls], [[str(Path(r'D:\isaacsim') / 'python.bat'), '-B', '-c',
+                self.assertEqual([args for args, _, _ in calls], [[str(Path(r'D:\isaacsim') / 'python.bat'), '-B', '-c',
                                   "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"]] * 2)
-                children = [options['env'] for _, options in calls]
+                self.assertEqual([options['stdin'] for _, options, _ in calls], [subprocess.DEVNULL] * 2)  # never waits for input
+                self.assertEqual(ended, [calls[1][2].pid] if outputs['twinpulse'] == 'hang' else [])
+                children = [options['env'] for _, options, _ in calls]
                 # As TwinPulse starts the engine: no PYTHONHOME/PYTHONPATH; the user folder only in the first run.
                 self.assertEqual([(c.get('PYTHONNOUSERSITE'), 'PYTHONPATH' in c, 'PYTHONHOME' in c) for c in children],
                                  [(None, False, False), ('1', False, False)])
@@ -714,11 +731,48 @@ class ReportAndSystemTests(unittest.TestCase):
         summary = check.summary_lines([{'key': 'isaac_needs_user_site', 'modules': ['PIL']}])
         self.assertIn('PIL', summary[0])
 
+    def test_a_probe_that_hangs_is_ended_with_its_children_and_the_next_still_runs(self):
+        answer = {'python': '3.11.9', 'user_site': False, 'user_site_path': 'x', 'modules': {}}
+        calls, ended = [], []
+        results = check.isaac_python_probe(r'D:\isaacsim', {}, popen=fake_python_bat({'default': 'hang', 'twinpulse': answer}, calls),
+                                           kill=lambda process: ended.append(process.pid) or setattr(process, 'ended', True))
+        self.assertEqual((results['default'], results['twinpulse']), ({'failed': 'TimeoutExpired'}, answer))
+        hung, answered = calls[0][2], calls[1][2]
+        self.assertEqual(ended, [hung.pid])  # only the run that hung, after its own timeout
+        self.assertEqual(hung.waits, [90, check.PROBE_KILL_WAIT])  # then a bounded wait for what it wrote
+        self.assertEqual((answered.waits, check.PROBE_KILL_WAIT), ([90], 10))
+
+    def test_a_real_probe_that_hangs_is_killed_within_the_bound(self):
+        processes = []
+
+        def popen(args, **options):  # a python.bat that never answers
+            processes.append(subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **options))
+            return processes[-1]
+        self.addCleanup(lambda: [process.kill() or process.wait() for process in processes if process.poll() is None])
+        started = time.monotonic()
+        results = check.isaac_python_probe(self.root, dict(os.environ), popen=popen, timeout=0.5)
+        self.assertEqual(results, {'default': {'failed': 'TimeoutExpired'}, 'twinpulse': {'failed': 'TimeoutExpired'}})
+        self.assertLess(time.monotonic() - started, check.PROBE_KILL_WAIT)  # unkilled, each run would wait PROBE_KILL_WAIT more
+        self.assertEqual([process.poll() is None for process in processes], [False, False])
+
+    def test_kill_tree_ends_python_bat_and_its_children(self):
+        commands, killed = [], []
+        process = SimpleNamespace(pid=4321, kill=lambda: killed.append(4321))
+        with patch.dict(os.environ, {'SystemRoot': '/fake/Windows'}):
+            check.kill_tree(process, windows=True, run=lambda command, **options: commands.append((command, options)))
+        # The absolute System32 path: a taskkill.exe in the current folder is never run.
+        self.assertEqual([command for command, _ in commands],
+                         [[str(Path('/fake/Windows') / 'System32' / 'taskkill.exe'), '/T', '/F', '/PID', '4321']])
+        self.assertEqual((commands[0][1]['stdin'], killed), (subprocess.DEVNULL, [4321]))
+        commands.clear()
+        check.kill_tree(process, windows=False, run=lambda command, **options: commands.append(command))
+        self.assertEqual((commands, killed), ([], [4321, 4321]))
+
     def test_isaac_python_probe_code_runs_in_a_real_python(self):
         # The real probe code, run by this Python in place of python.bat (no cmd.exe here).
-        def run(args, **options):
-            return subprocess.run([sys.executable, *args[1:]], **options)
-        results = check.isaac_python_probe(self.root, dict(os.environ), run=run, timeout=60)
+        def popen(args, **options):
+            return subprocess.Popen([sys.executable, *args[1:]], **options)
+        results = check.isaac_python_probe(self.root, dict(os.environ), popen=popen, timeout=60)
         self.assertEqual(set(results), {'default', 'twinpulse'})
         for mode in ('default', 'twinpulse'):
             self.assertEqual(results[mode]['python'], sys.version.split()[0])

@@ -530,20 +530,58 @@ ISAAC_PYTHON_PROBE = (
     "print('TWINPULSE_PROBE=' + json.dumps(out))\n")
 
 
-def isaac_python_probe(root, env, *, run=None, timeout=90):
+PROBE_KILL_WAIT = 10  # seconds to collect a probe's output after its process tree was ended
+
+
+def kill_tree(process, *, windows=None, run=None):
+    """End a timed-out probe and every process it started. python.bat is cmd.exe, and its child python.exe holds
+    the output pipes, so ending cmd.exe alone would leave the probe running and its pipes open."""
+    windows = os.name == 'nt' if windows is None else windows
+    if windows:
+        taskkill = Path(os.environ.get('SystemRoot') or r'C:\Windows') / 'System32' / 'taskkill.exe'
+        try:
+            (run or subprocess.run)([str(taskkill), '/T', '/F', '/PID', str(process.pid)], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        process.kill()  # elsewhere the only step; on Windows the fallback when taskkill could not run
+    except OSError:
+        pass
+
+
+def _run_bounded(command, *, popen, kill, timeout, **options):
+    """(exit code, stdout) of one run, which never waits longer than timeout plus PROBE_KILL_WAIT:
+    on timeout the whole process tree is ended and TimeoutExpired is raised."""
+    process = popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, errors='replace', **options)
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill(process)
+        try:
+            process.communicate(timeout=PROBE_KILL_WAIT)
+        except subprocess.TimeoutExpired:
+            pass  # something still holds the pipe: give up on it, the report comes first
+        raise subprocess.TimeoutExpired(command, timeout) from None
+    return process.returncode, stdout
+
+
+def isaac_python_probe(root, env, *, popen=None, kill=None, timeout=90):
     """Import numpy and PIL in Isaac's own Python twice: as a plain python.bat start and as
-    TwinPulse starts the engine (PYTHONNOUSERSITE=1, no PYTHONHOME/PYTHONPATH). Read-only (-B)."""
-    run = run or subprocess.run
+    TwinPulse starts the engine (PYTHONNOUSERSITE=1, no PYTHONHOME/PYTHONPATH). Read-only (-B).
+    stdin is empty, and a run that hangs is ended with all its children after timeout seconds."""
+    popen, kill = popen or subprocess.Popen, kill or kill_tree
     results = {}
     for mode, extra in (('default', {}), ('twinpulse', {'PYTHONNOUSERSITE': '1'})):
         child = {key: value for key, value in env.items() if key.upper() not in {'PYTHONHOME', 'PYTHONPATH', 'PYTHONNOUSERSITE'}}
         child.update(extra, TWINPULSE_PROBE_CODE=ISAAC_PYTHON_PROBE)
         try:
-            done = run([str(Path(root) / 'python.bat'), '-B', '-c', "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"],
-                       capture_output=True, text=True, errors='replace', timeout=timeout, env=child, cwd=str(root))
-            found = [line[len('TWINPULSE_PROBE='):] for line in (done.stdout or '').splitlines() if line.startswith('TWINPULSE_PROBE=')]
+            code, stdout = _run_bounded([str(Path(root) / 'python.bat'), '-B', '-c', "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"],
+                                        popen=popen, kill=kill, timeout=timeout, env=child, cwd=str(root))
+            found = [line[len('TWINPULSE_PROBE='):] for line in (stdout or '').splitlines() if line.startswith('TWINPULSE_PROBE=')]
             value = json.loads(found[-1]) if found else None
-            results[mode] = value if isinstance(value, dict) else {'failed': f'exit {done.returncode}, no probe line'}
+            results[mode] = value if isinstance(value, dict) else {'failed': f'exit {code}, no probe line'}
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             results[mode] = {'failed': type(error).__name__}
     return results
@@ -586,7 +624,7 @@ def _probe_part(results):
     return lines, findings
 
 
-def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, run=None):
+def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, popen=None):
     lines, findings, seen, valid = [], [], set(), []
     for label, root in [*roots, *(('default list', item) for item in candidates)]:
         key = os.path.normcase(os.path.normpath(str(root))).rstrip('\\/')
@@ -612,7 +650,7 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
         for name in ('PYTHONHOME', 'PYTHONPATH'):
             if env.get(name):
                 lines.append(f'env {name} is set ({short(env[name], 120)}); TwinPulse removes it for Isaac')
-        probe_lines, probe_findings = _probe_part(isaac_python_probe(valid[0][0], env, run=run))
+        probe_lines, probe_findings = _probe_part(isaac_python_probe(valid[0][0], env, popen=popen))
         lines += probe_lines
         findings += probe_findings
     logs = [log for root, _ in valid for log in _kit_logs(root / 'kit' / 'logs' / 'Kit')]
