@@ -14,6 +14,8 @@ deletes or moves, and Windows Credential Manager is never read. API keys, tokens
 values and long secrets are redacted, saved prompts (request_redacted) are never read out, and
 nothing is uploaded. The network check is an unauthenticated GET of two public model lists, once
 with Python's default User-Agent and once with TwinPulse's own (never a browser User-Agent).
+Isaac's python.bat runs twice with -B (no files written) only to import numpy and PIL, once as
+a plain start and once as TwinPulse starts the engine (without the user site-packages folder).
 """
 from __future__ import annotations
 
@@ -465,7 +467,78 @@ def _kit_logs(folder):
         return []
 
 
-def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80):
+# Run inside Isaac's python.bat; the code travels in an environment variable so
+# no quote or newline has to pass through cmd.exe.
+ISAAC_PYTHON_PROBE = (
+    "import json, site, sys\n"
+    "out = {'python': sys.version.split()[0], 'user_site': site.ENABLE_USER_SITE,\n"
+    "       'user_site_path': site.getusersitepackages(), 'modules': {}}\n"
+    "for name in ('numpy', 'PIL'):\n"
+    "    try:\n"
+    "        module = __import__(name)\n"
+    "        out['modules'][name] = {'version': str(getattr(module, '__version__', '')), 'file': str(module.__file__)}\n"
+    "    except Exception as error:\n"
+    "        out['modules'][name] = {'error': type(error).__name__}\n"
+    "print('TWINPULSE_PROBE=' + json.dumps(out))\n")
+
+
+def isaac_python_probe(root, env, *, run=None, timeout=90):
+    """Import numpy and PIL in Isaac's own Python twice: as a plain python.bat start and as
+    TwinPulse starts the engine (PYTHONNOUSERSITE=1, no PYTHONHOME/PYTHONPATH). Read-only (-B)."""
+    run = run or subprocess.run
+    results = {}
+    for mode, extra in (('default', {}), ('twinpulse', {'PYTHONNOUSERSITE': '1'})):
+        child = {key: value for key, value in env.items() if key.upper() not in {'PYTHONHOME', 'PYTHONPATH', 'PYTHONNOUSERSITE'}}
+        child.update(extra, TWINPULSE_PROBE_CODE=ISAAC_PYTHON_PROBE)
+        try:
+            done = run([str(Path(root) / 'python.bat'), '-B', '-c', "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"],
+                       capture_output=True, text=True, errors='replace', timeout=timeout, env=child, cwd=str(root))
+            found = [line[len('TWINPULSE_PROBE='):] for line in (done.stdout or '').splitlines() if line.startswith('TWINPULSE_PROBE=')]
+            value = json.loads(found[-1]) if found else None
+            results[mode] = value if isinstance(value, dict) else {'failed': f'exit {done.returncode}, no probe line'}
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            results[mode] = {'failed': type(error).__name__}
+    return results
+
+
+def _under(path, folder):
+    """True when path is inside folder; Windows spelling, so case and slashes do not matter."""
+    def norm(value):
+        return str(value).replace('\\', '/').rstrip('/').casefold()
+    return bool(path and folder) and norm(path).startswith(norm(folder) + '/')
+
+
+def _probe_part(results):
+    """Report lines and findings for isaac_python_probe."""
+    lines, findings = [], []
+    default, engine = results.get('default') or {}, results.get('twinpulse') or {}
+    for mode, label in (('default', 'plain python.bat'), ('twinpulse', 'as TwinPulse starts it (PYTHONNOUSERSITE=1)')):
+        value = results.get(mode) or {}
+        if 'failed' in value:
+            lines.append(f'Isaac Python probe, {label}: not run ({short(value["failed"], 120)})')
+            continue
+        modules = value.get('modules') if isinstance(value.get('modules'), dict) else {}
+        shown = '; '.join(f'{name} ' + (f'{short(item.get("version"), 40)} at {short(item.get("file"), 200)}' if 'file' in item
+                          else f'not importable ({short(item.get("error"), 60)})') for name, item in modules.items() if isinstance(item, dict))
+        lines.append(f'Isaac Python probe, {label}: Python {short(value.get("python"), 20)}, user site {value.get("user_site")}: {shown}')
+    if 'failed' in default or 'failed' in engine:
+        return lines, findings
+    user_site = default.get('user_site_path')
+    shadowed, needs = [], []
+    for name, item in (default.get('modules') or {}).items():
+        other = (engine.get('modules') or {}).get(name) or {}
+        if 'file' in item and _under(item['file'], user_site):
+            (shadowed if 'file' in other else needs).append(name)
+        elif 'file' not in item and 'file' in other:
+            shadowed.append(name)  # the user folder breaks the import; TwinPulse starts without it
+    if shadowed:
+        findings.append({'key': 'isaac_user_site_shadow', 'modules': shadowed})
+    if needs:
+        findings.append({'key': 'isaac_needs_user_site', 'modules': needs})
+    return lines, findings
+
+
+def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max_lines=80, run=None):
     lines, findings, seen, valid = [], [], set(), []
     for label, root in [*roots, *(('default list', item) for item in candidates)]:
         key = os.path.normcase(os.path.normpath(str(root))).rstrip('\\/')
@@ -488,6 +561,12 @@ def isaac_section(env, roots=(), *, candidates=ISAAC_CANDIDATES, max_logs=3, max
         for root, version in valid:
             if version and not re.match(r'6\.0\.1(?![0-9])', version):
                 findings.append({'key': 'isaac_version_other', 'root': str(root), 'version': version})
+        for name in ('PYTHONHOME', 'PYTHONPATH'):
+            if env.get(name):
+                lines.append(f'env {name} is set ({short(env[name], 120)}); TwinPulse removes it for Isaac')
+        probe_lines, probe_findings = _probe_part(isaac_python_probe(valid[0][0], env, run=run))
+        lines += probe_lines
+        findings += probe_findings
     logs = [log for root, _ in valid for log in _kit_logs(root / 'kit' / 'logs' / 'Kit')]
     if env.get('USERPROFILE'):
         logs += _kit_logs(Path(env['USERPROFILE']) / '.nvidia-omniverse' / 'logs' / 'Kit')
@@ -1193,6 +1272,12 @@ def summary_lines(findings):
                 text = f"Isaac 폴더 확인: {item['root']} (VERSION {item.get('version') or '없음'})"
             elif key == 'isaac_version_other':
                 text = f"Isaac 버전이 6.0.1이 아님 ({item['version']}) -> 경고만 표시되지만 검증되지 않은 버전"
+            elif key == 'isaac_user_site_shadow':
+                text = (f"사용자 폴더(AppData\\Roaming\\Python)의 {', '.join(item['modules'])}가 Isaac 기본 패키지를 가림 "
+                        "-> TwinPulse는 Isaac을 사용자 폴더 없이 시작하므로 영향 없음, 다른 Isaac 작업에서는 버전 충돌 가능")
+            elif key == 'isaac_needs_user_site':
+                text = (f"Isaac Python이 {', '.join(item['modules'])}를 사용자 폴더에서만 찾음 "
+                        "-> TwinPulse 엔진이 시작하지 못할 수 있음, 이 줄을 전달")
             elif key == 'kit_registry_sync':
                 text = f"Kit 로그({item['when']})에 확장 레지스트리 동기화 메시지 -> 인터넷이 막힌 PC에서는 시작이 늦거나 실패할 수 있음"
             elif key == 'pointer_unreadable':
@@ -1337,7 +1422,7 @@ def main(argv=None, *, env=None, cwd=None, out=None):
     runtime = _guard('Runtime', runtime_section, local)
     say('[3/5] System')
     system = _guard('System', system_section, env)
-    say('[4/5] Isaac Sim')
+    say('[4/5] Isaac Sim (imports numpy/PIL in Isaac Python twice, read-only)')
     roots = [('desktop-settings', runtime['facts'].get('settings_isaac_root')),
              ('active-release.json', install['facts'].get('pointer_isaac_root'))]
     isaac = _guard('Isaac', isaac_section, env, [(label, root) for label, root in roots if root])

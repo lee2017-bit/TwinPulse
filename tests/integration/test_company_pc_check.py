@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -521,7 +522,10 @@ class ReportAndSystemTests(unittest.TestCase):
             lines.insert(3, '[Warning] [omni.kit.registry.nucleus] Failed to solve some dependencies locally, syncing with extension registry\n')
             write(logs / f'kit_2026110{index}_000000.log', ''.join(lines) + '[Info] fine\n')
             os.utime(logs / f'kit_2026110{index}_000000.log', (1000 + index, 1000 + index))
-        part = check.isaac_section({'USERPROFILE': str(self.root / 'nobody')}, [('desktop-settings', str(isaac))], candidates=())
+        calls = []
+        part = check.isaac_section({'USERPROFILE': str(self.root / 'nobody')}, [('desktop-settings', str(isaac))], candidates=(),
+                                   run=lambda args, **options: calls.append(args) or SimpleNamespace(stdout='', returncode=1))
+        self.assertEqual([args[0] for args in calls], [str(isaac / 'python.bat')] * 2)
         text = '\n'.join(part['lines'])
         self.assertIn('VERSION 6.0.1-rc.7+release.42383.32955d8d.gl (reviewed build)', text)
         self.assertEqual(text.count('Kit log '), 3)
@@ -531,6 +535,61 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertEqual([item['key'] for item in part['findings']], ['isaac_found', 'kit_registry_sync'])
         missing = check.isaac_section({}, [], candidates=(str(self.root / 'none'),))
         self.assertEqual(missing['findings'], [{'key': 'isaac_missing'}])
+
+    def probe_run(self, outputs, calls):
+        """Fake python.bat: answers per mode, keyed by PYTHONNOUSERSITE in the child environment."""
+        def run(args, **options):
+            calls.append((args, options))
+            mode = 'twinpulse' if options['env'].get('PYTHONNOUSERSITE') == '1' else 'default'
+            value = outputs[mode]
+            if isinstance(value, BaseException):
+                raise value
+            return SimpleNamespace(stdout='Isaac env ready\nTWINPULSE_PROBE=' + json.dumps(value) + '\n', returncode=0)
+        return run
+
+    def test_isaac_python_probe_flags_user_site_packages(self):
+        user = r'C:\Users\user0042\AppData\Roaming\Python\Python311\site-packages'
+        bundled = r'D:\isaacsim\kit\python\Lib\site-packages'
+        def answer(numpy, pil, user_site=True):
+            return {'python': '3.11.9', 'user_site': user_site, 'user_site_path': user, 'modules': {'numpy': numpy, 'PIL': pil}}
+        numpy_user, numpy_bundled = {'version': '2.1.0', 'file': user + r'\numpy\__init__.py'}, {'version': '1.26.0', 'file': bundled + r'\numpy\__init__.py'}
+        pil_user, missing = {'version': '11.0.0', 'file': user.upper() + '/PIL/__init__.py'}, {'error': 'ModuleNotFoundError'}
+        env = {'PYTHONPATH': r'C:\tools', 'PYTHONHOME': r'C:\Python312', 'PYTHONNOUSERSITE': '0', 'USERPROFILE': r'C:\Users\user0042'}
+        for outputs, keys in (
+                ({'default': answer(numpy_user, pil_user), 'twinpulse': answer(numpy_bundled, missing, False)},
+                 [{'key': 'isaac_user_site_shadow', 'modules': ['numpy']}, {'key': 'isaac_needs_user_site', 'modules': ['PIL']}]),
+                ({'default': answer(missing, missing), 'twinpulse': answer(numpy_bundled, missing, False)},
+                 [{'key': 'isaac_user_site_shadow', 'modules': ['numpy']}]),
+                ({'default': answer(numpy_bundled, missing), 'twinpulse': answer(numpy_bundled, missing, False)}, []),
+                ({'default': answer(numpy_user, missing), 'twinpulse': subprocess.TimeoutExpired('python.bat', 90)}, [])):
+            with self.subTest(outputs=outputs):
+                calls = []
+                lines, findings = check._probe_part(check.isaac_python_probe(r'D:\isaacsim', env, run=self.probe_run(outputs, calls)))
+                self.assertEqual(findings, keys)
+                self.assertEqual(len(lines), 2)
+                self.assertEqual([args for args, _ in calls], [[str(Path(r'D:\isaacsim') / 'python.bat'), '-B', '-c',
+                                  "import os; exec(os.environ['TWINPULSE_PROBE_CODE'])"]] * 2)
+                children = [options['env'] for _, options in calls]
+                # As TwinPulse starts the engine: no PYTHONHOME/PYTHONPATH; the user folder only in the first run.
+                self.assertEqual([(c.get('PYTHONNOUSERSITE'), 'PYTHONPATH' in c, 'PYTHONHOME' in c) for c in children],
+                                 [(None, False, False), ('1', False, False)])
+                self.assertTrue(all(c['TWINPULSE_PROBE_CODE'] == check.ISAAC_PYTHON_PROBE for c in children))
+        self.assertIn('Isaac Python probe, as TwinPulse starts it (PYTHONNOUSERSITE=1): not run (TimeoutExpired)', lines)
+        summary = check.summary_lines([{'key': 'isaac_needs_user_site', 'modules': ['PIL']}])
+        self.assertIn('PIL', summary[0])
+
+    def test_isaac_python_probe_code_runs_in_a_real_python(self):
+        # The real probe code, run by this Python in place of python.bat (no cmd.exe here).
+        def run(args, **options):
+            return subprocess.run([sys.executable, *args[1:]], **options)
+        results = check.isaac_python_probe(self.root, dict(os.environ), run=run, timeout=60)
+        self.assertEqual(set(results), {'default', 'twinpulse'})
+        for mode in ('default', 'twinpulse'):
+            self.assertEqual(results[mode]['python'], sys.version.split()[0])
+            self.assertEqual(set(results[mode]['modules']), {'numpy', 'PIL'})
+        self.assertIs(results['twinpulse']['user_site'], False)
+        lines, _findings = check._probe_part(results)
+        self.assertTrue(lines[0].startswith('Isaac Python probe, plain python.bat: Python ' + sys.version.split()[0]))
 
     def test_main_without_network_writes_one_report_and_no_secrets(self):
         profile = self.root / 'profile'
