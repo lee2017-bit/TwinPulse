@@ -415,8 +415,13 @@ def system_section(env, *, winreg=None, run=None, getproxies=None, which=None):
         lines.append(f'{name}: {value or "(not set)"} - ASCII only: {"yes" if value.isascii() else "NO"}')
         if value and not value.isascii() and not any(f['key'] == 'profile_non_ascii' for f in findings):
             findings.append({'key': 'profile_non_ascii'})
-    if re.search(r'[&|<>^%]', (env.get('USERPROFILE') or '') + (env.get('LOCALAPPDATA') or '')):
-        findings.append({'key': 'profile_special_chars'})
+    # The App quotes the Isaac engine command for & | < > ^ ( ) and refuses % and " (engine_path_unsupported).
+    profile = (env.get('USERPROFILE') or '') + (env.get('LOCALAPPDATA') or '')
+    unsupported, special = [c for c in '%"' if c in profile], [c for c in '&|<>^()' if c in profile]
+    if unsupported:
+        findings.append({'key': 'profile_unsupported_chars', 'chars': unsupported})
+    elif special:
+        findings.append({'key': 'profile_special_chars', 'chars': special})
     if winreg is not None:
         long_paths = reg_value('HKEY_LOCAL_MACHINE', r'SYSTEM\CurrentControlSet\Control\FileSystem', 'LongPathsEnabled', winreg)
         lines.append(f'LongPathsEnabled: {long_paths if long_paths is not None else "(not set)"}')
@@ -1291,7 +1296,6 @@ def summary_lines(findings):
         key, release = item['key'], item.get('release', '')
         text = {
             'profile_non_ascii': '사용자 폴더 경로에 한글 등 비ASCII 문자 있음 -> Isaac/Kit에서 문제될 수 있음(미검증), 문제가 나면 이 줄을 전달',
-            'profile_special_chars': '사용자 경로에 & | < > ^ % 문자 있음 -> 일부 작업(RoomPlan 가져오기 등)이 거부될 수 있음',
             'long_paths_disabled': '긴 경로(LongPathsEnabled) 꺼짐 -> 설치 경로가 259자를 넘는 파일은 설치/시작에 실패할 수 있음, 그때 IT에 긴 경로 허용 요청',
             'proxy_pac_only': ('프록시 자동 구성(PAC, AutoConfigURL)만 설정됨 -> Python과 TwinPulse는 PAC 파일을 읽지 않으므로 '
                                '아래 네트워크 요청은 프록시 없이 직접 연결한 결과'),
@@ -1307,7 +1311,13 @@ def summary_lines(findings):
             'net_skipped': '네트워크 검사 생략(--no-network)',
         }.get(key)
         if text is None:
-            if key == 'proxy_configured':
+            if key == 'profile_special_chars':
+                text = (f"사용자 경로에 {' '.join(item['chars'])} 문자 있음 -> 새 버전은 Isaac 엔진 명령을 따옴표로 감싸 시작하므로 지원됨"
+                        "(이전 버전은 엔진 시작 실패 가능), 문제가 나면 이 줄을 전달")
+            elif key == 'profile_unsupported_chars':
+                text = (f"사용자 경로에 {' '.join(item['chars'])} 문자 있음 -> TwinPulse가 Isaac 엔진을 시작하지 않음"
+                        "(engine_path_unsupported), 이 문자가 없는 Windows 계정(사용자 폴더)에서 실행")
+            elif key == 'proxy_configured':
                 text = ('프록시 설정 있음 -> 아래 네트워크 결과는 이 프록시를 거친 결과' if 'https' in item['schemes'] else
                         'http 프록시만 설정됨 -> 아래 HTTPS 네트워크 요청(TwinPulse 공급자 요청도)은 프록시 없이 직접 연결한 결과')
             elif key == 'isaac_found':

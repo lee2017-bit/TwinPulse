@@ -595,6 +595,25 @@ class ReportAndSystemTests(unittest.TestCase):
         self.assertIn('Python urllib proxies: unknown (ZeroDivisionError)', broken['lines'])
         self.assertEqual([item for item in broken['findings'] if item['key'].startswith('proxy_')], [])  # unknown: no claim
 
+    def test_profile_characters_the_app_quotes_or_refuses(self):
+        for profile, local, expected in (
+                (r'C:\Users\kim&lee', None, ('profile_special_chars', ['&'])),
+                (r'C:\Users\a(b)^c', None, ('profile_special_chars', ['^', '(', ')'])),
+                (r'C:\Users\Kim Lee', None, None),
+                (r'C:\Users\100%user', None, ('profile_unsupported_chars', ['%'])),
+                (r'C:\Users\user0042', r'D:\Data"\AppData\Local', ('profile_unsupported_chars', ['"'])),
+                (r'C:\Users\kim&lee%', None, ('profile_unsupported_chars', ['%']))):  # a refused character wins
+            with self.subTest(profile=profile, local=local):
+                env = {'USERPROFILE': profile, 'LOCALAPPDATA': local or profile + r'\AppData\Local'}
+                part = check.system_section(env, winreg=FakeWinreg({}), getproxies=dict, which=lambda name: None)
+                found = [item for item in part['findings'] if item['key'] in ('profile_special_chars', 'profile_unsupported_chars')]
+                self.assertEqual([(item['key'], item['chars']) for item in found], [expected] if expected else [])
+                for line in check.summary_lines(found)[:-1]:
+                    self.assertIn(' '.join(expected[1]) + ' 문자 있음', line)
+                    self.assertIn('따옴표로 감싸 시작하므로 지원됨' if expected[0] == 'profile_special_chars'
+                                  else 'Isaac 엔진을 시작하지 않음(engine_path_unsupported)', line)
+                    self.assertNotIn('RoomPlan', line)
+
     def test_isaac_section_reads_version_and_redacts_kit_lines(self):
         isaac = self.root / 'isaacsim'
         write(isaac / 'python.bat', '@echo off')
