@@ -30,7 +30,7 @@ from twinpulse_app.project_store import ProjectStore
 from twinpulse_app.simulation_assets import (
     BURGER_MANIFEST, PUBLIC_ASSET_RELATIVE, PUBLIC_BURGER_MANIFEST, _inventory,
     digest_mismatch_detail, verify_public_burger_assets)
-from twinpulse_app.startup_checks import file_checklist, package_checklist
+from twinpulse_app.startup_checks import REVIEWED_ISAAC_VERSION, file_checklist, package_checklist
 
 PUBLIC = ROOT / PUBLIC_ASSET_RELATIVE
 CODE = 'SIM_BURGER_ASSET_DIGEST_MISMATCH: '
@@ -185,6 +185,7 @@ class IsaacVersionTests(unittest.TestCase):
         return next(r for r in rows if r['id'] == 'isaac_version')
 
     def test_reviewed_build_and_other_6_0_1_builds_are_ready(self):
+        self.assertEqual(REVIEWED_ISAAC_VERSION, REVIEWED)  # the one constant other checks compare with
         exact = self.row(REVIEWED)
         self.assertEqual(exact['state'], 'ready');self.assertIn('Matches the reviewed local runtime.', exact['detail'])
         for text in ('6.0.1', '6.0.1+release.51234.0a1b2c3d.gl', '6.0.1-rc.9+release.43000.32955d8d.gl'):

@@ -15,6 +15,9 @@ from hashlib import sha256
 from html.parser import HTMLParser
 from importlib.metadata import version, PackageNotFoundError
 
+# The Isaac Sim build this checkout was reviewed on. Any 6.0.1 build is accepted.
+REVIEWED_ISAAC_VERSION = '6.0.1-rc.7+release.42383.32955d8d.gl'
+
 
 def _row(name, state, detail, action=None, **extra):
     return dict(id=name, state=state, detail=detail, action=action,
@@ -182,7 +185,7 @@ def file_checklist(required: dict[str, Path], *, state_dir: Path, isaac_python: 
     try:
         if version_path.stat().st_size > 1024: raise OSError('version metadata size limit')
         version = version_path.read_text(encoding='utf-8-sig').strip()[:120]
-        reviewed = '6.0.1-rc.7+release.42383.32955d8d.gl'
+        reviewed = REVIEWED_ISAAC_VERSION
         # Any 6.0.1 build (pre-release or build suffix) counts; 6.0.10 or 6.1 does not.
         release = re.fullmatch(r'6\.0\.1([-+].*)?', version) is not None
         rows.append({'id':'isaac_version','state':'ready' if release else 'needs_action',
