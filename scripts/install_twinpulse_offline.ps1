@@ -122,7 +122,8 @@ try {
     Move-Item -LiteralPath $staging -Destination $target
     $active = [ordered]@{ release_id = $releaseId; isaac_root = $IsaacRoot }
     $activeTemp = Join-Path $InstallRoot ("active-release." + [Guid]::NewGuid().ToString("N") + ".tmp")
-    $active | ConvertTo-Json | Set-Content -LiteralPath $activeTemp -Encoding UTF8
+    # UTF-8 without BOM: Set-Content -Encoding UTF8 adds one in PowerShell 5.1.
+    [IO.File]::WriteAllText($activeTemp, ($active | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     $activePath = Join-Path $InstallRoot "active-release.json"
     if (Test-Path -LiteralPath $activePath) {
         [IO.File]::Replace($activeTemp, $activePath, (Join-Path $InstallRoot "active-release.previous.json"))

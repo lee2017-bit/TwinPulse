@@ -1,6 +1,21 @@
 # TwinPulse 회사 PC 설치 및 확인
 
-For the short English setup path, see [Quick Start](QUICKSTART.md). This longer Korean guide retains the detailed local/company verification history.
+## Company PC: Windows EXE ZIP (current path)
+
+Company PCs install the **Windows EXE ZIP**, which holds everything except Isaac Sim 6.0.1; no Python, Node.js, Git or PowerShell is needed. The steps, the table of what is checked and when, network notes and troubleshooting are in [Windows EXE](WINDOWS_EXE_QUICKSTART.md), which is also `README.md` inside the ZIP. In short:
+
+1. Get `TwinPulse-Windows-x64-<release version>-<build>.zip` (for example `TwinPulse-Windows-x64-0.1.0-alpha.1-<build>.zip`) and `SHA256SUMS.txt` from the release page or file you were given. Optionally compare the ZIP's SHA-256 (`Get-FileHash` or `certutil -hashfile`).
+2. ZIP **Properties** → **Unblock**, then **Extract All** to a short folder such as `C:\TP`.
+3. Run `C:\TP\TwinPulse\Install-TwinPulse.cmd`. It checks every file's SHA-256 against the manifest inside the ZIP; there is no manual hash step.
+4. Start `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd`. Isaac is taken from the saved folder when it has `python.bat`; otherwise it is found in `C:\isaacsim`, `D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64`, `C:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64` or `D:\isaacsim`, a folder whose `VERSION` says 6.0.1 first. If none of them has `python.bat`, a folder picker asks. A found folder never replaces a saved one. The first start can take up to 10 minutes.
+
+**For IT.** Install uses no network. At run time the App calls only `api.tokenfactory.nebius.com` and, if OpenAI is routed, `api.openai.com`, over HTTPS with the User-Agent `TwinPulse/<product version>`: `TwinPulse/0.1.0a1` for the 0.1.0-alpha.1 ZIP (the ZIP name spells the version differently), `TwinPulse/dev` from a source checkout. It never presents itself as a browser. When a filter blocks these requests, the App shows the HTTP status and the block page's title (for example a 503 page titled "외부사이트 차단"). Please allow these hosts for User-Agents that start with `TwinPulse/`; the PC check report prints the exact string it sent. Provider calls use the proxy environment variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and the like) when any of them is set, otherwise the proxy server set in Windows Internet Options; a proxy auto-config (PAC) script and automatic proxy detection are not read. Isaac Sim itself (not TwinPulse) may also try NVIDIA's online extension registry; TwinPulse needs only the extensions already in the local Isaac install. A connected robot is reached on the local network only; the App listens on 127.0.0.1 only, and calls between its own processes ignore proxy settings.
+
+**Check a PC.** The check is one file, `twinpulse_company_pc_check.py`, in the extracted `TwinPulse` folder next to `Install-TwinPulse.cmd` (in the source it is `scripts/twinpulse_company_pc_check.py`). Run `py -3 C:\TP\TwinPulse\twinpulse_company_pc_check.py` with any Python 3.10+, or with Isaac's `python.bat`, from where it is or from a copy outside the TwinPulse folders; never save other files inside them, or the next install or start stops with `WINDOWS_PACKAGE_UNMANIFESTED_FILE`. It changes nothing, writes one report to the Desktop (when there is no Desktop folder or it refuses the file, to the current folder, else to the user folder, never inside a TwinPulse folder; `--output-dir` picks another folder outside them) and never prints keys, prompts or proxy user names and passwords. It names the Isaac folder the EXE will use and runs that folder's `python.bat` twice to see whether numpy or PIL come from the user's own site-packages folder, which TwinPulse leaves out when it starts Isaac; a run that takes over 90 s is ended with its child processes. By default it sends unauthenticated test requests to both provider hosts with the Python default and the TwinPulse User-Agent (run from the ZIP, it carries that ZIP's version, as the App will; certificates are checked as the EXE's Python checks them), so you can see whether a filter treats them differently; `--no-network` skips them. It also flags a PAC-only proxy, `%` or `& ^ ( )` in the user folder or Isaac folder path (`&` and `^` let Isaac start but stop USD imports), a leftover `launcher.lock`, settings the App would refuse, and Burger robot files that are links, over 32 MB or changed.
+
+**From an old offline install (the PC-B case).** Exit TwinPulse and install the ZIP; the installer reads the old `active-release.json` with or without a BOM and keeps a byte-for-byte copy. Keep the old launch folders where they are, in `%LOCALAPPDATA%\TwinPulse\runtime\launches`: they are the failure records, and the PC check reads them there. Do not delete or move them; if you need an archive, copy them. The old `releases\tp-...` folder can stay. Details: [Moving from an old offline install](WINDOWS_EXE_QUICKSTART.md#moving-from-an-old-offline-install). The old offline release keeps its old code and still stops with `DESKTOP_HOST_NOT_BUILT`; current code falls back to Chrome or Edge wherever the desktop window is missing (for example a source checkout).
+
+The Korean sections below are the older notes for the developer source install and the deprecated offline release (section 6).
 
 > **2026-09-25 환경 정정:** GitHub 가능 일반 PC는 배포물 다운로드·전달만 하고, RTX 3070 워크스테이션에서 웹 App·LLM 요청·Isaac 3D를 모두 실행한다. 로컬에서 릴리스 빌드·분할·재조립·wheel 설치를 시험했지만 **회사 워크스테이션에서 설치/LLM 연결/Isaac Build·Run은 검증하지 않았다.** PC 간 장면 파일 교환 및 일반 PC planner-only는 현재 범위가 아니다. [회사 배포 계획의 정정](planning/TWINPULSE_COMPANY_OFFLINE_DEPLOYMENT_PLAN_2026-09-25.md)을 참조한다.
 
@@ -12,7 +27,7 @@ For the short English setup path, see [Quick Start](QUICKSTART.md). This longer 
 - NVIDIA Isaac Sim 6.0.1 standalone
 - PowerShell
 - CPython 3.12 (`py -3.12 --version`으로 확인)
-- Node.js 20.19+ 또는 22.12+와 npm (`node --version`, `npm --version`으로 확인). pnpm이 없어도 설치기가 고정 버전을 사용자 npm cache에 내려받는다.
+- Node.js 22.13 이상과 npm (`node --version`, `npm --version`으로 확인). 고정된 pnpm 11.19.0이 `>=22.13`을 선언하고(22.0–22.12에서는 오류로 멈추고 Node 20에서는 경고만 낸다) electron 44.7.2와 @electron/packager 20.3.0이 `>=22.12.0`을 선언하므로 20.19와 22.12는 지원하지 않는다. 23 이후 버전은 된다. pnpm이 없어도 설치기가 고정 버전을 사용자 npm cache에 내려받는다.
 - LLM 생성을 시험할 경우에만 선택한 provider의 별도 API key
 
 현재 개발 PC에서 검증한 런타임은 Isaac Sim `6.0.1-rc.7`, Kit `110.1.2`, bundled Python `3.12.13`이다. 회사 PC에 보고된 설치 경로는 아래와 같지만 실제 build/patch는 회사 PC에서 다시 확인해야 한다.
@@ -54,16 +69,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_twinpu
 
 마지막에 `TWINPULSE_INSTALL_RESULT=PASS`가 나와야 한다. 실행까지 하려면 `-Launch`를 덧붙인다. 설치기는 재실행 가능하며 기존 `.venv`를 무조건 지우지 않는다. 개발 PC의 깨끗한 로컬 clone에서 설치/빌드와 비-Isaac 회귀를 통과했다. 그 clone의 실제 Isaac 기동과 회사 PC는 아직 직접 검증하지 않았다.
 
-수동 설치가 필요하면 repository-local virtual environment에 Python 이미지 decoder를 설치한다. 이 명령은 고정된 Pillow wheel hash가 맞지 않으면 실패하며 시스템/Isaac Python을 수정하지 않는다.
+소스 checkout에서 수동 설치가 필요하면 repository-local virtual environment에 Python 이미지 decoder를 설치한다. 이 명령은 고정된 Pillow wheel hash가 맞지 않으면 실패하며 시스템/Isaac Python을 수정하지 않는다.
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r config\python-runtime-requirements.lock
 ```
 
-Pillow는 MIT-CMU 라이선스이며 product App은 `>=12.2,<13`, Windows lock은 `12.3.0`을 사용한다. launcher와 verifier는 `.venv\Scripts\python.exe`를 자동 선택한다. 인터넷이 차단된 회사 PC는 승인된 동일 wheel을 반입해 hash를 확인한 뒤 `.venv`에 설치해야 하며, wheel 자체를 Git에 커밋하지 않는다.
+Pillow는 MIT-CMU 라이선스이며 product App은 `>=12.2,<13`, Windows lock은 `12.3.0`을 사용한다. launcher와 verifier는 `.venv\Scripts\python.exe`를 자동 선택한다. wheel 자체를 Git에 커밋하지 않는다. 회사 PC는 이 소스 경로 대신 위의 Windows EXE ZIP을 쓴다(Python·venv·wheel 반입 불필요).
 
 ## 4. 자동 검증
+
+개발자 소스 checkout 전용이다. 회사 PC는 EXE ZIP을 쓰며 PowerShell이 필요 없다. 실행 정책이 그룹 정책으로 정해져 있으면 바꾸지 말고 IT에 문의한다.
 
 PowerShell 실행 정책이 스크립트를 막는 경우 현재 창에만 임시 허용한다.
 
@@ -103,7 +120,9 @@ React production build 후 local backend와 launcher 소유 Isaac 엔진이 시�
 
 빠른 재실행에는 위 스크립트 대신 `Start-TwinPulse.cmd`를 사용한다.
 
-## 6. 회사 분리망: 준비된 릴리스 반입 경로
+## 6. 회사 분리망: 준비된 릴리스 반입 경로 (deprecated)
+
+> **Deprecated (2026-11-04).** Use the Windows EXE ZIP ([Company PC: Windows EXE ZIP](#company-pc-windows-exe-zip-current-path)). The offline venv release (`Install-Offline.cmd`, `Reassemble-TwinPulse.cmd`, `tp-<git12>` bundles) ships no desktop window, needs a separate CPython 3.12, no longer fits its own 1,000-file limit and is built from untracked robot-asset folders. Its scripts stay in the repository as history; the steps below are not maintained.
 
 이 경로의 준비자는 인터넷/패키지 저장소가 허용된 Windows x64 + Python 3.12 + Node/pnpm 11.19.0 개발 환경에서 **검토·커밋된 깨끗한 소스**로 릴리스를 만든다. GPU/Isaac은 릴리스 빌드에 필요 없다. 회사의 GitHub 가능 일반 PC에서 npm/PyPI가 차단된다면 그 PC에서 빌드하지 말고 승인된 외부 빌드 환경에서 완성된 릴리스를 받아야 한다. 아직 GitHub에 배포용 릴리스 파일은 게시하지 않았다.
 
@@ -118,7 +137,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\split_offline_
 2. 생성된 `unpacked\<release-id>\Install-Offline.cmd`를 실행한다. Isaac 경로를 찾지 못하면 설치 root를 입력한다. 설치기는 파일 SHA-256을 확인하고 로컬 wheelhouse만 사용해 버전별 `.venv`를 만든다.
 3. 설치 완료 메시지에 표시된 `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd`로 다시 실행한다. 설치는 패키지 다운로드 없이 가능하지만 **기본 실행은 live LLM 모드**다. 워크스테이션에서 승인된 Nebius endpoint와 API key를 설정해야 새 이미지를 생성할 수 있다. `scripts\start_twinpulse_installed.ps1 -Offline`은 새 LLM 생성을 서버에서 차단하는 별도 진단 모드다.
 
-API key/사용자 입력/Isaac 전체 설치본은 릴리스에 들어가지 않는다. 반입 조각과 함께 온 SHA-256은 무결성 확인이지 배포자 신원 증명이 아니므로, 신뢰하는 경로의 릴리스 digest도 대조해야 한다. PowerShell 실행 정책 우회가 회사의 AppLocker/WDAC 또는 반입 정책을 우회하는 수단은 아니다. 차단되면 승인된 사내 절차를 따른다.
+API key/사용자 입력/Isaac 전체 설치본은 릴리스에 들어가지 않는다. 반입 조각과 함께 온 SHA-256은 무결성 확인이지 배포자 신원 증명이 아니다. PowerShell 실행 정책 우회가 회사의 AppLocker/WDAC 또는 반입 정책을 우회하는 수단은 아니다. 차단되면 승인된 사내 절차를 따른다.
 
 로봇의 App **No-motion evidence collection** 버튼은 설치/시작과 별개의 명시적 현장 동작이다. 버튼은 기존 소스 전송과 정지 상태 raw odom/scan/TF 수집을 시도하지만 모터 이동·라이다 드라이버 기동·전체 데모 승인을 하지 않는다. 릴리스에는 이 동작에 필요한 로컬 코드·수집 계약시험을 포함하고 개인 방 사진/과거 스캔은 자동 포함하지 않는다. 새 릴리스의 전체 빌드·회사 PC 실행·실제 로봇 접속은 아직 검증되지 않았다. [PC-only 근거](verification/demo-dp1-app-no-motion-collection-20260930.md).
 

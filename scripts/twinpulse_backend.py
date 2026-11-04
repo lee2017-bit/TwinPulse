@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -39,6 +40,7 @@ from twinpulse_app import (  # noqa: E402
     load_replay_fixture,
 )
 from twinpulse_app.credentials import DEFAULT_CREDENTIAL_TARGET  # noqa: E402
+from twinpulse_app.process_manager import MAX_BOOTSTRAP_TTL_S  # noqa: E402
 from twinpulse_app.key_registry import KeyRegistry
 from twinpulse_app.robot_diagnostics import RobotDiagnostics
 from twinpulse_app.robot_readiness import RobotReadiness
@@ -52,6 +54,17 @@ from twinpulse_provider import (  # noqa: E402
     ProviderConfig,
     ProviderConfigurationError,
 )
+
+
+def _bootstrap_ttl(text: str) -> float:
+    """Bootstrap lifetime in seconds: finite, positive, never past the launcher's longest."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or not 0 < value <= MAX_BOOTSTRAP_TTL_S:
+        raise argparse.ArgumentTypeError(f"must be finite and within 0..{MAX_BOOTSTRAP_TTL_S} seconds")
+    return value
 
 
 def main() -> int:
@@ -86,7 +99,7 @@ def main() -> int:
     parser.add_argument('--inference-timeout-s',type=int,default=90,
                         help='Host-only approved evaluation total deadline (90..300s); product default remains 90s.')
     parser.add_argument("--credential-target", default=DEFAULT_CREDENTIAL_TARGET)
-    parser.add_argument("--bootstrap-ttl-s", type=float, default=30.0)
+    parser.add_argument("--bootstrap-ttl-s", type=_bootstrap_ttl, default=30.0)
     parser.add_argument(
         "--fixture-mode", action="store_true",
         help="Use the explicit deterministic test gateway; never implied by serving the UI.",

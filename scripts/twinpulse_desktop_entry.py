@@ -5,9 +5,14 @@
 from pathlib import Path
 import json
 import os
+import re
 import runpy
 import sys
 import traceback
+
+# Usual Isaac Sim 6.0.1 folders, tried after the saved setting.
+ISAAC_CANDIDATES = (r'C:\isaacsim', r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64',
+                    r'C:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64', r'D:\isaacsim')
 
 
 def should_show_error_dialog(arguments):
@@ -31,14 +36,125 @@ def apply_packaged_capabilities(package,role,environment):
     environment['TWINPULSE_RELEASE_VERSION']=str(package.get('product_version',''))
 
 
-def main():
+def check_package(arguments, root):
+    """Package check by role, before any bundled source is imported.
+
+    A start checks that every listed file exists, is no link and has its
+    recorded size. --install and --inspect-package also hash every file here,
+    so the install and inspect code is itself checked before it runs
+    (verify_package then checks the package again as part of that work). An
+    --internal-role child of that launcher only validates the manifest it
+    reads its capabilities from and does not check the files again."""
+    from twinpulse_bootstrap_integrity import read_manifest, verify_before_import
+    if arguments[:1] == ['--internal-role']:
+        return read_manifest(root)
+    return verify_before_import(root, full=arguments[:1] == ['--install'] or arguments == ['--inspect-package'])
+
+
+def startup_failure_text(last_error, log_path):
+    """Dialog text after a failed start: the launcher's own error line and the log file to open."""
+    lines = ['TwinPulse could not complete startup.']
+    if last_error.get('code'):
+        lines += [last_error.get('message') or '(no message)', 'Code: ' + last_error['code']]
+    else:
+        lines.append('Open the diagnostics if the App is visible.')
+    lines.append('Log: ' + (str(log_path) if log_path else r'%LOCALAPPDATA%\TwinPulse\runtime\desktop-logs'))
+    lines.append('No other application was stopped.')
+    return '\n'.join(lines)
+
+
+def launcher_failure_text(launcher_globals, log_path):
+    """Dialog text after the launcher's main() failed.
+
+    launcher_globals is what runpy.run_path returned for the launcher: a copy
+    of its globals that shares the LAST_LAUNCH_ERROR dict the launcher updates
+    in place."""
+    return startup_failure_text(launcher_globals.get('LAST_LAUNCH_ERROR') or {}, log_path)
+
+
+def entry_failure_text(arguments, error, log_path):
+    """Dialog text when the entry itself raised, worded by what was asked."""
+    if arguments == ['--inspect-package']:
+        first = 'TwinPulse package check failed.'
+    elif arguments[:1] == ['--install']:
+        first = 'TwinPulse could not be installed.'
+    else:
+        first = 'TwinPulse could not start.'
+    return '\n'.join((first, type(error).__name__ + ': ' + str(error)[:600],
+                      'Log: ' + str(log_path) if log_path else 'No log was written.'))
+
+
+def failure_log_role(arguments):
+    """The role main() names its log after, read from the raw arguments without package code.
+
+    An --internal-role value that is not a plain name never goes into a file name."""
+    role = 'launcher'
+    if arguments[:1] == ['--install']:
+        role, arguments = 'install', arguments[1:]
+    if arguments[:1] == ['--internal-role']:
+        name = arguments[1] if len(arguments) > 1 else ''
+        role = name if re.fullmatch(r'[a-z][a-z-]{0,39}', name) else 'internal-role'
+    return role
+
+
+def write_failure_log(role, text, environment):
+    """Write text to a new desktop-logs file for a run that failed before main() opened its log.
+
+    Needs only LOCALAPPDATA, no package code. Returns the file, or None when
+    LOCALAPPDATA is not set or the write failed."""
+    if not environment.get('LOCALAPPDATA'):
+        return None
+    log = (Path(environment['LOCALAPPDATA']) / 'TwinPulse' / 'runtime' / 'desktop-logs'
+           / (role + '-' + str(os.getpid()) + '.log'))
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a', encoding='utf-8', errors='backslashreplace') as stream:
+            stream.write(text)
+    except (OSError, ValueError):
+        return None
+    return log
+
+
+def isaac_version(folder):
+    """First line of the folder's VERSION file (UTF-8, BOM allowed, at most 1 KB); None when it cannot be read."""
+    path = os.path.join(folder, 'VERSION')
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as stream:
+            data = stream.read(1025)
+        if len(data) > 1024:
+            return None
+        lines = data.decode('utf-8-sig').splitlines()
+    except (OSError, UnicodeError):
+        return None
+    return lines[0].strip() if lines else ''
+
+
+def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
+    """The saved folder when it has python.bat, else the first usual folder
+    with python.bat: those whose VERSION says Isaac Sim 6.0.1 first, then the
+    others in their order.
+
+    os.path.isfile, not Path.is_file: a locked or offline drive is skipped
+    instead of raising, so the folder dialog stays the fallback. A VERSION
+    that cannot be read counts as another version."""
+    if configured and os.path.isfile(os.path.join(configured, 'python.bat')):
+        return str(configured)
+    usable = [str(folder) for folder in candidates if os.path.isfile(os.path.join(folder, 'python.bat'))]
+    release = [folder for folder in usable if re.fullmatch(r'6\.0\.1([-+].*)?', isaac_version(folder) or '')]
+    return (release or usable or [None])[0]
+
+
+def main(opened=None):
+    """Run the role this EXE was started for. opened, when given, receives this
+    run's log file as opened['log'] once it is open, so run_entry can name it."""
     sys.dont_write_bytecode = True
     frozen = bool(getattr(sys, 'frozen', False))
     root = Path(sys._MEIPASS) / 'resources' if frozen else Path(__file__).resolve().parents[1]
     package=None
     if frozen:
-        from twinpulse_bootstrap_integrity import verify_before_import
-        package=verify_before_import(Path(sys.executable).parent)
+        package=check_package(sys.argv[1:], Path(sys.executable).parent)
     for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
         sys.path.insert(0, str(root / 'packages' / name / 'src'))
     sys.path.insert(0, str(root / 'scripts'))
@@ -59,6 +175,7 @@ def main():
     arguments=configure_testing(arguments,state,os.environ,role=role)
     # Windowed bootloaders have no Python stdout even when spawned with handles.
     inherited_output = False
+    log = None
     if frozen and role=='library-tool' and os.name=='nt':
         import ctypes
         import msvcrt
@@ -89,14 +206,24 @@ def main():
         log = state / 'desktop-logs' / (role + '-' + str(os.getpid()) + '.log')
         log.parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = log.open('a', encoding='utf-8', buffering=1)
+        if opened is not None:
+            opened['log'] = log
     if arguments == ['--inspect-package']:
         from twinpulse_app.windows_package import verify_package
         result = verify_package(Path(sys.executable).parent if frozen else root)
         print(json.dumps(result, sort_keys=True))
         return 0
-    if role == 'launcher' and frozen:
-        configuration = read_settings(state)
-        if '--isaac-root' not in arguments and not (Path(configuration.get('isaac_root', r'C:\isaacsim')) / 'python.bat').is_file():
+    if role == 'launcher' and frozen and '--isaac-root' not in arguments:
+        configured = read_settings(state).get('isaac_root')
+        found = find_isaac_root(configured, ISAAC_CANDIDATES)
+        if found and not configured:
+            save_settings(state, isaac_root=found)
+        elif found and found != configured:
+            # The saved folder is not usable now (an offline or locked drive?); it is never replaced unasked.
+            print('TWINPULSE_ISAAC_ROOT_FALLBACK saved="' + configured + '" used="' + found + '" (no python.bat in '
+                  'the saved folder now; used for this launch only, the setting is kept)', flush=True)
+            arguments = ['--isaac-root', found, *arguments]
+        if not found:
             import tkinter as tk
             from tkinter import filedialog
             window = tk.Tk(); window.withdraw()
@@ -125,25 +252,40 @@ def main():
     result = module['main']()
     if result and frozen and role == 'launcher':
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None,
-            'TwinPulse could not complete startup.\nOpen the diagnostics if the App is visible, '
-            'or inspect %LOCALAPPDATA%\\TwinPulse\\runtime\\desktop-logs.\n'
-            'No other application was stopped.', 'TwinPulse startup', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, launcher_failure_text(module, log), 'TwinPulse startup', 0x10)
     return result
 
 
-if __name__ == '__main__':
-    show_error_dialog = should_show_error_dialog(sys.argv[1:])
+def run_entry(arguments):
+    """main() as the EXE runs it; returns the exit code.
+
+    An error goes to this run's open log. When main() had not opened one yet
+    (package check, manifest, capabilities, state folder), the traceback goes
+    to a new desktop-logs file instead, and the dialog, where
+    should_show_error_dialog allows one, names that file or says none was
+    written."""
+    show_error_dialog = should_show_error_dialog(arguments)
+    opened = {}
     try:
-        raise SystemExit(main())
+        return main(opened)
     except SystemExit:
         raise
     except BaseException as error:
-        traceback.print_exc()
+        details = traceback.format_exc()
+        try:
+            # The open log or an inherited stream; a windowed EXE has no stderr before that.
+            traceback.print_exc()
+        except Exception:
+            pass
+        log = opened.get('log')
+        if log is None and getattr(sys, 'frozen', False):
+            log = write_failure_log(failure_log_role(arguments), details, os.environ)
         if show_error_dialog:
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None,
-                'TwinPulse could not start.\n' + type(error).__name__ + ': ' + str(error)[:600]
-                + '\nSee %LOCALAPPDATA%\\TwinPulse\\runtime\\desktop-logs.',
+            ctypes.windll.user32.MessageBoxW(None, entry_failure_text(arguments, error, log),
                 'TwinPulse startup', 0x10)
-        raise SystemExit(1)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(run_entry(sys.argv[1:]))

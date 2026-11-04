@@ -1,9 +1,21 @@
 # SPDX-FileCopyrightText: 2026 Jaewon Lee
 # SPDX-License-Identifier: Apache-2.0
 # Source: https://github.com/lee2017-bit/TwinPulse
+from contextlib import nullcontext
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 from copy import deepcopy
 from scripts.compare_model_roles_live import FailureStreak, plan_cases, wire_for, failure_fingerprint
+
+
+def saved_recipe():
+    """The saved 2026-10-26 factory's local bollard recipe: it has no children, so its schema root is an anyOf."""
+    saved=Path(__file__).resolve().parents[2]/'packages/twinpulse_provider/tests/fixtures/repair_stall_2026-10-26/draft.json'
+    return json.loads(saved.read_text(encoding='utf-8'))['model_recipes']['local.830361779608ac8f83396984']
 
 
 class RoleComparisonTests(unittest.TestCase):
@@ -69,6 +81,85 @@ class RoleComparisonTests(unittest.TestCase):
         self.assertNotIn('chat_template_kwargs',wire)
         self.assertEqual(wire['messages'][-1],body['messages'][-1])
         self.assertEqual(wire['response_format']['json_schema']['schema']['properties']['v'],{'enum':['yes'],'type':'string'})
+
+    def test_openai_reply_gets_the_host_shape_back_before_host_validation(self):
+        from scripts.compare_model_roles_live import ChatCompletion, host_reply
+        from twinpulse_provider.model_recipe_planning import checked_definition, definition_schema
+        recipe=saved_recipe()
+        body=dict(model='gpt-6-luna',max_tokens=20000,temperature=0,
+            messages=[dict(role='system',content='Return JSON.'),dict(role='user',content='same source')],
+            response_format={'type':'json_schema','json_schema':{'name':'twinpulse_model_recipe','strict':True,
+                'schema':definition_schema(recipe['kind'],[])}})
+        # A recipe without children has an anyOf root, which OpenAI receives as {"value": root}.
+        self.assertEqual(wire_for(body,'openai')['response_format']['json_schema']['schema']['required'],['value'])
+        reply=ChatCompletion('fixture','gpt-6-luna',json.dumps({'value':recipe}),'stop',{})
+        restored=host_reply(reply,body,'openai')
+        self.assertEqual(json.loads(restored.content),recipe)
+        checked_definition(json.loads(restored.content),recipe['kind'],'bollard_1',[])
+        self.assertIs(host_reply(reply,body,'nebius'),reply)  # a Nebius reply already has the host spelling
+
+
+class Transport:
+    """Stands in for AuditedChatTransport offline: keeps each wire body and answers with fixed JSON."""
+    def __init__(self, reply):
+        self.reply, self.bodies, self.calls, self.record_validation = reply, [], [], Mock()
+
+    async def complete(self, body, token, config):
+        from scripts.compare_model_roles_live import ChatCompletion
+        self.bodies.append(deepcopy(body))
+        return ChatCompletion('offline', body['model'], json.dumps(self.reply), 'stop', {})
+
+
+class RunCaseHostShapeTests(unittest.IsolatedAsyncioTestCase):
+    """run_case with the OpenAI role model, offline: each reply gets its host shape back and the host schema judges it."""
+
+    async def run_role(self, role, reply, service=None):
+        from scripts.compare_model_roles_live import LUNA, run_case
+        transport=Transport(reply)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);photo=root/'fixture.jpg';photo.write_bytes(b'offline fixture, never sent')
+            ledger=SimpleNamespace(state=dict(requests=[]),lock_path=root/'absent.lock')
+            services=patch('scripts.compare_model_roles_live.GenerationService',service) if service else nullcontext()
+            with patch('scripts.compare_model_roles_live.AuditedChatTransport',return_value=transport),services:
+                row=await run_case(root/'out',role,LUNA,1,dict(openai=SimpleNamespace(load=lambda:'unused-offline')),
+                    ledger,None,dict(photo_sha256='fixture',observation_sha256='fixture'),photo=photo,prompt='fixture')
+        return row,transport
+
+    async def test_observer_reply_is_judged_by_the_host_schema(self):
+        from twinpulse_provider.observation_alignment import unknown_alignment
+        def observation(category):
+            return dict(schema_version='1.5',summary='Offline fixture',entities=[dict(id='seen_bed',kind='static_obstacle',
+                description='bed',confidence=.9,role='object',category=category,region='unknown',spatial_confidence=.9,
+                instance_count=1,footprint_alignment=unknown_alignment())],relations=[],dimensions=[],ambiguities=['Unmeasured'])
+        row,transport=await self.run_role('observer',observation('bed'))
+        self.assertEqual((row['status'],row['categories']),('PASS',['bed']))
+        self.assertEqual(transport.bodies[0]['reasoning_effort'],'none')  # the OpenAI wire was sent
+        # The wire shares repeated enums by $ref; the host schema still lists every category.
+        row,_=await self.run_role('observer',observation('not_a_category'))
+        self.assertEqual((row['status'],row['error']),('FAIL','OBSERVER_SCHEMA_INVALID'))
+        self.assertEqual(row['contract_report']['issues'],
+            [dict(code='SEMANTIC_VARIANT_INVALID',path='$.entities[0]',severity='error')])
+
+    async def test_planner_reuse_hands_the_pipeline_host_shaped_replies(self):
+        from twinpulse_provider import CancellationToken
+        from twinpulse_provider.model_recipe_planning import checked_definition, definition_schema
+        from twinpulse_provider.nebius_pipeline import _json_content
+        recipe=saved_recipe();received=[]
+        class OneDefinition:
+            """Stands in for GenerationService: one real recipe request through run_case's planner transport."""
+            def __init__(self, pipeline, config, **_):
+                self.pipeline, self.config = pipeline, config
+            async def generate(self, request):
+                body=self.pipeline.body('twinpulse_model_recipe',definition_schema(recipe['kind'],[]),'Define it.',{})
+                value=_json_content(await self.pipeline._transport.complete(body,CancellationToken(),self.config),'planner')
+                received.append(value)
+                checked_definition(value,recipe['kind'],'bollard_1',[])
+                return SimpleNamespace(plan=SimpleNamespace(to_dict=dict,calls=[]),provider_provenance={})
+        row,transport=await self.run_role('planner',{'value':recipe},OneDefinition)
+        # OpenAI received the {"value": root} spelling and answered in it; the pipeline got the recipe itself.
+        self.assertEqual(transport.bodies[0]['response_format']['json_schema']['schema']['required'],['value'])
+        self.assertEqual(received,[recipe])
+        self.assertEqual(row['status'],'PASS')
 
 
 if __name__=='__main__':unittest.main()

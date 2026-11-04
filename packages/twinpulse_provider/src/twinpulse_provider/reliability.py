@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,8 @@ from threading import RLock
 from typing import Mapping
 from uuid import uuid4
 
-from .errors import ProviderConfigurationError
+from .errors import (ProviderAuthenticationError, ProviderConfigurationError, ProviderRateLimitError,
+    ProviderRequestError, ProviderUnavailableError)
 from .output_diagnostics import output_diagnostics
 
 
@@ -58,14 +60,183 @@ def check_benchmark_dispatch_deadline(*, now=None):
         raise ProviderConfigurationError('BENCHMARK_APPROVAL_EXPIRED_NO_DISPATCH')
 
 
+_DATA_URI_RUN = re.compile(r'data:[^\s"<>]*')
+_BASE64_RUN = re.compile(r'[A-Za-z0-9+/=]+')
+
+
+def _without_base64_data(match):
+    # Same text as data:[^\s"<>]*;base64,[A-Za-z0-9+/=]+ (the run's LAST ';base64,' with a payload)
+    # without its backtracking, which was quadratic on a page of many non-base64 data: URIs.
+    run, end = match.group(), len(match.group())
+    while (index := run.rfind(';base64,', 5, end)) >= 0:
+        payload = _BASE64_RUN.match(run, index + 8)
+        if payload:
+            return '[IMAGE_REMOVED]' + run[payload.end():]
+        end = index + 7
+    return run
+
+
 def safe_text(value: str, *, secret: str | None = None, limit: int = 262144) -> str:
     if secret:
         value = value.replace(secret, '[REDACTED]')
-    value = re.sub(r'data:[^\s"<>]*;base64,[A-Za-z0-9+/=]+', '[IMAGE_REMOVED]', value)
+    value = _DATA_URI_RUN.sub(_without_base64_data, value)
     value = re.sub(r'(?i)Bearer\s+[^\s"<>]+', 'Bearer [REDACTED]', value)
     value = re.sub(r'(?i)("(?:api[_-]?key|authorization|access_token|secret)"\s*:\s*")[^"]*',
                    r'\1[REDACTED]', value)
     return value[:limit]
+
+
+# A provider error body is read once and capped; only these typed fields leave the
+# private evidence, each re-validated, and a provider's own words pass safe_text.
+MAX_ERROR_BODY_BYTES = 262145
+_ERROR_FIELD = re.compile(r'[A-Za-z0-9_.:\[\]-]{1,80}')
+_ERROR_KINDS = {'json_error': ('type', 'code', 'param', 'message'), 'html_page': ('title',), 'unparsed': ('bytes',)}
+_KEY_IN_FIELD = re.compile(r'(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}')  # a key, not e.g. 'disk-quota_exceeded'
+
+
+def _short(value, *, secret=None, limit=300):
+    value = str(value)
+    if secret:
+        value = value.replace(secret, '[REDACTED]')  # the whole text, before any cut
+    # One line, then a bounded prefix, so the safe_text patterns below stay cheap on hostile bodies.
+    value = safe_text(' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', value).split())[:limit * 4])
+    value = re.sub(r'sk-[A-Za-z0-9_-]{8,}', '[REDACTED]', value)
+    value = re.sub(r'//[^/\s@]+@', '//[REDACTED]@', value)  # URL user info
+    return value if len(value) <= limit else value[:limit - 3] + '...'
+
+
+def public_provider_error(value):
+    """Re-validated copy of a provider_error_summary() result; anything else is dropped."""
+    if not isinstance(value, dict) or not isinstance(value.get('kind'), str) or value['kind'] not in _ERROR_KINDS:
+        return None
+    public = {'kind': value['kind']}
+    for key in _ERROR_KINDS[value['kind']]:
+        item = value.get(key)
+        if key == 'bytes':
+            if type(item) is int and 0 <= item <= MAX_ERROR_BODY_BYTES: public[key] = item
+        elif key in ('message', 'title'):
+            item = _short(item, limit=300 if key == 'message' else 120) if isinstance(item, str) else ''
+            if item: public[key] = item
+        elif isinstance(item, str) and _ERROR_FIELD.fullmatch(item) and not _KEY_IN_FIELD.search(item):
+            public[key] = item
+    return public
+
+
+def provider_error_summary(raw, *, secret=None, content_type=''):
+    """Typed facts from an HTTP error body; never the request, headers or a whole page.
+
+    JSON error{message,type,code,param} (or a detail/message fallback), only the
+    title of an HTML page (such as a network filter's block page), else a byte count.
+    """
+    raw = bytes(raw or b'')[:MAX_ERROR_BODY_BYTES]
+    declared = (re.search(r'charset=["\']?([A-Za-z0-9_.:-]{1,40})', content_type or '', re.I) or
+                re.search(r'<meta[^>]{1,512}charset=["\']?([A-Za-z0-9_.:-]{1,40})', raw[:4096].decode('ascii', 'replace'), re.I))
+    try:
+        text = raw.decode(declared.group(1) if declared else 'utf-8', errors='replace')
+    except (LookupError, ValueError):
+        text = raw.decode('utf-8', errors='replace')
+    text = text.removeprefix('\ufeff')  # json.loads rejects a BOM, which would hide a JSON error body
+    try:
+        payload = json.loads(text)
+    except (ValueError, RecursionError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get('error')
+        if not isinstance(error, dict):
+            detail = payload.get('detail')
+            if isinstance(detail, list) and detail and isinstance(detail[0], dict):
+                detail = detail[0].get('msg')  # a validation item's input/loc would echo the request
+            error = {'message': next((v for v in (error, detail, payload.get('message')) if isinstance(v, str)), None)}
+        summary = {key: str(error[key]) if type(error.get(key)) is int else error.get(key) for key in ('type', 'code', 'param')}
+        summary = {key: value for key, value in summary.items() if not (secret and isinstance(value, str) and secret in value)}
+        if isinstance(error.get('message'), str):
+            summary['message'] = _short(error['message'], secret=secret)
+        summary = public_provider_error({**summary, 'kind': 'json_error'})
+        if len(summary) > 1:
+            return summary
+    elif 'html' in (content_type or '').lower() or re.search(r'<(?:!doctype\s+html|html|head|title|body)\b', text[:4096], re.I):
+        # Bounded searches: a hostile page cannot make the title lookup quadratic.
+        start = re.search(r'<title[^>]{0,200}>', text[:65536], re.I)
+        end = re.search(r'</title\s{0,8}>', text[start.end():start.end() + 4096], re.I) if start else None
+        title = text[start.end():start.end() + end.start()] if end else ''
+        title = _short(html.unescape(re.sub(r'<[^>]{0,200}>', ' ', title)), secret=secret, limit=120)
+        return public_provider_error({'kind': 'html_page', 'title': title})
+    return {'kind': 'unparsed', 'bytes': len(raw)}
+
+
+def _error_text(summary):
+    """About 200 characters, so the reason survives the later public message cap."""
+    if summary['kind'] == 'html_page':
+        text = f"HTML page '{summary['title']}'" if summary.get('title') else 'HTML page'
+    elif summary['kind'] == 'json_error':
+        label = '/'.join(dict.fromkeys(summary[key] for key in ('type', 'code') if key in summary))
+        text = ': '.join(value for value in (label, summary.get('message')) if value)
+    else:
+        text = f"unrecognized body ({summary['bytes']} bytes)" if summary.get('bytes') else ''
+    return text if len(text) <= 200 else text[:197] + '...'
+
+
+def http_error_body(error, *, secret=None):
+    """One bounded read of an HTTP error body: (private raw bytes, public summary)."""
+    try:
+        raw = error.read(MAX_ERROR_BODY_BYTES)
+    except Exception:
+        raw = b''
+    raw = bytes(raw) if isinstance(raw, (bytes, bytearray)) else b''
+    try:
+        content_type = str(error.headers.get('Content-Type') or '')
+    except Exception:
+        content_type = ''
+    return raw, provider_error_summary(raw, secret=secret, content_type=content_type)
+
+
+def provider_http_error(error, *, secret=None):
+    """Typed failure for one HTTP error response, naming its short redacted reason.
+
+    raw_error_body is private (inference evidence only). An HTML 401/403 is a
+    filter or proxy page, not proof that the provider rejected the API key.
+    """
+    raw, summary = http_error_body(error, secret=secret)
+    status, detail = error.code, _error_text(summary)
+    suffix = f' ({status}): {detail}' if detail else f' ({status})'
+    if status in (401, 403) and summary['kind'] != 'html_page':
+        failure = ProviderAuthenticationError('provider rejected the API key' + suffix)
+    elif status == 429:
+        failure = ProviderRateLimitError('provider rate limit' + suffix)
+    elif 300 <= status < 400:
+        failure = ProviderRequestError('provider redirect was rejected' + suffix)
+    elif 500 <= status < 600:
+        failure = ProviderUnavailableError('provider unavailable' + suffix)
+    else:
+        failure = ProviderRequestError('provider request failed' + suffix)
+        failure.http_status = status
+    failure.raw_error_body, failure.provider_error = raw, summary
+    return failure
+
+
+def provider_page_error(raw, *, status=200, headers=None, secret=None):
+    """A success status whose body is an HTML page (a filter or portal), not provider JSON; else None.
+
+    The body is already private evidence; only its title is named, as for HTTP error pages.
+    """
+    try:
+        content_type = str(headers.get('Content-Type') or '') if headers is not None else ''
+    except Exception:
+        content_type = ''
+    summary = provider_error_summary(raw, secret=secret, content_type=content_type)
+    if summary['kind'] != 'html_page':
+        return None
+    failure = ProviderRequestError(f'provider request failed ({status}): {_error_text(summary)}')
+    failure.http_status, failure.provider_error = status, summary
+    return failure
+
+
+def provider_connection_error(error, *, secret=None):
+    """Typed connection failure: the reason's type and a redacted reason of at most 160 characters."""
+    reason = getattr(error, 'reason', error)
+    name = type(reason).__name__ if isinstance(reason, BaseException) else type(error).__name__
+    text = _short(reason, secret=secret, limit=160)
+    return ProviderRequestError(f'provider connection failed ({name}: {text})' if text else f'provider connection failed ({name})')
 
 
 class InferenceEvidence:
@@ -213,6 +384,10 @@ response files remain local-only. Production callers may omit a campaign.
                     def __enter__(self):self.response.__enter__();return self
                     def __exit__(self,*args):return self.response.__exit__(*args)
                     def geturl(self):return self.response.geturl()
+                    @property
+                    def headers(self):return getattr(self.response,'headers',None)
+                    @property
+                    def status(self):return getattr(self.response,'status',200)
                     def read(self,*args):
                         value=self.response.read(*args);raw.append(value);return value
                 def open_capture(*args,**kwargs):
@@ -235,7 +410,9 @@ response files remain local-only. Production callers may omit a campaign.
                     cause=error.__cause__
                     if isinstance(cause,urllib.error.HTTPError):
                         facts['http_status']=cause.code
-                        raw.append(cause.read(262145))
+                        # _post already read the stream once; keep that complete private body.
+                        received=getattr(error,'raw_error_body',None)
+                        raw.append(cause.read(262145) if received is None else received)
                     try:
                         payload=json.loads(raw[0]) if raw else {}
                         usage=payload.get('usage') if isinstance(payload,dict) else None

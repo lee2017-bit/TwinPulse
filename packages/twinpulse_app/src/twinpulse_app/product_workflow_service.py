@@ -1621,6 +1621,13 @@ def _public_generation_diagnostics(diagnostic):
     for key in ('max_tokens','elapsed_s','timeout_s','repair_count','max_repairs','sequence'):
         value=diagnostic.get(key)
         if type(value) in (int,float) and math.isfinite(value) and value>=0:allowed[key]=value
+    status=diagnostic.get('http_status')
+    if type(status) is int and 100<=status<=599:allowed['http_status']=status
+    if 'provider_error' in diagnostic:
+        # Typed provider error facts only (kind/type/code/param/message/title/bytes), re-validated and capped.
+        from twinpulse_provider.reliability import public_provider_error
+        summary=public_provider_error(diagnostic['provider_error'])
+        if summary:allowed['provider_error']=summary
     if isinstance(diagnostic.get('attempts'),list):
         allowed['attempts']=[{k:v for k,v in _public_generation_diagnostics(item).items() if k!='attempts'}
                              for item in diagnostic['attempts'][:32] if isinstance(item,dict)]

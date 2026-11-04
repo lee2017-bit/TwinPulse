@@ -6,13 +6,22 @@ from datetime import datetime,timedelta,timezone
 import hashlib
 import json
 import os
+import urllib.error
 import urllib.request
 from uuid import uuid4
+from twinpulse_provider.http_identity import json_headers
+from twinpulse_provider.reliability import http_error_body,provider_error_summary
 from .key_registry import KeyRegistryError
 from .stage_routing import StageRoutingSettings,PHYSICAL_AI_OBSERVER,PHYSICAL_AI_PLANNER
 
 class RejectRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self,*args,**kwargs):raise ValueError('METADATA_REDIRECT_REFUSED')
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        raise KeyRegistryError('provider_http_error','Nebius 모델 목록 요청이 다른 주소로 이동되어 중단했습니다(HTTP %d).'%code,502)
+
+def _blocked_page(status,summary):
+    # Only the page title is shown: a network filter's page, not a key or model failure.
+    title=", '%s'"%summary['title'] if summary.get('title') else ''
+    return KeyRegistryError('provider_blocked_page','Nebius 대신 HTML 페이지가 응답했습니다(HTTP %d%s). 네트워크 필터 차단일 수 있습니다.'%(status,title),502)
 
 def metadata(url,credential):
     if url not in ('https://api.tokenfactory.nebius.com/private/v1/models_info',
@@ -20,12 +29,26 @@ def metadata(url,credential):
         raise ValueError('METADATA_ORIGIN_INVALID')
     secret=credential.load()
     if not secret:raise ValueError('KEY_MISSING')
-    request=urllib.request.Request(url,headers={'Authorization':'Bearer '+secret})
-    with urllib.request.build_opener(RejectRedirects()).open(request,timeout=20) as response:
-        if response.geturl()!=url:raise ValueError('METADATA_REDIRECT_REFUSED')
-        raw=response.read(2_000_001)
+    request=urllib.request.Request(url,headers={**json_headers(),'Authorization':'Bearer '+secret})
+    try:
+        with urllib.request.build_opener(RejectRedirects()).open(request,timeout=20) as response:
+            if response.geturl()!=url:raise ValueError('METADATA_REDIRECT_REFUSED')
+            raw,kind=response.read(2_000_001),response.headers.get('Content-Type','')
+    except urllib.error.HTTPError as error:
+        summary=http_error_body(error,secret=secret)[1]
+        if summary['kind']=='html_page':raise _blocked_page(error.code,summary) from None
+        raise KeyRegistryError('provider_http_error','Nebius 모델 목록 요청이 실패했습니다(HTTP %d).%s'%(
+            error.code,' 키를 확인하세요.' if error.code in (401,403) else ''),502) from None
+    except (urllib.error.URLError,TimeoutError,ConnectionError) as error:
+        reason=getattr(error,'reason',None)
+        name=type(reason if isinstance(reason,BaseException) else error).__name__
+        raise KeyRegistryError('provider_unreachable','Nebius에 연결하지 못했습니다(%s). 네트워크 연결을 확인하세요.'%name,503) from None
     if len(raw)>2_000_000:raise ValueError('METADATA_SIZE_LIMIT')
-    return json.loads(raw),hashlib.sha256(raw).hexdigest()
+    try:return json.loads(raw),hashlib.sha256(raw).hexdigest()
+    except ValueError:
+        summary=provider_error_summary(raw,secret=secret,content_type=kind)
+        if summary['kind']=='html_page':raise _blocked_page(200,summary) from None
+        raise
 
 def configure_first_nebius_key(registry,key_id,changed,*,get=metadata):
     calls=0

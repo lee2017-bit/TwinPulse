@@ -175,6 +175,7 @@ if ($ReuseBuiltWeb) {
     # clean source rebuild, and never installs dependencies or downloads wheels.
     $manifest["web_build_mode"] = "REUSED_EXISTING_DIST_NOT_REBUILT"
 }
-$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $releaseRoot "release-manifest.json") -Encoding UTF8
+# UTF-8 without BOM: Set-Content -Encoding UTF8 adds one in PowerShell 5.1.
+[IO.File]::WriteAllText((Join-Path $releaseRoot "release-manifest.json"), ($manifest | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
 $bytes = (Get-ChildItem -LiteralPath $releaseRoot -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host "TWINPULSE_OFFLINE_RELEASE=PASS path=$releaseRoot files=$($files.Count) bytes=$bytes dirty=$dirty"

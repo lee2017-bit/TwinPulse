@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 if (-not $InstallRoot) { $InstallRoot = Split-Path -Parent $PSScriptRoot }
 $activeFile = Join-Path $InstallRoot "active-release.json"
 if (-not (Test-Path -LiteralPath $activeFile)) { throw "TwinPulse is not installed. Run Install-Offline.cmd first." }
-$active = Get-Content -LiteralPath $activeFile -Raw | ConvertFrom-Json
+$active = Get-Content -LiteralPath $activeFile -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($active.schema -eq 'twinpulse-windows-install-1.0') {
     if ([string]$active.release_id -notmatch '^[A-Za-z0-9_-]{1,80}$' -or
         [string]$active.exe -ne ('releases/' + [string]$active.release_id + '/TwinPulse.exe')) {

@@ -18,6 +18,24 @@ import zipfile
 import runpy
 
 ROOT = Path(__file__).resolve().parents[1]
+# Installed path for a 20-character Windows user name; MAX_PATH leaves 259 characters.
+INSTALL_RELEASES = 'C:\\Users\\' + 'u' * 20 + '\\AppData\\Local\\TwinPulse\\installed\\releases\\'
+MAX_PATH_CHARS = 259
+# The read-only company-PC check. It ships in the ZIP, so a company PC needs nothing else.
+PC_CHECK = 'scripts/twinpulse_company_pc_check.py'
+# Repository files staged beside the sources (and so hash-bound in source-manifest.json).
+EXTRA_FILES = ('LICENSE', 'NOTICE', 'CITATION.cff', 'THIRD_PARTY_NOTICES.md',
+               'docs/LICENSING.md', 'docs/RELEASE_PROVENANCE.md', 'docs/WINDOWS_EXE_QUICKSTART.md',
+               'docs/WINDOWS_EXE_BUILD.md', 'docs/ROBOT_FLEET_PREPARATION_GUIDE.md', 'scripts/build_windows_exe.ps1',
+               'config/python-runtime-requirements.lock', 'config/python-build-requirements.lock',
+               'assets/simulation/turtlebot3_burger/ROBOTIS-LICENSE',
+               'assets/simulation/turtlebot3_burger/SOURCE.json', PC_CHECK)
+# Top-level package files, beside TwinPulse.exe and Install-TwinPulse.cmd (the ZIP's
+# TwinPulse/ folder): published name -> its staged copy. The manifest lists every one.
+TOP_LEVEL_FILES = {'LICENSE': 'LICENSE', 'NOTICE': 'NOTICE', 'CITATION.cff': 'CITATION.cff',
+                   'THIRD_PARTY_NOTICES.md': 'THIRD_PARTY_NOTICES.md',
+                   'README.md': 'docs/WINDOWS_EXE_QUICKSTART.md',
+                   'twinpulse_company_pc_check.py': PC_CHECK}
 
 
 def hash_file(path):
@@ -26,6 +44,58 @@ def hash_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def stage(relative, resources, sources):
+    """Copy one repository file into the staging snapshot and record its SHA-256 in sources."""
+    source = ROOT / relative
+    if not source.is_file() or any(p.is_symlink() for p in [source, *source.parents]):
+        raise ValueError('RELEASE_SOURCE_MISSING_OR_LINK: ' + relative)
+    destination = resources / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    sources[relative.replace('\\', '/')] = hash_file(source)
+
+
+def add_top_level_files(resources, package):
+    """Copy the staged top-level files into the package and write its two .cmd entries."""
+    for name, staged in TOP_LEVEL_FILES.items():
+        shutil.copy2(resources / staged, package / name)
+    (package/'Install-TwinPulse.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --install\n',encoding='utf-8')
+    (package/'Start-TwinPulse-Test.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --automation-test\n',encoding='utf-8')
+
+
+def package_files(package):
+    """Manifest rows (path, bytes, sha256) for every file in the package folder."""
+    return [{'path': p.relative_to(package).as_posix(), 'bytes': p.stat().st_size, 'sha256': hash_file(p)}
+            for p in sorted(package.rglob('*')) if p.is_file()]
+
+
+def write_zip(package, archive):
+    """The distribution ZIP: every package file under one top folder, TwinPulse/."""
+    with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as zipfile_out:
+        for path in sorted(package.rglob('*')):
+            if path.is_file():
+                zipfile_out.write(path, 'TwinPulse/' + path.relative_to(package).as_posix())
+
+
+def finish_package(resources, package, manifest, archive=None, *, allow_long=False):
+    """Complete the package folder in the one order an installable ZIP needs.
+
+    The top-level files come first, so the file list and the manifest include
+    them (a file added after the listing is an unlisted extra that install
+    refuses: WINDOWS_PACKAGE_UNMANIFESTED_FILE). Then the install path check,
+    then the manifest, and the ZIP last, so it carries the manifest. No ZIP
+    when archive is None (--package-only).
+    """
+    add_top_level_files(resources, package)
+    files = package_files(package)
+    install_path_check([row['path'] for row in files], manifest['build_id'], allow_long=allow_long)
+    manifest['files'] = files
+    (package / 'windows-release-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    if archive is not None:
+        write_zip(package, archive)
+    return manifest
 
 
 def reuse_desktop(package, destination, sources):
@@ -48,6 +118,40 @@ def reuse_desktop(package, destination, sources):
         raise ValueError('DESKTOP_REUSE_RUNTIME_CHANGED')
     shutil.copytree(package/'desktop',destination,copy_function=os.link)
     return dict(electron=manifest['tools']['Electron'],source_build_id=verified['build_id'])
+
+
+def burger_asset_check(assets):
+    """The packaged Burger USD folder must hold exactly the reviewed public bytes."""
+    sys.dont_write_bytecode = True
+    for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
+        if str(ROOT / 'packages' / name / 'src') not in sys.path:
+            sys.path.insert(0, str(ROOT / 'packages' / name / 'src'))
+    from twinpulse_app.simulation_assets import PUBLIC_BURGER_MANIFEST, _inventory
+    inventory = _inventory(Path(assets))
+    changed = sorted(name for name in {*inventory, *PUBLIC_BURGER_MANIFEST} if inventory.get(name) != PUBLIC_BURGER_MANIFEST.get(name))
+    if changed:
+        raise ValueError('BUILD_BURGER_ASSET_NOT_PUBLIC: ' + ', '.join(changed))
+    return inventory
+
+
+def install_path_check(names, release_id, *, allow_long=False):
+    """Print the five longest package paths as installed; fail past MAX_PATH.
+
+    The staged copy (.stage- plus 12 hex) and the final release folder are
+    both measured; the longer one counts. allow_long (--allow-long-paths)
+    keeps the warning but builds anyway."""
+    prefix = len(INSTALL_RELEASES + max('.stage-' + 'x' * 12, release_id, key=len) + '\\')
+    longest = sorted(names, key=lambda name: (-len(name), name))[:5]
+    print('Longest installed paths (limit %d, 20-character user name):' % MAX_PATH_CHARS)
+    for name in longest:
+        print('  %d (%d relative) %s' % (prefix + len(name), len(name), name))
+    total = prefix + len(longest[0])
+    if total > MAX_PATH_CHARS:
+        message = 'BUILD_INSTALL_PATH_TOO_LONG: %d > %d: %s' % (total, MAX_PATH_CHARS, longest[0])
+        if not allow_long:
+            raise ValueError(message)
+        print('WARNING ' + message + ' (--allow-long-paths; needs Windows long paths on the target PC)')
+    return total, longest[0]
 
 
 def sprint_gate_receipt(root,max_age_s=24*3600):
@@ -84,6 +188,9 @@ def main():
         help='Verified immutable prior package with identical desktop sources; same-volume hard links only.')
     parser.add_argument('--skip-sprint-gate',action='store_true',
         help='Build without a fresh Verify-Sprint PASS receipt (emergency only; the receipt check is the default).')
+    parser.add_argument('--allow-long-paths',action='store_true',
+        help='Build even if an installed path would pass 259 characters (20-character user name); the warning is '
+             'still printed. Without Windows long paths such a package may fail to install or start.')
     args = parser.parse_args()
     output = args.output_dir.resolve()
     if output.exists():
@@ -105,8 +212,8 @@ def main():
     assets = ROOT / 'assets/simulation/turtlebot3_burger/usd'
     if not (web_dist / 'index.html').is_file() or not list((web_dist / 'assets').glob('*.js')):
         raise ValueError('BUILD_WEB_DIST_MISSING_RUN_LOCKED_WEB_BUILD')
-    if len(list(assets.rglob('*.usd'))) + len(list(assets.rglob('*.usda'))) + len(list(assets.rglob('*.usdc'))) != 9:
-        raise ValueError('BUILD_BURGER_ASSET_CLOSURE_MISSING')
+    # A wrong Burger byte fails here, on the build PC, not on a company PC.
+    burger_asset_check(assets)
     if not (ROOT / 'assets/simulation/turtlebot3_burger/ROBOTIS-LICENSE').is_file():
         raise ValueError('BUILD_BURGER_UPSTREAM_NOTICE_MISSING')
     output.mkdir(parents=True)
@@ -114,13 +221,7 @@ def main():
     sources = {}
 
     def copy(relative):
-        source = ROOT / relative
-        if not source.is_file() or any(p.is_symlink() for p in [source, *source.parents]):
-            raise ValueError('RELEASE_SOURCE_MISSING_OR_LINK: ' + relative)
-        destination = resources / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        sources[relative.replace('\\', '/')] = hash_file(source)
+        stage(relative, resources, sources)
 
     for name in ('twinpulse_core', 'twinpulse_provider', 'twinpulse_app'):
         for source in (ROOT / 'packages' / name / 'src').rglob('*'):
@@ -164,12 +265,7 @@ def main():
     for source in assets.rglob('*'):
         if source.is_file() and source.suffix in {'.usd', '.usda', '.usdc'}:
             copy(source.relative_to(ROOT).as_posix())
-    for name in ('LICENSE', 'NOTICE', 'CITATION.cff', 'THIRD_PARTY_NOTICES.md',
-                 'docs/LICENSING.md', 'docs/RELEASE_PROVENANCE.md', 'docs/WINDOWS_EXE_QUICKSTART.md',
-                 'docs/WINDOWS_EXE_BUILD.md', 'docs/ROBOT_FLEET_PREPARATION_GUIDE.md','scripts/build_windows_exe.ps1',
-                 'config/python-runtime-requirements.lock', 'config/python-build-requirements.lock',
-                 'assets/simulation/turtlebot3_burger/ROBOTIS-LICENSE',
-                 'assets/simulation/turtlebot3_burger/SOURCE.json'):
+    for name in EXTRA_FILES:
         copy(name)
     for name in ('LICENSE', 'NOTICE'):
         copy('extensions/twinpulse.extension/' + name)
@@ -232,19 +328,12 @@ def main():
     tool_metadata['@electron/packager'] = '20.3.0'
     if list((package/'_internal/resources').rglob('*.pyc')):
         raise ValueError('PACKAGE_SOURCE_BYTECODE_CACHE_PRESENT')
-    for name in ('LICENSE', 'NOTICE', 'CITATION.cff', 'THIRD_PARTY_NOTICES.md'):
-        shutil.copy2(resources / name, package / name)
-    shutil.copy2(resources / 'docs/WINDOWS_EXE_QUICKSTART.md', package / 'README.md')
-    (package/'Install-TwinPulse.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --install\n',encoding='utf-8')
-    (package/'Start-TwinPulse-Test.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --automation-test\n',encoding='utf-8')
-    files = [{'path': p.relative_to(package).as_posix(), 'bytes': p.stat().st_size, 'sha256': hash_file(p)}
-             for p in sorted(package.rglob('*')) if p.is_file()]
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     manifest = {'schema': 'twinpulse-windows-exe-1.0', 'build_id': build_id,
         'product_version': product, 'git_revision': revision, 'dirty': bool(subprocess.check_output(
             ['git', 'status', '--porcelain'], cwd=ROOT)), 'source_manifest_sha256': source_sha,
         'platform': 'win-x64', 'tools': tool_metadata, 'signed': False,
-        'public_release_status': 'LOCAL_CANDIDATE_REQUIRES_REVIEW', 'files': files}
+        'public_release_status': 'LOCAL_CANDIDATE_REQUIRES_REVIEW', 'files': None}  # filled by finish_package
     DATA_CONTRACT = runpy.run_path(str(resources/'packages/twinpulse_app/src/twinpulse_app/release_contract.py'))['DATA_CONTRACT']
     manifest.update(channel=args.channel, data_contract=DATA_CONTRACT,
         capabilities=dict(simulation=True, physical_robot=args.channel == 'development',
@@ -252,15 +341,12 @@ def main():
         release_version=product.replace('a', '-alpha.') if 'a' in product else product)
     if desktop.get('source_build_id'):
         manifest['desktop_reused_from']=desktop['source_build_id']
-    (package / 'windows-release-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-    if args.package_only:
+    archive = None if args.package_only else output / (
+        'TwinPulse-Windows-x64-' + manifest['release_version'] + '-' + build_id + '.zip')
+    finish_package(resources, package, manifest, archive, allow_long=args.allow_long_paths)
+    if archive is None:
         print(json.dumps({'package':str(package),'zip':None,'sha256':None,'build_id':build_id,'archive_status':'NOT_REQUESTED_LOCAL_PACKAGE_ONLY'}))
         return
-    archive = output / ('TwinPulse-Windows-x64-' + manifest['release_version'] + '-' + build_id + '.zip')
-    with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as zipfile_out:
-        for path in sorted(package.rglob('*')):
-            if path.is_file():
-                zipfile_out.write(path, 'TwinPulse/' + path.relative_to(package).as_posix())
     (output / 'SHA256SUMS.txt').write_text(hash_file(archive) + '  ' + archive.name + '\n', encoding='utf-8')
     print(json.dumps({'package': str(package), 'zip': str(archive), 'sha256': hash_file(archive), 'build_id': build_id}))
 

@@ -1,0 +1,410 @@
+# SPDX-FileCopyrightText: 2026 Jaewon Lee
+# SPDX-License-Identifier: Apache-2.0
+# Source: https://github.com/lee2017-bit/TwinPulse
+"""Honest User-Agent and bounded provider error summaries; injected openers, no network."""
+from __future__ import annotations
+
+import email.message
+import http.client
+import io
+import json
+import os
+from pathlib import Path
+import ssl
+import sys
+from tempfile import TemporaryDirectory
+import time
+import unittest
+from unittest.mock import patch
+import urllib.error
+import urllib.request
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PACKAGE_ROOT / "twinpulse_core" / "src"))
+sys.path.insert(0, str(PACKAGE_ROOT / "twinpulse_provider" / "src"))
+
+from twinpulse_provider import (  # noqa: E402
+    CancellationToken,
+    GenerationRequest,
+    InvalidProviderResponseError,
+    OpenAIResponsesProvider,
+    ProviderAuthenticationError,
+    ProviderCapabilities,
+    ProviderConfig,
+    ProviderRateLimitError,
+    ProviderRequestError,
+    ProviderUnavailableError,
+    StructuredJsonHttpProvider,
+    UrllibChatCompletionsTransport,
+)
+from twinpulse_provider.errors import ProviderError  # noqa: E402
+from twinpulse_provider.http_identity import json_headers, user_agent  # noqa: E402
+from twinpulse_provider.reliability import (  # noqa: E402
+    AuditedChatTransport, InferenceEvidence, provider_connection_error, provider_error_summary, provider_http_error,
+    public_provider_error, safe_text)
+
+
+KEY = "sk-proj-" + "Q7" * 20  # synthetic credential shape, never a real key
+TOKEN = "tok_live_" + "Z9" * 12
+BLOCK_PAGE = ("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"/>\n<title>외부사이트 차단</title>\n"
+              "<style>body{color:red}</style>\n</head>\n<body><p>Blocked for user user0042 at 10.1.2.3</p>"
+              "<script>var policy='internal';</script></body>\n</html>\n").encode("utf-8")
+# Synthetic credentials (never real keys) in two shapes that no generic pattern ('sk-', 'Bearer ...')
+# matches: a Nebius-style 'v1.' + base64url key and a JWT. Only the exact key a transport passes as
+# secret= removes them from what a provider echoes back.
+NEBIUS_STYLE_KEY = "v1.c3ludGhldGljIHR3aW5wdWxzZSB0ZXN0IGNyZWRlbnRpYWwsIG5ldmVyIGlzc3VlZCBieSBhbnkgcHJvdmlkZXI"
+JWT_STYLE_KEY = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzeW50aGV0aWMtdHdpbnB1bHNlLXRlc3QiLCJpc3MiOiJub25lIn0."
+                 "c3ludGhldGljIHNpZ25hdHVyZSwgbmV2ZXIgdmFsaWQu")
+
+
+def http_error(status, body=b"", content_type="application/json"):
+    headers = email.message.Message()
+    headers["Content-Type"] = content_type
+    return urllib.error.HTTPError("https://provider.example.invalid/v1/x", status, "failed", headers, io.BytesIO(body))
+
+
+def openai_error(message, *, kind="invalid_request_error", code=None, param=None):
+    return json.dumps({"error": {"message": message, "type": kind, "code": code, "param": param}}).encode()
+
+
+def config(endpoint="chat/completions"):
+    return ProviderConfig(base_url="https://provider.example.invalid/v1/", endpoint_path=endpoint,
+        model_id="fixture-model", api_key_env="TWINPULSE_FIXTURE_PROVIDER_KEY",
+        capabilities=ProviderCapabilities(True, True, 1), timeout_s=1.0)
+
+
+class UserAgentTests(unittest.TestCase):
+    def test_release_version_or_dev_and_never_a_browser_or_machine_identity(self):
+        with patch.dict(os.environ, {"TWINPULSE_RELEASE_VERSION": "0.1.0a1"}):
+            self.assertEqual(user_agent(), "TwinPulse/0.1.0a1")
+        with patch.dict(os.environ, {"TWINPULSE_RELEASE_VERSION": "1.2.3+local-4"}):
+            self.assertEqual(user_agent(), "TwinPulse/1.2.3+local-4")
+        for bad in ("", "1.0 (Windows NT 10.0; user0042)", "Mozilla/5.0", "1.0\n", "v" * 41, "1.0;host=PC-B"):
+            with self.subTest(version=bad), patch.dict(os.environ, {"TWINPULSE_RELEASE_VERSION": bad}):
+                self.assertEqual(user_agent(), "TwinPulse/dev")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(user_agent(), "TwinPulse/dev")
+        self.assertEqual(json_headers(), {"User-Agent": user_agent(), "Accept": "application/json"})
+
+    def check(self, request):
+        self.assertTrue(request.get_header("User-agent").startswith("TwinPulse/"))
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + KEY)
+        # The real opener keeps it: urllib adds its Python-urllib default only when no User-Agent is set.
+        handler = next(h for h in urllib.request.build_opener().handlers if isinstance(h, urllib.request.HTTPSHandler))
+        prepared = handler.do_request_(request)
+        self.assertTrue(prepared.get_header("User-agent").startswith("TwinPulse/"))
+        self.assertNotIn("Python-urllib", json.dumps(prepared.header_items()))
+
+    def test_chat_completions_request_names_twinpulse_and_accepts_json(self):
+        seen = []
+        def opener(request, timeout):
+            seen.append(request)
+            raise http_error(503)
+        transport = UrllibChatCompletionsTransport(lambda: KEY, opener=opener)
+        with self.assertRaises(ProviderUnavailableError):
+            transport._post({"model": "fixture-model"}, CancellationToken(), config(), KEY)
+        self.check(seen[0])
+
+    def test_both_providers_py_paths_name_twinpulse_and_never_redirect_the_key(self):
+        seen = []
+        def urlopen(request, timeout):
+            seen.append(request)
+            raise http_error(503)
+        with patch.dict(os.environ, {"TWINPULSE_FIXTURE_PROVIDER_KEY": KEY}), \
+                patch("twinpulse_provider.providers.urllib.request.urlopen", side_effect=urlopen):
+            import asyncio
+            with self.assertRaises(urllib.error.HTTPError):  # this gateway keeps its own status mapping
+                asyncio.run(StructuredJsonHttpProvider().generate(GenerationRequest("r1", "Scene"),
+                                                                  CancellationToken(), config("generate")))
+            with self.assertRaises(ProviderUnavailableError):
+                asyncio.run(OpenAIResponsesProvider(lambda: KEY).generate(GenerationRequest("r2", "Scene"),
+                                                                          CancellationToken(), config("responses")))
+        self.assertEqual(len(seen), 2)
+        for request in seen:
+            with self.subTest(url=request.full_url):
+                self.check(request)
+                redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+                    request, None, 302, "Found", {}, "https://elsewhere.example.invalid/")
+                self.assertIsNone(redirected.get_header("Authorization"))
+                self.assertTrue(redirected.get_header("User-agent").startswith("TwinPulse/"))
+
+
+class ProviderErrorSummaryTests(unittest.TestCase):
+    def test_openai_json_400_shows_reason_without_key_or_bearer_token(self):
+        body = openai_error("Invalid schema for response_format 'plan': 'additionalProperties' is required to be "
+                            f"supplied and to be false. Key {KEY}; Authorization: Bearer {TOKEN}; other sk-abcdefgh12345678",
+                            param="response_format")
+        failure = provider_http_error(http_error(400, body), secret=KEY)
+        self.assertIs(type(failure), ProviderRequestError)
+        self.assertEqual(failure.http_status, 400)
+        text = str(failure)
+        self.assertTrue(text.startswith("provider request failed (400): invalid_request_error: Invalid schema"))
+        self.assertLessEqual(len(text), len("provider request failed (400): ") + 200)
+        for secret in (KEY, TOKEN, "sk-abcdefgh12345678"):
+            self.assertNotIn(secret, text)
+            self.assertNotIn(secret, json.dumps(failure.provider_error))
+        self.assertEqual({k: failure.provider_error[k] for k in ("kind", "type", "param")},
+                         {"kind": "json_error", "type": "invalid_request_error", "param": "response_format"})
+        self.assertNotIn("code", failure.provider_error)  # null code is omitted
+        self.assertLessEqual(len(failure.provider_error["message"]), 300)
+        self.assertEqual(failure.raw_error_body, body)  # private evidence keeps the complete body
+        # A key echoed into a typed field is dropped, not shown: the exact key (any shape) or a legacy sk- key.
+        other_key, legacy = "nb1." + "R5" * 20, "sk-" + "L4" * 24
+        echoed = provider_http_error(http_error(400, openai_error("bad", code=legacy, param=other_key)), secret=other_key)
+        self.assertEqual(echoed.provider_error, {"kind": "json_error", "type": "invalid_request_error", "message": "bad"})
+        self.assertNotIn(legacy, str(echoed))
+        self.assertEqual(public_provider_error({"kind": "json_error", "code": "disk-quota_exceeded"})["code"],
+                         "disk-quota_exceeded")  # an ordinary code that merely contains "sk-" stays
+
+    def test_html_503_block_page_shows_only_its_title(self):
+        failure = provider_http_error(http_error(503, BLOCK_PAGE, "text/html; charset=UTF-8"), secret=KEY)
+        self.assertIs(type(failure), ProviderUnavailableError)
+        self.assertEqual(str(failure), "provider unavailable (503): HTML page '외부사이트 차단'")
+        self.assertEqual(failure.provider_error, {"kind": "html_page", "title": "외부사이트 차단"})
+        self.assertNotIn("user0042", str(failure) + json.dumps(failure.provider_error, ensure_ascii=False))
+
+    def test_html_401_or_403_is_not_an_api_key_rejection_but_json_is(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                failure = provider_http_error(http_error(status, BLOCK_PAGE, "text/html"), secret=KEY)
+                self.assertIs(type(failure), ProviderRequestError)
+                self.assertNotIsInstance(failure, ProviderAuthenticationError)
+                self.assertEqual(failure.http_status, status)
+                self.assertEqual(str(failure), f"provider request failed ({status}): HTML page '외부사이트 차단'")
+                rejected = provider_http_error(http_error(status, openai_error(
+                    "Incorrect API key provided.", code="invalid_api_key")), secret=KEY)
+                self.assertIs(type(rejected), ProviderAuthenticationError)
+                self.assertIn("invalid_request_error/invalid_api_key: Incorrect API key provided.", str(rejected))
+
+    def test_empty_bodies_keep_their_types_and_rate_limits_explain_quota(self):
+        for status, expected in ((401, ProviderAuthenticationError), (429, ProviderRateLimitError),
+                                 (503, ProviderUnavailableError), (302, ProviderRequestError), (400, ProviderRequestError)):
+            with self.subTest(status=status):
+                failure = provider_http_error(urllib.error.HTTPError("u", status, "x", {}, None))
+                self.assertIs(type(failure), expected)
+                self.assertTrue(str(failure).endswith(f"({status})"))
+                self.assertEqual(failure.provider_error, {"kind": "unparsed", "bytes": 0})
+        quota = provider_http_error(http_error(429, openai_error("You exceeded your current quota.",
+            kind="insufficient_quota", code="insufficient_quota")))
+        self.assertEqual(str(quota), "provider rate limit (429): insufficient_quota: You exceeded your current quota.")
+
+    def test_fallbacks_never_echo_the_request_and_unknown_bodies_are_only_counted(self):
+        fastapi = json.dumps({"detail": [{"type": "missing", "loc": ["body", "prompt"], "msg": "Field required",
+                                          "input": {"prompt": "PRIVATE USER PROMPT"}}]}).encode()
+        self.assertEqual(provider_error_summary(fastapi), {"kind": "json_error", "message": "Field required"})
+        self.assertEqual(provider_error_summary(b'{"detail":"Not authenticated"}'),
+                         {"kind": "json_error", "message": "Not authenticated"})
+        plain = b"upstream connect error PRIVATE"
+        self.assertEqual(provider_error_summary(plain), {"kind": "unparsed", "bytes": len(plain)})
+        self.assertEqual(provider_error_summary(b"{}"), {"kind": "unparsed", "bytes": 2})
+        failure = provider_http_error(http_error(502, plain, "text/plain"))
+        self.assertEqual(str(failure), f"provider unavailable (502): unrecognized body ({len(plain)} bytes)")
+
+    def test_declared_charset_decodes_a_non_utf8_block_page_title(self):
+        page = "<html><head><title>접근 차단 &amp; 안내</title></head></html>".encode("euc-kr")
+        self.assertEqual(provider_error_summary(page, content_type="text/html; charset=euc-kr"),
+                         {"kind": "html_page", "title": "접근 차단 & 안내"})
+        meta = b'<html><head><meta http-equiv="Content-Type" content="text/html; charset=euc-kr">' + \
+            "<title>차단</title>".encode("euc-kr")
+        self.assertEqual(provider_error_summary(meta)["title"], "차단")
+        bom = "\ufeff".encode() + openai_error("Invalid schema")  # some gateways prefix JSON with a BOM
+        self.assertEqual(provider_error_summary(bom)["message"], "Invalid schema")
+
+    def test_public_copy_revalidates_typed_fields_and_caps_text(self):
+        public = public_provider_error({"kind": "json_error", "code": "C" * 81, "type": "bad type!",
+            "param": "messages[0].content", "message": "m " * 400 + KEY, "raw": "PRIVATE", "title": "x"})
+        self.assertEqual(set(public), {"kind", "param", "message"})
+        self.assertLessEqual(len(public["message"]), 300)
+        self.assertEqual(public_provider_error({"kind": "html_page", "title": "Bearer abc " + "t" * 300,
+                                                "message": "PRIVATE"}), {"kind": "html_page", "title": (
+            "Bearer [REDACTED] " + "t" * 300)[:117] + "..."})
+        self.assertEqual(public_provider_error({"kind": "unparsed", "bytes": True}), {"kind": "unparsed"})
+        for invalid in (None, "html_page", {"kind": "request"}, {"title": "x"}, {"kind": ["json_error"]}):
+            self.assertIsNone(public_provider_error(invalid))  # an unhashable kind must not raise TypeError
+
+    def test_connection_failure_names_the_reason_type_with_a_short_redacted_reason(self):
+        failure = provider_connection_error(urllib.error.URLError(ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate")))
+        self.assertIs(type(failure), ProviderRequestError)
+        self.assertIn("provider connection failed (SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]", str(failure))
+        long = provider_connection_error(urllib.error.URLError(OSError("proxy https://user:pw@proxy.invalid " + KEY + " x" * 200)),
+                                         secret=KEY)
+        reason = str(long).split("(OSError: ", 1)[1][:-1]
+        self.assertLessEqual(len(reason), 160)
+        self.assertNotIn(KEY, str(long))
+        self.assertNotIn("user:pw", str(long))
+        self.assertEqual(str(provider_connection_error(urllib.error.URLError("unknown url type: ftp"))),
+                         "provider connection failed (URLError: unknown url type: ftp)")
+
+    def test_chat_transport_maps_errors_once_and_an_unreadable_body_is_tolerated(self):
+        class Broken(io.BytesIO):
+            def read(self, *args):
+                raise OSError("connection reset while reading the error body")
+        def opener(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 400, "failed", {}, Broken())
+        transport = UrllibChatCompletionsTransport(lambda: KEY, opener=opener)
+        with self.assertRaises(ProviderRequestError) as caught:
+            transport._post({"model": "fixture-model"}, CancellationToken(), config(), KEY)
+        self.assertEqual(str(caught.exception), "provider request failed (400)")
+        self.assertEqual((caught.exception.raw_error_body, caught.exception.http_status), (b"", 400))
+        def refused(request, timeout):
+            raise urllib.error.URLError(ConnectionRefusedError(10061, "actively refused"))
+        with self.assertRaisesRegex(ProviderRequestError, r"^provider connection failed \(ConnectionRefusedError: "):
+            UrllibChatCompletionsTransport(lambda: KEY, opener=refused)._post(
+                {"model": "fixture-model"}, CancellationToken(), config(), KEY)
+
+
+class Page:
+    """A success response, as a network filter or a followed redirect returns it."""
+    def __init__(self, url, body, content_type="text/html; charset=UTF-8", status=200):
+        self.url, self.body, self.status, self.headers = url, body, status, email.message.Message()
+        self.headers["Content-Type"] = content_type
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def geturl(self): return self.url
+    def read(self, *args): return self.body
+
+
+def chat_post(opener):
+    return UrllibChatCompletionsTransport(lambda: KEY, opener=opener)._post(
+        {"model": "fixture-model"}, CancellationToken(), config(), KEY)
+
+
+def responses_post(**urlopen):
+    import asyncio
+    with patch("twinpulse_provider.providers.urllib.request.urlopen", **urlopen):
+        return asyncio.run(OpenAIResponsesProvider(lambda: KEY).generate(
+            GenerationRequest("r3", "Scene"), CancellationToken(), config("responses")))
+
+
+class SuccessPageAndResetTests(unittest.TestCase):
+    def test_a_2xx_filter_page_is_named_by_its_title_on_both_paths_and_other_bodies_stay_invalid(self):
+        # A transforming proxy may answer 203; a redirect that urlopen followed ends in a 200 page.
+        sends = (("chat", 203, lambda body, kind, status: chat_post(
+                     lambda request, timeout: Page(request.full_url, body, kind, status))),
+                 ("responses", 200, lambda body, kind, status: responses_post(
+                     return_value=Page("https://filter.example.invalid/", body, kind, status))))
+        for path, status, send in sends:
+            with self.subTest(path=path):
+                with self.assertRaises(ProviderRequestError) as caught:  # was a JSON parse error
+                    send(BLOCK_PAGE, "text/html; charset=UTF-8", status)
+                self.assertEqual(str(caught.exception), f"provider request failed ({status}): HTML page '외부사이트 차단'")
+                self.assertEqual((caught.exception.http_status, caught.exception.provider_error),
+                                 (status, {"kind": "html_page", "title": "외부사이트 차단"}))
+                with self.assertRaisesRegex(InvalidProviderResponseError, "response is not valid JSON"):
+                    send(b"upstream said no", "text/plain", status)
+
+    def test_a_reset_after_sending_is_a_typed_connection_failure_on_both_paths(self):
+        # getresponse() raises these raw (urllib wraps only send-phase errors); the outcome stays unknown.
+        for reset in (http.client.RemoteDisconnected("Remote end closed connection without response"),
+                      ConnectionResetError(10054, "An existing connection was forcibly closed by the remote host")):
+            name = type(reset).__name__
+            with self.subTest(error=name):
+                def opener(request, timeout):
+                    raise reset
+                with self.assertRaisesRegex(ProviderRequestError, rf"^provider connection failed \({name}: "):
+                    chat_post(opener)
+                with self.assertRaisesRegex(ProviderRequestError, rf"^provider connection failed \({name}: "):
+                    responses_post(side_effect=reset)
+
+    def test_evidence_redaction_of_a_page_full_of_data_uris_is_linear_and_unchanged(self):
+        # Inline icons put many non-base64 data: URIs in one minified CSS run; the old pattern backtracked
+        # quadratically there (seconds for this page, about a minute for a hostile 262 KB body).
+        logo = "data:image/png;base64," + "iVBORw0KGgo" * 30
+        css = ".i{background:url(data:image/svg+xml,%3Csvg%20xmlns%3D%22x%22%3E%3C/svg%3E)}" * 3300
+        page = ("<!DOCTYPE html><html><head><title>외부사이트 차단</title><style>" + css + "</style></head><body>"
+                + ('<img src="' + logo + '" alt="logo">') * 20 + "Bearer " + TOKEN + " " + KEY + "</body></html>").encode()
+        self.assertTrue(250_000 < len(page) <= 262_145)  # about one capped error body
+        with TemporaryDirectory() as temp:
+            started = time.perf_counter()
+            InferenceEvidence(Path(temp)).save("a" * 32, {"status": "rejected"}, page, secret=KEY)
+            elapsed = time.perf_counter() - started
+            saved = json.loads((Path(temp) / ("a" * 32 + ".json")).read_text(encoding="utf-8"))["response_redacted"]
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual((saved.count("[IMAGE_REMOVED]"), saved.count("data:image/svg+xml")), (20, 3300))
+        for secret in ("iVBORw0KGgo", TOKEN, KEY):
+            self.assertNotIn(secret, saved)
+        # Same redaction as before: up to the payload end of the run's last ';base64,' that has a payload.
+        for text, expected in (("x data:image/png;base64,QUJD) y", "x [IMAGE_REMOVED]) y"),
+                               ("data:a;base64,QQ;base64,!", "[IMAGE_REMOVED];base64,!"),
+                               ("data:a;base64,QQ;b;base64,Ug==,z", "[IMAGE_REMOVED],z"),
+                               ('"data:x;base64,AA" data:y;base64,BB', '"[IMAGE_REMOVED]" [IMAGE_REMOVED]'),
+                               ("data:data:x;base64,AA", "[IMAGE_REMOVED]"),
+                               ("data:image/svg+xml,%3Csvg%3E", "data:image/svg+xml,%3Csvg%3E")):
+            self.assertEqual(safe_text(text), expected)
+
+
+def key_echoes(key):
+    """(case, outcome for one request URL, text shown where the key stood); a fresh outcome per attempt."""
+    page = f"<html><head><title>Access denied for {key}</title></head><body>{key}</body></html>".encode()
+    return (
+        ("json 401", lambda url: http_error(401, openai_error(f"Invalid API key: {key}", code="invalid_api_key")),
+         "invalid_request_error/invalid_api_key: Invalid API key: [REDACTED]"),
+        ("html 503", lambda url: http_error(503, page, "text/html; charset=UTF-8"),
+         "provider unavailable (503): HTML page 'Access denied for [REDACTED]'"),
+        ("html 200", lambda url: Page(url, page),
+         "provider request failed (200): HTML page 'Access denied for [REDACTED]'"),
+        ("connection", lambda url: urllib.error.URLError(OSError(f"proxy refused the request for {key}")),
+         "provider connection failed (OSError: proxy refused the request for [REDACTED])"),
+    )
+
+
+def answer(outcome):
+    """An opener (or urlopen) that returns the outcome, or raises it."""
+    def send(request, timeout):
+        value = outcome(request.full_url)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+    return send
+
+
+class EchoedKeyWithoutSkPrefixTests(unittest.TestCase):
+    """A provider, filter page or proxy repeats the key back: each transport passes the key to its error mapping."""
+
+    def assert_replaced(self, key, error, shown):
+        text = str(error)
+        self.assertIn(shown, text)  # the echo is still named, with the key replaced where it stood
+        for value in (text, json.dumps(getattr(error, "provider_error", None), ensure_ascii=False)):
+            self.assertNotIn(key[:16], value)  # the head too: a capped title or reason keeps only part of a key
+
+    def assert_private_evidence(self, key, root, case):
+        saved = "".join(path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.json")))
+        self.assertNotIn(key[:16], saved)
+        if case != "connection":  # a connection failure has no response body to keep
+            self.assertIn("Invalid API key: [REDACTED]" if case == "json 401" else "Access denied for [REDACTED]", saved)
+
+    def test_chat_completions_transport_and_its_audited_evidence(self):
+        import asyncio
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for case, outcome, shown in key_echoes(key):
+                with self.subTest(key=key[:3], case=case), TemporaryDirectory() as temp:
+                    with self.assertRaises(ProviderError) as caught:
+                        UrllibChatCompletionsTransport(lambda: key, opener=answer(outcome))._post(
+                            {"model": "fixture-model"}, CancellationToken(), config(), key)
+                    self.assert_replaced(key, caught.exception, shown)
+                    audited = AuditedChatTransport(lambda: key, InferenceEvidence(Path(temp)), opener=answer(outcome))
+                    with self.assertRaises(ProviderError) as caught:
+                        asyncio.run(audited.complete(dict(model="fixture-model", max_tokens=100, response_format={}),
+                                                     CancellationToken(), config()))
+                    self.assert_replaced(key, caught.exception, shown)
+                    self.assert_private_evidence(key, Path(temp), case)
+
+    def test_openai_responses_provider_and_its_evidence(self):
+        import asyncio
+        for key in (NEBIUS_STYLE_KEY, JWT_STYLE_KEY):
+            for case, outcome, shown in key_echoes(key):
+                with self.subTest(key=key[:3], case=case), TemporaryDirectory() as temp:
+                    provider = OpenAIResponsesProvider(lambda: key, evidence=InferenceEvidence(Path(temp)))
+                    with patch("twinpulse_provider.providers.urllib.request.urlopen", side_effect=answer(outcome)), \
+                            self.assertRaises(ProviderError) as caught:
+                        asyncio.run(provider.generate(GenerationRequest("r4", "Scene"), CancellationToken(),
+                                                      config("responses")))
+                    self.assert_replaced(key, caught.exception, shown)
+                    self.assert_private_evidence(key, Path(temp), case)
+
+
+if __name__ == "__main__":
+    unittest.main()

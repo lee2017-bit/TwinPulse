@@ -522,10 +522,10 @@ class EnvironmentWorkspace:
 
     def _inspect(self,folder,source,unit,job,token,trace):
         try:
-            from .desktop_settings import read_settings
+            from .desktop_settings import configured_isaac_root
             import os
             runtime=Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'TwinPulse'/'runtime'
-            python=Path(read_settings(runtime).get('isaac_root',r'C:\isaacsim'))/'python.bat'
+            python=configured_isaac_root(runtime)/'python.bat'
             output=folder/'inspection.json'
             # The verified installation is immutable. Peer-module imports must
             # never create an unmanifested __pycache__ beside packaged scripts.

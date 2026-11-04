@@ -4,6 +4,7 @@ rem SPDX-License-Identifier: Apache-2.0
 rem Source: https://github.com/lee2017-bit/TwinPulse
 setlocal
 cd /d "%~dp0"
+echo Install-Offline.cmd is deprecated. Company PCs use the Windows EXE ZIP: see docs/WINDOWS_EXE_QUICKSTART.md
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install_twinpulse_offline.ps1" -BundleRoot "%~dp0"
 set "TWINPULSE_EXIT=%ERRORLEVEL%"
 if not "%TWINPULSE_EXIT%"=="0" (

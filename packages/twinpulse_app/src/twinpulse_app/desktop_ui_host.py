@@ -17,8 +17,11 @@ import secrets
 import socket
 import sys
 from threading import Event, RLock, Thread
+import time
 
 PROTOCOL = 'desktop-engine-1.0'
+# A first Electron start can be slow while antivirus scans the new files.
+HANDSHAKE_TIMEOUT_S = 45.0
 
 
 def desktop_ui_test_arguments(environment):
@@ -49,17 +52,23 @@ class DesktopUiHost:
         self.writer = None
         self.listener = None
 
-    def _command(self):
+    def _executable(self):
         if getattr(sys, 'frozen', False):
-            executable = Path(sys.executable).parent / 'desktop' / 'TwinPulseDesktop.exe'
-            command = [str(executable)]
-        else:
-            app = self.root / 'apps/twinpulse-desktop'
-            executable = app / 'node_modules/electron/dist/electron.exe'
-            command = [str(executable), str(app)]
+            return Path(sys.executable).parent / 'desktop' / 'TwinPulseDesktop.exe'
+        return self.root / 'apps/twinpulse-desktop/node_modules/electron/dist/electron.exe'
+
+    def available(self):
+        # File check only: _command must still reject invalid test switches.
+        return self._executable().is_file()
+
+    def _command(self):
+        executable = self._executable()
         if not executable.is_file():
-            raise ValueError('DESKTOP_HOST_NOT_BUILT')
-        return command + desktop_ui_test_arguments(os.environ) + ['--twinpulse-state', str(self.state_dir.resolve())]
+            from .process_manager import ProcessManagerError
+            raise ProcessManagerError('desktop_host_not_built',
+                'Desktop window is not installed (DESKTOP_HOST_NOT_BUILT). Reinstall TwinPulse, or start again to use Chrome or Edge.')
+        app = [] if getattr(sys, 'frozen', False) else [str(self.root / 'apps/twinpulse-desktop')]
+        return [str(executable), *app] + desktop_ui_test_arguments(os.environ) + ['--twinpulse-state', str(self.state_dir.resolve())]
 
     def _send(self, row, *, child=None):
         with self.lock:
@@ -89,6 +98,8 @@ class DesktopUiHost:
                         'Desktop window connection was lost. Close that window, then use Start again. Active work was not restarted.')
                 self._event('focus', {'launch_id': manager._launch_id})
                 return
+            # Check the host first: a failed open leaves no manager or automation record.
+            command = self._command()
             self.manager = manager
             from .release_contract import atomic_json
             arguments=desktop_ui_test_arguments(os.environ)
@@ -96,10 +107,14 @@ class DesktopUiHost:
                 'schema':'desktop-automation-1.0','enabled':bool(arguments),
                 'port':int(os.environ['TWINPULSE_UI_TEST_CDP_PORT']) if arguments else None})
             self.base_url = f'http://127.0.0.1:{parsed.port}'
-            command = self._command()
             environment = dict(os.environ)
             environment.pop('ELECTRON_RUN_AS_NODE', None)
             environment.pop('TWINPULSE_UI_TEST_CDP_PORT', None)
+            # Tests > Run basic checks attaches to this window over loopback
+            # CDP from Node (Playwright), which follows proxy variables with no
+            # loopback bypass. Same rule as the backend and the engine.
+            from .process_manager import _no_proxy_loopback
+            _no_proxy_loopback(environment)
             environment['TWINPULSE_UI_HOST'] = 'electron'
             environment['ELECTRON_NO_ATTACH_CONSOLE'] = '1'
             # GUI Electron on Windows may detach/close inherited stdio. Use
@@ -127,7 +142,11 @@ class DesktopUiHost:
             Thread(target=self._accept_host, args=(listener,secret,child), daemon=True, name='TwinPulseDesktopProtocol').start()
             Thread(target=self._read_errors, args=(child,), daemon=True, name='TwinPulseDesktopErrors').start()
         # Reader needs self.lock to send the response. Never wait under it.
-        if not self.initialized.wait(timeout=10) or child.poll() is not None:
+        # A host that exits ends the wait early instead of using the whole window.
+        deadline = time.monotonic() + HANDSHAKE_TIMEOUT_S
+        while not self.initialized.wait(timeout=.25) and child.poll() is None and time.monotonic() < deadline:
+            pass
+        if not self.initialized.is_set() or child.poll() is not None:
             listener.close()
             from .process_manager import ProcessManagerError
             raise ProcessManagerError('desktop_handshake_failed',
@@ -143,13 +162,17 @@ class DesktopUiHost:
             'launch_id': self.manager._launch_id})
 
     def _accept_host(self, listener, secret, child):
+        # At most four connection attempts, but keep listening for the whole
+        # handshake window: a slow first start may connect late.
+        deadline, attempts = time.monotonic() + HANDSHAKE_TIMEOUT_S, 0
         try:
-            for _ in range(4):
+            while attempts < 4 and time.monotonic() < deadline:
                 try:
                     connection, _address = listener.accept()
                 except socket.timeout:
                     if child.poll() is not None: return
                     continue
+                attempts += 1
                 connection.settimeout(2)
                 stream = connection.makefile('rwb', buffering=0)
                 try:

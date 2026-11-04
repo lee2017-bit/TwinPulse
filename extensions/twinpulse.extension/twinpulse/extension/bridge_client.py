@@ -13,11 +13,22 @@ import time
 from typing import Any, Mapping
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from twinpulse_core import CommandEnvelope, CommandReceipt, SimulationSnapshot
 
 from .isaac_adapter import IsaacSimulationAdapter
+
+# The backend is loopback-only. Never route its bootstrap secret or bearer
+# token through an environment or system proxy.
+_LOOPBACK_OPENER = None
+
+
+def _loopback_opener():
+    global _LOOPBACK_OPENER
+    if _LOOPBACK_OPENER is None:  # Built on first use, like urlopen's own opener.
+        _LOOPBACK_OPENER = build_opener(ProxyHandler({}))
+    return _LOOPBACK_OPENER
 
 
 class BridgeProtocolError(RuntimeError):
@@ -166,7 +177,7 @@ class BridgeClient:
                 self.mission_visual_status=self.adapter.mission_visual_status
             except Exception as exc:
                 import re
-                code=str(exc)
+                code=str(exc).split(':',1)[0].strip()  # 'CODE: detail' keeps only CODE
                 outcome.update(status='ACTIVE_GEOMETRY_RENDER_FAILED',
                     error_code=code if re.fullmatch('[A-Z0-9_]{1,120}',code) else 'ACTIVE_GEOMETRY_PROCESSING_FAILED',
                     error_type=type(exc).__name__[:80])
@@ -184,7 +195,7 @@ class BridgeClient:
                 from twinpulse_core.active_mission_visual import DISPLAY_STATUSES
                 self.mission_visual_status=str(exc) if str(exc) in DISPLAY_STATUSES else 'ACTIVE_VISUAL_RENDER_FAILED'
                 import re
-                code=str(exc)
+                code=str(exc).split(':',1)[0].strip()
                 self.mission_visual_error={'error_code':code if re.fullmatch('[A-Z0-9_]{1,120}',code) else 'ACTIVE_VISUAL_PROCESSING_FAILED',
                     'error_type':type(exc).__name__[:80]}
             with self._lock:
@@ -454,7 +465,7 @@ class BridgeClient:
             return self._post_viewport(payload,headers)
         request = Request(self.base_url + path, data=payload, headers=headers, method="POST")
         try:
-            with urlopen(request, timeout=2.0) as response:
+            with _loopback_opener().open(request, timeout=2.0) as response:
                 value = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             try:

@@ -141,7 +141,9 @@ class LocalApiServer:
             raise ValueError("TwinPulse local API may bind only to 127.0.0.1")
         if len(product_bootstrap_secret) < 32 or len(engine_bootstrap_secret) < 32:
             raise ValueError("Bootstrap secrets must contain at least 256 bits of material")
-        if bootstrap_ttl_s <= 0 or session_idle_ttl_s <= 0 or session_absolute_ttl_s <= 0:
+        # A NaN or infinite bootstrap lifetime would never expire.
+        if (not math.isfinite(bootstrap_ttl_s) or bootstrap_ttl_s <= 0
+                or session_idle_ttl_s <= 0 or session_absolute_ttl_s <= 0):
             raise ValueError("Authentication lifetimes must be positive")
         if broker.project_id != "default" and physical_controller is not None and workspace_devices is None:
             raise ValueError("named projects cannot share the default robot session archive")

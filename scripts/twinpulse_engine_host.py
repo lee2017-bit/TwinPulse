@@ -17,7 +17,9 @@ import time
 import traceback
 
 
+STARTED_AT = time.monotonic()
 ROOT = Path(__file__).resolve().parents[1]
+EXTENSION_TOML = ROOT / "extensions" / "twinpulse.extension" / "config" / "extension.toml"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from twinpulse_capture_contract import CaptureAttempt  # noqa: E402
@@ -28,6 +30,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--result-file", type=Path, required=True)
     parser.add_argument("--viewport-capture", type=Path, required=True)
+    parser.add_argument("--progress-file", type=Path)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--maximum-runtime-s", type=float, default=24 * 60 * 60)
     return parser.parse_args()
@@ -35,6 +38,82 @@ def _arguments() -> argparse.Namespace:
 
 ARGS = _arguments()
 APP = None
+_LAST_PHASE = None
+
+
+def _report_progress(phase: str, **detail: object) -> None:
+    """Best-effort startup phase for the owning launcher; never fails startup."""
+    global _LAST_PHASE
+    if ARGS.progress_file is None:
+        return
+    elapsed = round(time.monotonic() - STARTED_AT, 1)
+    if phase != _LAST_PHASE:
+        _LAST_PHASE = phase
+        try:  # engine.log keeps the phase timeline; the file keeps only the last phase.
+            print(f"TWINPULSE_ENGINE_PHASE phase={phase} elapsed_s={elapsed}", flush=True)
+        except (OSError, ValueError):
+            pass
+    value = {"schema_version": "1.0", "phase": phase, "elapsed_s": elapsed, **detail}
+    for _ in range(20):
+        try:
+            _write_json_atomic(ARGS.progress_file, value)
+            return
+        except PermissionError:
+            time.sleep(0.01)  # The launcher may hold the file for a moment on Windows.
+        except (OSError, TypeError, ValueError):
+            return
+
+
+def _http_status(text: str | None) -> int | None:
+    import re
+    found = re.search(r"HTTP Error (\d{3})\b", text or "")
+    return int(found.group(1)) if found else None
+
+
+def _declared_dependencies(path: Path = EXTENSION_TOML) -> list[str]:
+    """Kit dependency names from extension.toml; empty when unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+        try:
+            import tomllib
+            names = tomllib.loads(text).get("dependencies", {})
+        except ImportError:  # Kit Python older than 3.11
+            import re
+            section = re.search(r"^\[dependencies\][^\n]*\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
+            names = re.findall(r'^\s*"?([A-Za-z0-9_.-]+)"?\s*=', section.group(1), re.M) if section else []
+    except (OSError, UnicodeError, ValueError):
+        return []
+    return sorted(str(name) for name in names) if isinstance(names, (dict, list)) else []
+
+
+def _extension_state(manager: object, name: str) -> str:
+    """'enabled', 'not_enabled' or 'unknown'. Kit method names are unverified."""
+    for method in ("is_extension_enabled", "get_enabled_extension_id"):
+        probe = getattr(manager, method, None)
+        if callable(probe):
+            try:
+                return "enabled" if probe(name) else "not_enabled"
+            except Exception:
+                continue
+    return "unknown"
+
+
+def _extension_diagnostic(manager: object, names: list[str]) -> dict[str, object]:
+    return {"extension": _extension_state(manager, "twinpulse.extension"),
+            "dependencies": {name: _extension_state(manager, name) for name in names}}
+
+
+def _diagnostic_summary(diagnostic: dict[str, object]) -> str:
+    dependencies = diagnostic["dependencies"]
+    parts = [f"extension {diagnostic['extension']}"]
+    for state in ("not_enabled", "unknown"):
+        names = [name for name, value in dependencies.items() if value == state]
+        if names:
+            parts.append(f"dependencies {state}: " + ", ".join(names))
+    if len(parts) == 1:
+        parts.append(f"{len(dependencies)} declared dependencies enabled" if dependencies
+                     else "no declared dependencies read")
+    return "; ".join(parts)
 
 
 def _finish_engine(result,app,probe,viewport,manager,path):
@@ -169,9 +248,11 @@ def _start_simulation_app() -> bool:
     global APP
     phase = "isaac_import"
     try:
+        _report_progress(phase)
         from isaacsim import SimulationApp
 
         phase = "simulation_app_init"
+        _report_progress(phase)
         APP = SimulationApp({
             "headless": ARGS.headless,
             "renderer": "RaytracedLighting",
@@ -179,6 +260,7 @@ def _start_simulation_app() -> bool:
             "width": 960,
             "height": 640,
         })
+        _report_progress("simulation_app_ready")
         return True
     except Exception as error:
         result = {
@@ -379,37 +461,52 @@ def main() -> int:
         context.new_stage()
         for _ in range(8):
             APP.update()
+        _report_progress("stage_ready")
 
         manager = omni.kit.app.get_app().get_extension_manager()
         manager.add_path(str(ROOT / "extensions"))
+        _report_progress("extension_enable")
         manager.set_extension_enabled_immediate("twinpulse.extension", True)
         for _ in range(12):
             APP.update()
             time.sleep(0.01)
 
-        import twinpulse.extension as extension_module
-
-        extension = extension_module.get_extension()
+        import_error = None
+        try:
+            import twinpulse.extension as extension_module
+            extension = extension_module.get_extension()
+        except ImportError as error:  # Kit did not load it, e.g. a dependency is missing.
+            import_error = error
         if extension is None or extension._bridge_client is None or not extension._managed_mode:
-            raise RuntimeError("Managed TwinPulse Extension did not start")
+            # Extension and dependency names only; never Kit log text.
+            diagnostic = _extension_diagnostic(manager, _declared_dependencies())
+            result["extension_diagnostic"] = diagnostic
+            raise RuntimeError("Managed TwinPulse Extension did not start ("
+                               + _diagnostic_summary(diagnostic) + ")") from import_error
+        _report_progress("extension_enabled")
         bridge = extension._bridge_client
+        _report_progress("bridge_wait", http_status=_http_status(bridge.last_error))
+        reported = time.monotonic()
         deadline = time.monotonic() + 90.0
         while not bridge.connected and time.monotonic() < deadline:
             APP.update()
             if bridge.last_error == 'BridgeProtocolError: Backend rejected request: bootstrap_rejected':
                 break  # This worker already terminated; do not idle for another90s.
+            if time.monotonic() - reported >= 5.0:
+                reported = time.monotonic()
+                _report_progress("bridge_wait", http_status=_http_status(bridge.last_error))
             time.sleep(0.02)
         if not bridge.connected:
             # Never persist bootstrap/authentication material or raw error text.
             import re
             last_error=bridge.last_error or ''
             error_type=last_error.split(':',1)[0]
-            status=re.search(r'HTTP Error (\d{3})\b',last_error)
             result['bridge_diagnostic']={'connected':False,
                 'error_type':error_type if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,60}',error_type) else 'UNCLASSIFIED',
-                'http_status':int(status.group(1)) if status else None,
+                'http_status':_http_status(last_error),
                 'error_code':'bootstrap_rejected' if last_error == 'BridgeProtocolError: Backend rejected request: bootstrap_rejected' else None}
             raise TimeoutError("Managed bridge did not authenticate before timeout")
+        _report_progress("bridge_connected")
         from twinpulse_live_viewport import LiveViewportPublisher
         live_viewport = LiveViewportPublisher(bridge)
         live_viewport.start()

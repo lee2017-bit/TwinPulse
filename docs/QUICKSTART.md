@@ -6,38 +6,23 @@ TwinPulse runs a local app and a separate Isaac Sim window on the **same Windows
 
 | Where you will run TwinPulse | What to use | What that PC needs |
 |---|---|---|
-| Personal PC with package-network access | Clone the repository and run `Install-TwinPulse.cmd` | Isaac Sim 6.0.1 standalone, 64-bit CPython 3.12, Node.js 20.19+/22.12+/24+, Git, browser |
-| Company RTX workstation without package-network access | Transfer a **prepared offline release**, then run `Reassemble-TwinPulse.cmd` and `Install-Offline.cmd` | Isaac Sim 6.0.1 standalone, 64-bit CPython 3.12, browser; no Node/Git/npm/pnpm needed on the workstation |
+| Company PC, or any PC without developer tools | The **Windows EXE ZIP**: extract it, run `TwinPulse\Install-TwinPulse.cmd`, start `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd` ([steps](WINDOWS_EXE_QUICKSTART.md)) | Isaac Sim 6.0.1 standalone only; Python, the web UI, the desktop window and the robot assets are inside the ZIP |
+| Personal or developer PC with package-network access | Clone the repository and run its `Install-TwinPulse.cmd` | Isaac Sim 6.0.1 standalone, 64-bit CPython 3.12, Node.js 22.13+, Git |
 
-The company PC that can access GitHub only downloads and transfers the prepared release. The RTX workstation runs the web app, AI requests, and Isaac Sim together. VDI transfer is limited to 1 GB per operation, so release parts are at most 900,000,000 bytes each. A prepared release is **not currently published on GitHub**; cloning source alone onto the offline workstation is not an offline install.
+Get the ZIP and its `SHA256SUMS.txt` from the release page or file you were given. Every file is checked automatically at install; there is no manual hash step ([what is checked, and when](WINDOWS_EXE_QUICKSTART.md#what-is-checked-and-when)). The `Install-TwinPulse.cmd` in a source checkout (or a "Source code" archive) is the developer install, not the company-PC one. Follow your company's transfer and execution policy; do not bypass AppLocker, WDAC, or other company controls. Company-PC install, Nebius network access and actual Isaac Build/Run on a company PC have **not** been verified with the EXE ZIP yet.
 
 ## Online source install and restart
 
 1. Install the prerequisites above yourself. The TwinPulse installer does not install Isaac Sim, Python, or Node.js.
 2. Clone this repository on the PC that will run TwinPulse. In File Explorer, double-click `Install-TwinPulse.cmd` in the repository root. If asked, enter the Isaac Sim folder containing both `python.bat` and `isaac-sim.bat`.
 3. The installer creates a repository-local `.venv`, installs locked dependencies, builds the web UI, and starts the local app and its owned Isaac window. `TWINPULSE_INSTALL_RESULT=PASS` means installation finished; it does not mean an AI request or Isaac scene build has passed.
-4. On later starts, double-click `Start-TwinPulse.cmd` in the repository root. It does not rebuild. After pulling source changes, rerun `Install-TwinPulse.cmd` to rebuild.
+4. On later starts, double-click `Start-TwinPulse.cmd` in the repository root. It does not rebuild. After pulling source changes, rerun `Install-TwinPulse.cmd` to rebuild. If an installed release exists under `%LOCALAPPDATA%\TwinPulse\installed`, this file starts that release instead; `Start-TwinPulse-Development.cmd` always runs the source.
 
 Save any open Isaac stage before starting a new managed session. Stop TwinPulse with Ctrl+C in its launcher window; the launcher stops only the processes it started. Never paste an API key into a command line, screenshot, or repository file.
 
-## Offline release transfer and install
+## Offline venv release (deprecated)
 
-A release preparer must first build from **reviewed, committed, clean source** on an approved Windows x64 PC with internet/package access, Python 3.12, Node.js, and pnpm 11.19.0. This build PC does not need a GPU or Isaac Sim. If the GitHub-connected company PC cannot access npm/PyPI, build the release in another approved environment and use that PC only to download and transfer it. Do not use `-AllowDirty` for a distributable release.
-
-From the repository root on the approved build PC:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_offline_release.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\split_offline_release.ps1 -ReleaseRoot ".\artifacts\offline-release\<release-id>" -OutputRoot ".\artifacts\offline-transfer\<release-id>"
-```
-
-Replace `<release-id>` with the directory created by the first command. Transfer `transfer-manifest.json`, `Reassemble-TwinPulse.cmd`, `scripts/reassemble_offline_release.ps1`, and **every** `.partNNNN` file through the approved VDI route, one part per transfer if needed. On the RTX workstation:
-
-1. Run `Reassemble-TwinPulse.cmd` in the transferred folder. Missing or damaged parts are rejected.
-2. Run `unpacked\<release-id>\Install-Offline.cmd`. Enter the Isaac Sim root when prompted. The installer verifies file hashes and installs its local Python wheel without contacting a package index.
-3. Start later from `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd`, not the copy inside the release bundle. The installed launcher defaults to **live AI mode**. The `-Offline` PowerShell option is a diagnostic mode that blocks new AI generation; it does not make new photos work without a provider.
-
-An archive hash proves transfer integrity, not publisher identity. Compare the release digest through a trusted channel and follow your company's transfer/execution policy. Do not bypass AppLocker, WDAC, or other company controls. No API key, user input, or Isaac Sim installation is included in the release. Company-workstation install, Nebius network access, and actual Isaac Build/Run have **not** been verified yet.
+The prepared offline release (`Install-Offline.cmd`, `Reassemble-TwinPulse.cmd`, `tp-<git12>` bundles) is deprecated: it ships no desktop window, needs a separate CPython 3.12 and no longer fits its own 1,000-file limit. Use the [Windows EXE ZIP](WINDOWS_EXE_QUICKSTART.md) instead; earlier EXE ZIPs were about 190 MB, so one file normally fits the 1 GB VDI transfer limit. To move a PC from an old offline install, see [Moving from an old offline install](WINDOWS_EXE_QUICKSTART.md#moving-from-an-old-offline-install). The historical steps remain in [Company PC install](COMPANY_PC_INSTALL.md) section 6.
 
 ## Run the loop
 
@@ -50,14 +35,15 @@ An archive hash proves transfer integrity, not publisher identity. Compare the r
 
 ### Physical TurtleBot3 (supervised only)
 
-Run `Prepare-Robot.cmd` once, start `Start-TwinPulse.cmd` (development channel), then **Connect → Prepare → Arm → Bootstrap stop** before the first route, and confirm the supervised-session checks. Stop is always one click. A proximity stop, battery cutoff at 11.1 V, output timeout and wheel-readback check run on the robot side, independent of the app and the model. The robot refuses motion when the session record cannot be written; keep a physical session under about an hour or reconnect between runs. The start pose is declared, not localized, so check the robot's real position against the twin before each run.
+Run `Prepare-Robot.cmd` once, start `Start-TwinPulse-Development.cmd` from the source checkout (or the installed Start entry of a development-channel EXE; the default sim-alpha EXE has no physical controls), then **Connect → Prepare → Arm → Bootstrap stop** before the first route, and confirm the supervised-session checks. Stop is always one click. A proximity stop, battery cutoff at 11.1 V, output timeout and wheel-readback check run on the robot side, independent of the app and the model. The robot refuses motion when the session record cannot be written; keep a physical session under about an hour or reconnect between runs. The start pose is declared, not localized, so check the robot's real position against the twin before each run.
 
 ## If something fails
 
-- **API key saved, but no plan or photo result:** Check the model routing, the key, and that the PC can reach `api.tokenfactory.nebius.com`. A saved key is not a successful AI request. Do not repeat an uncertain paid request without checking its outcome.
+- **API key saved, but no plan or photo result:** Check the model routing, the key, and that the PC can reach `api.tokenfactory.nebius.com`. A saved key is not a successful AI request. Do not repeat an uncertain paid request without checking its outcome. If the error shows a web page title, a company filter answered the `TwinPulse/<product version>` User-Agent (`TwinPulse/dev` from a source checkout); see [Network](WINDOWS_EXE_QUICKSTART.md#network).
 - **Session expired:** Reopen TwinPulse from the secure link provided by its launcher. Failed state-changing actions are not automatically retried.
 - **Isaac disconnected or unresponsive:** Check the owned launcher and Isaac window. Do not force-close an unrelated user Isaac session.
 - **Route refused or safety stop:** Keep the reported error code and trace ID. Do not bypass validation or the robot-side guards; re-arm and run a bootstrap stop before the next physical route.
-- **Company offline install blocked:** Verify every transfer part, the Python/Isaac prerequisites, and company execution policy. Do not disable security controls to make the installer run.
+- **No desktop window:** a current source checkout without the desktop window opens Chrome or Edge instead and prints `TWINPULSE_UI_HOST=browser reason=desktop_host_not_built`; with neither browser it stops with `ui_host_unavailable` before starting anything. Rerun `Install-TwinPulse.cmd` to install the desktop window. An old offline release keeps its old code and still stops with `DESKTOP_HOST_NOT_BUILT`; move that PC to the EXE ZIP.
+- **Company PC install or start blocked:** See [If something fails](WINDOWS_EXE_QUICKSTART.md#if-something-fails) for the EXE ZIP. Do not disable security controls to make the installer run.
 
-For detailed Korean company-install notes see [Company PC install](COMPANY_PC_INSTALL.md). For verified and unverified milestones see [Progress](progress.md). Local checks and actual Isaac acceptance are different; only report an actual Isaac pass with the corresponding run/capture evidence.
+For company networks, the PC check script and older Korean install notes see [Company PC install](COMPANY_PC_INSTALL.md). For verified and unverified milestones see [Progress](progress.md). Local checks and actual Isaac acceptance are different; only report an actual Isaac pass with the corresponding run/capture evidence.
