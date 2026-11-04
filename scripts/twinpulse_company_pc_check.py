@@ -1168,21 +1168,30 @@ def _lock_part(runtime, alive, identity):
     return [line], [{'key': key, 'pid': pid, **({'access_denied': True} if denied else {})}]
 
 
+SETTINGS_MAX_BYTES = 8192  # desktop_settings.read_settings refuses a larger desktop-settings.json
+
+
 def _settings_part(runtime, facts):
-    settings, info = read_json(runtime / 'desktop-settings.json', 64 * 1024)
-    if not info['exists']:
+    """desktop-settings.json, flagged exactly when desktop_settings.read_settings refuses it (the EXE then does not start)."""
+    path = runtime / 'desktop-settings.json'
+    if not path.exists():  # a link to nothing is no file to read_settings either: it uses the defaults
         return ['desktop-settings.json: none (defaults: port 8765, Isaac C:\\isaacsim)'], []
+    if path.is_symlink() or not path.is_file():
+        return [f"desktop-settings.json: {'a link' if path.is_symlink() else 'not a file'}, refused"], [{'key': 'desktop_settings_invalid'}]
+    settings, info = read_json(path, SETTINGS_MAX_BYTES)
     if not isinstance(settings, dict):
         return [f"desktop-settings.json: not parsed ({info['error'] or 'unexpected shape'})"], [{'key': 'desktop_settings_invalid'}]
     findings = []
     unknown = sorted(str(key) for key in settings if key not in ('schema_version', 'preferred_port', 'isaac_root'))
-    root = settings.get('isaac_root') if isinstance(settings.get('isaac_root'), str) else None
-    line = (f"desktop-settings.json: port {ident(settings.get('preferred_port'))}, isaac_root {root or '-'}, "
+    root = settings.get('isaac_root')
+    line = (f"desktop-settings.json: port {ident(settings.get('preferred_port'))}, "
+            f"isaac_root {(root or '-') if isinstance(root, str) else '(not text)' if 'isaac_root' in settings else '-'}, "
             f"BOM {'YES' if info['bom'] else 'no'}" + (f", unknown keys: {names(unknown)}" if unknown else ''))
-    if root:
+    if isinstance(root, str) and root:
         facts['settings_isaac_root'] = root
     port = settings.get('preferred_port')
-    if unknown or settings.get('schema_version') != '1.0' or type(port) is not int or not 1024 <= port <= 65535:
+    if (unknown or settings.get('schema_version') != '1.0' or type(port) is not int or not 1024 <= port <= 65535
+            or ('isaac_root' in settings and not isinstance(root, str))):
         findings.append({'key': 'desktop_settings_invalid'})  # the same rules as desktop_settings.read_settings
     if info['bom']:
         findings.append({'key': 'desktop_settings_bom'})

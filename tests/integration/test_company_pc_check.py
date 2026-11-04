@@ -142,6 +142,15 @@ def fake_python_bat(outputs, calls):
     return popen
 
 
+def can_symlink(folder):
+    try:
+        (Path(folder) / 'link-probe').symlink_to(Path(folder))
+    except (OSError, NotImplementedError):
+        return False
+    (Path(folder) / 'link-probe').unlink()
+    return True
+
+
 class FakeFilter(BaseHTTPRequestHandler):
     """A network filter that answers Python-urllib (or everyone) with an HTML block page, or drops it."""
     seen, block_all, drop_python = [], False, False
@@ -468,6 +477,60 @@ class InstallAndRuntimeTests(unittest.TestCase):
                 self.assertEqual(fakes[2].opened, [(0x1000, False, 4242)])  # PROCESS_QUERY_LIMITED_INFORMATION only
         with patch.object(check.os, 'kill', side_effect=PermissionError(1, 'Operation not permitted')):
             self.assertEqual(check.pid_alive(4242), check.ACCESS_DENIED)
+
+    def test_settings_are_flagged_exactly_when_read_settings_refuses_them(self):
+        from twinpulse_app.desktop_settings import read_settings
+        good = {'schema_version': '1.0', 'preferred_port': 8765}
+
+        def sized(total):  # valid JSON padded with spaces to exactly `total` bytes
+            text = json.dumps({**good, 'isaac_root': r'D:\isaacsim'})
+            return (text[:-1] + ' ' * (total - len(text)) + '}').encode()
+
+        def put(value):
+            def make(path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+            return make
+
+        def linked(target_exists):
+            def make(path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                target = path.parent / 'elsewhere.json'
+                if target_exists:
+                    target.write_text(json.dumps(good), encoding='utf-8')
+                path.symlink_to(target)
+            return make
+        rows = [('valid', put(good), False), ('valid with isaac_root', put({**good, 'isaac_root': r'D:\isaacsim'}), False),
+                ('empty isaac_root', put({**good, 'isaac_root': ''}), False),
+                ('BOM', put(b'\xef\xbb\xbf' + json.dumps(good).encode()), False), ('missing', lambda path: None, False),
+                ('exactly 8192 bytes', put(sized(8192)), False), ('8193 bytes', put(sized(8193)), True),
+                ('isaac_root null', put({**good, 'isaac_root': None}), True), ('isaac_root number', put({**good, 'isaac_root': 5}), True),
+                ('isaac_root list', put({**good, 'isaac_root': ['D:/isaacsim']}), True),
+                ('port 1023', put({**good, 'preferred_port': 1023}), True), ('port 1024', put({**good, 'preferred_port': 1024}), False),
+                ('port 65535', put({**good, 'preferred_port': 65535}), False), ('port 65536', put({**good, 'preferred_port': 65536}), True),
+                ('port text', put({**good, 'preferred_port': '8765'}), True), ('port bool', put({**good, 'preferred_port': True}), True),
+                ('port float', put({**good, 'preferred_port': 8765.0}), True), ('port missing', put({'schema_version': '1.0'}), True),
+                ('schema 2.0', put({**good, 'schema_version': '2.0'}), True), ('schema missing', put({'preferred_port': 8765}), True),
+                ('unknown key', put({**good, 'ready_timeout_s': 600}), True), ('not JSON', put(b'{"schema_version": '), True),
+                ('empty file', put(b''), True), ('JSON list', put(b'[1, 2]'), True),
+                ('not UTF-8', put(b'{"schema_version": "1.0", "preferred_port": 8765, "isaac_root": "D:\\\\\xff"}'), True),
+                ('a folder', lambda path: path.mkdir(parents=True), True)]
+        with tempfile.TemporaryDirectory() as temp:
+            if can_symlink(temp):
+                rows += [('link to a valid file', linked(True), True), ('link to nothing', linked(False), False)]
+        for name, make, expected in rows:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                runtime = Path(temp) / 'runtime'
+                runtime.mkdir()
+                make(runtime / 'desktop-settings.json')
+                try:
+                    read_settings(runtime)
+                except Exception:  # ValueError, or OSError for a folder: the EXE does not start either way
+                    refused = True
+                else:
+                    refused = False
+                flagged = any(item['key'] == 'desktop_settings_invalid' for item in check._settings_part(runtime, {})[1])
+                self.assertEqual((refused, flagged), (expected, expected))
 
     def test_provider_evidence_summary_never_includes_request_redacted(self):
         evidence = self.runtime / 'provider-evidence'
