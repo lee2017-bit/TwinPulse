@@ -9,7 +9,7 @@ import re
 import shutil
 from uuid import uuid4
 from .windows_package import OS_JUNK, verify_package
-from .release_contract import MaintenanceLock, DATA_CONTRACT, check_data_epoch, atomic_json
+from .release_contract import MaintenanceLock, DATA_CONTRACT, check_data_epoch, atomic_json, replace_retrying
 
 
 def install_package(source: Path, destination: Path, *, reuse_desktop_from: Path | None = None):
@@ -41,6 +41,19 @@ def _retire_launcher_lock(launcher_lock: Path, state: Path):
     preserved = state / 'stale-launch-records' / (uuid4().hex + '.json')
     preserved.parent.mkdir(parents=True, exist_ok=True)
     launcher_lock.rename(preserved)
+
+
+def _entry_scripts(identity):
+    """Stable entries for one release. The .cmd entries need no PowerShell; the .ps1 is a fallback."""
+    program = '"%~dp0releases\\' + identity + '\\TwinPulse.exe"'
+    return (
+        ('Start-TwinPulse.cmd', '@echo off\r\nstart "" ' + program + ' %*\r\n'),
+        ('Start-TwinPulse-Test.cmd', '@echo off\r\nstart "" ' + program + ' --automation-test %*\r\n'),
+        ('start-installed.ps1', 'param([switch]$AutomationTest)\n$ErrorActionPreference="Stop"\n'
+            '$pointer=Get-Content -LiteralPath (Join-Path $PSScriptRoot "active-release.json") -Raw -Encoding UTF8 | ConvertFrom-Json\n'
+            'if ($pointer.schema -ne "twinpulse-windows-install-1.0" -or $pointer.release_id -notmatch "^[A-Za-z0-9_-]{1,80}$" '
+            '-or $pointer.exe -ne ("releases/"+$pointer.release_id+"/TwinPulse.exe")) { throw "Invalid installed release" }\n'
+            'if ($AutomationTest) { & (Join-Path $PSScriptRoot $pointer.exe) --automation-test } else { & (Join-Path $PSScriptRoot $pointer.exe) }\n'))
 
 
 def _install_package(source: Path, destination: Path, state: Path, *, reuse_desktop_from: Path | None = None):
@@ -116,32 +129,47 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
         # Keep every old pointer, including a legacy Python installation.
         shutil.copy2(active, destination / ('active-release.previous.' + uuid4().hex + '.json'))
     temporary = destination / ('.active-' + uuid4().hex + '.tmp')
-    with temporary.open('x', encoding='utf-8') as stream:
-        json.dump(value, stream, sort_keys=True); stream.flush(); os.fsync(stream.fileno())
-    os.replace(temporary, active)
-    transaction['phase'] = 'active_pointer_committed'
-    atomic_json(journal, transaction)
-    # Stable entries are rewritten at every install and rollback, so they follow
-    # the pointer. The .cmd entries need no PowerShell; the .ps1 is a fallback.
-    # User data stays outside releases.
-    program = '"%~dp0releases\\' + identity + '\\TwinPulse.exe"'
-    for filename, script in (
-        ('Start-TwinPulse.cmd', '@echo off\r\nstart "" ' + program + ' %*\r\n'),
-        ('Start-TwinPulse-Test.cmd', '@echo off\r\nstart "" ' + program + ' --automation-test %*\r\n'),
-        ('start-installed.ps1', 'param([switch]$AutomationTest)\n$ErrorActionPreference="Stop"\n'
-            '$pointer=Get-Content -LiteralPath (Join-Path $PSScriptRoot "active-release.json") -Raw -Encoding UTF8 | ConvertFrom-Json\n'
-            'if ($pointer.schema -ne "twinpulse-windows-install-1.0" -or $pointer.release_id -notmatch "^[A-Za-z0-9_-]{1,80}$" '
-            '-or $pointer.exe -ne ("releases/"+$pointer.release_id+"/TwinPulse.exe")) { throw "Invalid installed release" }\n'
-            'if ($AutomationTest) { & (Join-Path $PSScriptRoot $pointer.exe) --automation-test } else { & (Join-Path $PSScriptRoot $pointer.exe) }\n')):
-        path = destination / filename
-        if path.is_symlink():
-            raise ValueError('INSTALL_ENTRY_PATH_INVALID')
-        stage = path.with_name('.' + filename + '-' + uuid4().hex + '.tmp')
-        with stage.open('x', encoding='utf-8', newline='') as stream:
-            stream.write(script); stream.flush(); os.fsync(stream.fileno())
-        os.replace(stage, path)
-    transaction['phase'] = 'completed'
-    atomic_json(journal, transaction)
+    staged = []
+    try:
+        # The .cmd entries name the release, so they are rewritten at every
+        # install and rollback. They are written beside their final names before
+        # the pointer moves: a failed write leaves the old pointer and entries.
+        for filename, script in _entry_scripts(identity):
+            path = destination / filename
+            if path.is_symlink():
+                raise ValueError('INSTALL_ENTRY_PATH_INVALID')
+            stage = path.with_name('.' + filename + '-' + uuid4().hex + '.tmp')
+            staged.append((filename, stage, path))
+            with stage.open('x', encoding='utf-8', newline='') as stream:
+                stream.write(script); stream.flush(); os.fsync(stream.fileno())
+        transaction['phase'] = 'entries_staged'
+        atomic_json(journal, transaction)
+        with temporary.open('x', encoding='utf-8') as stream:
+            json.dump(value, stream, sort_keys=True); stream.flush(); os.fsync(stream.fileno())
+        replace_retrying(temporary, active)
+        # From here the journal lists every entry that still names another release.
+        pending = [filename for filename, _stage, _path in staged]
+        transaction.update(phase='active_pointer_committed', entries_pending=list(pending))
+        atomic_json(journal, transaction)
+        try:
+            for filename, stage, path in staged:
+                replace_retrying(stage, path)
+                pending.remove(filename)
+        except BaseException as error:
+            if pending != transaction['entries_pending']:
+                transaction['entries_pending'] = list(pending)
+                try:atomic_json(journal, transaction)
+                except OSError as journal_error:
+                    error.add_note('The update journal still lists replaced entries as pending: '
+                                   + type(journal_error).__name__)
+            raise
+        transaction.update(phase='completed', entries_pending=[])
+        atomic_json(journal, transaction)
+    finally:
+        # Staged copies that did not become entries are regenerated by the next install.
+        for leftover in [stage for _filename, stage, _path in staged] + [temporary]:
+            try:leftover.unlink(missing_ok=True)
+            except OSError:pass
     return {'status': 'installed', 'build_id': identity, 'exe': str(target / 'TwinPulse.exe'),
             'verified_desktop_hardlinks':desktop_links,
             'start': str(destination / 'Start-TwinPulse.cmd'), 'user_data': 'preserved',

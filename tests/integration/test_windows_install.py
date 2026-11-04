@@ -18,7 +18,8 @@ for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
 from twinpulse_app.windows_install import install_package
 from twinpulse_app.windows_package import verify_package
-from twinpulse_app.release_contract import MaintenanceLock, DATA_CONTRACT, atomic_json, initialize_data_epoch
+from twinpulse_app.release_contract import (MaintenanceLock, DATA_CONTRACT, REPLACE_ATTEMPTS, atomic_json,
+                                            initialize_data_epoch)
 from twinpulse_app.process_manager import ProcessManagerError, TwinPulseProcessManager
 
 
@@ -232,6 +233,86 @@ class WindowsInstallTests(unittest.TestCase):
                     else:
                         self.assertFalse((state/'launcher.lock').exists());self.assertEqual(archived,[content])
                 self.assertEqual((profile/'installed/active-release.json').exists(),decision=='archive')
+
+    def journal(self,build_id):
+        rows=[json.loads(p.read_text(encoding='utf-8')) for p in (self.installed/'update-journals').glob('*.json')]
+        return [row for row in rows if row['target']['release_id']==build_id]
+
+    def update_to_build_2(self):
+        self.manifest['data_contract']=DATA_CONTRACT
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        install_package(self.source,self.installed)
+        self.manifest['build_id']='build_2'
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+
+    def entry_release(self,name):
+        content=(self.installed/name).read_bytes()
+        return [build for build in ('build_1','build_2') if ('releases\\'+build+'\\').encode() in content]
+
+    def test_entry_replace_waits_out_a_scanner_and_names_the_new_release(self):
+        self.update_to_build_2();replace=os.replace;held=[]
+        def scanned_once(source,target):
+            if Path(target).name=='Start-TwinPulse.cmd' and not held:
+                held.append(target);raise PermissionError(13,'held by a scanner',str(target))
+            return replace(source,target)
+        with patch('twinpulse_app.release_contract.os.replace',side_effect=scanned_once):
+            install_package(self.source,self.installed)
+        self.assertEqual(len(held),1)
+        for name in ('Start-TwinPulse.cmd','Start-TwinPulse-Test.cmd'):
+            self.assertEqual(self.entry_release(name),['build_2'])
+        [journal]=self.journal('build_2')
+        self.assertEqual((journal['phase'],journal['entries_pending']),('completed',[]))
+        self.assertEqual(sorted(p.name for p in self.installed.iterdir() if p.name.endswith('.tmp')),[])
+
+    def test_entry_held_open_raises_after_the_pointer_commit_and_the_journal_lists_it_as_pending(self):
+        self.update_to_build_2();replace=os.replace;attempts=[]
+        def held(source,target):
+            if Path(target).name=='Start-TwinPulse-Test.cmd':
+                attempts.append(target);raise PermissionError(13,'held open',str(target))
+            return replace(source,target)
+        with patch('twinpulse_app.release_contract.os.replace',side_effect=held):
+            with self.assertRaises(PermissionError):
+                install_package(self.source,self.installed)
+        self.assertEqual(len(attempts),REPLACE_ATTEMPTS)
+        self.assertEqual(json.loads((self.installed/'active-release.json').read_text())['release_id'],'build_2')
+        self.assertEqual(self.entry_release('Start-TwinPulse.cmd'),['build_2'])
+        self.assertEqual(self.entry_release('Start-TwinPulse-Test.cmd'),['build_1'])
+        [journal]=self.journal('build_2')
+        self.assertEqual((journal['phase'],journal['entries_pending']),
+                         ('active_pointer_committed',['Start-TwinPulse-Test.cmd','start-installed.ps1']))
+        self.assertEqual(sorted(p.name for p in self.installed.iterdir() if p.name.endswith('.tmp')),[])
+        install_package(self.source,self.installed)  # installing again finishes the entries
+        self.assertEqual(self.entry_release('Start-TwinPulse-Test.cmd'),['build_2'])
+
+    def test_entries_are_written_before_the_pointer_moves(self):
+        self.update_to_build_2();open_file=Path.open
+        def full(path,*arguments,**options):
+            if path.name.startswith('.start-installed.ps1-'):raise OSError(28,'No space left on device')
+            return open_file(path,*arguments,**options)
+        with patch.object(Path,'open',autospec=True,side_effect=full):
+            with self.assertRaisesRegex(OSError,'No space left'):
+                install_package(self.source,self.installed)
+        # A failed entry write leaves the old pointer and the old entries together.
+        self.assertEqual(json.loads((self.installed/'active-release.json').read_text())['release_id'],'build_1')
+        self.assertEqual(self.entry_release('Start-TwinPulse.cmd'),['build_1'])
+        [journal]=self.journal('build_2')
+        self.assertEqual(journal['phase'],'package_verified')
+        self.assertEqual(sorted(p.name for p in self.installed.iterdir() if p.name.endswith('.tmp')),[])
+
+    def test_journal_and_record_writes_wait_out_a_scanner_and_raise_when_the_file_stays_held(self):
+        target=self.root/'state'/'record.json';replace=os.replace;calls=[]
+        def held_once(source,destination):
+            calls.append(destination)
+            if len(calls)==1:raise PermissionError(13,'held by a scanner',str(destination))
+            return replace(source,destination)
+        with patch('twinpulse_app.release_contract.os.replace',side_effect=held_once):
+            atomic_json(target,{'value':1})
+        self.assertEqual((len(calls),json.loads(target.read_text())),(2,{'value':1}))
+        with patch('twinpulse_app.release_contract.os.replace',side_effect=PermissionError(13,'held open')) as held:
+            with self.assertRaises(PermissionError):
+                atomic_json(target,{'value':2})
+        self.assertEqual(held.call_count,REPLACE_ATTEMPTS)
+        self.assertEqual(json.loads(target.read_text()),{'value':1})  # the earlier record stays whole
 
     def test_file_manager_junk_never_enters_a_release_and_stage_name_is_short(self):
         (self.source/'desktop.ini').write_bytes(b'[.ShellClassInfo]');(self.source/'sub').mkdir()

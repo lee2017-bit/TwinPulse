@@ -11,13 +11,31 @@ from contextlib import AbstractContextManager
 import json
 import os
 from pathlib import Path
+import time
 from uuid import uuid4
+
+# Antivirus or the search indexer can hold a just-written file for a moment;
+# os.replace then fails with PermissionError. Retry that, then raise it.
+REPLACE_ATTEMPTS = 50
+REPLACE_RETRY_S = 0.01
 
 DATA_EPOCH = 1
 DATA_CONTRACT = dict(schema='twinpulse-data-contract-1.0', read_epochs=[1], write_epoch=1,
     project=['1.0', '2.0'], conversation=['conversation-1.0'], site_draft=['2.0','2.1','2.2','2.3','2.4'],
     settings=['1.0','2.0','3.0'], read_capabilities=['environment-static-1.1','environment-survey-binding-1.0'],
     update_policy='same_epoch_and_required_capabilities_no_data_conversion')
+
+
+def replace_retrying(source, target):
+    """os.replace with the PermissionError retry policy above; other errors raise at once."""
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_RETRY_S)
 
 
 def atomic_json(path, value):
@@ -27,7 +45,7 @@ def atomic_json(path, value):
     with temporary.open('x', encoding='utf-8') as stream:
         json.dump(value, stream, sort_keys=True)
         stream.flush(); os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    replace_retrying(temporary, path)
 
 
 class MaintenanceLock(AbstractContextManager):
