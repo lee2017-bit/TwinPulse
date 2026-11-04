@@ -5,6 +5,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from urllib.parse import unquote
 
 from .errors import ProviderConfigurationError
 
@@ -205,14 +206,28 @@ def _subschemas(node, path):
             for key,child in enumerate(node[word]):yield word,key,f'{path}.{word}[{key}]',child
 
 
+def _ref_target(ref, root):
+    """What a local reference names when it is the root ('#') or a whole root definition, else None.
+
+    The OpenAI wire spells exactly these targets as wholes (a wrapped root moves
+    its definitions up beside it and '#' becomes '#/properties/value'), so only
+    these keep their meaning on the wire and in restore_openai_wire.
+    """
+    if not (isinstance(ref,str) and ref.startswith('#') and isinstance(root,dict)):return None
+    pointer=unquote(ref[1:])  # a URI fragment that holds an RFC 6901 JSON pointer
+    if not pointer:return root
+    tokens=[token.replace('~1','/').replace('~0','~') for token in pointer.split('/')]
+    if len(tokens)!=3 or tokens[0] or tokens[1] not in ('$defs','definitions'):return None
+    table=root.get(tokens[1])
+    return table.get(tokens[2]) if isinstance(table,dict) else None
+
+
 def _deref(node, root):
-    """Follow root-local #/$defs/ (or #/definitions/) references only."""
+    """Follow references to the root or a whole root definition (_ref_target); any other stays as written."""
     seen=set()
     while isinstance(node,dict) and isinstance(node.get('$ref'),str) and node['$ref'] not in seen:
         seen.add(node['$ref'])
-        word,_,name=node['$ref'].removeprefix('#/').partition('/')
-        target=root.get(word) if word in ('$defs','definitions') else None
-        target=target.get(name) if isinstance(target,dict) else None
+        target=_ref_target(node['$ref'],root)
         if not isinstance(target,dict):break
         node=target
     return node
@@ -313,6 +328,12 @@ def _accepts_null(node, root, refs=frozenset()):
     return not (isinstance(node.get('allOf'),list) and not all(_accepts_null(part,root,refs) for part in node['allOf']))
 
 
+def _closed_object(node):
+    """A closed object whose every property the wire sends: one without anyOf/oneOf beside its properties."""
+    return (isinstance(node,dict) and node.get('additionalProperties') is False
+            and isinstance(node.get('properties'),dict) and 'anyOf' not in node and 'oneOf' not in node)
+
+
 def _optional_properties(node, root):
     """{name: boxed} for each optional property of a closed object, in property order.
 
@@ -322,9 +343,7 @@ def _optional_properties(node, root):
     Rows keep every closed object and the null acceptance of every schema, so
     this gives the same answer for the host schema and its map-rows spelling.
     """
-    if (not isinstance(node,dict) or node.get('additionalProperties') is not False
-            or not isinstance(node.get('properties'),dict) or 'anyOf' in node or 'oneOf' in node):
-        return {}
+    if not _closed_object(node):return {}
     required=node.get('required') or ()
     return {key:_accepts_null(child,root) for key,child in node['properties'].items() if key not in required}
 
@@ -348,6 +367,16 @@ def _optional_fields(schema):
     return visit(deepcopy(schema))
 
 
+def _rewrites(node, root, refs=frozenset()):
+    """Whether the wire spells this host subschema differently: an open map or an optional property below it."""
+    if isinstance(node,dict) and isinstance(node.get('$ref'),str):
+        target=_deref(node,root)
+        return target is not node and node['$ref'] not in refs and _rewrites(target,root,refs|{node['$ref']})
+    if not isinstance(node,dict):return False
+    return bool(_open_map(node) or _optional_properties(node,root)) or any(_rewrites(child,root,refs)
+        for word,_,_,child in _subschemas(node,'$') if word not in ('$defs','definitions'))
+
+
 def _wraps_root(schema):
     """Whether the OpenAI wire root is {"value": host root}: strict mode needs a plain object root."""
     return isinstance(schema,dict) and (schema.get('type')!='object' or 'anyOf' in schema or 'oneOf' in schema
@@ -355,16 +384,14 @@ def _wraps_root(schema):
 
 
 def _object_root(schema):
-    """{"value": schema}. Root definitions move up and other local refs gain the /properties/value
-    prefix, so every $ref still names the same subschema."""
+    """{"value": schema}. Root definitions move up beside it and a reference to the root, '#',
+    becomes '#/properties/value', so every reference _ref_target follows names the same subschema."""
     def rebase(node):
         if not isinstance(node,dict):return node
         for word,key,_,child in list(_subschemas(node,'$')):
             if key is None:node[word]=rebase(child)
             else:node[word][key]=rebase(child)
-        ref=node.get('$ref')
-        if isinstance(ref,str) and (ref=='#' or ref.startswith('#/')) and not ref.startswith(('#/$defs/','#/definitions/')):
-            node['$ref']='#/properties/'+_ROOT_KEY+ref[1:]
+        if node.get('$ref')=='#':node['$ref']='#/properties/'+_ROOT_KEY
         return node
     inner=rebase(deepcopy(schema))
     root={'type':'object','additionalProperties':False,'required':[_ROOT_KEY],'properties':{_ROOT_KEY:inner}}
@@ -380,8 +407,11 @@ def openai_wire_schema(schema):
     of a closed object becomes required, null meaning "left out" and a
     property that itself accepts null boxed as {"set": value}; a root that is
     not a plain object becomes {"value": root}. restore_openai_wire is the
-    exact inverse. Anything else stays as written, so openai_strict_violations
-    still rejects it locally.
+    exact inverse for every strict schema openai_observer_body sends: one whose
+    references name the root or a root definition and whose anyOf/oneOf
+    branches, where the wire rewrites one, share no wire value (_wire_issues).
+    Anything else stays as written, so openai_strict_violations still rejects
+    it locally.
     """
     wire=_optional_fields(openai_map_rows(schema))
     return _object_root(wire) if _wraps_root(schema) else wire
@@ -447,6 +477,35 @@ def _fits_field(value, node, boxed, root):
     return _fits(value,node,root)
 
 
+_JSON_TYPES = {'object', 'array', 'string', 'null', 'boolean', 'integer', 'number'}
+
+
+def _wire_types(node):
+    """JSON types a value fitting this host node can have on the wire (rows are arrays); None if unknown."""
+    if _open_map(node):return {'array'}
+    kinds=node.get('type');kinds=kinds if isinstance(kinds,list) else [kinds] if kinds else []  # as _fits reads it
+    if not kinds or not set(kinds)<=_JSON_TYPES:return None
+    return set(kinds)|({'integer'} if 'number' in kinds else set())  # an integer fits number too
+
+
+def _disjoint(one, other, root, depth=0):
+    """True only when no wire value can fit both host schemas (see _fits); False when unsure."""
+    one,other=_deref(one,root),_deref(other,root)
+    if depth>32 or not (isinstance(one,dict) and isinstance(other,dict)):return False
+    kinds=_wire_types(one),_wire_types(other)
+    if None not in kinds and not kinds[0]&kinds[1]:return True
+    values=[[node['const']] if 'const' in node else node.get('enum') if isinstance(node.get('enum'),list) else None
+            for node in (one,other)]
+    if None not in values and not any(_same(a,b) for a in values[0] for b in values[1]):return True
+    if kinds!=({'object'},{'object'}):return False
+    # A closed object's wire value carries exactly its property names.
+    if _closed_object(one) and _closed_object(other) and set(one['properties'])!=set(other['properties']):return True
+    # A property that both require is sent as written (never null for "left out").
+    first,second=(node['properties'] if isinstance(node.get('properties'),dict) else {} for node in (one,other))
+    shared=[key for key in one.get('required') or () if key in (other.get('required') or ())]
+    return any(key in first and key in second and _disjoint(first[key],second[key],root,depth+1) for key in shared)
+
+
 def _restored(value, node, root):
     """(value, changed): the host value of a wire value, walked with the host's own schema.
 
@@ -504,12 +563,14 @@ def _json_text(value):
 def restore_openai_wire(completion, schema):
     """Give the host its own JSON shape back for a completion of openai_wire_schema(schema).
 
-    The exact inverse, walked with the host schema: a wrapped root is
-    unwrapped, rows become maps, a null optional property is left out and a
-    {"set": v} box becomes v. A part that is unmatched or ambiguous keeps its
-    wire spelling; unparseable or duplicate-key content, or a wrapped root that
-    is not exactly {"value": ...}, is returned unchanged. Host validation stays
-    the authority. Repeated row names become repeated JSON keys, which the host
+    The exact inverse for every strict schema openai_observer_body sends, walked
+    with the host schema: a wrapped root is unwrapped, rows become maps, a null
+    optional property is left out and a {"set": v} box becomes v. A part that
+    is unmatched keeps its wire spelling (an ambiguous one cannot reach here:
+    _wire_issues refuses such a schema before dispatch); unparseable or
+    duplicate-key content, or a wrapped root that is not exactly
+    {"value": ...}, is returned unchanged. Host validation stays the
+    authority. Repeated row names become repeated JSON keys, which the host
     parser rejects as PROVIDER_JSON_DUPLICATE_KEY. Only for OpenAI wire
     completions: a host-shaped (Nebius) reply is not a wire spelling.
     """
@@ -531,12 +592,38 @@ def restore_openai_wire(completion, schema):
     return completion if text is None else replace(completion,content=text)
 
 
+def _wire_issues(schema):
+    """(json_path, rule) for host shapes whose OpenAI wire spelling restore_openai_wire could not invert exactly.
+
+    ref_not_root_or_definition: the wire may move or widen any other target,
+    and the restore does not follow it. anyOf/oneOf_branches_not_disjoint: one
+    wire value might fit two branches, one of them rewritten, that restore to
+    different host values; the host could then read it as the other branch.
+    """
+    found=[]
+    def visit(node, path):
+        if not isinstance(node,dict):return
+        if isinstance(node.get('$ref'),str) and not isinstance(_ref_target(node['$ref'],schema),dict):
+            found.append((path,'ref_not_root_or_definition'))
+        for word in ('anyOf','oneOf'):
+            branches=node.get(word)
+            if not isinstance(branches,list):continue
+            rewritten=[_rewrites(branch,schema) for branch in branches]
+            if not all(_disjoint(one,other,schema) for i,one in enumerate(branches)
+                       for j,other in enumerate(branches) if i<j and (rewritten[i] or rewritten[j])):
+                found.append((path,word+'_branches_not_disjoint'))
+        for _,_,child_path,child in _subschemas(node,path):visit(child,child_path)
+    visit(schema,'$')
+    return found
+
+
 def openai_observer_body(original, *, reasoning_effort='low'):
     """Equivalent stage contract; only OpenAI wire compatibility changes.
 
     The schema travels in its OpenAI strict spelling (openai_wire_schema);
     restore_openai_wire gives a completion back its host shape. A strict
-    schema that OpenAI would still reject fails here, before any paid dispatch.
+    schema that OpenAI would still reject, or whose wire spelling could not be
+    restored exactly (_wire_issues), fails here, before any paid dispatch.
     """
     body = deepcopy(original)
     if 'chat_template_kwargs' in body:
@@ -547,8 +634,10 @@ def openai_observer_body(original, *, reasoning_effort='low'):
     body['response_format'] = normalize_json_schema(body['response_format'])
     envelope=body['response_format'].get('json_schema')
     if envelope:
-        envelope['schema']=compact_repeated_enum_schemas(openai_wire_schema(envelope['schema']))
-        problems=openai_strict_violations(envelope['schema']) if envelope.get('strict') is True else []
+        host=envelope['schema']
+        envelope['schema']=compact_repeated_enum_schemas(openai_wire_schema(host))
+        problems=(_wire_issues(host)+openai_strict_violations(envelope['schema'])
+                  if envelope.get('strict') is True else [])
         if problems:
             error=ProviderConfigurationError('OpenAI strict schema invalid before dispatch: '+', '.join(
                 path+' '+rule for path,rule in problems[:3])+(f' (+{len(problems)-3} more)' if len(problems)>3 else ''))

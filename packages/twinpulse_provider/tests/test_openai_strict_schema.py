@@ -80,6 +80,11 @@ def completion(value):
     return ChatCompletion('fixture',LUNA,value if isinstance(value,str) else json.dumps(value),'stop',{})
 
 
+def strict_body(schema):
+    return {'model':LUNA,'max_tokens':100,'messages':[],'response_format':{'type':'json_schema',
+        'json_schema':{'name':'fixture','strict':True,'schema':schema}}}
+
+
 def rows(**values):
     return [dict(name=key,value=value) for key,value in values.items()]
 
@@ -201,18 +206,49 @@ class StrictRuleTests(unittest.TestCase):
         self.assertTrue(found)  # repeated enums are shared from the wrapper's own $defs
         for ref in found:
             with self.subTest(ref=ref):self.assertIsInstance(target(ref,wire),dict)
-        # Root definitions move up beside the shared enums; a reference to the old root follows it below.
+        # Root definitions ($defs or definitions) move up beside the shared enums, and '#' follows the
+        # old root below. The restore follows both kinds of reference: an optional next left out at
+        # the end of the chain is a wire null there, which the host never sees.
         letter={'type':'string','enum':['l','r']}
-        recursive={'anyOf':[letter,{'$ref':'#/$defs/node'}],'$defs':{'node':{'type':'object','additionalProperties':False,
-            'required':['side','next'],'properties':{'side':letter,'next':{'$ref':'#'}}}}}
-        wrapped=wire_of(recursive)
-        self.assertEqual(openai_strict_violations(wrapped),[])
-        self.assertEqual(wrapped['$defs']['node']['properties']['next'],{'$ref':'#/properties/value'})
-        self.assertEqual(target('#/properties/value',wrapped)['anyOf'][1],{'$ref':'#/$defs/node'})
-        shared=[name for name in wrapped['$defs'] if name!='node']
-        self.assertEqual([target('#/$defs/'+name,wrapped) for name in shared],[letter])
-        for ref in set(refs(wrapped)):
-            with self.subTest(ref=ref):self.assertIsInstance(target(ref,wrapped),dict)
+        for word in ('$defs','definitions'):
+            with self.subTest(word=word):
+                recursive={'anyOf':[letter,{'$ref':f'#/{word}/node'}],word:{'node':{'type':'object',
+                    'additionalProperties':False,'required':['side'],'properties':{'side':letter,'next':{'$ref':'#'}}}}}
+                wrapped=wire_of(recursive)
+                self.assertEqual(openai_strict_violations(wrapped),[])
+                # The root rejects null, so a plain null can mean "left out": no box.
+                self.assertEqual(wrapped[word]['node']['properties']['next'],
+                    {'anyOf':[{'type':'null'},{'$ref':'#/properties/value'}]})
+                self.assertEqual(target('#/properties/value',wrapped)['anyOf'][1],{'$ref':f'#/{word}/node'})
+                shared=[name for name in wrapped['$defs'] if name!='node']
+                self.assertEqual([target('#/$defs/'+name,wrapped) for name in shared],[letter])
+                for ref in set(refs(wrapped)):
+                    with self.subTest(ref=ref):self.assertIsInstance(target(ref,wrapped),dict)
+                sent={'value':{'side':'l','next':{'side':'r','next':{'side':'l','next':None}}}}
+                restored=restore_openai_wire(completion(sent),recursive)
+                self.assertEqual(json.loads(restored.content),{'side':'l','next':{'side':'r','next':{'side':'l'}}})
+
+    def test_only_references_to_the_root_or_a_whole_definition_are_sent(self):
+        # Only those keep their meaning on the wire, and only those does the restore follow.
+        # Any other target may move or widen there: '#/properties/a' would name a's nullable spelling.
+        def schema(ref):
+            return {'type':'object','additionalProperties':False,'required':['b'],'properties':{
+                'a':{'type':'string'},'b':{'$ref':ref}},'$defs':{'c/d':{'type':'object','additionalProperties':False,
+                'properties':{'e':{'type':'string'}}}}}
+        for ref in ('#/properties/a','#/$defs/missing','#/$defs/c/d','#node','other.json#/$defs/c~1d'):
+            with self.subTest(ref=ref):
+                with self.assertRaises(ProviderConfigurationError) as caught:
+                    openai_observer_body(strict_body(schema(ref)),reasoning_effort='none')
+                self.assertEqual(caught.exception.code,'OPENAI_STRICT_SCHEMA_INVALID')
+                self.assertIn('$.b ref_not_root_or_definition',str(caught.exception))
+        # A definition name is an RFC 6901 token ('~1' spells '/') in a URI fragment ('%24' spells '$');
+        # the restore follows either spelling.
+        for ref in ('#/$defs/c~1d','#/%24defs/c~1d'):
+            with self.subTest(ref=ref):
+                sent=openai_observer_body(strict_body(schema(ref)),reasoning_effort='none')
+                self.assertEqual(openai_strict_violations(sent['response_format']['json_schema']['schema']),[])
+                restored=restore_openai_wire(completion({'b':{'e':None},'a':None}),schema(ref))
+                self.assertEqual(json.loads(restored.content),{'b':{}})
 
     def test_other_roots_are_wrapped_too_and_optional_fields_beside_anyof_still_fail_locally(self):
         # No stage builds these shapes today; the same rules decide them from the host schema alone.
@@ -287,6 +323,40 @@ class RestoreTests(unittest.TestCase):
             with self.subTest(reply=reply):
                 restored=restore_openai_wire(completion({'value':reply}),{'anyOf':[a,b]})
                 self.assertEqual(json.loads(restored.content),host)
+        openai_observer_body(strict_body({'anyOf':[a,b]}),reasoning_effort='none')  # so this schema is sent
+
+    def test_branches_one_wire_value_could_fit_are_refused_before_dispatch(self):
+        # Each refused schema differs from a sent one in one place, and the host could read its
+        # reply as the other branch. In a, a wire null for note means "left out"; in b it is the
+        # value, so only kind can tell them apart, and an integer is a number too. Without a type
+        # a branch also takes arrays: an array of rows fits both, and only the first converts it.
+        # Rows also look like the list branch's own name/value items.
+        def item(*branches):
+            return {'type':'object','additionalProperties':False,'required':['item'],'properties':{'item':{'anyOf':list(branches)}}}
+        def a(kind):
+            return {'type':'object','additionalProperties':False,'required':['kind'],'properties':{'kind':kind,'note':{'type':'string'}}}
+        def b(kind):
+            return {'type':'object','additionalProperties':False,'required':['kind','note'],'properties':{'kind':kind,'note':{'type':'null'}}}
+        def c(kind,rows,**typed):
+            node=dict(typed,additionalProperties=False,required=['kind'],properties={'kind':kind})
+            return dict(node,items={'type':'object','additionalProperties':{'type':'number'}}) if rows else node
+        def listed(kind):
+            schema=self.schema();schema['properties']['calls']['items']['anyOf'][1]['properties']['kind']['enum']=[kind]
+            return schema
+        x,y,xy={'type':'string','enum':['x']},{'type':'string','enum':['y']},{'type':'string','enum':['x','y']}
+        whole,number,text={'type':'integer'},{'type':'number'},{'type':'string'}
+        cases={'null note':(item(a(x),b(xy)),item(a(x),b(y)),'$.item'),
+               'integer kind':(item(a(whole),b(number)),item(a(whole),b(text)),'$.item'),
+               'untyped':(item(c(x,True),c(y,False)),item(c(x,True,type='object'),c(y,False,type='object')),'$.item'),
+               'rows':(listed('map'),listed('list'),'$.calls.items')}
+        for case,(shared,separate,path) in cases.items():
+            with self.subTest(case=case):
+                with self.assertRaises(ProviderConfigurationError) as caught:
+                    openai_observer_body(strict_body(shared),reasoning_effort='none')
+                self.assertEqual(caught.exception.code,'OPENAI_STRICT_SCHEMA_INVALID')
+                self.assertIn(path+' anyOf_branches_not_disjoint',str(caught.exception))
+                wire=openai_observer_body(strict_body(separate),reasoning_effort='none')['response_format']['json_schema']
+                self.assertEqual(openai_strict_violations(wire['schema']),[])
 
     def test_repeated_names_are_never_merged_and_fail_the_host_json_parser(self):
         repeated=[dict(name='w',value=1),dict(name='w',value=2)]
@@ -378,6 +448,14 @@ def saved_factory():
     return load('draft.json'),load('compile_diagnosis.json'),load
 
 
+def saved_repair_candidate():
+    """A saved factory batch whose rack_1 lost its region: the targeted repair may set only that slot."""
+    draft,_,_=saved_factory()
+    candidate={identity:deepcopy(draft['objects'][identity]) for identity in ('rack_1','bollard_1')}
+    del candidate['rack_1']['region']
+    return candidate
+
+
 class EveryOpenAIStageSchemaTests(unittest.TestCase):
     """Actual builders through ConfiguredStageTransport to the OpenAI wire; every one is strict."""
 
@@ -396,6 +474,7 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
         from twinpulse_provider.render_review import body as review_body
         from twinpulse_provider.repair_scope import delta_schema
         from twinpulse_provider.scene_edit_provider import feedback_proposal_json_schema
+        from twinpulse_provider.semantic_bindings import batch_repair_schema
         from twinpulse_provider.semantic_scene import (batch_schema,checked_batch,checked_structure,compile_scene,
             revision,scene_draft,structure_schema)
         text=fixtures.text_request();photo=replace(text,images=(PNG,));empty=fixtures.empty_observation()
@@ -441,6 +520,9 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
             # A builtin selection beside local recipes has an optional, null-only recipe_parameters.
             'twinpulse_semantic_batch/saved_factory':body('twinpulse_semantic_batch',batch_schema(factory['inventory'],
                 ['rack_1','bollard_1'],recipes=factory['model_recipes'],selections=factory['model_selections']),'B',{}),
+            # Its targeted repair: one set operation per malformed slot, here a rack that lost its region.
+            'twinpulse_semantic_batch/repair_saved_factory':body('twinpulse_semantic_batch',
+                batch_repair_schema(saved_repair_candidate(),factory,['rack_1','bollard_1']),'B',{}),
             'twinpulse_semantic_patch':body('twinpulse_semantic_patch',response_schema(delta_schema(patch_draft,diagnosis),None),'P',{}),
             'twinpulse_semantic_patch/focus':body('twinpulse_semantic_patch',response_schema(delta_schema(patch_draft,diagnosis),
                 objective(patch_draft,diagnosis,plan,[])),'P',{}),
@@ -507,7 +589,8 @@ class EveryOpenAIStageSchemaTests(unittest.TestCase):
         self.assertEqual(rewritten,{'twinpulse_site_tool_plan_v2/text','twinpulse_site_tool_plan_v2/photo',
             'twinpulse_model_resolution/capability','twinpulse_scene_feedback',  # open maps as rows
             'twinpulse_model_recipe/no_children',  # root anyOf wrapped as {value}
-            'twinpulse_semantic_batch/saved_factory','twinpulse_semantic_patch','twinpulse_semantic_patch/focus',
+            'twinpulse_semantic_batch/saved_factory','twinpulse_semantic_batch/repair_saved_factory',
+            'twinpulse_semantic_patch','twinpulse_semantic_patch/focus',
             'twinpulse_semantic_patch/saved_factory'})  # optional fields required on the wire
         # The same counts as the launch audit; OpenAI's own depth rule stays unverified. The
         # {value} root adds one level (host 6), like the children variant's {recipe} wrapper.
@@ -632,6 +715,25 @@ class OptionalFieldAndRootRoundTripTests(unittest.TestCase):
         raw=_json_content(restored,'planner')
         self.assertEqual(raw,objects)
         self.assertEqual(checked_batch(raw,draft,targets)['objects'],draft['objects'])
+
+    def test_saved_factory_batch_repair_tells_a_left_out_field_from_a_null_one(self):
+        # recipe_parameters sits below operations.items.anyOf[0].value, inside the set operation.
+        from twinpulse_provider.semantic_bindings import batch_repair_schema,repair_batch
+        from twinpulse_provider.semantic_scene import checked_batch
+        draft,_,_=saved_factory();targets=['rack_1','bollard_1'];stored=draft['objects']['rack_1']
+        candidate=saved_repair_candidate();schema=batch_repair_schema(candidate,draft,targets)
+        def sent(recipe_parameters):
+            return dict(base_revision=schema['properties']['base_revision']['const'],
+                operations=[dict(op='set',id='rack_1',value=dict(stored,recipe_parameters=recipe_parameters))])
+        nulled=dict(stored,recipe_parameters=None)
+        # Unrestored, the wire's "left out" would reach the host as an explicit null.
+        self.assertEqual(repair_batch(candidate,sent(None),draft,targets)['rack_1'],nulled)
+        for box,expected in ((None,stored),({'set':None},nulled)):
+            with self.subTest(box=box):
+                restored,_=self.dispatch('twinpulse_semantic_batch',schema,sent(box))
+                repaired=repair_batch(candidate,_json_content(restored,'planner'),draft,targets)
+                self.assertEqual(repaired['rack_1'],expected)
+                self.assertEqual(checked_batch(repaired,draft,targets)['objects']['rack_1'],expected)
 
     def test_wrapped_recipe_root_is_unwrapped_for_checked_definition(self):
         from test_model_recipe_planning import plinth_recipe
