@@ -214,6 +214,28 @@ class StrictRuleTests(unittest.TestCase):
         for ref in set(refs(wrapped)):
             with self.subTest(ref=ref):self.assertIsInstance(target(ref,wrapped),dict)
 
+    def test_other_roots_are_wrapped_too_and_optional_fields_beside_anyof_still_fail_locally(self):
+        # No stage builds these shapes today; the same rules decide them from the host schema alone.
+        closed={'type':'object','additionalProperties':False,'required':['a'],'properties':{'a':{'type':'string'}}}
+        self.assertEqual(openai_wire_schema(closed),closed)  # a plain object root is sent as written
+        counts={'type':'object','additionalProperties':{'type':'integer'}}
+        for schema in (counts,dict(closed,type=['object','null'])):
+            with self.subTest(root=schema['type']):
+                wire=openai_wire_schema(schema)
+                self.assertEqual((wire['required'],openai_strict_violations(wire)),(['value'],[]))
+        restored=restore_openai_wire(completion({'value':[{'name':'x','value':2}]}),counts)
+        self.assertEqual(json.loads(restored.content),{'x':2})
+        # A branch's own required list would count a wire null as present, so these
+        # optional properties are not rewritten and the request is refused before dispatch.
+        mixed={'type':'object','additionalProperties':False,'required':['m'],'properties':{'m':dict(closed,
+            required=[],anyOf=[{'required':['a']},{'maxProperties':0}])}}
+        self.assertEqual(openai_wire_schema(mixed),mixed)
+        body={'model':LUNA,'max_tokens':100,'messages':[],'response_format':{'type':'json_schema',
+            'json_schema':{'name':'mixed','strict':True,'schema':mixed}}}
+        with self.assertRaises(ProviderConfigurationError) as caught:openai_observer_body(body,reasoning_effort='none')
+        self.assertEqual(caught.exception.code,'OPENAI_STRICT_SCHEMA_INVALID')
+        self.assertIn('$.m required_not_all_properties',str(caught.exception))
+
 
 class RestoreTests(unittest.TestCase):
     def schema(self):
@@ -255,6 +277,16 @@ class RestoreTests(unittest.TestCase):
         plain=completion('{"a":[{"name":"x","value":1}]}')
         self.assertIs(restore_openai_wire(plain,{'type':'object','additionalProperties':False,'required':['a'],'properties':{
             'a':{'type':'array','items':{'type':'object'}}}}),plain)
+
+    def test_a_branch_fits_only_its_full_wire_spelling(self):
+        # In A a wire null for k means "left out"; in B k is required and null. A's reply has no j,
+        # so it is not a B reply, even though the host shape of B would not need j.
+        a={'type':'object','additionalProperties':False,'properties':{'k':{'type':'string'}}}
+        b={'type':'object','additionalProperties':False,'required':['k'],'properties':{'k':{'type':'null'},'j':{'type':'string'}}}
+        for reply,host in (({'k':None},{}),({'k':None,'j':None},{'k':None})):
+            with self.subTest(reply=reply):
+                restored=restore_openai_wire(completion({'value':reply}),{'anyOf':[a,b]})
+                self.assertEqual(json.loads(restored.content),host)
 
     def test_repeated_names_are_never_merged_and_fail_the_host_json_parser(self):
         repeated=[dict(name='w',value=1),dict(name='w',value=2)]
