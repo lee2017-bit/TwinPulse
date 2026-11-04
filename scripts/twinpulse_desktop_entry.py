@@ -48,9 +48,12 @@ def check_package(arguments, root):
 
 
 def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
-    """First folder with python.bat: the saved setting, then the usual folders."""
+    """First folder with python.bat: the saved setting, then the usual folders.
+
+    os.path.isfile, not Path.is_file: a locked or offline drive is skipped
+    instead of raising, so the folder dialog stays the fallback."""
     for candidate in ([configured] if configured else []) + list(candidates):
-        if (Path(candidate) / 'python.bat').is_file():
+        if os.path.isfile(os.path.join(candidate, 'python.bat')):
             return str(candidate)
     return None
 

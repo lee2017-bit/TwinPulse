@@ -51,7 +51,7 @@ class BootstrapIntegrityTests(unittest.TestCase):
 
     def test_os_junk_is_ignored_and_unexpected_files_are_named(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);package(root,['data.bin'],prefix='﻿')  # PowerShell 5.1 style BOM
+            root=Path(tmp);package(root,['data.bin'],prefix='\ufeff')  # PowerShell 5.1 style BOM
             for junk in ('desktop.ini','sub/Thumbs.db','.DS_Store'):
                 (root/junk).parent.mkdir(exist_ok=True);(root/junk).write_bytes(b'junk')
             for full in (False,True):self.assertEqual(len(verify(root,full=full)['files']),1)

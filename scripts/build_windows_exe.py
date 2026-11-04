@@ -67,18 +67,24 @@ def burger_asset_check(assets):
     return inventory
 
 
-def install_path_check(names, release_id):
-    """Fail when the longest package path would pass MAX_PATH once installed.
+def install_path_check(names, release_id, *, allow_long=False):
+    """Print the five longest package paths as installed; fail past MAX_PATH.
 
     The staged copy (.stage- plus 12 hex) and the final release folder are
-    both measured; the longer one counts."""
-    longest = max(names, key=len)
-    folder = max('.stage-' + 'x' * 12, release_id, key=len)
-    total = len(INSTALL_RELEASES + folder + '\\') + len(longest)
+    both measured; the longer one counts. allow_long (--allow-long-paths)
+    keeps the warning but builds anyway."""
+    prefix = len(INSTALL_RELEASES + max('.stage-' + 'x' * 12, release_id, key=len) + '\\')
+    longest = sorted(names, key=lambda name: (-len(name), name))[:5]
+    print('Longest installed paths (limit %d, 20-character user name):' % MAX_PATH_CHARS)
+    for name in longest:
+        print('  %d (%d relative) %s' % (prefix + len(name), len(name), name))
+    total = prefix + len(longest[0])
     if total > MAX_PATH_CHARS:
-        print('Longest package path (%d characters installed): %s' % (total, longest))
-        raise ValueError('BUILD_INSTALL_PATH_TOO_LONG: %d > %d: %s' % (total, MAX_PATH_CHARS, longest))
-    return total, longest
+        message = 'BUILD_INSTALL_PATH_TOO_LONG: %d > %d: %s' % (total, MAX_PATH_CHARS, longest[0])
+        if not allow_long:
+            raise ValueError(message)
+        print('WARNING ' + message + ' (--allow-long-paths; needs Windows long paths on the target PC)')
+    return total, longest[0]
 
 
 def sprint_gate_receipt(root,max_age_s=24*3600):
@@ -115,6 +121,9 @@ def main():
         help='Verified immutable prior package with identical desktop sources; same-volume hard links only.')
     parser.add_argument('--skip-sprint-gate',action='store_true',
         help='Build without a fresh Verify-Sprint PASS receipt (emergency only; the receipt check is the default).')
+    parser.add_argument('--allow-long-paths',action='store_true',
+        help='Build even if an installed path would pass 259 characters (20-character user name); the warning is '
+             'still printed. Without Windows long paths such a package may fail to install or start.')
     args = parser.parse_args()
     output = args.output_dir.resolve()
     if output.exists():
@@ -270,7 +279,7 @@ def main():
     (package/'Start-TwinPulse-Test.cmd').write_text('@echo off\n"%~dp0TwinPulse.exe" --automation-test\n',encoding='utf-8')
     files = [{'path': p.relative_to(package).as_posix(), 'bytes': p.stat().st_size, 'sha256': hash_file(p)}
              for p in sorted(package.rglob('*')) if p.is_file()]
-    install_path_check([row['path'] for row in files], build_id)
+    install_path_check([row['path'] for row in files], build_id, allow_long=args.allow_long_paths)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     manifest = {'schema': 'twinpulse-windows-exe-1.0', 'build_id': build_id,
         'product_version': product, 'git_revision': revision, 'dirty': bool(subprocess.check_output(

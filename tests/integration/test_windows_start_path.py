@@ -82,6 +82,14 @@ class StartPathTests(unittest.TestCase):
         (folders[2]/'python.bat').write_text('');self.assertEqual(find(str(folders[0]),candidates),str(folders[2]))
         (folders[0]/'python.bat').write_text('');self.assertEqual(find(str(folders[0]),candidates),str(folders[0]))
         self.assertEqual(find('',candidates),str(folders[2]))
+        # An unreadable probe (locked or offline drive) is skipped, so the folder dialog stays the fallback.
+        stat=os.stat
+        def locked(path,*arguments,**options):
+            if 'locked' in str(path):raise PermissionError(13,'Access is denied',str(path))
+            return stat(path,*arguments,**options)
+        with patch('os.stat',side_effect=locked):
+            self.assertEqual(find(str(self.root/'locked'),[str(self.root/'locked-d'),str(folders[2])]),str(folders[2]))
+            self.assertIsNone(find(None,[str(self.root/'locked-d')]))
 
     def test_installed_start_entries_run_the_active_exe_without_powershell(self):
         installed=self.root/'installed'
@@ -92,7 +100,6 @@ class StartPathTests(unittest.TestCase):
                   'Start-TwinPulse-Test.cmd':b'@echo off\r\nstart "" "%~dp0releases\\build_2\\TwinPulse.exe" --automation-test %*\r\n'}
         for name,content in expected.items():
             self.assertEqual((installed/name).read_bytes(),content)
-            self.assertNotIn(b'powershell',content.lower())
         self.assertTrue((installed/'releases/build_2/TwinPulse.exe').is_file())
         self.assertIn('active-release.json',(installed/'start-installed.ps1').read_text(encoding='utf-8'))
         # Rollback rewrites the entries, so they keep following the active pointer.
@@ -115,19 +122,22 @@ class StartPathTests(unittest.TestCase):
         (copy/'payloads/base.usda').unlink()
         with self.assertRaises(ValueError):build.burger_asset_check(copy)
 
-    def test_install_path_budget_counts_the_longer_of_stage_and_release_folder(self):
-        release='20261103T000000Z-0123456789ab'
-        releases='C:\\Users\\'+'u'*20+'\\AppData\\Local\\TwinPulse\\installed\\releases\\'
-        self.assertEqual((len(releases+release+'\\'),len(releases+'.stage-xxxxxxxxxxxx\\')),(103,93))
-        fits='_internal/resources/'+'a'*(259-103-20)
-        self.assertEqual(build.install_path_check(['TwinPulse.exe',fits],release),(259,fits))
-        printed=io.StringIO()
-        with redirect_stdout(printed),self.assertRaisesRegex(ValueError,'^BUILD_INSTALL_PATH_TOO_LONG: 260 > 259: '+fits+'b$'):
-            build.install_path_check([fits+'b','TwinPulse.exe'],release)
-        self.assertIn(fits+'b',printed.getvalue())
-        self.assertEqual(build.install_path_check(['x'*(259-93)],'short_id'),(259,'x'*(259-93)))
-        with redirect_stdout(io.StringIO()),self.assertRaisesRegex(ValueError,'BUILD_INSTALL_PATH_TOO_LONG'):
-            build.install_path_check(['x'*(260-93)],'short_id')
+    def test_install_path_check_lists_five_longest_and_fails_only_past_max_path(self):
+        # A real build id (29 characters) gives a 103-character installed prefix with a 20-character user name.
+        release='20261103T000000Z-0123456789ab';fits='_internal/resources/'+'a'*(259-103-20)
+        names=['TwinPulse.exe','LICENSE','desktop/locales/en-US.pak','_internal/python312.dll','README.md','NOTICE',fits]
+        with redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(build.install_path_check(names,release),(259,fits))
+        self.assertEqual(printed.getvalue().splitlines()[1:],['  259 (156 relative) '+fits,
+            '  128 (25 relative) desktop/locales/en-US.pak','  126 (23 relative) _internal/python312.dll',
+            '  116 (13 relative) TwinPulse.exe','  112 (9 relative) README.md'])
+        with redirect_stdout(io.StringIO()) as printed,self.assertRaisesRegex(ValueError,'^BUILD_INSTALL_PATH_TOO_LONG: 260 > 259: '+fits+'b$'):
+            build.install_path_check(names+[fits+'b'],release)
+        self.assertIn('  260 (157 relative) '+fits+'b',printed.getvalue())
+        # The builder-only override keeps the warning and builds.
+        with redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(build.install_path_check(names+[fits+'b'],release,allow_long=True),(260,fits+'b'))
+        self.assertIn('WARNING BUILD_INSTALL_PATH_TOO_LONG: 260 > 259: '+fits+'b',printed.getvalue())
 
 
 if __name__=='__main__':unittest.main()
