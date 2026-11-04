@@ -18,7 +18,7 @@ from twinpulse_core import InputArtifactStore, InputRevision, SiteToolPlan, cano
 
 from .image_validation import decode_image
 from .project_store import ProjectRecord, ProjectStore, checked_project_id
-from .simulation_assets import BURGER_MANIFEST, PUBLIC_BURGER_MANIFEST, digest_mismatch_detail
+from .simulation_assets import BURGER_MANIFEST, PUBLIC_BURGER_MANIFEST, digest_mismatch_detail, is_os_junk
 from .site_draft import SiteDraftRecord
 
 
@@ -67,8 +67,10 @@ def _checked_burger_files(asset_root: Path) -> dict[str, str]:
     if not asset_root.is_dir() or asset_root.is_symlink():
         raise ValueError("project Burger asset directory is missing or linked")
     contents = tuple(asset_root.rglob("*"))
+    # A link is refused whatever its name; Explorer/Finder metadata files are skipped, never read or copied.
     if (any(path.is_symlink() for path in contents)
-            or {path.relative_to(asset_root).as_posix() for path in contents if path.is_file()} != _BURGER_FILES):
+            or {path.relative_to(asset_root).as_posix() for path in contents
+                if path.is_file() and not is_os_junk(path)} != _BURGER_FILES):
         raise ValueError("project Burger asset files are missing, extra or linked")
     hashes = {}
     for name in sorted(_BURGER_FILES):
@@ -245,7 +247,8 @@ def prepare_project_burger_visual(state_root: Path, project_id: str,
             or position_m[2] < 0 or position_m[2] > 1
             or type(yaw_deg) not in (int, float) or not math.isfinite(yaw_deg) or abs(yaw_deg) > 180):
         raise ValueError("project Burger placement is invalid")
-    # A fixed list, never a user-supplied source path or recursive arbitrary tree.
+    # A fixed list, never a user-supplied source path or recursive arbitrary tree
+    # (so Explorer/Finder metadata beside the source files is never copied).
     asset_root.mkdir(parents=True, exist_ok=False)
     for name in sorted(_BURGER_FILES):
         destination = asset_root.joinpath(*PurePosixPath(name).parts)

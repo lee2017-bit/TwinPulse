@@ -176,6 +176,91 @@ class BurgerPinTests(unittest.TestCase):
         self.assertEqual((row['state'], row['detail']), ('needs_action', 'ValueError'))
 
 
+class FileManagerMetadataTests(unittest.TestCase):
+    """desktop.ini, Thumbs.db and .DS_Store are ignored in the Burger folder; nothing else is."""
+    def setUp(self):
+        temporary = TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.copy = self.root / PUBLIC_ASSET_RELATIVE
+        shutil.copytree(PUBLIC, self.copy)
+        # Each folder of the closure, in the letter case Explorer or Finder writes and in two others.
+        self.metadata = [self.copy / folder / name for folder, names in (
+            ('', ('desktop.ini', 'Thumbs.db', '.DS_Store')), ('payloads', ('Desktop.ini', 'thumbs.db', '.ds_store')),
+            ('payloads/Physics', ('DESKTOP.INI', 'THUMBS.DB', '.DS_STORE'))) for name in names]
+        for path in self.metadata:
+            path.write_bytes(b'[.ShellClassInfo]\r\n')
+
+    def burger_row(self):
+        return next(r for r in package_checklist(self.root) if r['id'] == 'burger_asset_manifest')
+
+    def test_every_burger_check_accepts_the_folder_and_never_reads_the_metadata(self):
+        # Never read, so an oversized metadata file does not meet the per-file size limit either.
+        with (self.copy / 'payloads/thumbs.db').open('r+b') as stream:
+            stream.truncate(33 * 1024 * 1024)
+        self.assertEqual(_inventory(self.copy), PUBLIC_BURGER_MANIFEST)
+        self.assertEqual(verify_public_burger_assets(self.copy), PUBLIC_BURGER_MANIFEST)
+        self.assertEqual(room_recipe._checked_burger_files(self.copy), PUBLIC_BURGER_MANIFEST)
+        row = self.burger_row()
+        self.assertEqual((row['state'], row['action']), ('ready', None))
+        with patch('twinpulse_app.bedroom_review.ROOT', self.root):
+            self.assertTrue(ProjectCatalog._burger_visual_available())
+        self.assertTrue(all(path.is_file() for path in self.metadata))  # skipped, not removed
+
+    def test_any_other_extra_file_or_a_missing_file_is_still_refused_with_the_same_code(self):
+        closure = 'SIM_BURGER_DEPENDENCY_CLOSURE_CHANGED'
+        for extra in ('desktop.ini.bak', 'payloads/ehthumbs.db', 'payloads/._base.usda', 'payloads/notes.txt',
+                      'materials/Thumbs.db/base.usda'):  # the last one: a file in a folder named like metadata
+            with self.subTest(extra=extra):
+                path = self.copy / extra
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'x')
+                with self.assertRaises(ValueError) as caught:_inventory(self.copy)
+                self.assertEqual(str(caught.exception), closure)
+                with self.assertRaisesRegex(ValueError, r'\Aproject Burger asset files are missing, extra or linked\Z'):
+                    room_recipe._checked_burger_files(self.copy)
+                self.assertEqual(self.burger_row()['detail'], closure)
+                path.unlink()
+        self.assertEqual(_inventory(self.copy), PUBLIC_BURGER_MANIFEST)  # each refusal above was that one file
+        (self.copy / 'payloads/Physics/mujoco.usda').unlink()  # metadata never stands in for a pinned file
+        with self.assertRaises(ValueError) as caught:_inventory(self.copy)
+        self.assertEqual(str(caught.exception), closure)
+        with self.assertRaisesRegex(ValueError, r'\Aproject Burger asset files are missing, extra or linked\Z'):
+            room_recipe._checked_burger_files(self.copy)
+
+    def test_a_link_is_refused_even_under_a_metadata_name(self):
+        link = self.metadata[0]  # desktop.ini, pointing at a pinned file inside the folder
+        link.unlink()
+        try:
+            link.symlink_to(self.copy / 'turtlebot3_burger.usda')
+        except (OSError, NotImplementedError):
+            self.skipTest('symbolic links are not available to this user')
+        with self.assertRaises(ValueError) as caught:_inventory(self.copy)
+        self.assertEqual(str(caught.exception), 'SIM_ASSET_DEPENDENCY_UNSAFE')
+        with self.assertRaisesRegex(ValueError, r'\Aproject Burger asset files are missing, extra or linked\Z'):
+            room_recipe._checked_burger_files(self.copy)
+        self.assertEqual(self.burger_row()['detail'], 'SIM_ASSET_DEPENDENCY_UNSAFE')
+
+    def test_a_project_copy_carries_only_the_pinned_files_and_later_metadata_is_skipped(self):
+        buffer = BytesIO();Image.new('RGB', (8, 8), 'red').save(buffer, format='PNG')
+        state = self.root / 'state';state.mkdir()
+        with patch('twinpulse_app.bedroom_review.ROOT', self.root):  # the copy above is the bundled source
+            result = ProjectCatalog(state, 'default').create_from_manual_room(
+                'with_burger', prompt='My room; dimensions entered by user', photo=buffer.getvalue(),
+                media_type='image/png', width_m=3.2, length_m=4.4, wall_height_m=2.4,
+                include_burger_visual=True, request_id=str(uuid4()))
+        self.assertTrue(result['burger_visual_included'])
+        draft = ProjectStore.for_project(state, 'with_burger').load().site_draft
+        manifest, assets = room_recipe.load_project_room_visual(state, 'with_burger', draft)
+        self.assertEqual(digests(assets), PUBLIC_BURGER_MANIFEST)  # no metadata file was copied
+        self.assertEqual(manifest['asset_files_sha256'], PUBLIC_BURGER_MANIFEST)
+        # Explorer may write its metadata into the project's copy later: skipped too. Any other file is not.
+        (assets / 'payloads/desktop.ini').write_bytes(b'[.ShellClassInfo]\r\n')
+        self.assertEqual(room_recipe.load_project_room_visual(state, 'with_burger', draft), (manifest, assets))
+        (assets / 'payloads/notes.txt').write_bytes(b'x')
+        with self.assertRaisesRegex(ValueError, 'missing, extra or linked'):
+            room_recipe.load_project_room_visual(state, 'with_burger', draft)
+
+
 class IsaacVersionTests(unittest.TestCase):
     def row(self, text, *, raw=None):
         with TemporaryDirectory() as directory:
