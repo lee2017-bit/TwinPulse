@@ -96,7 +96,7 @@ from twinpulse_provider import (GenerationRequest, ImageInput, CancellationToken
     ProviderConfig, ProviderCapabilities, GenerationService)
 from twinpulse_provider.nebius_pipeline import NebiusChatCompletionsPipelineProvider, ObservationArtifact, _validation_code, _json_content
 from twinpulse_provider.reliability import CampaignLedger, InferenceEvidence, AuditedChatTransport, safe_text
-from twinpulse_provider.stage_transport import explicit_json_contract, openai_observer_body, has_image
+from twinpulse_provider.stage_transport import explicit_json_contract, openai_observer_body, has_image, restore_openai_wire
 from twinpulse_provider.semantic_scene import _shape_issues
 from twinpulse_provider.budgeted_pipeline import BudgetedPipeline
 from twinpulse_provider.generation_policy import GenerationPolicy
@@ -128,6 +128,17 @@ def wire_for(body, provider, *, current_adapter=False):
         # Trial-only adapter: no expansion of the production Nano allow-list.
         result['chat_template_kwargs']={'enable_thinking':False}
     return result
+
+
+def host_reply(completion, body, provider):
+    """The host shape of a reply to wire_for(body, provider), before any host validation.
+
+    OpenAI answers in its strict wire spelling (rows, required optional fields,
+    a {value} root); this is the same inverse ConfiguredStageTransport applies.
+    """
+    if provider != 'openai':
+        return completion
+    return restore_openai_wire(completion, explicit_json_contract(body)['response_format']['json_schema']['schema'])
 
 
 def plan_cases(scope):
@@ -276,11 +287,13 @@ async def run_case(output, role, model, repetition, stores, ledger, observation,
             provider = NebiusChatCompletionsPipelineProvider(transport, observer_model_id=model['model_id'],
                 planner_model_id='nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',site_plan_version='2.2',
                 compact_photo_layout=True, stage_output_token_caps={'observer':output_cap,'planner':output_cap})
-            body = wire_for(provider.build_observer_body(request),model['provider'],current_adapter=current_adapter)
+            source = provider.build_observer_body(request)
+            body = wire_for(source,model['provider'],current_adapter=current_adapter)
             body['max_completion_tokens' if model['provider']=='openai' else 'max_tokens']=output_cap
-            completion = await transport.complete(body,token,config)
+            completion = host_reply(await transport.complete(body,token,config),source,model['provider'])
             value=_json_content(completion,'observer')
-            schema=body['response_format']['json_schema']['schema']
+            # The host schema, not the OpenAI wire spelling, judges the restored reply.
+            schema=explicit_json_contract(source)['response_format']['json_schema']['schema']
             problems=_shape_issues(value,schema)
             if problems:
                 row['contract_report']={'issues':problems}
@@ -307,7 +320,8 @@ async def run_case(output, role, model, repetition, stores, ledger, observation,
                     if has_image(body.get('messages')):
                         raise ValueError('Image leaked to planner')
                     wire=wire_for(body,model['provider'],current_adapter=current_adapter)
-                    return await transport.complete(wire,inner_token,replace(config,timeout_s=inner_config.timeout_s))
+                    return host_reply(await transport.complete(wire,inner_token,
+                        replace(config,timeout_s=inner_config.timeout_s)),body,model['provider'])
                 def record_validation(self, stage, attempt_id, record):
                     if attempt_id:
                         transport.record_validation(stage,attempt_id,record)

@@ -70,5 +70,24 @@ class RoleComparisonTests(unittest.TestCase):
         self.assertEqual(wire['messages'][-1],body['messages'][-1])
         self.assertEqual(wire['response_format']['json_schema']['schema']['properties']['v'],{'enum':['yes'],'type':'string'})
 
+    def test_openai_reply_gets_the_host_shape_back_before_host_validation(self):
+        import json
+        from pathlib import Path
+        from scripts.compare_model_roles_live import ChatCompletion, host_reply
+        from twinpulse_provider.model_recipe_planning import checked_definition, definition_schema
+        saved=Path(__file__).resolve().parents[2]/'packages/twinpulse_provider/tests/fixtures/repair_stall_2026-10-26/draft.json'
+        recipe=json.loads(saved.read_text(encoding='utf-8'))['model_recipes']['local.830361779608ac8f83396984']
+        body=dict(model='gpt-6-luna',max_tokens=20000,temperature=0,
+            messages=[dict(role='system',content='Return JSON.'),dict(role='user',content='same source')],
+            response_format={'type':'json_schema','json_schema':{'name':'twinpulse_model_recipe','strict':True,
+                'schema':definition_schema(recipe['kind'],[])}})
+        # A recipe without children has an anyOf root, which OpenAI receives as {"value": root}.
+        self.assertEqual(wire_for(body,'openai')['response_format']['json_schema']['schema']['required'],['value'])
+        reply=ChatCompletion('fixture','gpt-6-luna',json.dumps({'value':recipe}),'stop',{})
+        restored=host_reply(reply,body,'openai')
+        self.assertEqual(json.loads(restored.content),recipe)
+        checked_definition(json.loads(restored.content),recipe['kind'],'bollard_1',[])
+        self.assertIs(host_reply(reply,body,'nebius'),reply)  # a Nebius reply already has the host spelling
+
 
 if __name__=='__main__':unittest.main()
