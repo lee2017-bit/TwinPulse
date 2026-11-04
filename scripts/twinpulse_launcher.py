@@ -39,14 +39,28 @@ def _browser(configured: str | None) -> Path | None:
     return next((item for item in candidates if item.is_file()), None)
 
 
+# Last reported launch error ({code, message}); the frozen Windows entry shows it in its dialog.
+LAST_LAUNCH_ERROR: dict[str, str] = {}
+
+
+def _redacted(text: str) -> str:
+    return re.sub(r"(#bootstrap=)[A-Za-z0-9_-]+", r"\1[REDACTED]", text)
+
+
+def _remember_error(code: str, message: object) -> None:
+    LAST_LAUNCH_ERROR.clear()
+    LAST_LAUNCH_ERROR.update(code=str(code), message=_redacted(" ".join(str(message).split())[:300]))
+
+
 def _report_error(error: Exception) -> int:
     """One searchable stderr line; an unexpected error adds its traceback. Tickets stay redacted."""
     typed = isinstance(error, ProcessManagerError)
-    text = (f"TWINPULSE_LAUNCH_ERROR code={error.code if typed else type(error).__name__} "
-            f"message={' '.join(str(error).split())[:300]}\n")
+    code = error.code if typed else type(error).__name__
+    _remember_error(code, error)
+    text = f"TWINPULSE_LAUNCH_ERROR code={code} message={' '.join(str(error).split())[:300]}\n"
     if not typed:
         text += "".join(traceback.format_exception(type(error), error, error.__traceback__))
-    print(re.sub(r"(#bootstrap=)[A-Za-z0-9_-]+", r"\1[REDACTED]", text), end="", file=sys.stderr, flush=True)
+    print(_redacted(text), end="", file=sys.stderr, flush=True)
     return 1
 
 
@@ -97,6 +111,7 @@ def _main() -> int:
     retry_count = 0
     selected_project = args.project_id
     while True:
+        LAST_LAUNCH_ERROR.clear()  # a retried attempt never shows the previous attempt's error
         manager = TwinPulseProcessManager(
             repo_root=ROOT,
             state_dir=state_dir,
@@ -141,7 +156,8 @@ def _main() -> int:
             if error.code == "startup_cancelled":
                 print("TwinPulse startup cancelled. Only this launch was stopped.", flush=True)
                 return 0
-            print(f"TWINPULSE_LAUNCH_ERROR code={error.code} message={error}", file=sys.stderr, flush=True)
+            _remember_error(error.code, error)
+            print(_redacted(f"TWINPULSE_LAUNCH_ERROR code={error.code} message={error}"), file=sys.stderr, flush=True)
             if getattr(error,'execution_id',None):
                 print(f"TWINPULSE_EXECUTION_ID={error.execution_id} diagnostics={error.diagnostics_path}",
                       file=sys.stderr,flush=True)

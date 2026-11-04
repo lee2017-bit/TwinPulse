@@ -50,7 +50,9 @@ class FakeManager:
 class LauncherUiFallbackTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.main = staticmethod(runpy.run_path(str(ROOT / "scripts" / "twinpulse_launcher.py"))["main"])
+        # Same access as twinpulse_desktop_entry: runpy returns a copy of the module globals.
+        cls.module = runpy.run_path(str(ROOT / "scripts" / "twinpulse_launcher.py"))
+        cls.main = staticmethod(cls.module["main"])
 
     def setUp(self) -> None:
         self.temp = TemporaryDirectory(dir=ROOT / "artifacts" / "test-tmp")
@@ -175,6 +177,20 @@ class LauncherUiFallbackTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertRegex(err, r"\ATWINPULSE_LAUNCH_ERROR code=ready_timeout_invalid message=\S")
         self.assertNotIn("Traceback", err)
+
+    def test_last_error_reaches_the_windows_entry_and_a_new_attempt_clears_it(self) -> None:
+        from twinpulse_app import ProcessManagerError
+        message = "Isaac did not finish starting within 600 s (last phase: extensions, started at 412 s)"
+        code, _out, _err = self.launch("--no-browser", error=ProcessManagerError("engine_ready_timeout", message))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.module["LAST_LAUNCH_ERROR"], {"code": "engine_ready_timeout", "message": message})
+        code, _out, _err = self.launch("--no-browser", error=OSError("open http://127.0.0.1:8765/#bootstrap=Secret_Ticket-1\nfailed"))
+        self.assertEqual(self.module["LAST_LAUNCH_ERROR"],
+                         {"code": "OSError", "message": "open http://127.0.0.1:8765/#bootstrap=[REDACTED] failed"})
+        code, _out, _err = self.launch("--no-browser")
+        self.assertEqual((code, self.module["LAST_LAUNCH_ERROR"]), (0, {}))
+        code, _out, _err = self.launch(browser=None, desktop=False)
+        self.assertEqual(self.module["LAST_LAUNCH_ERROR"]["code"], "ui_host_unavailable")
 
     def test_bom_isaac_root_file_resolves_to_the_saved_folder(self) -> None:
         repo = self.base / "repo"

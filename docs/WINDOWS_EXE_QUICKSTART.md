@@ -29,7 +29,7 @@ Use the `Install-TwinPulse.cmd` inside the extracted `TwinPulse` folder. A sourc
 |---|---|---|
 | Build PC | Locked build tools and versions, the Burger robot files against their reviewed digests, and that no installed path passes 259 characters | None. Strict, on the builder only: the build stops |
 | Download | The ZIP's SHA-256 against `SHA256SUMS.txt` | Optional (step 2) |
-| Install | Size and SHA-256 of every file against `windows-release-manifest.json` inside the ZIP, for the extracted folder and again for the installed copy | None. Automatic |
+| Install | Size and SHA-256 of every file against `windows-release-manifest.json` inside the ZIP, for the extracted folder before any install code runs and again for the installed copy | None. Automatic |
 | Each start | Every listed file is present with its recorded size. Child processes (backend, workers) only read the manifest | None. Quick |
 | On demand | The full SHA-256 check of every file | Run `Start-TwinPulse.cmd --inspect-package` (or `TwinPulse.exe --inspect-package` in a package folder), or reinstall |
 | Isaac Sim | Its version: any 6.0.1 build is accepted; another version gets a warning, not a block | None |

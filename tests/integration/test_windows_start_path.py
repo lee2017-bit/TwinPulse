@@ -64,12 +64,32 @@ class StartPathTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'^WINDOWS_MANIFEST_INVALID$'):
             entry['check_package'](['--internal-role','backend'],package)
 
-    def test_no_start_check_hashes_but_full_mode_does(self):
+    def test_start_checks_do_not_hash_but_install_and_inspect_do(self):
         package=self.root/'package';write_package(package,'build_1')
         with patch.object(integrity,'sha256',side_effect=AssertionError('hashed')):
-            for arguments in ([],['--internal-role','backend'],['--install']):
+            for arguments in ([],['--internal-role','backend'],['--automation-test'],['--ready-timeout-s','600']):
                 self.assertEqual(entry['check_package'](arguments,package)['build_id'],'build_1')
-            with self.assertRaisesRegex(AssertionError,'hashed'):integrity.verify_before_import(package,full=True)
+            for arguments in (['--install'],['--install','--quiet'],['--inspect-package']):
+                with self.assertRaisesRegex(AssertionError,'hashed'):entry['check_package'](arguments,package)
+
+    def test_same_size_change_passes_a_start_but_stops_install_before_its_code_runs(self):
+        package=self.root/'package';write_package(package,'build_1')
+        script=package/'_internal/resources/scripts/twinpulse_backend.py'
+        data=script.read_bytes();script.write_bytes(data[:-1]+bytes([data[-1]^1]))
+        self.assertEqual(entry['check_package']([],package)['build_id'],'build_1')
+        for arguments in (['--install'],['--install','--quiet'],['--inspect-package']):
+            with self.assertRaisesRegex(ValueError,r'^WINDOWS_PACKAGE_FILE_MISMATCH: _internal/resources/scripts/twinpulse_backend\.py$'):
+                entry['check_package'](arguments,package)
+
+    def test_startup_failure_dialog_names_the_launcher_error_and_its_log(self):
+        text=entry['startup_failure_text'];log=self.root/'profile/TwinPulse/runtime/desktop-logs/launcher-42.log'
+        message='Isaac did not finish starting within 600 s (last phase: extensions, started at 412 s)'
+        self.assertEqual(text({'code':'engine_ready_timeout','message':message},log).splitlines(),
+            ['TwinPulse could not complete startup.',message,'Code: engine_ready_timeout','Log: '+str(log),
+             'No other application was stopped.'])
+        # Without a reported error (for example the App closed after running) the dialog points to diagnostics.
+        self.assertEqual(text({},None).splitlines()[1:3],
+            ['Open the diagnostics if the App is visible.',r'Log: %LOCALAPPDATA%\TwinPulse\runtime\desktop-logs'])
 
     def test_isaac_search_tries_saved_folder_then_usual_installs_in_order(self):
         self.assertEqual(entry['ISAAC_CANDIDATES'],(r'C:\isaacsim',r'D:\isaacsim\isaac-sim-standalone-6.0.1-windows-x86_64',

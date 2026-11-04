@@ -3,11 +3,12 @@
 # Source: https://github.com/lee2017-bit/TwinPulse
 """Compiled bootstrap check: run before importing any external App payload.
 
-Installation hashes every file (verify_package on the extracted source and on
-the staged copy), and so does --inspect-package. A normal start runs the quick
-check: every listed file exists, is no link, stays under the root and has its
-recorded size; full=True also hashes every byte. A launcher child only reads
-the manifest (read_manifest). Owner decision, 2026-11-03."""
+--install and --inspect-package hash every file here (full=True) before their
+own code is imported; installation then hashes the extracted source and the
+staged copy again (verify_package). A normal start runs the quick check: every
+listed file exists, is no link, stays under the root and has its recorded size.
+A launcher child only reads the manifest (read_manifest). Owner decision,
+2026-11-03."""
 from pathlib import Path
 from hashlib import sha256
 import json

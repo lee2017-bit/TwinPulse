@@ -38,13 +38,28 @@ def apply_packaged_capabilities(package,role,environment):
 def check_package(arguments, root):
     """Package check by role, before any bundled source is imported.
 
-    A start (also --install and --inspect-package) checks that every listed
-    file exists, is no link and has its recorded size; install_package and
-    --inspect-package then hash every file (verify_package). An --internal-role
-    child of that launcher only validates the manifest it reads its
-    capabilities from and does not check the files again."""
+    A start checks that every listed file exists, is no link and has its
+    recorded size. --install and --inspect-package also hash every file here,
+    so the install and inspect code is itself checked before it runs
+    (verify_package then checks the package again as part of that work). An
+    --internal-role child of that launcher only validates the manifest it
+    reads its capabilities from and does not check the files again."""
     from twinpulse_bootstrap_integrity import read_manifest, verify_before_import
-    return (read_manifest if arguments[:1] == ['--internal-role'] else verify_before_import)(root)
+    if arguments[:1] == ['--internal-role']:
+        return read_manifest(root)
+    return verify_before_import(root, full=arguments[:1] == ['--install'] or arguments == ['--inspect-package'])
+
+
+def startup_failure_text(last_error, log_path):
+    """Dialog text after a failed start: the launcher's own error line and the log file to open."""
+    lines = ['TwinPulse could not complete startup.']
+    if last_error.get('code'):
+        lines += [last_error.get('message') or '(no message)', 'Code: ' + last_error['code']]
+    else:
+        lines.append('Open the diagnostics if the App is visible.')
+    lines.append('Log: ' + (str(log_path) if log_path else r'%LOCALAPPDATA%\TwinPulse\runtime\desktop-logs'))
+    lines.append('No other application was stopped.')
+    return '\n'.join(lines)
 
 
 def find_isaac_root(configured, candidates=ISAAC_CANDIDATES):
@@ -85,6 +100,7 @@ def main():
     arguments=configure_testing(arguments,state,os.environ,role=role)
     # Windowed bootloaders have no Python stdout even when spawned with handles.
     inherited_output = False
+    log = None
     if frozen and role=='library-tool' and os.name=='nt':
         import ctypes
         import msvcrt
@@ -154,10 +170,9 @@ def main():
     result = module['main']()
     if result and frozen and role == 'launcher':
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None,
-            'TwinPulse could not complete startup.\nOpen the diagnostics if the App is visible, '
-            'or inspect %LOCALAPPDATA%\\TwinPulse\\runtime\\desktop-logs.\n'
-            'No other application was stopped.', 'TwinPulse startup', 0x10)
+        # The launcher keeps its last reported error in this shared dict.
+        ctypes.windll.user32.MessageBoxW(None, startup_failure_text(module.get('LAST_LAUNCH_ERROR') or {}, log),
+            'TwinPulse startup', 0x10)
     return result
 
 
