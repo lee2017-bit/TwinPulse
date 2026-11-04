@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jaewon Lee
 # SPDX-License-Identifier: Apache-2.0
 # Source: https://github.com/lee2017-bit/TwinPulse
-"""Isaac start window, engine environment, loopback without proxy and stale lock.
+"""Isaac start window, engine environment, proxy rule, python.bat command line and stale lock.
 
 Supplementary unit tests only: no Windows, Isaac, Kit or provider is used.
 """
@@ -959,6 +959,82 @@ class EngineStartWindowTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, "launcher_owner_identity_changed")
                 self.assertEqual((self.state / "launcher.lock").read_bytes(), original)
                 self.assertFalse((self.state / "stale-launch-records").exists())
+
+    # j) python.bat runs through cmd.exe on Windows
+    def test_batch_command_line_quotes_every_argument_when_a_path_holds_cmd_metacharacters(self) -> None:
+        command = [r"C:\isaac\python.bat", "-B", r"C:\Users\kim&lee\AppData\Local\TwinPulse\scripts\host.py",
+                   "--stop-file", r"C:\Users\kim^lee\launch\engine.stop", "--viewport-capture", "C:\\Users\\kim(1)|x\\"]
+        self.assertEqual(pm._batch_command_line(command),
+                         '"C:\\isaac\\python.bat" "-B" "C:\\Users\\kim&lee\\AppData\\Local\\TwinPulse\\scripts\\host.py" '
+                         '"--stop-file" "C:\\Users\\kim^lee\\launch\\engine.stop" '
+                         '"--viewport-capture" "C:\\Users\\kim(1)|x\\\\"')
+        # Where subprocess quotes too (a space), both give the same MSVC argument.
+        spaced = [r"C:\Program Files\isaac\python.bat", r"C:\Users\Kim & Lee\host.py", "C:\\Users\\Kim & Lee\\state\\"]
+        self.assertEqual(pm._batch_command_line(spaced), subprocess.list2cmdline(spaced))
+        for program in (r"C:\isaac\PYTHON.BAT", r"C:\isaac\run.Cmd"):
+            with self.subTest(program=program):
+                self.assertEqual(pm._batch_command_line([program, "a^b"]), f'"{program}" "a^b"')
+
+    def test_batch_command_line_refuses_percent_quote_and_line_break_and_names_the_folder(self) -> None:
+        for command, folder in (
+                ([r"C:\isaac\python.bat", "-B", r"C:\Users\50%off\AppData\host.py"], r"C:\Users\50%off"),
+                ([r"C:\isaac\python.bat", r"C:\Users\kim&lee\x", 'C:\\Users\\a"b\\host.py'], 'C:\\Users\\a"b'),
+                ([r"C:\isaac\python.bat", "C:\\Users\\a\nb\\host.py"], r"C:\Users\a\nb"),
+                ([r"C:\isaac%\python.bat", "-B"], r"C:\isaac%")):
+            with self.subTest(command=command):
+                with self.assertRaises(ProcessManagerError) as raised:
+                    pm._batch_command_line(command)
+                self.assertEqual((raised.exception.code, str(raised.exception)), (
+                    "engine_path_unsupported", f"Isaac cannot start from {folder}: python.bat cannot pass a path with "
+                    '" % or a line break. Use a Windows account or profile path without these characters.'))
+
+    def test_batch_command_line_keeps_plain_and_non_batch_commands_as_lists(self) -> None:
+        for command in ([r"C:\isaac\python.bat", "-B", r"C:\Users\kim\host.py", "C:\\Users\\kim\\"],
+                        [r"C:\isaac\python.exe", r"C:\Users\kim&lee\host.py", "50%", 'a"b']):
+            with self.subTest(command=command):
+                result = pm._batch_command_line(command)
+                self.assertIsInstance(result, list)
+                self.assertEqual(result, command)
+
+    def test_engine_spawn_command_is_one_quoted_line_on_windows_only(self) -> None:
+        manager = self.manager(state_dir=self.root / "kim&lee" / "state")
+        command = manager._engine_command()
+        self.assertEqual(manager._engine_spawn_command(windows=False), command)
+        self.assertEqual(manager._engine_spawn_command(windows=True), " ".join(f'"{part}"' for part in command))
+        refused = self.manager(state_dir=self.root / "50%off" / "state")
+        self.assertEqual(refused._engine_spawn_command(windows=False), refused._engine_command())
+        with self.assertRaises(ProcessManagerError) as raised:
+            refused._engine_spawn_command(windows=True)
+        self.assertEqual(raised.exception.code, "engine_path_unsupported")
+        self.assertIn(f"Isaac cannot start from {str(refused.engine_stop_file).split('50%off')[0]}50%off: ",
+                      str(raised.exception))
+
+    def test_start_gives_subprocess_the_quoted_engine_line_or_stops_before_the_engine(self) -> None:
+        original = TwinPulseProcessManager._engine_spawn_command
+        for folder, code in (("kim&lee", "engine_spawn_failed"), ("50%off", "engine_path_unsupported")):
+            with self.subTest(folder=folder):
+                manager = self.manager(state_dir=self.root / folder / "state")
+                spawned: list[object] = []
+
+                def spawn(command, **_kwargs):
+                    spawned.append(command)
+                    if len(spawned) == 1:
+                        manager.ready_file.write_text(json.dumps({"base_url": "http://127.0.0.1:43123"}),
+                                                      encoding="utf-8")
+                        return FakeProcess(201)
+                    raise OSError("engine command captured")
+
+                manager._popen = spawn  # type: ignore[assignment]
+                with patch.object(TwinPulseProcessManager, "_engine_spawn_command",
+                                  lambda self: original(self, windows=True)):
+                    with self.assertRaises(ProcessManagerError) as raised:
+                        manager.start(open_browser=False)
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(spawned[0], manager._backend_command())  # the backend list is unchanged
+                if code == "engine_spawn_failed":
+                    self.assertEqual(spawned[1:], [" ".join(f'"{part}"' for part in manager._engine_command())])
+                else:
+                    self.assertEqual(len(spawned), 1)  # no engine process was started
 
 
 if __name__ == "__main__":

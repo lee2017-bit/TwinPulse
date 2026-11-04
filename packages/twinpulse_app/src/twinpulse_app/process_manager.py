@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import secrets
 import subprocess
@@ -444,7 +444,7 @@ class TwinPulseProcessManager:
             engine_env["PYTHONUNBUFFERED"] = "1"
             engine_env["PYTHONNOUSERSITE"] = "1"
             _no_proxy_loopback(engine_env)
-            engine = self._spawn("engine", self._engine_command(), engine_env, hidden=self.headless)
+            engine = self._spawn("engine", self._engine_spawn_command(), engine_env, hidden=self.headless)
             with self._launch_trace.span('engine_ready_wait'):
                 engine_status = self._wait_engine_ready(backend, engine)
             snapshot = engine_status["snapshot"]
@@ -815,8 +815,18 @@ class TwinPulseProcessManager:
             command.append("--headless")
         return command
 
+    def _engine_spawn_command(self, *, windows: bool = os.name == "nt") -> str | list[str]:
+        """The engine command as subprocess receives it.
+
+        On Windows, Isaac's python.bat runs through cmd.exe, which re-reads the
+        command line; _batch_command_line keeps every path one argument there.
+        Elsewhere the list is passed unchanged.
+        """
+        command = self._engine_command()
+        return _batch_command_line(command) if windows else command
+
     def _spawn(
-        self, name: str, command: Sequence[str], environment: Mapping[str, str], *, hidden: bool,
+        self, name: str, command: Sequence[str] | str, environment: Mapping[str, str], *, hidden: bool,
     ) -> subprocess.Popen[bytes]:
         self.launch_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.launch_dir / f"{name}.log"
@@ -829,7 +839,9 @@ class TwinPulseProcessManager:
             from contextlib import nullcontext
             with external_dll_search() if name == 'engine' else nullcontext():
                 process = self._popen(
-                    list(command), cwd=str(self.repo_root), env=child_environment(environment, external=name == 'engine'),
+                    # A string is one finished Windows command line (_batch_command_line).
+                    command if isinstance(command, str) else list(command),
+                    cwd=str(self.repo_root), env=child_environment(environment, external=name == 'engine'),
                     stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
                     shell=False, creationflags=flags,
                 )
@@ -1394,6 +1406,50 @@ def _no_proxy_loopback(environment: dict[str, str]) -> dict[str, str]:
             value = ",".join(item for item in (value.rstrip(" ,"), *missing) if item)
         environment[key] = value
     return environment
+
+
+# cmd.exe, which runs a .bat/.cmd program, acts on these outside double quotes.
+_CMD_METACHARACTERS = frozenset("&|<>^()")
+# cmd.exe expands % and ends a command at a line break even inside double
+# quotes, and a double quote cannot be passed through it reliably.
+_CMD_UNSUPPORTED = frozenset('"%\r\n')
+
+
+def _batch_command_line(command: Sequence[str]) -> str | list[str]:
+    """Windows form of a command whose program may be a .bat/.cmd file.
+
+    CreateProcess runs a batch file through cmd.exe, which re-reads the command
+    line subprocess builds. subprocess quotes only arguments with spaces, so in
+    C:\\Users\\kim&lee an unquoted & ends the command and an unquoted ^ is
+    dropped. When any argument holds one of & | < > ^ ( ), return one command
+    line with every argument double-quoted by the MSVC argv rules (backslashes
+    before the closing quote are doubled). " % and line breaks are refused, as
+    no quoting carries them through cmd.exe. Other commands stay the same list.
+    """
+    parts = [str(part) for part in command]
+    if not parts or PureWindowsPath(parts[0]).suffix.lower() not in {".bat", ".cmd"}:
+        return parts
+    for part in parts:
+        if _CMD_UNSUPPORTED.intersection(part):
+            folder = _first_folder_with(part, _CMD_UNSUPPORTED)
+            raise ProcessManagerError(
+                "engine_path_unsupported",
+                f"Isaac cannot start from {folder}: python.bat cannot pass a path with \" % or a line break. "
+                "Use a Windows account or profile path without these characters.",
+            )
+    if not any(_CMD_METACHARACTERS.intersection(part) for part in parts):
+        return parts
+    return " ".join('"' + re.sub(r"(\\+)$", r"\1\1", part) + '"' for part in parts)
+
+
+def _first_folder_with(path: str, characters: frozenset[str]) -> str:
+    """The leading part of path up to the first name holding one of characters."""
+    names = re.split(r"([\\/])", path)
+    for index in range(0, len(names), 2):
+        if characters.intersection(names[index]):
+            shown = "".join(names[:index + 1])
+            return shown.replace("\r", "\\r").replace("\n", "\\n")
+    return path
 
 
 def _engine_progress(value: Mapping[str, object] | None) -> dict[str, object] | None:
