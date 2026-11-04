@@ -27,7 +27,7 @@ The Korean sections below are the older notes for the developer source install a
 - NVIDIA Isaac Sim 6.0.1 standalone
 - PowerShell
 - CPython 3.12 (`py -3.12 --version`으로 확인)
-- Node.js 22.12+와 npm (`node --version`, `npm --version`으로 확인). electron 44.7.2와 그 패키저가 Node 22.12 이상을 요구하므로 20.19는 지원하지 않는다. pnpm이 없어도 설치기가 고정 버전을 사용자 npm cache에 내려받는다.
+- Node.js 22.13 이상과 npm (`node --version`, `npm --version`으로 확인). 고정된 pnpm 11.19.0이 `>=22.13`을 선언하고(22.0–22.12에서는 오류로 멈추고 Node 20에서는 경고만 낸다) electron 44.7.2와 @electron/packager 20.3.0이 `>=22.12.0`을 선언하므로 20.19와 22.12는 지원하지 않는다. 23 이후 버전은 된다. pnpm이 없어도 설치기가 고정 버전을 사용자 npm cache에 내려받는다.
 - LLM 생성을 시험할 경우에만 선택한 provider의 별도 API key
 
 현재 개발 PC에서 검증한 런타임은 Isaac Sim `6.0.1-rc.7`, Kit `110.1.2`, bundled Python `3.12.13`이다. 회사 PC에 보고된 설치 경로는 아래와 같지만 실제 build/patch는 회사 PC에서 다시 확인해야 한다.

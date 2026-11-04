@@ -62,10 +62,14 @@ try {
         $createVenv = { & python -m venv $venvRoot }
     }
 
+    # The lowest Node.js every tool below accepts: pnpm 11.19.0 declares >=22.13 (it exits below
+    # that, except on Node 20, where it only warns), and the locked electron 44.7.2 and
+    # @electron/packager 20.3.0 declare >=22.12.0.
+    # tests/integration/test_source_install_node_gate.py checks this gate against both lock files.
     $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $nodeCommand) { throw "Node.js is required. Install Node.js 20.19+ or 22.12+ and rerun this file." }
-    & node -e "const [major,minor]=process.versions.node.split('.').map(Number); if (!((major===20&&minor>=19)||(major===22&&minor>=12)||major>=24)) process.exit(1)"
-    Assert-LastExitCode "Node.js version check (20.19+ or 22.12+)"
+    if (-not $nodeCommand) { throw "Node.js is required. Install Node.js 22.13 or later and rerun this file." }
+    & node -e "const [major,minor]=process.versions.node.split('.').map(Number); if (!(major>22||(major===22&&minor>=13))) process.exit(1)"
+    Assert-LastExitCode "Node.js version check (22.13 or later)"
 
     $pnpmCommand = Get-Command pnpm -ErrorAction SilentlyContinue
     if ($pnpmCommand) {

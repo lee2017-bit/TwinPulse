@@ -139,7 +139,7 @@ TwinPulse was developed in a **develop → operate → observe → diagnose → 
 
 - Windows 10/11 x64 with an NVIDIA RTX GPU (developed on an RTX 2070-class 8 GB laptop GPU)
 - [NVIDIA Isaac Sim 6.0.1](https://docs.isaacsim.omniverse.nvidia.com/) standalone
-- From source: CPython 3.12, Node.js 22.12+, Git. The Windows EXE ZIP used on company PCs needs none of these; Python, the UI, the desktop window and the robot assets are inside it
+- From source: CPython 3.12, Node.js 22.13+, Git. The Windows EXE ZIP used on company PCs needs none of these; Python, the UI, the desktop window and the robot assets are inside it
 - A Nebius Token Factory API key
 - Optional, for the physical run: TurtleBot3 Burger (ROS 2) with its LDS LiDAR on the same network, and a RoomPlan USD scan of the room
 

@@ -7,7 +7,7 @@ TwinPulse runs a local app and a separate Isaac Sim window on the **same Windows
 | Where you will run TwinPulse | What to use | What that PC needs |
 |---|---|---|
 | Company PC, or any PC without developer tools | The **Windows EXE ZIP**: extract it, run `TwinPulse\Install-TwinPulse.cmd`, start `%LOCALAPPDATA%\TwinPulse\installed\Start-TwinPulse.cmd` ([steps](WINDOWS_EXE_QUICKSTART.md)) | Isaac Sim 6.0.1 standalone only; Python, the web UI, the desktop window and the robot assets are inside the ZIP |
-| Personal or developer PC with package-network access | Clone the repository and run its `Install-TwinPulse.cmd` | Isaac Sim 6.0.1 standalone, 64-bit CPython 3.12, Node.js 22.12+, Git |
+| Personal or developer PC with package-network access | Clone the repository and run its `Install-TwinPulse.cmd` | Isaac Sim 6.0.1 standalone, 64-bit CPython 3.12, Node.js 22.13+, Git |
 
 Get the ZIP and its `SHA256SUMS.txt` from the release page or file you were given. Every file is checked automatically at install; there is no manual hash step ([what is checked, and when](WINDOWS_EXE_QUICKSTART.md#what-is-checked-and-when)). The `Install-TwinPulse.cmd` in a source checkout (or a "Source code" archive) is the developer install, not the company-PC one. Follow your company's transfer and execution policy; do not bypass AppLocker, WDAC, or other company controls. Company-PC install, Nebius network access and actual Isaac Build/Run on a company PC have **not** been verified with the EXE ZIP yet.
 
