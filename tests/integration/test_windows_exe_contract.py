@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Source: https://github.com/lee2017-bit/TwinPulse
 """Supplementary real-bind, package integrity and shutdown contract checks."""
+from contextlib import redirect_stdout
 from pathlib import Path
 import hashlib
+import io
 import json
 import runpy
 import socket
@@ -128,32 +130,46 @@ class BuildHandOverTests(unittest.TestCase):
         integrity=runpy.run_path(str(ROOT/'scripts/twinpulse_bootstrap_integrity.py'))
         name='twinpulse_company_pc_check.py';original=(ROOT/'scripts'/name).read_bytes()
         digest=hashlib.sha256(original).hexdigest()
-        # main() runs PyInstaller and node, so it is not run here: it must stage EXTRA_FILES
-        # and assemble, list and zip the package with the helpers exercised below.
-        self.assertLessEqual({'EXTRA_FILES','add_top_level_files','package_files','write_zip'},
-                             set(build['main'].__code__.co_names))
+        # main() runs PyInstaller and node, so it is not run here: it stages EXTRA_FILES and
+        # finishes the package (top-level files, list, path check, manifest, ZIP) with finish_package.
+        self.assertLessEqual({'EXTRA_FILES','finish_package'},set(build['main'].__code__.co_names))
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);resources=root/'staging/resources';package=root/'dist/TwinPulse';sources={}
+            root=Path(tmp);resources=root/'staging/resources';sources={}
             for relative in build['EXTRA_FILES']:
                 build['stage'](relative,resources,sources)
             # source-manifest.json binds the shipped check to its repository bytes.
             self.assertEqual(sources['scripts/'+name],digest)
-            package.mkdir(parents=True);(package/'TwinPulse.exe').write_bytes(b'owned-test-placeholder')
-            build['add_top_level_files'](resources,package)
-            files=build['package_files'](package)
-            self.assertIn({'path':name,'bytes':len(original),'sha256':digest},files)
-            (package/'windows-release-manifest.json').write_text(json.dumps({'schema':'twinpulse-windows-exe-1.0',
-                'build_id':'test','source_manifest_sha256':'a'*64,'files':files}),encoding='utf-8')
-            archive=root/'TwinPulse-Windows-x64-test.zip';build['write_zip'](package,archive)
+            for archive in (None,root/'TwinPulse-Windows-x64-test.zip'):  # --package-only, then the ZIP
+                package=root/('package-only' if archive is None else 'dist')/'TwinPulse'
+                package.mkdir(parents=True);(package/'TwinPulse.exe').write_bytes(b'owned-test-placeholder')
+                manifest={'schema':'twinpulse-windows-exe-1.0','build_id':'test','source_manifest_sha256':'a'*64,'files':None}
+                with redirect_stdout(io.StringIO()):build['finish_package'](resources,package,manifest,archive)
+                self.assertIn({'path':name,'bytes':len(original),'sha256':digest},manifest['files'])
+                self.assertEqual(json.loads((package/'windows-release-manifest.json').read_text(encoding='utf-8')),manifest)
+                self.assertEqual(verify_package(package)['status'],'verified')
+                self.assertEqual([p.name for p in root.rglob('*.zip')],[] if archive is None else [archive.name])
             with zipfile.ZipFile(archive) as stream:stream.extractall(root/'extracted')
             extracted=root/'extracted/TwinPulse'
-            # Top level of the extracted folder, next to Install-TwinPulse.cmd, byte for byte.
-            self.assertTrue((extracted/'Install-TwinPulse.cmd').is_file())
+            # Double-clicking Install-TwinPulse.cmd installs; the check sits beside it, byte for byte.
+            self.assertEqual((extracted/'Install-TwinPulse.cmd').read_text(encoding='utf-8').splitlines(),
+                             ['@echo off','"%~dp0TwinPulse.exe" --install'])
+            self.assertEqual((extracted/'Start-TwinPulse-Test.cmd').read_text(encoding='utf-8').splitlines(),
+                             ['@echo off','"%~dp0TwinPulse.exe" --automation-test'])
             self.assertEqual((extracted/name).read_bytes(),original)
-            # Install (full hash) and start (size) checks accept it: it is a listed file, not an extra one.
+            # Install (full hash) and start (size) checks accept the extracted ZIP as it is.
             self.assertEqual(verify_package(extracted)['status'],'verified')
             self.assertEqual(integrity['verify_before_import'](extracted,full=True)['build_id'],'test')
             self.assertEqual(integrity['verify_before_import'](extracted)['build_id'],'test')
 
+    def test_finishing_refuses_a_too_long_install_path_before_writing_a_manifest_or_zip(self):
+        build=runpy.run_path(str(ROOT/'scripts/build_windows_exe.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);resources=root/'staging/resources';package=root/'dist/TwinPulse'
+            for relative in build['EXTRA_FILES']:build['stage'](relative,resources,{})
+            deep=package/('d'*100)/('d'*100)/'f.txt';deep.parent.mkdir(parents=True);deep.write_bytes(b'x')
+            manifest={'schema':'twinpulse-windows-exe-1.0','build_id':'test','source_manifest_sha256':'a'*64,'files':None}
+            with redirect_stdout(io.StringIO()),self.assertRaisesRegex(ValueError,'^BUILD_INSTALL_PATH_TOO_LONG: '):
+                build['finish_package'](resources,package,manifest,root/'out.zip')
+            self.assertFalse((package/'windows-release-manifest.json').exists());self.assertFalse((root/'out.zip').exists())
 
 if __name__ == '__main__': unittest.main()

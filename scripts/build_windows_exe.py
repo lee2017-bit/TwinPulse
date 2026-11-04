@@ -79,6 +79,25 @@ def write_zip(package, archive):
                 zipfile_out.write(path, 'TwinPulse/' + path.relative_to(package).as_posix())
 
 
+def finish_package(resources, package, manifest, archive=None, *, allow_long=False):
+    """Complete the package folder in the one order an installable ZIP needs.
+
+    The top-level files come first, so the file list and the manifest include
+    them (a file added after the listing is an unlisted extra that install
+    refuses: WINDOWS_PACKAGE_UNMANIFESTED_FILE). Then the install path check,
+    then the manifest, and the ZIP last, so it carries the manifest. No ZIP
+    when archive is None (--package-only).
+    """
+    add_top_level_files(resources, package)
+    files = package_files(package)
+    install_path_check([row['path'] for row in files], manifest['build_id'], allow_long=allow_long)
+    manifest['files'] = files
+    (package / 'windows-release-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    if archive is not None:
+        write_zip(package, archive)
+    return manifest
+
+
 def reuse_desktop(package, destination, sources):
     """Reuse unchanged, verified desktop bytes through same-volume hard links.
 
@@ -309,15 +328,12 @@ def main():
     tool_metadata['@electron/packager'] = '20.3.0'
     if list((package/'_internal/resources').rglob('*.pyc')):
         raise ValueError('PACKAGE_SOURCE_BYTECODE_CACHE_PRESENT')
-    add_top_level_files(resources, package)
-    files = package_files(package)
-    install_path_check([row['path'] for row in files], build_id, allow_long=args.allow_long_paths)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     manifest = {'schema': 'twinpulse-windows-exe-1.0', 'build_id': build_id,
         'product_version': product, 'git_revision': revision, 'dirty': bool(subprocess.check_output(
             ['git', 'status', '--porcelain'], cwd=ROOT)), 'source_manifest_sha256': source_sha,
         'platform': 'win-x64', 'tools': tool_metadata, 'signed': False,
-        'public_release_status': 'LOCAL_CANDIDATE_REQUIRES_REVIEW', 'files': files}
+        'public_release_status': 'LOCAL_CANDIDATE_REQUIRES_REVIEW', 'files': None}  # filled by finish_package
     DATA_CONTRACT = runpy.run_path(str(resources/'packages/twinpulse_app/src/twinpulse_app/release_contract.py'))['DATA_CONTRACT']
     manifest.update(channel=args.channel, data_contract=DATA_CONTRACT,
         capabilities=dict(simulation=True, physical_robot=args.channel == 'development',
@@ -325,12 +341,12 @@ def main():
         release_version=product.replace('a', '-alpha.') if 'a' in product else product)
     if desktop.get('source_build_id'):
         manifest['desktop_reused_from']=desktop['source_build_id']
-    (package / 'windows-release-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-    if args.package_only:
+    archive = None if args.package_only else output / (
+        'TwinPulse-Windows-x64-' + manifest['release_version'] + '-' + build_id + '.zip')
+    finish_package(resources, package, manifest, archive, allow_long=args.allow_long_paths)
+    if archive is None:
         print(json.dumps({'package':str(package),'zip':None,'sha256':None,'build_id':build_id,'archive_status':'NOT_REQUESTED_LOCAL_PACKAGE_ONLY'}))
         return
-    archive = output / ('TwinPulse-Windows-x64-' + manifest['release_version'] + '-' + build_id + '.zip')
-    write_zip(package, archive)
     (output / 'SHA256SUMS.txt').write_text(hash_file(archive) + '  ' + archive.name + '\n', encoding='utf-8')
     print(json.dumps({'package': str(package), 'zip': str(archive), 'sha256': hash_file(archive), 'build_id': build_id}))
 
