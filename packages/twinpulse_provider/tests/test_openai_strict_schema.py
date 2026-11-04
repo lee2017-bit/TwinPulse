@@ -198,11 +198,18 @@ class RestoreTests(unittest.TestCase):
             'a':{'type':'array','items':{'type':'object'}}}}),plain)
 
     def test_repeated_names_are_never_merged_and_fail_the_host_json_parser(self):
-        restored=restore_open_maps(completion(dict(calls=[dict(kind='map',p=[dict(name='w',value=1),dict(name='w',value=2)])],
-            nested=[])),self.schema())
-        self.assertEqual(restored.content,'{"calls":[{"kind":"map","p":{"w":1,"w":2}}],"nested":{}}')
-        with self.assertRaises(InvalidProviderResponseError) as caught:_json_content(restored,'planner')
-        self.assertEqual(caught.exception.code,'PROVIDER_JSON_DUPLICATE_KEY')
+        repeated=[dict(name='w',value=1),dict(name='w',value=2)]
+        # A nullable map is itself an anyOf: its repeated rows must stay one object, not [[name, value]] pairs.
+        nullable={'type':'object','additionalProperties':False,'required':['p'],'properties':{
+            'p':{'anyOf':[{'type':'null'},{'type':'object','additionalProperties':{'type':'number'}}]}}}
+        for schema,value,text in ((self.schema(),dict(calls=[dict(kind='map',p=repeated)],nested=[]),
+                                   '{"calls":[{"kind":"map","p":{"w":1,"w":2}}],"nested":{}}'),
+                                  (nullable,dict(p=repeated),'{"p":{"w":1,"w":2}}')):
+            with self.subTest(text=text):
+                restored=restore_open_maps(completion(value),schema)
+                self.assertEqual(restored.content,text)
+                with self.assertRaises(InvalidProviderResponseError) as caught:_json_content(restored,'planner')
+                self.assertEqual(caught.exception.code,'PROVIDER_JSON_DUPLICATE_KEY')
 
 
 class SitePlanRoundTripTests(unittest.TestCase):

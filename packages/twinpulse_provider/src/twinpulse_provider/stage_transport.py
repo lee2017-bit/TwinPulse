@@ -362,7 +362,7 @@ def _restored(value, node, root):
                 item,moved=_restored(item,node['properties'][key],root);changed|=moved
             result[key]=item
         value=result
-    elif isinstance(value,list):
+    elif isinstance(value,list) and not isinstance(value,_RepeatedNames):  # an anyOf map stays one object
         result=[]
         for index,item in enumerate(value):
             schema=_item_schema(node,index)
