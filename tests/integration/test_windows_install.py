@@ -16,7 +16,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 for name in ('twinpulse_core','twinpulse_provider','twinpulse_app'):
     sys.path.insert(0,str(ROOT/'packages'/name/'src'))
-from twinpulse_app.windows_install import install_package
+from twinpulse_app.windows_install import MAX_PATH_CHARS, install_package
 from twinpulse_app.windows_package import verify_package
 from twinpulse_app.release_contract import (MaintenanceLock, DATA_CONTRACT, REPLACE_ATTEMPTS, atomic_json,
                                             initialize_data_epoch)
@@ -233,6 +233,43 @@ class WindowsInstallTests(unittest.TestCase):
                     else:
                         self.assertFalse((state/'launcher.lock').exists());self.assertEqual(archived,[content])
                 self.assertEqual((profile/'installed/active-release.json').exists(),decision=='archive')
+
+    def deep_file(self,length):
+        """List one more package file whose relative path has exactly this many characters."""
+        parts=[];left=length
+        while left>101:parts.append('d'*100);left-=101
+        relative='/'.join(parts+['f'*left]);data=b'deep'
+        (self.source/relative).parent.mkdir(parents=True,exist_ok=True);(self.source/relative).write_bytes(data)
+        self.manifest['files'].append(dict(path=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+        (self.source/'windows-release-manifest.json').write_text(json.dumps(self.manifest))
+        return relative
+
+    def test_install_refuses_a_path_past_max_path_before_copying_unless_long_paths_are_on(self):
+        installed=lambda name:self.root/('inst-'+name)  # equal-length folders share one package
+        releases=installed('a').resolve()/'releases'
+        # The staged copy's folder (.stage- plus 12 hex) is longer than 'build_1'.
+        relative=self.deep_file(MAX_PATH_CHARS+1-len(str(releases/('.stage-'+'0'*12)))-1)
+        for name,value in (('a',0),('b',None),('c','1')):
+            with self.subTest(long_paths=value):
+                with self.assertRaisesRegex(ValueError,'^INSTALL_PATH_TOO_LONG: 260 > 259: '+relative+'$'):
+                    install_package(self.source,installed(name),read_long_paths=lambda:value)
+                self.assertEqual(list((installed(name)/'releases').iterdir()),[])  # nothing was copied
+                self.assertFalse((installed(name)/'active-release.json').exists())
+                self.assertFalse((installed(name)/'update-journals').exists())
+        result=install_package(self.source,installed('d'),read_long_paths=lambda:1)
+        self.assertTrue((Path(result['exe']).parent/relative).is_file())
+        if os.name!='nt':  # elsewhere no registry is read and the check is skipped
+            self.assertEqual(install_package(self.source,installed('e'))['build_id'],'build_1')
+
+    def test_install_path_check_counts_the_longer_of_the_stage_and_release_folders(self):
+        self.manifest['build_id']='b'*40  # the release folder is now longer than the stage folder
+        releases=(self.root/'inst-a').resolve()/'releases'
+        fits=self.deep_file(MAX_PATH_CHARS-len(str(releases/('b'*40)))-1)
+        self.assertEqual(install_package(self.source,self.root/'inst-a',read_long_paths=lambda:0)['build_id'],'b'*40)
+        self.manifest['files'].pop();shutil.rmtree(self.source/fits.split('/')[0])
+        relative=self.deep_file(len(fits)+1)
+        with self.assertRaisesRegex(ValueError,'^INSTALL_PATH_TOO_LONG: 260 > 259: '+relative+'$'):
+            install_package(self.source,self.root/'inst-b',read_long_paths=lambda:0)
 
     def journal(self,build_id):
         rows=[json.loads(p.read_text(encoding='utf-8')) for p in (self.installed/'update-journals').glob('*.json')]

@@ -11,11 +11,40 @@ from uuid import uuid4
 from .windows_package import OS_JUNK, verify_package
 from .release_contract import MaintenanceLock, DATA_CONTRACT, check_data_epoch, atomic_json, replace_retrying
 
+# Without Windows long paths, a longer path cannot be created or opened.
+MAX_PATH_CHARS = 259
+LONG_PATHS_KEY = r'SYSTEM\CurrentControlSet\Control\FileSystem'
 
-def install_package(source: Path, destination: Path, *, reuse_desktop_from: Path | None = None):
+
+def install_package(source: Path, destination: Path, *, reuse_desktop_from: Path | None = None,
+                    read_long_paths=None):
+    """read_long_paths() returns LongPathsEnabled; by default the registry on Windows, no check elsewhere."""
     state = Path(os.environ.get('LOCALAPPDATA', Path(destination).parent)) / 'TwinPulse/runtime'
+    if read_long_paths is None and os.name == 'nt':
+        read_long_paths = _registry_long_paths
     with MaintenanceLock(state):
-        return _install_package(source, destination, state,reuse_desktop_from=reuse_desktop_from)
+        return _install_package(source, destination, state,reuse_desktop_from=reuse_desktop_from,
+                                read_long_paths=read_long_paths)
+
+
+def _registry_long_paths():
+    """HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem LongPathsEnabled, or None when absent."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, LONG_PATHS_KEY) as key:
+            return winreg.QueryValueEx(key, 'LongPathsEnabled')[0]
+    except OSError:
+        return None
+
+
+def _check_install_paths(names, folders, read_long_paths):
+    """Refuse, before anything is copied, a package path past MAX_PATH in any of folders."""
+    if read_long_paths is None or not names:
+        return
+    name = sorted(names, key=lambda item: (-len(item), item))[0]
+    total = max(len(str(folder)) for folder in folders) + 1 + len(name)
+    if total > MAX_PATH_CHARS and read_long_paths() != 1:
+        raise ValueError('INSTALL_PATH_TOO_LONG: %d > %d: %s' % (total, MAX_PATH_CHARS, name))
 
 
 def _retire_launcher_lock(launcher_lock: Path, state: Path):
@@ -56,7 +85,8 @@ def _entry_scripts(identity):
             'if ($AutomationTest) { & (Join-Path $PSScriptRoot $pointer.exe) --automation-test } else { & (Join-Path $PSScriptRoot $pointer.exe) }\n'))
 
 
-def _install_package(source: Path, destination: Path, state: Path, *, reuse_desktop_from: Path | None = None):
+def _install_package(source: Path, destination: Path, state: Path, *, reuse_desktop_from: Path | None = None,
+                     read_long_paths=None):
     source, destination = source.resolve(), destination.resolve()
     checked = verify_package(source)
     identity = checked['build_id']
@@ -84,6 +114,8 @@ def _install_package(source: Path, destination: Path, state: Path, *, reuse_desk
         previous=None;old_files={}
         new_files={x['path']:x for x in json.loads((source/'windows-release-manifest.json').read_text(encoding='utf-8-sig'))['files']}
         listed={name.casefold() for name in new_files}
+        # Both the staged copy and the final release folder must hold every path.
+        _check_install_paths([*new_files, 'windows-release-manifest.json'], (stage, target), read_long_paths)
         if reuse_desktop_from is not None:
             previous=Path(reuse_desktop_from).resolve()
             if previous.parent!=releases:raise ValueError('INSTALL_DESKTOP_REUSE_OUTSIDE_RELEASE_STORE')
