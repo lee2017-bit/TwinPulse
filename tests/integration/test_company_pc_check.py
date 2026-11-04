@@ -13,6 +13,7 @@ import io
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -324,6 +325,23 @@ class BurgerTests(unittest.TestCase):
         self.assertEqual(check.PUBLIC_BURGER_MANIFEST, simulation_assets.PUBLIC_BURGER_MANIFEST)
         self.assertEqual(check.BURGER_MANIFEST, simulation_assets.BURGER_MANIFEST)
         self.assertEqual(check.BURGER_FOLDERS[0], simulation_assets.PUBLIC_ASSET_RELATIVE)
+
+    def test_metadata_names_and_isaac_folders_equal_the_app_copies(self):
+        from twinpulse_app import windows_package
+        integrity = runpy.run_path(str(ROOT / 'scripts/twinpulse_bootstrap_integrity.py'))
+        entry = runpy.run_path(str(ROOT / 'scripts/twinpulse_desktop_entry.py'))  # not run as __main__: nothing starts
+        self.assertEqual(check.OS_JUNK, windows_package.OS_JUNK)
+        self.assertEqual(check.OS_JUNK, integrity['OS_JUNK'])
+        self.assertEqual(check.ISAAC_CANDIDATES, entry['ISAAC_CANDIDATES'])
+
+    def test_reviewed_isaac_version_is_the_build_the_app_calls_reviewed(self):
+        from twinpulse_app.startup_checks import file_checklist
+        with tempfile.TemporaryDirectory() as temp:
+            write(Path(temp) / 'isaac/VERSION', check.REVIEWED_ISAAC_VERSION)
+            rows = file_checklist({}, state_dir=Path(temp), isaac_python=Path(temp) / 'isaac/python.bat')
+        row = next(row for row in rows if row['id'] == 'isaac_version')
+        self.assertEqual(row['state'], 'ready')
+        self.assertIn('Matches the reviewed local runtime.', row['detail'])
 
     def test_public_copy_matches_and_a_changed_file_is_named(self):
         with tempfile.TemporaryDirectory() as temp:
