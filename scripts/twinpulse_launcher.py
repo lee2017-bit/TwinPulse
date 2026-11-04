@@ -26,18 +26,17 @@ from twinpulse_app.process_manager import PROJECT_SWITCH_REQUESTED, RESTART_REQU
 
 
 def _browser(configured: str | None) -> Path | None:
-    if configured and not Path(configured).is_file():
-        # An explicit choice never silently becomes another browser.
-        raise ProcessManagerError("browser_missing", "Configured browser was not found. Check the --browser path.")
-    candidates = [
-        Path(configured) if configured else None,
-        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
-        Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-        Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
-    ]
-    return next((item for item in candidates if item is not None and item.is_file()), None)
+    if configured:
+        if not Path(configured).is_file():
+            # An explicit choice never silently becomes another browser.
+            raise ProcessManagerError("browser_missing", "Configured browser was not found. Check the --browser path.")
+        return Path(configured)
+    # Machine-wide installs (Windows may not be on C:), then per-user installs.
+    roots = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+             r"C:\Program Files", r"C:\Program Files (x86)", os.environ.get("LOCALAPPDATA")]
+    candidates = [Path(root, *relative) for relative in (("Google", "Chrome", "Application", "chrome.exe"),
+                  ("Microsoft", "Edge", "Application", "msedge.exe")) for root in roots if root]
+    return next((item for item in candidates if item.is_file()), None)
 
 
 def _report_error(error: Exception) -> int:

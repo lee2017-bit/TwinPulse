@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 from pathlib import Path
 import runpy
 import sys
@@ -126,6 +127,21 @@ class LauncherUiFallbackTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertRegex(err, r"\ATWINPULSE_LAUNCH_ERROR code=browser_missing message=\S")
         self.assertEqual((self.created, self.events), ([], []))
+
+    def test_default_browser_search_covers_another_drive_and_per_user_edge(self) -> None:
+        find = self.main.__globals__["_browser"]
+        machine, user = self.base / "D" / "Program Files", self.base / "LocalAppData"
+        edge = user / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+        chrome = machine / "Google" / "Chrome" / "Application" / "chrome.exe"
+        real = Path.is_file
+        # Only files in the temp folder count, so browsers installed on this machine cannot interfere.
+        with patch.dict(os.environ, {"ProgramFiles": str(machine), "ProgramFiles(x86)": str(machine), "LOCALAPPDATA": str(user)}), \
+                patch.object(Path, "is_file", lambda path: self.base in path.parents and real(path)):
+            self.assertIsNone(find(None))
+            edge.parent.mkdir(parents=True); edge.write_bytes(b"fixture")
+            self.assertEqual(find(None), edge)
+            chrome.parent.mkdir(parents=True); chrome.write_bytes(b"fixture")
+            self.assertEqual(find(None), chrome)
 
     def test_default_ready_timeout_matches_the_600_second_cap(self) -> None:
         self.launch("--no-browser")

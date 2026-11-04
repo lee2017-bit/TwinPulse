@@ -99,7 +99,7 @@ class HostAvailabilityTests(unittest.TestCase):
         os.environ.pop('TWINPULSE_UI_TEST_CDP_PORT',None)
     def host(self,built,**kwargs):
         host=DesktopUiHost(self.base/'repo',self.base/'state',**kwargs)
-        if built:host._executable().parent.mkdir(parents=True);host._executable().write_bytes(b'fixture')
+        if built:host._executable().parent.mkdir(parents=True,exist_ok=True);host._executable().write_bytes(b'fixture')
         return host
     def test_available_reports_only_whether_the_source_host_exists(self):
         host=self.host(False)
@@ -131,8 +131,29 @@ class HostAvailabilityTests(unittest.TestCase):
         host.close_after_stop(self.manager)
         self.launch.mkdir();self.manager.supervisor_status_file.write_text(json.dumps({'status':'stopped'}),encoding='utf-8')
         host.close_after_stop(self.manager)
-    def test_handshake_window_is_45_seconds(self):
-        self.assertEqual(HANDSHAKE_TIMEOUT_S,45.0)
+    def test_slow_first_start_is_accepted_and_a_silent_host_fails_at_the_window(self):
+        # Fake clock: a first start that confirms after 40 s still opens (the old
+        # single 10 s wait refused it); one that never confirms fails at the window.
+        for ready_at,expected in ((40.,'opened'),(float('inf'),'desktop_handshake_failed')):
+            with self.subTest(ready_at=ready_at):
+                now=[0.];statuses=[]
+                class Initialized:
+                    def wait(self,timeout):
+                        now[0]+=timeout
+                        if now[0]>300:raise AssertionError('handshake wait has no deadline')
+                        return now[0]>=ready_at
+                    def is_set(self):return now[0]>=ready_at
+                    def clear(self):pass
+                host=self.host(True,popen=lambda *a,**k:SimpleNamespace(poll=lambda:None));host.initialized=Initialized()
+                host._accept_host=host._read_errors=lambda *a:None
+                self.manager._issue_product_bootstrap=lambda url:'ticket';self.manager._write_status=lambda *a,**k:statuses.append(k)
+                with patch('twinpulse_app.desktop_ui_host.time',SimpleNamespace(monotonic=lambda:now[0])):
+                    try:host.open(self.manager,'http://127.0.0.1:8765/');outcome='opened'
+                    except ProcessManagerError as error:outcome=error.code
+                    finally:host.listener is None or host.listener.close()
+                self.assertEqual(outcome,expected)
+                if expected=='opened':self.assertEqual(statuses,[{'browser_launched':True}])
+                else:self.assertTrue(HANDSHAKE_TIMEOUT_S<=now[0]<HANDSHAKE_TIMEOUT_S+1,now[0])
     def test_slow_host_can_connect_after_more_than_four_accept_timeouts(self):
         child=SimpleNamespace(poll=lambda:None);host=self.host(False);host.child=child;seen=[]
         host._read_requests=lambda current,stream:seen.append(current)
@@ -146,10 +167,14 @@ class HostAvailabilityTests(unittest.TestCase):
         host._accept_host(Listener(),'exact-nonce',child)
         self.assertEqual(seen,[child])
     def test_accept_stops_when_the_host_exits(self):
-        listener=SimpleNamespace(accept=lambda:(_ for _ in ()).throw(socket.timeout()),close=lambda:None)
-        host=self.host(False);child=SimpleNamespace(poll=lambda:1);host.child=child
+        calls=[];host=self.host(False);child=SimpleNamespace(poll=lambda:1);host.child=child
+        def accept():
+            calls.append(1)
+            if len(calls)>1:raise AssertionError('still listening after the host exited')
+            raise socket.timeout()
         host._read_requests=lambda current,stream:self.fail('no connection')
-        host._accept_host(listener,'exact-nonce',child)
+        host._accept_host(SimpleNamespace(accept=accept,close=lambda:None),'exact-nonce',child)
+        self.assertEqual(calls,[1])
     def test_exited_host_ends_the_handshake_wait_early(self):
         child=SimpleNamespace(poll=lambda:1,stdout=None,stdin=None,stderr=None)
         host=self.host(True,popen=lambda *a,**k:child);started=time.monotonic()
